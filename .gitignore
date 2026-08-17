@@ -1,0 +1,26 @@
+# Dependencies and generated builds
+node_modules/
+dist/
+release/
+coverage/
+
+# Local runtime payloads (the manifest remains tracked)
+resources/runtime/bin/
+
+# Local design and QA evidence
+audit/
+design/
+design-qa.md
+design-comparison-*.jpg
+implementation-*.jpg
+implementation-*.png
+AGENTS.md
+
+# Package-manager and editor noise
+package-lock.json
+.DS_Store
+*.log
+*.local
+.env
+.env.*
+!.env.example
