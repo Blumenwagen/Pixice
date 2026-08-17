@@ -33,6 +33,9 @@ export class LoomDatabase {
         selected_agent_id TEXT, panel_state TEXT, last_seen_event TEXT,
         FOREIGN KEY(task_id) REFERENCES tasks(id)
       );
+      CREATE TABLE IF NOT EXISTS thread_runtime_state (
+        thread_id TEXT PRIMARY KEY, plan TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
+      );
     `);
   }
 
@@ -66,5 +69,27 @@ export class LoomDatabase {
         selected_agent_id=excluded.selected_agent_id, panel_state=excluded.panel_state,
         last_seen_event=excluded.last_seen_event
     `).run(taskId, state.unreadCount ?? 0, state.selectedAgentId ?? null, JSON.stringify(state.panelState ?? {}), state.lastSeenEvent ?? null);
+  }
+
+  getThreadPlan(threadId) {
+    const row = this.db.prepare("SELECT plan FROM thread_runtime_state WHERE thread_id = ?").get(threadId);
+    if (!row) return null;
+    try {
+      return JSON.parse(row.plan);
+    } catch {
+      return null;
+    }
+  }
+
+  saveThreadPlan(threadId, plan) {
+    this.db.prepare(`
+      INSERT INTO thread_runtime_state (thread_id, plan, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET plan=excluded.plan, updated_at=excluded.updated_at
+    `).run(threadId, JSON.stringify(plan ?? []), new Date().toISOString());
+  }
+
+  deleteThreadRuntimeState(threadId) {
+    this.db.prepare("DELETE FROM thread_runtime_state WHERE thread_id = ?").run(threadId);
   }
 }

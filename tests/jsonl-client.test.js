@@ -23,4 +23,16 @@ describe("JsonlClient", () => {
     output.write("not json\n");
     await expect(error).resolves.toMatchObject({ line: "not json" });
   });
+
+  it("rejects valid JSON primitives without crashing the stream", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const client = new JsonlClient({ input, output });
+    const error = new Promise((resolve) => client.once("protocol-error", resolve));
+    output.write("null\n");
+    await expect(error).resolves.toMatchObject({
+      line: "null",
+      error: expect.objectContaining({ message: "JSON-RPC message must be an object" })
+    });
+  });
 });

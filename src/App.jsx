@@ -1,17 +1,22 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Children, cloneElement, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
-  ArrowClockwise, Bell, CaretLeft, CaretRight, Check, CheckCircle,
-  Circle, Desktop, File, Files, Folder, FolderOpen, Gear, GitBranch,
-  GitDiff, Globe, Info, List, MagnifyingGlass, PaperPlaneTilt, Pause,
+  ArrowClockwise, Bell, Brain, CaretDown, CaretLeft, CaretRight, Check, CheckCircle,
+  Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
+  GitDiff, Globe, Info, Lightning, List, LockKey, MagnifyingGlass, PaperPlaneTilt, Pause,
   PlugsConnected, Plus, ShieldCheck, Sparkle, SpinnerGap, Stack,
-  TerminalWindow, TreeStructure, Warning, X
+  TerminalWindow, Trash, TreeStructure, Warning, X
 } from "@phosphor-icons/react";
 import loomIcon from "./assets/loom-icon.png";
+import { ReasoningOrb } from "./components/ReasoningOrb.jsx";
+import { StreamingText } from "./components/StreamingText.jsx";
+import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
 import {
   applyRuntimePayload,
   descendantsOf,
   flattenItems,
+  mergeThreadSnapshot,
   parseDiff,
+  projectCollabAgents,
   threadStatus,
   threadTitle
 } from "./state/runtime.js";
@@ -67,6 +72,7 @@ function Sidebar({
   tasks,
   selectedThreadId,
   onSelectThread,
+  onDeleteThread,
   onNewTask,
   onOpenProject,
   activeView,
@@ -198,19 +204,23 @@ function Sidebar({
                 {selected && (
                   <div className="task-tree">
                     {tasks.length === 0 && <p>No Codex tasks yet</p>}
-                    {tasks.slice(0, 12).map((task) => (
-                      <button
-                        key={task.id}
-                        className={task.id === selectedThreadId && activeView === "task" ? "active" : ""}
-                        onClick={() => onSelectThread(task.id)}
-                        title={threadTitle(task)}
-                      >
-                        <span className="task-branch" />
-                        <StatusDot status={threadStatus(task)} />
-                        <span>{threadTitle(task)}</span>
-                        <time>{relativeTime(task.recencyAt ?? task.updatedAt)}</time>
-                      </button>
-                    ))}
+                    {tasks.map((task) => {
+                      const title = threadTitle(task);
+                      const active = task.id === selectedThreadId && activeView === "task";
+                      return (
+                        <div className={`task-row ${active ? "active" : ""}`} key={task.id}>
+                          <button className="task-select" onClick={() => onSelectThread(task.id)} title={title}>
+                            <span className="task-branch" />
+                            <StatusDot status={threadStatus(task)} />
+                            <span>{title}</span>
+                            <time>{relativeTime(task.recencyAt ?? task.updatedAt)}</time>
+                          </button>
+                          <IconButton className="task-delete" label={`Delete ${title}`} onClick={() => onDeleteThread(task.id)}>
+                            <Trash size={13} />
+                          </IconButton>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -274,7 +284,7 @@ function PlanPanel({ plan, fallbackText }) {
         <div className="progress-steps">
           {plan.map((step) => (
             <div className={`progress-step ${step.status}`} key={step.step}>
-              {step.status === "completed" ? <CheckCircle size={17} weight="fill" /> : step.status === "in_progress" ? <SpinnerGap className="spin-icon" size={17} /> : <Circle size={16} />}
+              {step.status === "completed" ? <CheckCircle size={17} weight="fill" /> : step.status === "inProgress" ? <SpinnerGap className="spin-icon" size={17} /> : <Circle size={16} />}
               <span>{step.step}</span>
             </div>
           ))}
@@ -338,7 +348,60 @@ function tableCells(line) {
   return line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
 }
 
-function MarkdownMessage({ text }) {
+function MarkdownTable({ headers, rows }) {
+  return (
+    <div className="message-table-wrap">
+      <table>
+        <thead>
+          <tr>{headers.map((cell, cellIndex) => <th key={`head-${cellIndex}`}>{inlineMarkdown(cell, `head-${cellIndex}`)}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={`row-${rowIndex}`}>
+              {row.map((cell, cellIndex) => {
+                const branded = cellIndex === 0 && modelBrand(cell);
+                return (
+                  <td key={`cell-${rowIndex}-${cellIndex}`}>
+                    <span className={branded ? "model-cell" : "table-cell-text"}>
+                      {branded && <ModelBrandIcon model={cell} />}
+                      <span className="table-cell-text">{inlineMarkdown(cell, `cell-${rowIndex}-${cellIndex}`)}</span>
+                    </span>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function appendTrailing(blocks, trailing) {
+  if (!trailing) return blocks;
+  if (!blocks.length) return [<p key="trailing-only">{trailing}</p>];
+
+  const next = [...blocks];
+  const index = next.length - 1;
+  const last = next[index];
+  if (["p", "h1", "h2", "h3", "blockquote"].includes(last.type)) {
+    next[index] = cloneElement(last, undefined, ...Children.toArray(last.props.children), trailing);
+    return next;
+  }
+  if (last.type === "ul" || last.type === "ol") {
+    const items = Children.toArray(last.props.children);
+    const itemIndex = items.length - 1;
+    if (itemIndex >= 0) {
+      items[itemIndex] = cloneElement(items[itemIndex], undefined, ...Children.toArray(items[itemIndex].props.children), trailing);
+      next[index] = cloneElement(last, undefined, ...items);
+      return next;
+    }
+  }
+  next.push(<span className="message-trailing" key="message-trailing">{trailing}</span>);
+  return next;
+}
+
+function MarkdownMessage({ text, trailing }) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const blocks = [];
   let index = 0;
@@ -380,14 +443,7 @@ function MarkdownMessage({ text }) {
         rows.push(tableCells(lines[index]));
         index += 1;
       }
-      blocks.push(
-        <div className="message-table-wrap" key={`table-${index}`}>
-          <table>
-            <thead><tr>{headers.map((cell, cellIndex) => <th key={`head-${cellIndex}`}>{inlineMarkdown(cell, `head-${cellIndex}`)}</th>)}</tr></thead>
-            <tbody>{rows.map((row, rowIndex) => <tr key={`row-${rowIndex}`}>{row.map((cell, cellIndex) => <td key={`cell-${rowIndex}-${cellIndex}`}>{inlineMarkdown(cell, `cell-${rowIndex}-${cellIndex}`)}</td>)}</tr>)}</tbody>
-          </table>
-        </div>
-      );
+      blocks.push(<MarkdownTable headers={headers} rows={rows} key={`table-${index}`} />);
       continue;
     }
 
@@ -426,10 +482,64 @@ function MarkdownMessage({ text }) {
     blocks.push(<p key={`paragraph-${index}`}>{inlineMarkdown(paragraph.join(" "), `paragraph-${index}`)}</p>);
   }
 
-  return <div className="markdown-body">{blocks}</div>;
+  return <div className="markdown-body">{appendTrailing(blocks, trailing)}</div>;
 }
 
-function ConversationItem({ item, forceFinal = false }) {
+function responseDisplayKey(threadId, turnId, item, index = 0) {
+  return `${threadId}:${turnId}:${item.renderId ?? item.id ?? `agent-${index}`}`;
+}
+
+function markResponsesSeen(thread, seenResponseIds) {
+  (thread?.turns ?? []).forEach((turn) => {
+    (turn.items ?? []).forEach((item, index) => {
+      if (item.type === "agentMessage") {
+        seenResponseIds.add(responseDisplayKey(thread.id, turn.renderId ?? turn.id, item, index));
+      }
+    });
+  });
+}
+
+function threadRevision(thread) {
+  return JSON.stringify([
+    thread?.id,
+    thread?.updatedAt,
+    thread?.status,
+    (thread?.turns ?? []).map((turn) => [
+      turn.id,
+      turn.status,
+      (turn.items ?? []).map((item) => [
+        item.id,
+        item.type,
+        item.status,
+        item.phase,
+        item.text,
+        item.aggregatedOutput,
+        item.content?.map((part) => part.text).join("\n"),
+        item.summary,
+        item.changes
+      ])
+    ])
+  ]);
+}
+
+function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds }) {
+  const [animate] = useState(() => !seenResponseIds.has(responseKey));
+  useEffect(() => {
+    seenResponseIds.add(responseKey);
+  }, [responseKey, seenResponseIds]);
+
+  return (
+    <article className={`message assistant-message ${forceFinal ? "final_answer" : item.phase ?? ""}`}>
+      {animate ? (
+        <StreamingText text={item.text}>
+          {(shown, caret) => <MarkdownMessage text={shown} trailing={caret} />}
+        </StreamingText>
+      ) : <MarkdownMessage text={item.text} />}
+    </article>
+  );
+}
+
+function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds }) {
   if (item.type === "userMessage") {
     const text = item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n");
     if (!text) return null;
@@ -437,7 +547,7 @@ function ConversationItem({ item, forceFinal = false }) {
   }
   if (item.type === "agentMessage") {
     if (!item.text) return null;
-    return <article className={`message assistant-message ${forceFinal ? "final_answer" : item.phase ?? ""}`}><MarkdownMessage text={item.text} /></article>;
+    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} />;
   }
   if (item.type === "plan") return null;
   return <ActivityItem item={item} />;
@@ -447,6 +557,143 @@ const TRACE_ITEM_TYPES = new Set(["reasoning", "commandExecution", "fileChange",
 
 function turnIsRunning(status) {
   return status === "inProgress" || status === "running" || status === "active";
+}
+
+const PERMISSION_OPTIONS = [
+  {
+    value: "read-only",
+    label: "Read only",
+    description: "Inspect the project without changing files.",
+    icon: LockKey
+  },
+  {
+    value: "workspace-write",
+    label: "Workspace access",
+    description: "Read and edit this project; ask before broader access.",
+    icon: ShieldCheck
+  }
+];
+
+const EFFORT_META = {
+  none: { label: "None", description: "Answer directly without deliberate reasoning.", icon: Lightning },
+  minimal: { label: "Minimal", description: "Fast responses for straightforward work.", icon: Lightning },
+  low: { label: "Low", description: "A quick pass with light reasoning.", icon: Gauge },
+  medium: { label: "Medium", description: "Balanced speed and problem solving.", icon: Brain },
+  high: { label: "High", description: "Deeper reasoning for complex tasks.", icon: Sparkle },
+  xhigh: { label: "Extra high", description: "Maximum depth for the hardest problems.", icon: Sparkle }
+};
+
+function PickerGlyph({ option, kind }) {
+  if (kind === "model") {
+    const branded = modelBrand(option.value);
+    return (
+      <span className="picker-glyph model-picker-glyph">
+        {branded ? <ModelBrandIcon model={option.value} /> : <Sparkle size={14} weight="fill" />}
+      </span>
+    );
+  }
+  const Glyph = option.icon ?? Sparkle;
+  return <span className={`picker-glyph${option.danger ? " danger" : ""}`}><Glyph size={15} weight="regular" /></span>;
+}
+
+function ComposerPicker({ label, hint, value, options, onChange, kind, align = "right", disabled = false }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const optionRefs = useRef([]);
+  const listboxId = useId();
+  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
+  const selected = options[selectedIndex] ?? options[0];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOutside = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        rootRef.current?.querySelector(".picker-trigger")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    window.setTimeout(() => optionRefs.current[selectedIndex]?.focus(), 0);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open, selectedIndex]);
+
+  const choose = (next) => {
+    onChange(next.value);
+    setOpen(false);
+    window.setTimeout(() => rootRef.current?.querySelector(".picker-trigger")?.focus(), 0);
+  };
+
+  const moveFocus = (event) => {
+    const currentIndex = optionRefs.current.indexOf(document.activeElement);
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowDown") nextIndex = (currentIndex + 1 + options.length) % options.length;
+    else if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + options.length) % options.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = options.length - 1;
+    else return;
+    event.preventDefault();
+    optionRefs.current[nextIndex]?.focus();
+  };
+
+  return (
+    <div className={`composer-picker ${kind}`} data-open={open} ref={rootRef}>
+      <button
+        type="button"
+        className="picker-trigger"
+        aria-label={`${label}: ${selected?.label ?? "Unavailable"}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        disabled={disabled || !selected}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        {selected && <PickerGlyph option={selected} kind={kind} />}
+        <span className="picker-trigger-label">{selected?.label ?? "Unavailable"}</span>
+        <CaretDown className="picker-chevron" size={12} weight="bold" />
+      </button>
+      {open && (
+        <div className="picker-popover" data-align={align}>
+          <div className="picker-head">
+            <span>{label}</span>
+            <small>{hint}</small>
+          </div>
+          <div className="picker-options" id={listboxId} role="listbox" aria-label={label} onKeyDown={moveFocus}>
+            {options.map((option, index) => (
+              <button
+                type="button"
+                className={`picker-option${option.value === value ? " selected" : ""}${option.danger ? " danger" : ""}`}
+                role="option"
+                aria-selected={option.value === value}
+                ref={(node) => { optionRefs.current[index] = node; }}
+                onClick={() => choose(option)}
+                key={option.value}
+              >
+                <PickerGlyph option={option} kind={kind} />
+                <span className="picker-option-copy">
+                  <strong>{option.label}</strong>
+                  <small>{option.description}</small>
+                </span>
+                <span className="picker-check" aria-hidden="true"><Check size={12} weight="bold" /></span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function WorkingTrace({ items, running, settled }) {
@@ -480,7 +727,9 @@ function WorkingTrace({ items, running, settled }) {
         aria-controls={disclosureId}
         onClick={() => setManualExpanded((current) => !(current ?? !settled))}
       >
-        <Sparkle className="trace-status-icon" size={15} weight={running ? "fill" : "regular"} />
+        {running
+          ? <ReasoningOrb className="trace-status-orb" label={label} decorative />
+          : <Sparkle className="trace-status-icon" size={15} weight="regular" />}
         <span className={`trace-toggle-label ${running ? "shimmer" : ""}`} role="status">{label}</span>
         <CaretRight className="trace-caret" size={13} />
       </button>
@@ -493,9 +742,9 @@ function WorkingTrace({ items, running, settled }) {
         <div className="trace-disclosure-inner">
           <div className="trace-list">
             {items.map((item, index) => item.type === "agentMessage" ? (
-              item.text ? <div className="trace-commentary" key={item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div> : null
+              item.text ? <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div> : null
             ) : (
-              <ActivityItem item={item} key={item.id ?? `${item.type}-${index}`} />
+              <ActivityItem item={item} key={item.renderId ?? item.id ?? `${item.type}-${index}`} />
             ))}
           </div>
         </div>
@@ -504,22 +753,24 @@ function WorkingTrace({ items, running, settled }) {
   );
 }
 
-function TurnConversation({ turn }) {
+function TurnConversation({ threadId, turn, seenResponseIds }) {
   const items = turn.items ?? [];
   const running = turnIsRunning(turn.status);
   const explicitFinalIndex = items.findLastIndex((item) => item.type === "agentMessage" && item.phase === "final_answer");
-  const fallbackFinalIndex = explicitFinalIndex === -1 && !running
+  const fallbackFinalIndex = explicitFinalIndex === -1 && turn.status === "completed"
     ? items.findLastIndex((item) => item.type === "agentMessage" && item.text)
     : -1;
   const finalIndex = explicitFinalIndex === -1 ? fallbackFinalIndex : explicitFinalIndex;
   const settled = !running && finalIndex !== -1;
   const rendered = [];
   let traceItems = [];
+  let renderedWorkingTrace = false;
 
   const flushTrace = () => {
     if (!traceItems.length) return;
-    const key = traceItems[0].id ?? `trace-${rendered.length}`;
+    const key = traceItems[0].renderId ?? traceItems[0].id ?? `trace-${rendered.length}`;
     rendered.push(<WorkingTrace items={traceItems} running={running} settled={settled} key={key} />);
+    renderedWorkingTrace = true;
     traceItems = [];
   };
 
@@ -532,23 +783,44 @@ function TurnConversation({ turn }) {
       return;
     }
     flushTrace();
-    rendered.push(<ConversationItem item={item} forceFinal={isFinal} key={item.id ?? `${item.type}-${index}`} />);
+    rendered.push(
+      <ConversationItem
+        item={item}
+        forceFinal={isFinal}
+        responseKey={responseDisplayKey(threadId, turn.renderId ?? turn.id, item, index)}
+        seenResponseIds={seenResponseIds}
+        key={item.renderId ?? item.id ?? `${item.type}-${index}`}
+      />
+    );
   });
   flushTrace();
+  if (running && !renderedWorkingTrace && finalIndex === -1) {
+    rendered.push(<WorkingTrace items={[]} running settled={false} key={`pending-${turn.renderId ?? turn.id}`} />);
+  }
 
   return rendered;
 }
 
-function Composer({ disabled, running, models, selectedModel, onModelChange, effort, onEffortChange, onSubmit, onInterrupt }) {
+function Composer({ disabled, busy, draftKey, running, models, selectedModel, onModelChange, effort, onEffortChange, permissionMode, onPermissionModeChange, onSubmit, onInterrupt }) {
   const [text, setText] = useState("");
   const selected = models.find((model) => model.model === selectedModel);
   const efforts = selected?.supportedReasoningEfforts ?? [];
+  const modelOptions = models.map((model) => ({
+    value: model.model,
+    label: model.displayName ?? model.model,
+    description: model.isDefault ? `${model.model} · Default` : model.model
+  }));
+  const effortOptions = (efforts.length ? efforts : [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }]).map((option) => {
+    const value = option.reasoningEffort ?? option.effort ?? option;
+    return { value, ...(EFFORT_META[value] ?? { label: String(value).replace(/^./, (letter) => letter.toUpperCase()), description: "Adjust how deeply Codex reasons.", icon: Brain }) };
+  });
+  useEffect(() => setText(""), [draftKey]);
   const submit = async () => {
     const value = text.trim();
-    if (!value || disabled) return;
+    if (!value || disabled || busy) return;
     setText("");
     const accepted = await onSubmit(value);
-    if (accepted === false) setText(value);
+    if (accepted === false) setText((current) => current || value);
   };
   return (
     <div className="composer">
@@ -559,27 +831,44 @@ function Composer({ disabled, running, models, selectedModel, onModelChange, eff
         disabled={disabled}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey) {
+          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             submit();
           }
         }}
       />
       <div className="composer-controls">
-        <div className="permission-label"><ShieldCheck size={15} />Workspace access</div>
-        <div>
-          <select aria-label="Model" value={selectedModel} onChange={(event) => onModelChange(event.target.value)} disabled={disabled || models.length === 0}>
-            {models.length === 0 && <option value="">Default model</option>}
-            {models.map((model) => <option value={model.model} key={model.id ?? model.model}>{model.displayName ?? model.model}</option>)}
-          </select>
-          <select aria-label="Reasoning effort" value={effort} onChange={(event) => onEffortChange(event.target.value)} disabled={disabled}>
-            {(efforts.length ? efforts : [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }]).map((option) => {
-              const value = option.reasoningEffort ?? option.effort ?? option;
-              return <option value={value} key={value}>{String(value).replace(/^./, (letter) => letter.toUpperCase())}</option>;
-            })}
-          </select>
+        <ComposerPicker
+          label="Permissions"
+          hint="Applied to this task"
+          value={permissionMode}
+          options={PERMISSION_OPTIONS}
+          onChange={onPermissionModeChange}
+          kind="permission"
+          align="left"
+          disabled={disabled || running}
+        />
+        <div className="composer-actions">
+          <ComposerPicker
+            label="Model"
+            hint="Choose the right engine"
+            value={selectedModel}
+            options={modelOptions}
+            onChange={onModelChange}
+            kind="model"
+            disabled={disabled || models.length === 0 || running}
+          />
+          <ComposerPicker
+            label="Reasoning"
+            hint="Control depth and speed"
+            value={effort}
+            options={effortOptions}
+            onChange={onEffortChange}
+            kind="reasoning"
+            disabled={disabled || running}
+          />
           {running && <IconButton label="Interrupt task" className="turn-button" onClick={onInterrupt}><Pause size={16} weight="fill" /></IconButton>}
-          <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || !text.trim()}>
+          <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || !text.trim()}>
             <PaperPlaneTilt size={17} weight="fill" />
           </IconButton>
         </div>
@@ -614,6 +903,7 @@ function ConversationWorkspace({
   loading,
   runtime,
   plan,
+  seenResponseIds,
   inspectorOpen,
   onInspectorToggle,
   onOpenProject,
@@ -622,11 +912,23 @@ function ConversationWorkspace({
   const items = flattenItems(thread);
   const latestPlanText = [...items].reverse().find((item) => item.type === "plan")?.text;
   const scrollRef = useRef(null);
+  const followLatestRef = useRef(true);
+  const followedThreadRef = useRef(thread?.id);
   const liveLength = items.map((item) => (item.text?.length ?? 0) + (item.aggregatedOutput?.length ?? 0) + (Array.isArray(item.summary) ? item.summary.join("").length : 0)).join(":");
   useEffect(() => {
+    if (followedThreadRef.current !== thread?.id) {
+      followedThreadRef.current = thread?.id;
+      followLatestRef.current = true;
+    }
     const node = scrollRef.current;
-    if (node) node.scrollTop = node.scrollHeight;
-  }, [items.length, liveLength]);
+    if (node && followLatestRef.current) node.scrollTop = node.scrollHeight;
+  }, [thread?.id, items.length, liveLength]);
+
+  const handleConversationScroll = () => {
+    const node = scrollRef.current;
+    if (!node) return;
+    followLatestRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+  };
 
   return (
     <main className="main-canvas">
@@ -637,18 +939,18 @@ function ConversationWorkspace({
         onInspectorToggle={onInspectorToggle}
         showInspector={Boolean(thread)}
       />
-      <div className="conversation-scroll" ref={scrollRef}>
+      <div className="conversation-scroll" ref={scrollRef} onScroll={handleConversationScroll}>
         {loading ? (
           <div className="loading-state"><SpinnerGap className="spin-icon" size={20} />Loading conversation…</div>
         ) : !thread ? (
           <EmptyConversation project={project} runtime={runtime} onOpenProject={onOpenProject} />
         ) : (
           <div className="conversation-column">
-            <PlanPanel plan={plan} fallbackText={latestPlanText} />
             <div className="message-stream">
               {items.length === 0 && <p className="quiet-empty">This task has no messages yet.</p>}
-              {(thread.turns ?? []).map((turn) => <TurnConversation turn={turn} key={turn.id} />)}
+              {(thread.turns ?? []).map((turn) => <TurnConversation threadId={thread.id} turn={turn} seenResponseIds={seenResponseIds} key={turn.renderId ?? turn.id} />)}
             </div>
+            <PlanPanel plan={plan} fallbackText={latestPlanText} />
           </div>
         )}
       </div>
@@ -661,18 +963,45 @@ function ApprovalCard({ request, onResolve }) {
   const method = request.method ?? "Approval";
   const params = request.params ?? {};
   const isApproval = method.includes("requestApproval") || method === "applyPatchApproval" || method === "execCommandApproval";
+  const isUserInput = method.includes("requestUserInput");
+  const questions = Array.isArray(params.questions) ? params.questions : [];
+  const [answers, setAnswers] = useState({});
   const summary = params.command || params.reason || params.cwd || method.replaceAll("/", " · ");
+  const submitAnswers = () => onResolve(request, Object.fromEntries(questions.map((question, index) => {
+    const id = question.id ?? `question-${index + 1}`;
+    return [id, { answers: [answers[id]?.trim()].filter(Boolean) }];
+  })));
   return (
     <section className="approval-card">
       <div className="approval-title"><Warning size={17} weight="fill" /><strong>{isApproval ? "Approval required" : "Attention required"}</strong></div>
       <p>{summary}</p>
+      {(params.cwd || request.projectId) && <small className="approval-context">{params.cwd ?? `Project ${request.projectId}`}</small>}
       {isApproval ? (
         <div className="approval-actions">
           <button className="approve" onClick={() => onResolve(request, "accept")}><Check size={15} />Approve</button>
           <button onClick={() => onResolve(request, "decline")}><X size={15} />Decline</button>
           <button onClick={() => onResolve(request, "acceptForSession")}>Allow for session</button>
         </div>
-      ) : <small>Open the active task to respond to this request.</small>}
+      ) : isUserInput && questions.length ? (
+        <div className="approval-questions">
+          {questions.map((question, index) => {
+            const id = question.id ?? `question-${index + 1}`;
+            return (
+              <fieldset key={id}>
+                <legend>{question.question ?? question.header ?? `Question ${index + 1}`}</legend>
+                {(question.options ?? []).map((option) => (
+                  <label key={option.label}>
+                    <input type="radio" name={`${request.id}-${id}`} checked={answers[id] === option.label} onChange={() => setAnswers((current) => ({ ...current, [id]: option.label }))} />
+                    <span>{option.label}{option.description && <small>{option.description}</small>}</span>
+                  </label>
+                ))}
+                <input aria-label={`Custom answer for ${question.header ?? id}`} value={(question.options ?? []).some((option) => option.label === answers[id]) ? "" : answers[id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [id]: event.target.value }))} placeholder="Custom answer" />
+              </fieldset>
+            );
+          })}
+          <button className="approve" disabled={questions.some((question, index) => !(answers[question.id ?? `question-${index + 1}`] ?? "").trim())} onClick={submitAnswers}><Check size={15} />Submit answers</button>
+        </div>
+      ) : <small>This request type is not supported by this Loom version.</small>}
     </section>
   );
 }
@@ -680,6 +1009,19 @@ function ApprovalCard({ request, onResolve }) {
 function Inspector({ open, thread, threads, plan, attention, onResolve }) {
   if (!thread) return null;
   const agents = descendantsOf(threads, thread.id);
+  const agentStatusCopy = (agent) => {
+    const status = threadStatus(agent);
+    if (status === "running" || status === "inProgress") return "Working";
+    if (status === "completed" || status === "idle") return "Completed";
+    if (status === "failed" || status === "systemError") return "Failed";
+    if (status === "interrupted") return "Interrupted";
+    return "Waiting";
+  };
+  const agentDetail = (agent) => {
+    if (agent.agentStatusMessage) return agent.agentStatusMessage;
+    const title = threadTitle(agent);
+    return title !== threadTitle(thread) ? title : "";
+  };
   return (
     <aside className={`inspector ${open ? "open" : ""}`} aria-label="Task inspector">
       <div className="inspector-head"><span>Task</span><StatusDot status={threadStatus(thread)} /></div>
@@ -687,7 +1029,7 @@ function Inspector({ open, thread, threads, plan, attention, onResolve }) {
         <span className="section-label">Plan</span>
         {plan?.length ? (
           <div className="inspector-plan">
-            {plan.map((step) => <div key={step.step} className={step.status}>{step.status === "completed" ? <CheckCircle size={14} weight="fill" /> : <Circle size={14} />}<span>{step.step}</span></div>)}
+            {plan.map((step) => <div key={step.step} className={step.status}>{step.status === "completed" ? <CheckCircle size={14} weight="fill" /> : step.status === "inProgress" ? <SpinnerGap className="spin-icon" size={14} /> : <Circle size={14} />}<span>{step.step}</span></div>)}
           </div>
         ) : <p className="inspector-empty">No structured plan reported yet.</p>}
       </section>
@@ -698,7 +1040,7 @@ function Inspector({ open, thread, threads, plan, attention, onResolve }) {
           {agents.map((agent) => (
             <div className="agent-row child" key={agent.id}>
               <span className="branch-line" /><StatusDot status={threadStatus(agent)} />
-              <span><strong>{agent.agentNickname || agent.agentRole || "Delegated agent"}</strong><small>{threadTitle(agent)}</small></span>
+              <span><strong>{agent.agentNickname || agent.agentRole || "Delegated agent"}</strong><small>{agentStatusCopy(agent)}{agentDetail(agent) ? ` · ${agentDetail(agent)}` : ""}</small></span>
             </div>
           ))}
           {agents.length === 0 && <p className="inspector-empty">No delegated agents yet.</p>}
@@ -706,6 +1048,34 @@ function Inspector({ open, thread, threads, plan, attention, onResolve }) {
       </section>
       {attention.filter((request) => request.params?.threadId === thread.id).map((request) => <ApprovalCard request={request} onResolve={onResolve} key={request.id} />)}
     </aside>
+  );
+}
+
+function FileDiff({ file }) {
+  if (!file) return null;
+  return (
+    <div className="file-diff">
+      <div className="file-diff-head">
+        <span className="file-diff-name">
+          <Code size={15} aria-hidden="true" />
+          <span>{file.path}</span>
+        </span>
+        <span className="file-diff-stat" aria-label={`${file.plus} additions and ${file.minus} deletions`}>
+          <span className="add">+{file.plus}</span>
+          <span className="del">−{file.minus}</span>
+        </span>
+      </div>
+      <div className="file-diff-body">
+        {file.rows.length ? file.rows.map((row, index) => (
+          <div className={`file-diff-row ${row.type}`} key={`${index}-${row.old ?? ""}-${row.cur ?? ""}`}>
+            <span className="line-number old-line">{row.old ?? ""}</span>
+            <span className="line-number new-line">{row.cur ?? ""}</span>
+            <span className="diff-sign" aria-hidden="true">{row.type === "add" ? "+" : row.type === "del" ? "−" : ""}</span>
+            <code>{row.text || " "}</code>
+          </div>
+        )) : <p className="file-diff-empty">No textual diff is available for this file.</p>}
+      </div>
+    </div>
   );
 }
 
@@ -745,13 +1115,7 @@ function ReviewWorkspace({ project, review, loading, onRefresh, onExternal }) {
             ))}
           </aside>
           <section className="diff-panel">
-            <div className="diff-head"><span>{selected?.path}</span><small>Unified diff</small></div>
-            <div className="diff-code">
-              {selected?.lines.map((line, index) => {
-                const kind = line.startsWith("+") && !line.startsWith("+++") ? "added" : line.startsWith("-") && !line.startsWith("---") ? "removed" : line.startsWith("@@") ? "hunk" : "";
-                return <div className={`diff-line ${kind}`} key={`${index}-${line}`}><span>{index + 1}</span><code>{line || " "}</code></div>;
-              })}
-            </div>
+            <FileDiff file={selected} />
           </section>
         </div>
       )}
@@ -814,8 +1178,17 @@ export function App() {
   const api = window.loom;
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
+  const selectedProjectIdRef = useRef(null);
   const [threads, setThreads] = useState([]);
   const [selectedThreadId, setSelectedThreadId] = useState(null);
+  const selectedThreadIdRef = useRef(null);
+  const optimisticThreadsRef = useRef(new Map());
+  const threadLoadRequestRef = useRef(0);
+  const threadsLoadRequestRef = useRef(0);
+  const reviewLoadRequestRef = useRef(0);
+  const extensionsLoadRequestRef = useRef(0);
+  const submittingRef = useRef(false);
+  const seenResponseIdsRef = useRef(new Set());
   const [thread, setThread] = useState(null);
   const [plan, setPlan] = useState([]);
   const [attention, setAttention] = useState([]);
@@ -823,7 +1196,11 @@ export function App() {
   const [extensions, setExtensions] = useState(EMPTY_EXTENSIONS);
   const [models, setModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState("");
-  const [effort, setEffort] = useState("high");
+  const [effort, setEffort] = useState("");
+  const [permissionMode, setPermissionMode] = useState(() => {
+    const saved = localStorage.getItem("loom.permissionMode");
+    return PERMISSION_OPTIONS.some((option) => option.value === saved) ? saved : "workspace-write";
+  });
   const [runtime, setRuntime] = useState({ state: "starting", connected: false });
   const [activeView, setActiveView] = useState("task");
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -835,6 +1212,7 @@ export function App() {
   const [draftMode, setDraftMode] = useState(false);
   const draftModeRef = useRef(false);
   const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, extensions: false });
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
@@ -842,9 +1220,22 @@ export function App() {
   const activeTurn = [...(thread?.turns ?? [])].reverse().find((turn) => turn.status === "inProgress");
   const changedCount = review.repository?.dirtyPaths?.length ?? 0;
 
+  const normalizePlan = useCallback((steps) => (steps ?? []).map((step) => ({
+    ...step,
+    status: step.status === "in_progress" ? "inProgress" : step.status
+  })), []);
+
   useEffect(() => {
     draftModeRef.current = draftMode;
   }, [draftMode]);
+
+  useEffect(() => {
+    selectedThreadIdRef.current = selectedThreadId;
+  }, [selectedThreadId]);
+
+  useEffect(() => {
+    selectedProjectIdRef.current = selectedProjectId;
+  }, [selectedProjectId]);
 
   const loadModels = useCallback(async () => {
     if (!api) return;
@@ -854,65 +1245,128 @@ export function App() {
 
   const loadThreads = useCallback(async (projectId) => {
     if (!api || !projectId) return;
+    const requestId = ++threadsLoadRequestRef.current;
     setLoading((state) => ({ ...state, threads: true }));
     try {
       const response = await api.threads.list({ projectId });
+      if (requestId !== threadsLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       const next = response.data ?? [];
       setThreads(next);
       const roots = next.filter((candidate) => !candidate.parentThreadId);
       setSelectedThreadId((current) => {
-        if (current && roots.some((candidate) => candidate.id === current)) return current;
-        return draftModeRef.current ? null : roots[0]?.id ?? null;
+        const selected = current && roots.some((candidate) => candidate.id === current)
+          ? current
+          : draftModeRef.current ? null : roots[0]?.id ?? null;
+        selectedThreadIdRef.current = selected;
+        return selected;
       });
     } catch (cause) {
+      if (requestId !== threadsLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setError(cause.message);
       setThreads([]);
     } finally {
-      setLoading((state) => ({ ...state, threads: false }));
+      if (requestId === threadsLoadRequestRef.current) setLoading((state) => ({ ...state, threads: false }));
     }
   }, [api]);
 
   const loadThread = useCallback(async (projectId, threadId) => {
     if (!api || !projectId || !threadId) return;
+    const requestId = ++threadLoadRequestRef.current;
     setLoading((state) => ({ ...state, thread: true }));
     try {
       const response = await api.threads.read({ projectId, threadId });
-      setThread(response.thread);
+      if (requestId === threadLoadRequestRef.current && selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === threadId) {
+        markResponsesSeen(response.thread, seenResponseIdsRef.current);
+        setThread(response.thread);
+        if (Array.isArray(response.plan)) setPlan(normalizePlan(response.plan));
+      }
     } catch (cause) {
-      setError(cause.message);
-      setThread(null);
+      if (requestId === threadLoadRequestRef.current && selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === threadId) {
+        setError(cause.message);
+        setThread(null);
+      }
     } finally {
-      setLoading((state) => ({ ...state, thread: false }));
+      if (requestId === threadLoadRequestRef.current) {
+        setLoading((state) => ({ ...state, thread: false }));
+      }
+    }
+  }, [api, normalizePlan]);
+
+  const refreshThread = useCallback(async (projectId, threadId) => {
+    if (!api || !projectId || !threadId) return;
+    try {
+      const response = await api.threads.read({ projectId, threadId });
+      if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === threadId) {
+        if (Array.isArray(response.plan)) setPlan(normalizePlan(response.plan));
+        setThread((current) => {
+          const merged = mergeThreadSnapshot(current, response.thread);
+          return threadRevision(merged) === threadRevision(current) ? current : merged;
+        });
+      }
+    } catch {
+      // Runtime events remain primary; a later refresh can recover a transient read.
+    }
+  }, [api, normalizePlan]);
+
+  const loadAgents = useCallback(async (projectId, threadId) => {
+    if (!api?.threads.children || !projectId || !threadId) return;
+    try {
+      const response = await api.threads.children({ projectId, threadId });
+      if (selectedProjectIdRef.current !== projectId || selectedThreadIdRef.current !== threadId) return;
+      const incoming = response.data ?? [];
+      setThreads((current) => {
+        const byId = new Map(current.map((candidate) => [candidate.id, candidate]));
+        incoming.forEach((candidate) => {
+          const existing = byId.get(candidate.id);
+          byId.set(candidate.id, {
+            ...existing,
+            ...candidate,
+            preview: existing?.liveProjection && existing.preview ? existing.preview : candidate.preview,
+            liveProjection: existing?.liveProjection ?? false
+          });
+        });
+        return [...byId.values()];
+      });
+    } catch {
+      // Live collaboration items still provide an immediate best-effort projection.
     }
   }, [api]);
 
   const loadReview = useCallback(async (projectId) => {
     if (!api || !projectId) return;
+    const requestId = ++reviewLoadRequestRef.current;
     setLoading((state) => ({ ...state, review: true }));
     try {
       const result = await api.review.read({ projectId });
+      if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setReview(result);
       setProjects((current) => current.map((project) => project.id === projectId ? { ...project, repository: result.repository } : project));
     } catch (cause) {
+      if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setError(cause.message);
       setReview({ repository: null, diff: "" });
     } finally {
-      setLoading((state) => ({ ...state, review: false }));
+      if (requestId === reviewLoadRequestRef.current) setLoading((state) => ({ ...state, review: false }));
     }
   }, [api]);
 
   const loadExtensions = useCallback(async () => {
     if (!api) return;
+    const requestId = ++extensionsLoadRequestRef.current;
+    const projectId = selectedProjectId;
+    const threadId = selectedThreadId;
     setLoading((state) => ({ ...state, extensions: true }));
     try {
-      const result = await api.extensions.list({ cwd: selectedProject?.canonicalPath, threadId: selectedThreadId ?? undefined });
+      const result = await api.extensions.list({ projectId: projectId ?? undefined, threadId: threadId ?? undefined });
+      if (requestId !== extensionsLoadRequestRef.current || selectedProjectIdRef.current !== projectId || selectedThreadIdRef.current !== threadId) return;
       setExtensions({ ...EMPTY_EXTENSIONS, ...result });
     } catch (cause) {
+      if (requestId !== extensionsLoadRequestRef.current) return;
       setError(cause.message);
     } finally {
-      setLoading((state) => ({ ...state, extensions: false }));
+      if (requestId === extensionsLoadRequestRef.current) setLoading((state) => ({ ...state, extensions: false }));
     }
-  }, [api, selectedProject?.canonicalPath, selectedThreadId]);
+  }, [api, selectedProjectId, selectedThreadId]);
 
   useEffect(() => {
     if (!api) {
@@ -947,6 +1401,7 @@ export function App() {
   useEffect(() => {
     if (!selectedProjectId) {
       setThreads([]);
+      selectedThreadIdRef.current = null;
       setSelectedThreadId(null);
       setThread(null);
       setReview({ repository: null, diff: "" });
@@ -960,11 +1415,53 @@ export function App() {
   useEffect(() => {
     setPlan([]);
     if (!selectedProjectId || !selectedThreadId) {
+      threadLoadRequestRef.current += 1;
       setThread(null);
+      setLoading((state) => ({ ...state, thread: false }));
+      return;
+    }
+    if (optimisticThreadsRef.current.has(selectedThreadId)) {
+      optimisticThreadsRef.current.delete(selectedThreadId);
+      threadLoadRequestRef.current += 1;
+      setLoading((state) => ({ ...state, thread: false }));
       return;
     }
     loadThread(selectedProjectId, selectedThreadId);
   }, [selectedProjectId, selectedThreadId, loadThread]);
+
+  useEffect(() => {
+    if (!api || !selectedProjectId || !selectedThreadId || !activeTurn) return undefined;
+    let cancelled = false;
+    let timer;
+    const refresh = async () => {
+      try {
+        await refreshThread(selectedProjectId, selectedThreadId);
+      } catch {
+        // Live notifications remain the primary path; polling is only a quiet fallback.
+      }
+      if (!cancelled) timer = window.setTimeout(refresh, 1500);
+    };
+    timer = window.setTimeout(refresh, 1500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [api, selectedProjectId, selectedThreadId, activeTurn?.id, refreshThread]);
+
+  useEffect(() => {
+    if (!api || !selectedProjectId || !selectedThreadId || activeView !== "task") return undefined;
+    let cancelled = false;
+    let timer;
+    const refresh = async () => {
+      await loadAgents(selectedProjectId, selectedThreadId);
+      if (!cancelled) timer = window.setTimeout(refresh, 1200);
+    };
+    refresh();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [api, activeView, loadAgents, selectedProjectId, selectedThreadId]);
 
   useEffect(() => {
     if (activeView === "extensions") loadExtensions();
@@ -978,7 +1475,10 @@ export function App() {
         setRuntime(event.payload);
         if (event.payload.connected) {
           loadModels().catch(() => null);
-          if (selectedProjectId) loadThreads(selectedProjectId);
+          if (selectedProjectId) {
+            loadThreads(selectedProjectId);
+            if (selectedThreadIdRef.current) refreshThread(selectedProjectId, selectedThreadIdRef.current);
+          }
         }
         return;
       }
@@ -990,24 +1490,46 @@ export function App() {
         setAttention((current) => current.some((request) => request.id === event.payload.id) ? current : [...current, event.payload]);
         return;
       }
+      if (event.type === "AttentionReset") {
+        setAttention([]);
+        return;
+      }
 
       const payload = event.payload ?? {};
+      if (payload.projectId && payload.projectId !== selectedProjectId) return;
       if (payload.method === "thread/status/changed") {
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId ? { ...candidate, status: payload.status } : candidate));
       }
       if (payload.method === "thread/name/updated") {
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId ? { ...candidate, name: payload.name } : candidate));
       }
-      if (payload.method === "thread/started" && payload.thread) {
-        setThreads((current) => current.some((candidate) => candidate.id === payload.thread.id) ? current : [payload.thread, ...current]);
+      if (payload.method === "thread/started" && payload.thread && (!payload.projectId || payload.projectId === selectedProjectId)) {
+        setThreads((current) => {
+          const existing = current.find((candidate) => candidate.id === payload.thread.id);
+          return existing
+            ? current.map((candidate) => candidate.id === payload.thread.id ? { ...candidate, ...payload.thread } : candidate)
+            : [payload.thread, ...current];
+        });
       }
-      if (payload.threadId === selectedThreadId) {
-        setThread((current) => applyRuntimePayload(current, payload));
-        if (payload.method === "turn/plan/updated") setPlan(payload.plan ?? []);
-        if (payload.method === "turn/completed" && selectedProjectId) loadReview(selectedProjectId);
+      if (payload.item?.type === "collabAgentToolCall" || payload.item?.type === "collabToolCall") {
+        setThreads((current) => projectCollabAgents(current, payload.item));
+        if (selectedProjectId && selectedThreadIdRef.current) {
+          window.setTimeout(() => loadAgents(selectedProjectId, selectedThreadIdRef.current), 80);
+        }
+      }
+      if (payload.threadId === selectedThreadIdRef.current) {
+        const optimisticThread = optimisticThreadsRef.current.get(payload.threadId);
+        setThread((current) => applyRuntimePayload(current ?? optimisticThread, payload));
+        if (payload.method === "turn/started") setPlan([]);
+        if (payload.method === "turn/plan/updated") setPlan(normalizePlan(payload.plan));
+        if (payload.method === "turn/completed" && selectedProjectId) {
+          loadReview(selectedProjectId);
+          window.setTimeout(() => refreshThread(selectedProjectId, payload.threadId), 100);
+          window.setTimeout(() => refreshThread(selectedProjectId, payload.threadId), 600);
+        }
       }
     });
-  }, [api, loadModels, loadReview, loadThreads, selectedProjectId, selectedThreadId]);
+  }, [api, loadAgents, loadModels, loadReview, loadThreads, normalizePlan, refreshThread, selectedProjectId]);
 
   const openProject = async () => {
     if (!api) return;
@@ -1016,6 +1538,7 @@ export function App() {
       if (!project) return;
       setProjects((current) => [project, ...current.filter((candidate) => candidate.id !== project.id)]);
       setDraftMode(false);
+      selectedProjectIdRef.current = project.id;
       setSelectedProjectId(project.id);
       setActiveView("task");
     } catch (cause) {
@@ -1025,6 +1548,8 @@ export function App() {
 
   const selectProject = (projectId) => {
     setDraftMode(false);
+    selectedProjectIdRef.current = projectId;
+    selectedThreadIdRef.current = null;
     setSelectedThreadId(null);
     setSelectedProjectId(projectId);
     setActiveView("task");
@@ -1032,6 +1557,7 @@ export function App() {
 
   const selectThread = (threadId) => {
     setDraftMode(false);
+    selectedThreadIdRef.current = threadId;
     setSelectedThreadId(threadId);
     setActiveView("task");
   };
@@ -1039,10 +1565,36 @@ export function App() {
   const newTask = () => {
     if (!selectedProjectId) return;
     setDraftMode(true);
+    selectedThreadIdRef.current = null;
     setSelectedThreadId(null);
     setThread(null);
     setPlan([]);
     setActiveView("task");
+  };
+
+  const deleteThread = async (threadId) => {
+    if (!api || !selectedProjectId) return;
+    const projectId = selectedProjectId;
+    const target = threads.find((candidate) => candidate.id === threadId);
+    const title = threadTitle(target);
+    if (!window.confirm(`Delete “${title}”?\n\nThis removes the conversation from Loom’s task list.`)) return;
+    try {
+      await api.threads.archive({ projectId, threadId });
+      if (selectedProjectIdRef.current !== projectId) return;
+      const remaining = threads.filter((candidate) => candidate.id !== threadId);
+      setThreads((current) => current.filter((candidate) => candidate.id !== threadId));
+      if (selectedThreadIdRef.current === threadId) {
+        const next = remaining.find((candidate) => !candidate.parentThreadId) ?? null;
+        selectedThreadIdRef.current = next?.id ?? null;
+        setSelectedThreadId(next?.id ?? null);
+        setThread(null);
+        setPlan([]);
+        setDraftMode(!next);
+      }
+      setError(null);
+    } catch (cause) {
+      setError(cause.message);
+    }
   };
 
   const changeModel = (modelName) => {
@@ -1052,34 +1604,66 @@ export function App() {
     if (model?.defaultReasoningEffort) setEffort(model.defaultReasoningEffort);
   };
 
+  const changePermissionMode = (mode) => {
+    setPermissionMode(mode);
+    localStorage.setItem("loom.permissionMode", mode);
+  };
+
   const submit = async (text) => {
-    if (!api || !selectedProjectId || !runtime.connected) return false;
+    if (!api || !selectedProjectId || !runtime.connected || submittingRef.current) return false;
+    const projectId = selectedProjectId;
+    const startingThreadId = selectedThreadId;
+    submittingRef.current = true;
+    setSubmitting(true);
+    let optimisticThreadId = null;
     try {
-      let targetThreadId = selectedThreadId;
+      let targetThreadId = startingThreadId;
       if (!targetThreadId) {
-        const created = await api.threads.create({ projectId: selectedProjectId, model: selectedModel || undefined });
+        const created = await api.threads.create({ projectId, model: selectedModel || undefined, permissionMode });
         targetThreadId = created.thread.id;
-        setDraftMode(false);
-        setThreads((current) => [created.thread, ...current]);
-        setSelectedThreadId(targetThreadId);
-        setThread(created.thread);
+        optimisticThreadId = targetThreadId;
+        if (selectedProjectIdRef.current === projectId) {
+          optimisticThreadsRef.current.set(targetThreadId, created.thread);
+          selectedThreadIdRef.current = targetThreadId;
+          setDraftMode(false);
+          setThreads((current) => current.some((candidate) => candidate.id === targetThreadId)
+            ? current.map((candidate) => candidate.id === targetThreadId ? { ...candidate, ...created.thread } : candidate)
+            : [created.thread, ...current]);
+          setSelectedThreadId(targetThreadId);
+          setThread(created.thread);
+        }
       }
-      if (activeTurn && targetThreadId === selectedThreadId) {
-        await api.turns.steer({ projectId: selectedProjectId, threadId: targetThreadId, turnId: activeTurn.id, text });
+      if (activeTurn && targetThreadId === startingThreadId) {
+        await api.turns.steer({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text });
+        if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
+          window.setTimeout(() => refreshThread(projectId, targetThreadId), 250);
+        }
       } else {
         const response = await api.turns.start({
-          projectId: selectedProjectId,
+          projectId,
           threadId: targetThreadId,
           text,
           model: selectedModel || undefined,
-          effort
+          effort,
+          permissionMode
         });
-        setThread((current) => current ? applyRuntimePayload(current, { method: "turn/started", threadId: targetThreadId, turn: response.turn }) : current);
+        if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
+          setThread((current) => current
+            ? applyRuntimePayload(current, { method: "turn/started", threadId: targetThreadId, turn: response.turn })
+            : current);
+          window.setTimeout(() => refreshThread(projectId, targetThreadId), 250);
+          window.setTimeout(() => refreshThread(projectId, targetThreadId), 900);
+        }
       }
+      setError(null);
       return true;
     } catch (cause) {
+      if (optimisticThreadId) optimisticThreadsRef.current.delete(optimisticThreadId);
       setError(cause.message);
       return false;
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -1094,7 +1678,8 @@ export function App() {
 
   const resolveAttention = async (request, decision) => {
     try {
-      await api.approvals.resolve({ requestId: request.id, decision });
+      if (request.method?.includes("requestUserInput")) await api.requests.respond({ requestId: request.id, answers: decision });
+      else await api.approvals.resolve({ requestId: request.id, decision });
       setAttention((current) => current.filter((candidate) => candidate.id !== request.id));
     } catch (cause) {
       setError(cause.message);
@@ -1114,12 +1699,16 @@ export function App() {
 
   const composerProps = {
     disabled: !runtime.connected || !selectedProject,
+    busy: submitting,
+    draftKey: `${selectedProjectId ?? "none"}:${selectedThreadId ?? "new"}`,
     running: Boolean(activeTurn),
     models,
     selectedModel,
     onModelChange: changeModel,
     effort,
     onEffortChange: setEffort,
+    permissionMode,
+    onPermissionModeChange: changePermissionMode,
     onSubmit: submit,
     onInterrupt: interrupt
   };
@@ -1139,6 +1728,7 @@ export function App() {
         loading={loading.app || loading.thread}
         runtime={runtime}
         plan={plan}
+        seenResponseIds={seenResponseIdsRef.current}
         inspectorOpen={inspectorOpen}
         onInspectorToggle={() => setInspectorOpen((open) => !open)}
         onOpenProject={openProject}
@@ -1163,6 +1753,7 @@ export function App() {
           tasks={rootThreads}
           selectedThreadId={selectedThreadId}
           onSelectThread={selectThread}
+          onDeleteThread={deleteThread}
           onNewTask={newTask}
           onOpenProject={openProject}
           activeView={activeView}

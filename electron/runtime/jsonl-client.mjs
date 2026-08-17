@@ -48,6 +48,11 @@ export class JsonlClient extends EventEmitter {
       return;
     }
 
+    if (!message || typeof message !== "object" || Array.isArray(message)) {
+      this.emit("protocol-error", { error: new Error("JSON-RPC message must be an object"), line });
+      return;
+    }
+
     if (Object.hasOwn(message, "id") && (Object.hasOwn(message, "result") || Object.hasOwn(message, "error"))) {
       const pending = this.#pending.get(message.id);
       if (!pending) return;

@@ -26,7 +26,9 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: pnpm release:verify
       - run: pnpm runtime:verify
+      - run: pnpm exec vite build --mode desktop
       - run: pnpm exec electron-builder --${{ matrix.target }} --publish never
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -34,8 +36,7 @@ jobs:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
       - name: Generate checksums
-        shell: bash
-        run: cd release && shasum -a 256 * > SHA256SUMS.txt
+        run: pnpm release:checksums
       - uses: actions/upload-artifact@v4
         with:
           name: loom-${{ matrix.target }}

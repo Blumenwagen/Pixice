@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, s
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { CodexRuntime } from "./runtime/codex-runtime.mjs";
@@ -23,10 +23,37 @@ let database;
 let quitting = false;
 let runtimeStatus = { state: "starting" };
 const activeTurns = new Map();
+const loadedThreads = new Map();
+const loadingThreads = new Map();
+const threadPlans = new Map();
+const threadMonitorCache = new Map();
+const threadProjects = new Map();
+const pendingRequests = new Map();
+let runtimeGeneration = 0;
 
 const idPayload = z.object({ projectId: z.string().min(1) });
 const threadPayload = idPayload.extend({ threadId: z.string().min(1) });
+const permissionModeSchema = z.enum(["read-only", "workspace-write"]);
 const send = (type, payload = {}) => mainWindow?.webContents.send("loom:event", { type, payload, at: new Date().toISOString() });
+
+function permissionSettings(mode, project) {
+  if (mode === "read-only") {
+    return {
+      sandbox: "read-only",
+      sandboxPolicy: { type: "readOnly" }
+    };
+  }
+  return {
+    sandbox: "workspace-write",
+    sandboxPolicy: {
+      type: "workspaceWrite",
+      writableRoots: [project.canonicalPath],
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false
+    }
+  };
+}
 
 function getProject(projectId) {
   const project = database.getProject(projectId);
@@ -41,9 +68,34 @@ function isWithin(root, target) {
 
 function projectTarget(projectId, target) {
   const project = getProject(projectId);
-  const resolved = path.resolve(target ?? project.canonicalPath);
+  const resolved = realpathSync(path.resolve(target ?? project.canonicalPath));
   if (!isWithin(project.canonicalPath, resolved)) throw new Error("Target is outside the selected project");
   return resolved;
+}
+
+function requestKey(id) {
+  return `${typeof id}:${id}`;
+}
+
+function projectForPath(target) {
+  if (!target) return null;
+  let canonicalTarget;
+  try {
+    canonicalTarget = realpathSync(target);
+  } catch {
+    return null;
+  }
+  return database.listProjects()
+    .filter((project) => isWithin(project.canonicalPath, canonicalTarget))
+    .sort((a, b) => b.canonicalPath.length - a.canonicalPath.length)[0] ?? null;
+}
+
+function rememberThread(project, thread) {
+  if (!thread?.id) return;
+  const cwd = realpathSync(thread.cwd ?? project.canonicalPath);
+  if (!isWithin(project.canonicalPath, cwd)) throw new Error("Thread is outside the selected project");
+  loadedThreads.set(thread.id, cwd);
+  threadProjects.set(thread.id, project.id);
 }
 
 async function projectWithRepository(project) {
@@ -63,6 +115,16 @@ function updateTrayMenu() {
     { type: "separator" },
     { label: "Quit", click: () => app.quit() }
   ]));
+}
+
+function monitorStatus(thread) {
+  const turn = [...(thread?.turns ?? [])].reverse()[0];
+  if (!turn) return { type: "notLoaded" };
+  if (turn.status === "inProgress") return { type: "active", activeFlags: [] };
+  if (turn.status === "completed") return "completed";
+  if (turn.status === "failed") return "failed";
+  if (turn.status === "interrupted" || turn.status === "cancelled") return "interrupted";
+  return { type: "notLoaded" };
 }
 
 function createWindow() {
@@ -89,6 +151,19 @@ function createWindow() {
   });
   if (isDev) mainWindow.loadURL("http://127.0.0.1:5173");
   else mainWindow.loadFile(path.join(__dirname, "../dist/client/index.html"));
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const destination = new URL(url);
+    const allowed = isDev
+      ? destination.origin === "http://127.0.0.1:5173"
+      : destination.protocol === "file:" && path.normalize(fileURLToPath(destination)) === path.normalize(path.join(__dirname, "../dist/client/index.html"));
+    if (allowed) return;
+    event.preventDefault();
+    if (destination.protocol === "https:" || destination.protocol === "http:") shell.openExternal(url);
+  });
   mainWindow.once("ready-to-show", () => mainWindow.show());
   mainWindow.webContents.once("did-finish-load", () => {
     if (!process.env.LOOM_CAPTURE_PATH) return;
@@ -109,7 +184,9 @@ function createWindow() {
 }
 
 function createTray() {
-  tray = new Tray(nativeImage.createEmpty());
+  const iconPath = isDev ? path.join(__dirname, "../build/icon.png") : path.join(process.resourcesPath, "app-icon.png");
+  const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
+  tray = new Tray(icon);
   tray.setToolTip("Loom");
   updateTrayMenu();
   tray.on("click", () => mainWindow.show());
@@ -138,6 +215,24 @@ async function listModels() {
   return response.data ?? [];
 }
 
+async function ensureThreadLoaded(project, threadId) {
+  let cwd = loadedThreads.get(threadId);
+  let pending = loadingThreads.get(threadId);
+  if (!cwd && !pending) {
+    pending = runtime.request("thread/resume", { threadId }).then((response) => {
+      const resumedCwd = response.thread?.cwd;
+      if (!resumedCwd) throw new Error("Runtime returned a thread without a working directory");
+      const canonicalCwd = realpathSync(resumedCwd);
+      loadedThreads.set(threadId, canonicalCwd);
+      return canonicalCwd;
+    }).finally(() => loadingThreads.delete(threadId));
+    loadingThreads.set(threadId, pending);
+  }
+  cwd ??= await pending;
+  if (!isWithin(project.canonicalPath, cwd)) throw new Error("Thread is outside the selected project");
+  threadProjects.set(threadId, project.id);
+}
+
 function registerIpc() {
   ipcMain.handle("app:bootstrap", async () => ({
     projects: await listProjects(),
@@ -150,7 +245,7 @@ function registerIpc() {
   ipcMain.handle("projects:open", async () => {
     const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
     if (result.canceled) return null;
-    const canonicalPath = path.resolve(result.filePaths[0]);
+    const canonicalPath = realpathSync(result.filePaths[0]);
     const now = new Date().toISOString();
     const project = database.upsertProject({
       id: randomUUID(),
@@ -166,61 +261,109 @@ function registerIpc() {
     const { projectId } = idPayload.parse(payload);
     const project = getProject(projectId);
     if (!runtime.connected) return { data: [], nextCursor: null };
-    return runtime.request("thread/list", {
+    const response = await runtime.request("thread/list", {
       cwd: project.canonicalPath,
       limit: 200,
       sourceKinds: threadSourceKinds,
       archived: false
     });
+    for (const thread of response.data ?? []) rememberThread(project, thread);
+    return response;
   });
   ipcMain.handle("threads:read", async (_event, payload) => {
     const { projectId, threadId } = threadPayload.parse(payload);
     const project = getProject(projectId);
     const response = await runtime.request("thread/read", { threadId, includeTurns: true });
     if (!isWithin(project.canonicalPath, response.thread.cwd)) throw new Error("Thread is outside the selected project");
-    return response;
+    rememberThread(project, response.thread);
+    return { ...response, plan: threadPlans.get(threadId) ?? database.getThreadPlan(threadId) };
+  });
+  ipcMain.handle("threads:children", async (_event, payload) => {
+    const { projectId, threadId } = threadPayload.parse(payload);
+    const project = getProject(projectId);
+    if (!runtime.connected) return { data: [], nextCursor: null };
+    const response = await runtime.request("thread/list", {
+      cwd: project.canonicalPath,
+      ancestorThreadId: threadId,
+      limit: 200,
+      sourceKinds: threadSourceKinds,
+      archived: false
+    });
+    for (const thread of response.data ?? []) rememberThread(project, thread);
+    const data = await Promise.all((response.data ?? []).map(async (candidate) => {
+      if (candidate.status?.type !== "notLoaded") return candidate;
+      const cached = threadMonitorCache.get(candidate.id);
+      if (cached?.updatedAt === candidate.updatedAt) return { ...candidate, status: cached.status };
+      try {
+        const detail = await runtime.request("thread/read", { threadId: candidate.id, includeTurns: true });
+        const status = monitorStatus(detail.thread);
+        threadMonitorCache.set(candidate.id, { updatedAt: candidate.updatedAt, status });
+        return { ...candidate, status };
+      } catch {
+        return candidate;
+      }
+    }));
+    return { ...response, data };
   });
   ipcMain.handle("threads:create", async (_event, payload) => {
-    const value = idPayload.extend({ model: z.string().optional() }).parse(payload);
+    const value = idPayload.extend({
+      model: z.string().optional(),
+      permissionMode: permissionModeSchema.default("workspace-write")
+    }).parse(payload);
     const project = getProject(value.projectId);
-    return runtime.request("thread/start", {
+    const permissions = permissionSettings(value.permissionMode, project);
+    const response = await runtime.request("thread/start", {
       cwd: project.canonicalPath,
       runtimeWorkspaceRoots: [project.canonicalPath],
       model: value.model || null,
       approvalPolicy: "on-request",
-      sandbox: "workspace-write",
+      sandbox: permissions.sandbox,
       threadSource: "loom"
     });
+    rememberThread(project, response.thread);
+    return response;
   });
-  ipcMain.handle("threads:archive", (_event, payload) => {
-    const { threadId } = threadPayload.parse(payload);
-    return runtime.request("thread/archive", { threadId });
+  ipcMain.handle("threads:archive", async (_event, payload) => {
+    const { projectId, threadId } = threadPayload.parse(payload);
+    const project = getProject(projectId);
+    await ensureThreadLoaded(project, threadId);
+    const response = await runtime.request("thread/archive", { threadId });
+    loadedThreads.delete(threadId);
+    threadProjects.delete(threadId);
+    return response;
   });
 
   ipcMain.handle("turns:start", async (_event, payload) => {
     const value = threadPayload.extend({
       text: z.string().trim().min(1),
       model: z.string().optional(),
-      effort: z.string().optional()
+      effort: z.string().optional(),
+      permissionMode: permissionModeSchema.default("workspace-write")
     }).parse(payload);
     const project = getProject(value.projectId);
+    const permissions = permissionSettings(value.permissionMode, project);
+    await ensureThreadLoaded(project, value.threadId);
     const response = await runtime.request("turn/start", {
       threadId: value.threadId,
       input: [{ type: "text", text: value.text, text_elements: [] }],
       cwd: project.canonicalPath,
       runtimeWorkspaceRoots: [project.canonicalPath],
       model: value.model || null,
-      effort: value.effort || null
+      effort: value.effort || null,
+      approvalPolicy: "on-request",
+      sandboxPolicy: permissions.sandboxPolicy
     });
     activeTurns.set(value.threadId, response.turn.id);
     updateTrayMenu();
     return response;
   });
-  ipcMain.handle("turns:steer", (_event, payload) => {
+  ipcMain.handle("turns:steer", async (_event, payload) => {
     const value = threadPayload.extend({
       turnId: z.string().min(1),
       text: z.string().trim().min(1)
     }).parse(payload);
+    const project = getProject(value.projectId);
+    await ensureThreadLoaded(project, value.threadId);
     return runtime.request("turn/steer", {
       threadId: value.threadId,
       expectedTurnId: value.turnId,
@@ -229,6 +372,8 @@ function registerIpc() {
   });
   ipcMain.handle("turns:interrupt", async (_event, payload) => {
     const value = threadPayload.extend({ turnId: z.string().min(1) }).parse(payload);
+    const project = getProject(value.projectId);
+    await ensureThreadLoaded(project, value.threadId);
     const response = await runtime.request("turn/interrupt", { threadId: value.threadId, turnId: value.turnId });
     activeTurns.delete(value.threadId);
     updateTrayMenu();
@@ -240,7 +385,25 @@ function registerIpc() {
       requestId: z.union([z.string(), z.number()]),
       decision: z.enum(["accept", "decline", "acceptForSession", "cancel"])
     }).parse(payload);
+    const key = requestKey(value.requestId);
+    const pending = pendingRequests.get(key);
+    if (!pending || pending.generation !== runtimeGeneration) throw new Error("Approval request is no longer pending");
+    if (!pending.request.method?.toLowerCase().includes("approval")) throw new Error("Pending request is not an approval");
     runtime.respond(value.requestId, { decision: value.decision });
+    pendingRequests.delete(key);
+    return { ok: true };
+  });
+  ipcMain.handle("requests:respond", (_event, payload) => {
+    const value = z.object({
+      requestId: z.union([z.string(), z.number()]),
+      answers: z.record(z.object({ answers: z.array(z.string().trim().min(1)).min(1).max(20) }))
+    }).parse(payload);
+    const key = requestKey(value.requestId);
+    const pending = pendingRequests.get(key);
+    if (!pending || pending.generation !== runtimeGeneration) throw new Error("Input request is no longer pending");
+    if (!pending.request.method?.includes("requestUserInput")) throw new Error("Pending request does not accept user input");
+    runtime.respond(value.requestId, { answers: value.answers });
+    pendingRequests.delete(key);
     return { ok: true };
   });
 
@@ -249,7 +412,7 @@ function registerIpc() {
     const project = getProject(projectId);
     const repository = await inspectRepository(project.canonicalPath);
     const diff = repository.kind === "git"
-      ? await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit })
+      ? await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: project.canonicalPath })
       : "";
     return { repository, diff };
   });
@@ -270,9 +433,14 @@ function registerIpc() {
 
   ipcMain.handle("models:list", () => listModels());
   ipcMain.handle("extensions:list", async (_event, payload) => {
-    const value = z.object({ cwd: z.string().optional(), threadId: z.string().optional() }).parse(payload ?? {});
+    const value = z.object({ projectId: z.string().min(1).optional(), threadId: z.string().min(1).optional() }).parse(payload ?? {});
+    const project = value.projectId ? getProject(value.projectId) : null;
+    if (value.threadId) {
+      if (!project) throw new Error("A project is required when loading thread extensions");
+      await ensureThreadLoaded(project, value.threadId);
+    }
     const [skills, apps, mcp] = await Promise.allSettled([
-      runtime.request("skills/list", { cwds: value.cwd ? [value.cwd] : [] }),
+      runtime.request("skills/list", { cwds: project ? [project.canonicalPath] : [] }),
       runtime.request("app/list", { limit: 100, threadId: value.threadId || null }),
       runtime.request("mcpServerStatus/list", {})
     ]);
@@ -287,20 +455,61 @@ function registerIpc() {
 
 app.whenReady().then(async () => {
   database = new LoomDatabase(app.getPath("userData"));
-  runtime = new CodexRuntime({ resourcesPath: process.resourcesPath, clientVersion: app.getVersion() });
+  runtime = new CodexRuntime({
+    resourcesPath: process.resourcesPath,
+    clientVersion: app.getVersion(),
+    allowDevelopmentRuntime: !app.isPackaged
+  });
   runtime.on("status", (status) => {
+    if (status.state === "connecting" || status.state === "reconnecting" || status.state === "stopped") {
+      loadedThreads.clear();
+      loadingThreads.clear();
+      threadProjects.clear();
+      pendingRequests.clear();
+      activeTurns.clear();
+      runtimeGeneration += 1;
+      updateTrayMenu();
+      send("AttentionReset");
+    }
     runtimeStatus = status;
     send("RuntimeStatus", { ...status, connected: runtime.connected });
   });
   runtime.on("event", (event) => {
     const { method, threadId, turn } = event.payload ?? {};
+    if (method === "turn/started" && threadId) {
+      threadPlans.set(threadId, []);
+      database.saveThreadPlan(threadId, []);
+    }
+    if (method === "turn/plan/updated" && threadId) {
+      const plan = event.payload.plan ?? [];
+      threadPlans.set(threadId, plan);
+      database.saveThreadPlan(threadId, plan);
+    }
+    if ((method === "thread/deleted" || method === "thread/archived") && threadId) {
+      threadPlans.delete(threadId);
+      threadMonitorCache.delete(threadId);
+      loadedThreads.delete(threadId);
+      threadProjects.delete(threadId);
+      database.deleteThreadRuntimeState(threadId);
+    }
+    if (threadId && (method === "turn/started" || method === "turn/completed" || method === "thread/status/changed")) {
+      threadMonitorCache.delete(threadId);
+    }
+    if (method === "thread/started" && event.payload?.thread?.id) {
+      const project = projectForPath(event.payload.thread.cwd);
+      if (project) rememberThread(project, event.payload.thread);
+    }
     if (method === "turn/started" && threadId && turn?.id) activeTurns.set(threadId, turn.id);
     if (method === "turn/completed" && threadId) activeTurns.delete(threadId);
     if (method === "turn/started" || method === "turn/completed") updateTrayMenu();
-    send(event.type, event.payload);
+    send(event.type, {
+      ...event.payload,
+      projectId: threadProjects.get(threadId ?? event.payload?.thread?.id)
+    });
   });
   runtime.on("server-request", (request) => {
-    send("AttentionRequired", request);
+    pendingRequests.set(requestKey(request.id), { request, generation: runtimeGeneration });
+    send("AttentionRequired", { ...request, projectId: threadProjects.get(request.params?.threadId) });
     if (Notification.isSupported()) {
       new Notification({ title: "Loom needs your attention", body: request.method }).show();
     }
@@ -327,7 +536,9 @@ app.on("before-quit", async (event) => {
       detail: "Quitting will interrupt active work. Closing the window keeps Loom running in the tray."
     });
     if (result.response === 0) return;
-    await Promise.allSettled([...activeTurns].map(([threadId, turnId]) => runtime.request("turn/interrupt", { threadId, turnId })));
+    await Promise.allSettled([...activeTurns].map(([threadId, turnId]) =>
+      Promise.resolve().then(() => runtime.request("turn/interrupt", { threadId, turnId }))
+    ));
   }
   quitting = true;
   await runtime?.stop();

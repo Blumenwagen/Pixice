@@ -1,0 +1,222 @@
+.root {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--thread-bright);
+}
+
+.root:not([data-pill]) {
+  width: var(--orb-size);
+  height: var(--orb-size);
+}
+
+.root[data-pill] {
+  gap: 7px;
+  height: 30px;
+  padding: 0 11px 0 5px;
+  color: #111;
+  background: #fff;
+  border-radius: 999px;
+  box-shadow:
+    0 0 0 .5px rgba(0, 0, 0, .08),
+    0 1px 2px rgba(0, 0, 0, .05),
+    0 2px 4px rgba(0, 0, 0, .02);
+}
+
+.glyph {
+  position: relative;
+  width: var(--orb-size);
+  height: var(--orb-size);
+  display: block;
+  flex: none;
+  overflow: hidden;
+  contain: strict;
+  filter: drop-shadow(0 0 5px var(--thread-glow));
+}
+
+.pillLabel {
+  color: #a1a1a1;
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 11.5px;
+  font-weight: 425;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 28px;
+  height: 28px;
+  transform: scale(var(--orb-k));
+  transform-origin: top left;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  transform-origin: center;
+}
+
+.layer[data-slot="current"] {
+  animation: layer-arrive 520ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.layer[data-slot="previous"] {
+  animation: layer-leave 520ms cubic-bezier(.4, 0, .2, 1) both;
+}
+
+.lattice {
+  position: absolute;
+  top: 6.5px;
+  left: 6.5px;
+  width: 15px;
+  height: 15px;
+}
+
+.cell {
+  --dot: 3px;
+  position: absolute;
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 4px color-mix(in oklab, currentColor 72%, transparent);
+  will-change: transform, opacity;
+}
+
+.layer[data-variant="S1"] .cell {
+  animation: settle 2800ms cubic-bezier(.45, 0, .25, 1) infinite both;
+}
+
+.layer[data-variant="S2"] .cell {
+  animation: sweep 2000ms cubic-bezier(.45, 0, .3, 1) infinite both;
+}
+
+.layer[data-variant="S3"] .cell,
+.layer[data-variant="S5"] .cell {
+  animation: comet 1700ms cubic-bezier(.45, 0, .3, 1) infinite both;
+}
+
+.layer[data-variant="S4"] .cell {
+  animation: sweep 1650ms cubic-bezier(.45, 0, .3, 1) infinite both;
+}
+
+.cell[data-still] {
+  animation: none !important;
+  opacity: .24;
+  transform: scale(.58);
+}
+
+.helix {
+  position: absolute;
+  inset: 0;
+}
+
+.helixDot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 2px;
+  margin: -1px 0 0 -1px;
+  border-radius: 50%;
+  background: currentColor;
+  will-change: transform, opacity;
+}
+
+.layer[data-variant="G1"] .helixDot {
+  animation: globe-spin 4500ms linear infinite both;
+}
+
+@keyframes settle {
+  0% {
+    opacity: .08;
+    transform: translate(var(--orb-ax), var(--orb-ay)) scale(.18);
+  }
+  35% {
+    opacity: .94;
+    transform: translate(0, 0) scale(1);
+  }
+  52% {
+    opacity: .72;
+    transform: translate(0, 0) scale(.82);
+  }
+  100% {
+    opacity: .08;
+    transform: translate(var(--orb-bx), var(--orb-by)) scale(.18);
+  }
+}
+
+@keyframes sweep {
+  0%, 100% { opacity: .12; transform: scale(.5); }
+  42% { opacity: .42; transform: scale(.72); }
+  55% { opacity: 1; transform: scale(1.14); }
+  70% { opacity: .3; transform: scale(.62); }
+}
+
+@keyframes comet {
+  0%, 100% { opacity: .12; transform: scale(.45); }
+  12% { opacity: 1; transform: scale(1.2); }
+  34% { opacity: .52; transform: scale(.78); }
+  62% { opacity: .2; transform: scale(.55); }
+}
+
+@keyframes globe-spin {
+  0%, 100% { transform: translate(var(--g0x), var(--g0y)); opacity: var(--g0o); }
+  12.5% { transform: translate(var(--g1x), var(--g1y)); opacity: var(--g1o); }
+  25% { transform: translate(var(--g2x), var(--g2y)); opacity: var(--g2o); }
+  37.5% { transform: translate(var(--g3x), var(--g3y)); opacity: var(--g3o); }
+  50% { transform: translate(var(--g4x), var(--g4y)); opacity: var(--g4o); }
+  62.5% { transform: translate(var(--g5x), var(--g5y)); opacity: var(--g5o); }
+  75% { transform: translate(var(--g6x), var(--g6y)); opacity: var(--g6o); }
+  87.5% { transform: translate(var(--g7x), var(--g7y)); opacity: var(--g7o); }
+}
+
+@keyframes layer-arrive {
+  from { opacity: 0; transform: scale(.66) rotate(-28deg); filter: blur(2px); }
+  to { opacity: 1; transform: scale(1) rotate(0); filter: blur(0); }
+}
+
+@keyframes layer-leave {
+  from { opacity: 1; transform: scale(1) rotate(0); filter: blur(0); }
+  to { opacity: 0; transform: scale(1.28) rotate(24deg); filter: blur(2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .layer,
+  .cell,
+  .helixDot {
+    animation: none !important;
+  }
+
+  .cell {
+    opacity: .28;
+    transform: scale(.68);
+  }
+
+  .cell[data-mid] {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+
+  .helixDot {
+    opacity: var(--g0o);
+    transform: translate(var(--g0x), var(--g0y));
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .root[data-pill] {
+    color: #f5f5f5;
+    background: #1a1a1a;
+    box-shadow:
+      0 0 0 .5px rgba(255, 255, 255, .12),
+      0 1px 2px rgba(0, 0, 0, .4),
+      0 2px 4px rgba(0, 0, 0, .3);
+  }
+
+  .pillLabel { color: #a3a3a3; }
+}

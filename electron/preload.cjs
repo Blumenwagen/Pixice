@@ -14,11 +14,13 @@ contextBridge.exposeInMainWorld("loom", Object.freeze({
   threads: Object.freeze({
     list: invoke("threads:list"),
     read: invoke("threads:read"),
+    children: invoke("threads:children"),
     create: invoke("threads:create"),
     archive: invoke("threads:archive")
   }),
   turns: Object.freeze({ start: invoke("turns:start"), steer: invoke("turns:steer"), interrupt: invoke("turns:interrupt") }),
   approvals: Object.freeze({ resolve: invoke("approvals:resolve") }),
+  requests: Object.freeze({ respond: invoke("requests:respond") }),
   review: Object.freeze({ read: invoke("review:read") }),
   models: Object.freeze({ list: invoke("models:list") }),
   extensions: Object.freeze({ list: invoke("extensions:list") }),

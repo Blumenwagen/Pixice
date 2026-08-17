@@ -8,6 +8,10 @@ importers:
 
   .:
     dependencies:
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
       '@fontsource-variable/jetbrains-mono':
         specifier: 5.2.8
         version: 5.2.8
@@ -17,22 +21,6 @@ importers:
       '@phosphor-icons/react':
         specifier: 2.1.10
         version: 2.1.10(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
-      '@vitejs/plugin-react':
-        specifier: 5.0.4
-        version: 5.0.4(supports-color@8.1.1)(vite@6.4.2(@types/node@26.2.0))
-      react:
-        specifier: 19.2.0
-        version: 19.2.0
-      react-dom:
-        specifier: 19.2.0
-        version: 19.2.0(react@19.2.0)
-      vite:
-        specifier: 6.4.2
-        version: 6.4.2(@types/node@26.2.0)
-      zod:
-        specifier: 3.25.76
-        version: 3.25.76
-    devDependencies:
       '@testing-library/jest-dom':
         specifier: 6.9.1
         version: 6.9.1
@@ -48,6 +36,9 @@ importers:
       '@types/react-dom':
         specifier: 19.2.2
         version: 19.2.2(@types/react@19.2.2)
+      '@vitejs/plugin-react':
+        specifier: 5.0.4
+        version: 5.0.4(supports-color@8.1.1)(vite@6.4.2(@types/node@26.2.0))
       concurrently:
         specifier: 9.2.1
         version: 9.2.1
@@ -60,6 +51,15 @@ importers:
       jsdom:
         specifier: 27.0.0
         version: 27.0.0(supports-color@8.1.1)
+      react:
+        specifier: 19.2.0
+        version: 19.2.0
+      react-dom:
+        specifier: 19.2.0
+        version: 19.2.0(react@19.2.0)
+      vite:
+        specifier: 6.4.2
+        version: 6.4.2(@types/node@26.2.0)
       vitest:
         specifier: 3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@26.2.0)(jsdom@27.0.0(supports-color@8.1.1))(supports-color@8.1.1)

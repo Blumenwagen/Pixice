@@ -22,8 +22,12 @@ export class CapabilityAdapter {
 
 export function normalizeCodexEvent(message) {
   const { method, params = {} } = message;
-  if (method?.includes("approval") || method?.includes("requestUserInput")) return { type: "AttentionRequired", payload: { source: "codex", method, ...params } };
-  if (params.item?.type === "collabToolCall" || method?.includes("collab")) return { type: "AgentUpdated", payload: { method, ...params } };
+  // Actionable prompts arrive as JSON-RPC server requests. Notifications with
+  // similar names are status updates and must never create a response card.
+  if (method?.includes("approval") || method?.includes("requestUserInput")) return { type: "ActivityReceived", payload: { source: "codex", method, ...params } };
+  if (["collabToolCall", "collabAgentToolCall", "subAgentActivity"].includes(params.item?.type) || method?.includes("collab")) {
+    return { type: "AgentUpdated", payload: { method, ...params } };
+  }
   if (method?.startsWith("thread/") || method?.startsWith("turn/")) return { type: "TaskUpdated", payload: { method, ...params } };
   return { type: "ActivityReceived", payload: { method, ...params } };
 }

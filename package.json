@@ -8,34 +8,36 @@
   "scripts": {
     "dev": "vite",
     "dev:electron": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "build": "vite build && node scripts/prepare-sites-build.mjs",
-    "build:desktop": "vite build && electron-builder",
+    "build": "vite build --mode sites && node scripts/prepare-sites-build.mjs",
+    "build:desktop": "node scripts/verify-runtime.mjs && vite build --mode desktop && electron-builder",
     "runtime:verify": "node scripts/verify-runtime.mjs",
+    "release:verify": "node scripts/verify-release-version.mjs",
+    "release:checksums": "node scripts/generate-checksums.mjs",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:sites": "node --test tests/sites-worker.test.mjs",
-    "check": "vitest run && vite build && node scripts/prepare-sites-build.mjs && node --test tests/sites-worker.test.mjs"
+    "test:sites": "vite build --mode sites && node scripts/prepare-sites-build.mjs && node --test tests/sites-worker.test.mjs",
+    "check": "vitest run && pnpm test:sites"
   },
   "dependencies": {
-    "@fontsource-variable/jetbrains-mono": "5.2.8",
-    "@fontsource-variable/manrope": "5.2.8",
-    "@phosphor-icons/react": "2.1.10",
-    "@vitejs/plugin-react": "5.0.4",
-    "react": "19.2.0",
-    "react-dom": "19.2.0",
-    "vite": "6.4.2",
     "zod": "3.25.76"
   },
   "devDependencies": {
+    "@fontsource-variable/jetbrains-mono": "5.2.8",
+    "@fontsource-variable/manrope": "5.2.8",
+    "@phosphor-icons/react": "2.1.10",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.0",
     "@testing-library/user-event": "14.6.1",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
+    "@vitejs/plugin-react": "5.0.4",
     "concurrently": "9.2.1",
     "electron": "38.7.2",
     "electron-builder": "26.0.12",
     "jsdom": "27.0.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "vite": "6.4.2",
     "vitest": "3.2.4",
     "wait-on": "8.0.5"
   },
@@ -52,6 +54,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "app-icon.png"
+      },
       {
         "from": "resources/runtime",
         "to": "runtime",

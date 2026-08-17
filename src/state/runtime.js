@@ -16,6 +16,101 @@ export function flattenItems(thread) {
   );
 }
 
+function itemFingerprint(item) {
+  if (item.type === "userMessage") {
+    return `user:${item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n") ?? ""}`;
+  }
+  if (item.type === "agentMessage") return `agent:${item.phase ?? ""}:${item.text ?? ""}`;
+  if (item.type === "reasoning") return `reasoning:${JSON.stringify(item.summary ?? item.content ?? "")}`;
+  if (item.type === "commandExecution") return `command:${item.command ?? ""}`;
+  if (item.type === "fileChange") return `file:${item.path ?? item.filePath ?? JSON.stringify(item.changes ?? "")}`;
+  if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") {
+    return `${item.type}:${item.server ?? ""}:${item.tool ?? item.name ?? ""}:${JSON.stringify(item.arguments ?? item.input ?? "")}`;
+  }
+  return null;
+}
+
+function mergeTurnItems(currentItems = [], incomingItems = []) {
+  if (!incomingItems.length) return currentItems;
+  const currentById = new Map(currentItems.map((item) => [item.id, item]));
+  const incomingIds = new Set(incomingItems.map((item) => item.id));
+  const consumedCurrentIds = new Set();
+  const hasPersistedUserMessage = incomingItems.some((item) => item.type === "userMessage");
+  const merged = incomingItems.map((item) => {
+    let current = currentById.get(item.id);
+    if (!current) {
+      const fingerprint = itemFingerprint(item);
+      current = currentItems.find((candidate) =>
+        !incomingIds.has(candidate.id)
+        && !consumedCurrentIds.has(candidate.id)
+        && fingerprint
+        && itemFingerprint(candidate) === fingerprint
+      );
+    }
+    if (!current) return item;
+    consumedCurrentIds.add(current.id);
+    const next = { ...current, ...item, renderId: current.renderId ?? current.id };
+    if (item.type === "agentMessage" && (current.text?.length ?? 0) > (item.text?.length ?? 0)) {
+      next.text = current.text;
+    }
+    return next;
+  });
+  currentItems.forEach((item) => {
+    if (incomingIds.has(item.id) || consumedCurrentIds.has(item.id)) return;
+    if (hasPersistedUserMessage && String(item.id).startsWith("local-user:")) return;
+    merged.push(item);
+  });
+  return merged;
+}
+
+function turnIsSettled(status) {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted";
+}
+
+function turnFingerprint(turn) {
+  const items = turn?.items ?? [];
+  const userText = items
+    .find((item) => item.type === "userMessage")
+    ?.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+  const agentText = items.find((item) => item.type === "agentMessage" && item.text)?.text;
+  return userText ? `user:${userText}` : agentText ? `agent:${agentText}` : null;
+}
+
+export function mergeThreadSnapshot(current, incoming) {
+  if (!current || current.id !== incoming?.id) return incoming ?? current;
+  const currentTurns = new Map((current.turns ?? []).map((turn) => [turn.id, turn]));
+  const incomingTurnIds = new Set((incoming.turns ?? []).map((turn) => turn.id));
+  const consumedCurrentTurnIds = new Set();
+  const turns = (incoming.turns ?? []).map((turn) => {
+    let existing = currentTurns.get(turn.id);
+    if (!existing) {
+      const fingerprint = turnFingerprint(turn);
+      existing = [...(current.turns ?? [])].reverse().find((candidate) =>
+        !incomingTurnIds.has(candidate.id)
+        && !consumedCurrentTurnIds.has(candidate.id)
+        && fingerprint
+        && turnFingerprint(candidate) === fingerprint
+      );
+    }
+    if (!existing) return turn;
+    consumedCurrentTurnIds.add(existing.id);
+    const status = turnIsSettled(existing.status) && !turnIsSettled(turn.status)
+      ? existing.status
+      : turn.status;
+    return {
+      ...existing,
+      ...turn,
+      renderId: existing.renderId ?? existing.id,
+      status,
+      items: mergeTurnItems(existing.items, turn.items)
+    };
+  });
+  (current.turns ?? []).forEach((turn) => {
+    if (!incomingTurnIds.has(turn.id) && !consumedCurrentTurnIds.has(turn.id)) turns.push(turn);
+  });
+  return { ...current, ...incoming, turns };
+}
+
 function upsertItem(turn, item) {
   const items = [...(turn.items ?? [])];
   const index = items.findIndex((candidate) => candidate.id === item.id);
@@ -37,10 +132,18 @@ export function applyRuntimePayload(thread, payload) {
   const method = payload.method;
 
   if (method === "turn/started" && payload.turn) {
-    return updateTurn(thread, payload.turn.id, () => payload.turn, payload.turn);
+    return updateTurn(thread, payload.turn.id, (turn) => ({
+      ...turn,
+      ...payload.turn,
+      items: payload.turn.items?.length ? payload.turn.items : turn.items ?? []
+    }), payload.turn);
   }
   if (method === "turn/completed" && payload.turn) {
-    return updateTurn(thread, payload.turn.id, () => payload.turn, payload.turn);
+    return updateTurn(thread, payload.turn.id, (turn) => ({
+      ...turn,
+      ...payload.turn,
+      items: payload.turn.items?.length ? payload.turn.items : turn.items ?? []
+    }), payload.turn);
   }
   if ((method === "item/started" || method === "item/completed") && payload.item) {
     return updateTurn(thread, payload.turnId, (turn) => upsertItem(turn, payload.item));
@@ -71,6 +174,41 @@ export function descendantsOf(threads, rootId) {
   });
 }
 
+function collabThreadStatus(status, tool) {
+  if (status === "pendingInit" || status === "running") return "running";
+  if (status === "completed") return "completed";
+  if (status === "errored") return "failed";
+  if (status === "interrupted" || status === "shutdown" || status === "notFound") return status;
+  return tool === "closeAgent" ? "completed" : "running";
+}
+
+export function projectCollabAgents(threads, item) {
+  if (item?.type !== "collabAgentToolCall" && item?.type !== "collabToolCall") return threads;
+  const receiverIds = [...new Set([
+    ...(item.receiverThreadIds ?? []),
+    ...Object.keys(item.agentsStates ?? {})
+  ])].filter((id) => id && id !== item.senderThreadId);
+  if (!receiverIds.length) return threads;
+
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  receiverIds.forEach((id) => {
+    const existing = byId.get(id);
+    const agentState = item.agentsStates?.[id];
+    const preview = existing?.preview || item.prompt?.trim() || "Delegated task";
+    byId.set(id, {
+      id,
+      ...existing,
+      parentThreadId: existing?.parentThreadId ?? (item.tool === "spawnAgent" ? item.senderThreadId : null),
+      preview,
+      name: existing?.name ?? null,
+      status: collabThreadStatus(agentState?.status, item.tool),
+      agentStatusMessage: agentState?.message ?? existing?.agentStatusMessage ?? null,
+      liveProjection: existing?.liveProjection ?? true
+    });
+  });
+  return [...byId.values()];
+}
+
 export function parseDiff(diff) {
   if (!diff?.trim()) return [];
   const files = [];
@@ -88,5 +226,44 @@ export function parseDiff(diff) {
     if (line.startsWith("-") && !line.startsWith("---")) current.minus += 1;
   }
   if (current) files.push(current);
-  return files;
+  return files.map((file) => ({ ...file, rows: parseDiffRows(file.lines) }));
+}
+
+function parseDiffRows(lines) {
+  const rows = [];
+  let oldLine = 0;
+  let newLine = 0;
+  let inHunk = false;
+
+  for (const line of lines) {
+    const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      inHunk = true;
+      rows.push({ old: null, cur: null, type: "hunk", text: line });
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith("\\ No newline at end of file")) {
+      rows.push({ old: null, cur: null, type: "meta", text: line });
+      continue;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      rows.push({ old: null, cur: newLine, type: "add", text: line.slice(1) });
+      newLine += 1;
+      continue;
+    }
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      rows.push({ old: oldLine, cur: null, type: "del", text: line.slice(1) });
+      oldLine += 1;
+      continue;
+    }
+    const text = line.startsWith(" ") ? line.slice(1) : line;
+    rows.push({ old: oldLine, cur: newLine, type: "ctx", text });
+    oldLine += 1;
+    newLine += 1;
+  }
+
+  return rows;
 }
