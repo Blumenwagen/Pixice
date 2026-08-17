@@ -9,6 +9,15 @@ async function git(cwd, args) {
   return stdout.trim();
 }
 
+async function gitDiff(cwd, args) {
+  try {
+    return await git(cwd, args);
+  } catch (error) {
+    if (error.code === 1 && typeof error.stdout === "string") return error.stdout.trim();
+    throw error;
+  }
+}
+
 export async function inspectRepository(folder) {
   try {
     const root = await git(folder, ["rev-parse", "--show-toplevel"]);
@@ -33,5 +42,11 @@ export async function removeCleanWorktree({ root, worktreePath }) {
 
 export async function readDiff({ workingPath, baseCommit }) {
   const args = baseCommit ? ["diff", "--no-ext-diff", baseCommit, "--"] : ["diff", "--no-ext-diff"];
-  return git(workingPath, args);
+  const tracked = await git(workingPath, args);
+  const untrackedOutput = await git(workingPath, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  const untracked = untrackedOutput.split("\0").filter(Boolean);
+  const additions = await Promise.all(untracked.map((file) =>
+    gitDiff(workingPath, ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", file])
+  ));
+  return [tracked, ...additions].filter(Boolean).join("\n");
 }

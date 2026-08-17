@@ -1,6 +1,17 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 
+function mapProject(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    canonicalPath: row.canonical_path,
+    displayName: row.display_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 export class LoomDatabase {
   constructor(userDataPath) {
     this.db = new DatabaseSync(path.join(userDataPath, "loom.sqlite"));
@@ -26,17 +37,25 @@ export class LoomDatabase {
   }
 
   listProjects() {
-    return this.db.prepare("SELECT * FROM projects ORDER BY updated_at DESC").all();
+    return this.db.prepare("SELECT * FROM projects ORDER BY updated_at DESC").all().map(mapProject);
+  }
+
+  getProject(id) {
+    return mapProject(this.db.prepare("SELECT * FROM projects WHERE id = ?").get(id));
   }
 
   upsertProject(project) {
+    const existing = this.db.prepare("SELECT * FROM projects WHERE canonical_path = ?").get(project.canonicalPath);
+    const id = existing?.id ?? project.id;
+    const createdAt = existing?.created_at ?? project.createdAt;
     this.db.prepare(`
       INSERT INTO projects (id, canonical_path, display_name, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET canonical_path=excluded.canonical_path,
-        display_name=excluded.display_name, updated_at=excluded.updated_at
-    `).run(project.id, project.canonicalPath, project.displayName, project.createdAt, project.updatedAt);
-    return project;
+      ON CONFLICT(canonical_path) DO UPDATE SET
+        display_name=excluded.display_name,
+        updated_at=excluded.updated_at
+    `).run(id, project.canonicalPath, project.displayName, createdAt, project.updatedAt);
+    return this.getProject(id);
   }
 
   saveViewState(taskId, state) {
