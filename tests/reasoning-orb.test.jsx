@@ -1,6 +1,23 @@
 import { act, render } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReasoningOrb } from "../src/components/ReasoningOrb.jsx";
+
+beforeEach(() => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    arc: vi.fn(),
+    beginPath: vi.fn(),
+    clearRect: vi.fn(),
+    fill: vi.fn(),
+    fillStyle: "",
+    globalAlpha: 1,
+    restore: vi.fn(),
+    rotate: vi.fn(),
+    save: vi.fn(),
+    scale: vi.fn(),
+    setTransform: vi.fn(),
+    translate: vi.fn(),
+  });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -8,21 +25,21 @@ afterEach(() => {
 });
 
 describe("ReasoningOrb", () => {
-  it("renders the supplied nine-cell lattice", () => {
+  it("renders the supplied nine-cell lattice on one canvas", () => {
     const { container } = render(<ReasoningOrb />);
-    expect(container.querySelectorAll('[data-slot="current"] span')).toHaveLength(10);
-    expect(container.querySelector('[data-slot="current"]')).toHaveAttribute("data-variant", "S1");
+    const stage = container.querySelector('[data-current-variant]');
+    expect(stage).toHaveAttribute("data-current-variant", "S1");
+    expect(stage).toHaveAttribute("data-dot-count", "9");
+    expect(container.querySelectorAll("canvas")).toHaveLength(1);
+    expect(container.querySelector('[data-reasoning-orb]')).toHaveAttribute("data-frame-rate", "24");
   });
 
   it("renders the supplied G1 globe as five rings of eight projected dots", () => {
     const { container } = render(<ReasoningOrb variant="G1" />);
-    const globe = container.querySelector('[data-slot="current"]');
-    const dots = globe.querySelectorAll('[style*="--g0x"]');
-
-    expect(globe).toHaveAttribute("data-variant", "G1");
-    expect(dots).toHaveLength(40);
-    expect(dots[0].style.getPropertyValue("--g0x")).toMatch(/px$/);
-    expect(dots[0].style.getPropertyValue("--g7o")).toMatch(/^0\.\d{3}$/);
+    const globe = container.querySelector('[data-current-variant]');
+    expect(globe).toHaveAttribute("data-current-variant", "G1");
+    expect(globe).toHaveAttribute("data-dot-count", "40");
+    expect(container.querySelectorAll("canvas")).toHaveLength(1);
   });
 
   it("morphs to a different randomized choreography while active", () => {
@@ -32,11 +49,12 @@ describe("ReasoningOrb", () => {
 
     act(() => vi.advanceTimersByTime(1801));
 
-    expect(container.querySelector('[data-slot="current"]')).toHaveAttribute("data-variant", "S2");
-    expect(container.querySelector('[data-slot="previous"]')).toHaveAttribute("data-variant", "S1");
+    const stage = container.querySelector('[data-current-variant]');
+    expect(stage).toHaveAttribute("data-current-variant", "S2");
+    expect(stage).toHaveAttribute("data-previous-variant", "S1");
 
     act(() => vi.advanceTimersByTime(520));
-    expect(container.querySelector('[data-slot="previous"]')).not.toBeInTheDocument();
+    expect(stage).not.toHaveAttribute("data-previous-variant");
   });
 
   it("includes G1 in the randomized morph pool", () => {
@@ -46,8 +64,8 @@ describe("ReasoningOrb", () => {
 
     act(() => vi.advanceTimersByTime(3400));
 
-    expect(container.querySelector('[data-slot="current"]')).toHaveAttribute("data-variant", "G1");
-    expect(container.querySelectorAll('[data-slot="current"] [style*="--g0x"]')).toHaveLength(40);
+    expect(container.querySelector('[data-current-variant]')).toHaveAttribute("data-current-variant", "G1");
+    expect(container.querySelector('[data-current-variant]')).toHaveAttribute("data-dot-count", "40");
   });
 
   it("stays on a static lattice when reduced motion is requested", () => {
@@ -61,7 +79,7 @@ describe("ReasoningOrb", () => {
 
     act(() => vi.advanceTimersByTime(10000));
 
-    expect(container.querySelector('[data-slot="current"]')).toHaveAttribute("data-variant", "S1");
-    expect(container.querySelector('[data-slot="previous"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-current-variant]')).toHaveAttribute("data-current-variant", "S1");
+    expect(container.querySelector('[data-current-variant]')).not.toHaveAttribute("data-previous-variant");
   });
 });

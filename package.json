@@ -19,6 +19,9 @@
     "check": "vitest run && pnpm test:sites"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.170",
+    "electron-updater": "6.8.9",
+    "ms": "2.1.3",
     "zod": "3.25.76"
   },
   "devDependencies": {
@@ -47,7 +50,17 @@
     "productName": "Loom",
     "icon": "build/icon.png",
     "asar": true,
-    "directories": { "output": "release" },
+    "directories": {
+      "output": "release"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Blumenwagen",
+        "repo": "Loom",
+        "releaseType": "release"
+      }
+    ],
     "files": [
       "dist/client/**/*",
       "electron/**/*",
@@ -59,13 +72,35 @@
         "to": "app-icon.png"
       },
       {
+        "from": "resources/app-update.yml",
+        "to": "app-update.yml"
+      },
+      {
         "from": "resources/runtime",
         "to": "runtime",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
-    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.developer-tools" },
-    "win": { "target": ["nsis"] },
-    "linux": { "target": ["AppImage", "deb"], "category": "Development" }
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    }
   }
 }

@@ -1,5 +1,8 @@
 name: release
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   push:
@@ -35,9 +38,39 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-      - name: Generate checksums
-        run: pnpm release:checksums
       - uses: actions/upload-artifact@v4
         with:
           name: loom-${{ matrix.target }}
-          path: release/*
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest*.yml
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: loom-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Generate release checksums
+        run: node scripts/generate-checksums.mjs release-artifacts
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release-artifacts/* --verify-tag --generate-notes --title "Loom $GITHUB_REF_NAME"
+          fi

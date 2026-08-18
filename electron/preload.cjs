@@ -10,6 +10,18 @@ const onEvent = (listener) => {
 contextBridge.exposeInMainWorld("loom", Object.freeze({
   app: Object.freeze({ bootstrap: invoke("app:bootstrap") }),
   runtime: Object.freeze({ status: invoke("runtime:status") }),
+  updates: Object.freeze({ status: invoke("updates:status"), check: invoke("updates:check"), download: invoke("updates:download"), install: invoke("updates:install") }),
+  browser: Object.freeze({
+    state: invoke("browser:state"),
+    create: invoke("browser:create"),
+    close: invoke("browser:close"),
+    activate: invoke("browser:activate"),
+    navigate: invoke("browser:navigate"),
+    history: invoke("browser:history"),
+    setViewport: invoke("browser:viewport"),
+    adopt: invoke("browser:adopt")
+  }),
+  files: Object.freeze({ read: invoke("files:read"), write: invoke("files:write") }),
   projects: Object.freeze({ list: invoke("projects:list"), open: invoke("projects:open") }),
   threads: Object.freeze({
     list: invoke("threads:list"),
@@ -21,6 +33,7 @@ contextBridge.exposeInMainWorld("loom", Object.freeze({
   turns: Object.freeze({ start: invoke("turns:start"), steer: invoke("turns:steer"), interrupt: invoke("turns:interrupt") }),
   approvals: Object.freeze({ resolve: invoke("approvals:resolve") }),
   requests: Object.freeze({ respond: invoke("requests:respond") }),
+  elicitations: Object.freeze({ respond: invoke("elicitations:respond") }),
   review: Object.freeze({ read: invoke("review:read") }),
   models: Object.freeze({ list: invoke("models:list") }),
   extensions: Object.freeze({ list: invoke("extensions:list") }),

@@ -6,6 +6,12 @@ import path from "node:path";
 import { JsonlClient } from "./jsonl-client.mjs";
 import { CapabilityAdapter, normalizeCodexEvent } from "./capability-adapter.mjs";
 
+export function codexAppServerArgs(developerInstructions = "") {
+  const instructions = String(developerInstructions).trim();
+  if (!instructions) return ["app-server"];
+  return ["--config", `developer_instructions=${JSON.stringify(instructions)}`, "app-server"];
+}
+
 export class CodexRuntime extends EventEmitter {
   #client = null;
   #process = null;
@@ -15,11 +21,12 @@ export class CodexRuntime extends EventEmitter {
   #stopping = false;
   #capabilities = new CapabilityAdapter();
 
-  constructor({ resourcesPath, clientVersion, allowDevelopmentRuntime = true }) {
+  constructor({ resourcesPath, clientVersion, allowDevelopmentRuntime = true, developerInstructionsPath = null }) {
     super();
     this.resourcesPath = resourcesPath;
     this.clientVersion = clientVersion;
     this.allowDevelopmentRuntime = allowDevelopmentRuntime;
+    this.developerInstructionsPath = developerInstructionsPath;
   }
 
   get connected() { return this.#initialized; }
@@ -38,10 +45,22 @@ export class CodexRuntime extends EventEmitter {
       return false;
     }
 
+    let args;
+    try {
+      args = codexAppServerArgs(
+        this.developerInstructionsPath ? readFileSync(this.developerInstructionsPath, "utf8") : ""
+      );
+    } catch (error) {
+      const message = `Loom runtime instructions are unavailable: ${error.message}`;
+      this.emit("status", { state: "error", message });
+      this.emit("recoverable-error", { code: "developer_instructions_unavailable", message });
+      return false;
+    }
+
     this.#stopping = false;
     this.#initialized = false;
     this.emit("status", { state: "connecting" });
-    const child = spawn(binary, ["app-server"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     this.#process = child;
     this.#client = new JsonlClient({ input: child.stdin, output: child.stdout });
     this.#client.on("notification", (event) => this.emit("event", normalizeCodexEvent(event)));
@@ -112,6 +131,7 @@ export class CodexRuntime extends EventEmitter {
   #resolveBinary() {
     const key = `${process.platform}-${process.arch}`;
     const filename = process.platform === "win32" ? "codex.exe" : "codex";
+    const codeModeHostFilename = process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host";
     const runtimeRoot = path.join(this.resourcesPath, "runtime");
     const manifestPath = path.join(runtimeRoot, "manifest.json");
     if (existsSync(manifestPath)) {
@@ -119,12 +139,23 @@ export class CodexRuntime extends EventEmitter {
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
         const entry = manifest.platforms?.[key];
         const expectedPath = `${key}/${filename}`;
-        if (entry?.path === expectedPath && /^[a-f0-9]{64}$/.test(entry.sha256 ?? "")) {
+        const expectedCodeModeHostPath = `${key}/${codeModeHostFilename}`;
+        if (
+          entry?.path === expectedPath
+          && entry?.codeModeHostPath === expectedCodeModeHostPath
+          && /^[a-f0-9]{64}$/.test(entry.sha256 ?? "")
+          && /^[a-f0-9]{64}$/.test(entry.codeModeHostSha256 ?? "")
+        ) {
           const candidate = path.join(runtimeRoot, entry.path);
-          if (existsSync(candidate)) {
-            if (process.platform !== "win32") accessSync(candidate, constants.X_OK);
+          const codeModeHost = path.join(runtimeRoot, entry.codeModeHostPath);
+          if (existsSync(candidate) && existsSync(codeModeHost)) {
+            if (process.platform !== "win32") {
+              accessSync(candidate, constants.X_OK);
+              accessSync(codeModeHost, constants.X_OK);
+            }
             const actual = createHash("sha256").update(readFileSync(candidate)).digest("hex");
-            if (actual === entry.sha256) return candidate;
+            const actualCodeModeHost = createHash("sha256").update(readFileSync(codeModeHost)).digest("hex");
+            if (actual === entry.sha256 && actualCodeModeHost === entry.codeModeHostSha256) return candidate;
           }
         }
       } catch (error) {

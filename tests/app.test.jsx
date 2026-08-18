@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App.jsx";
@@ -30,14 +30,61 @@ const thread = {
 
 function createApi(threadValue = thread) {
   let eventListener = null;
+  const threadValues = Array.isArray(threadValue) ? threadValue : [threadValue];
+  const browserState = {
+    native: false,
+    activeTabId: "browser-1",
+    tabs: [{ id: "browser-1", title: "New tab", url: "", loading: false, error: null, canGoBack: false, canGoForward: false }]
+  };
+  const scopedBrowserState = (payload = {}) => ({ ...browserState, workspaceId: payload.workspaceId });
   const api = {
     emit(event) { eventListener?.(event); },
     app: { bootstrap: vi.fn().mockResolvedValue({ projects: [project], models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], runtime: { state: "ready", connected: true } }) },
     runtime: { status: vi.fn().mockResolvedValue({ state: "ready", connected: true }) },
+    updates: {
+      status: vi.fn().mockResolvedValue({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Loom builds." }),
+      check: vi.fn().mockResolvedValue({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Loom builds." }),
+      download: vi.fn(),
+      install: vi.fn()
+    },
+    browser: {
+      state: vi.fn(async (payload) => scopedBrowserState(payload)),
+      create: vi.fn(async (payload) => scopedBrowserState(payload)),
+      close: vi.fn(async (payload) => scopedBrowserState(payload)),
+      activate: vi.fn(async (payload) => scopedBrowserState(payload)),
+      navigate: vi.fn(async (payload) => scopedBrowserState(payload)),
+      history: vi.fn(async (payload) => scopedBrowserState(payload)),
+      setViewport: vi.fn(async (payload) => scopedBrowserState(payload)),
+      adopt: vi.fn(async ({ toWorkspaceId }) => scopedBrowserState({ workspaceId: toWorkspaceId }))
+    },
+    files: {
+      read: vi.fn(async ({ path }) => ({
+        path: path.startsWith("/") ? path.replace(/:\d+$/, "") : `/work/aurora/${path.replace(/:\d+$/, "")}`,
+        relativePath: path.replace(/:\d+$/, ""),
+        name: path.replace(/:\d+$/, "").split("/").at(-1),
+        extension: `.${path.replace(/:\d+$/, "").split(".").at(-1)}`,
+        kind: path.endsWith(".md") ? "markdown" : "text",
+        content: "export const ready = true;\n",
+        editable: true,
+        size: 27,
+        mtimeMs: 1
+      })),
+      write: vi.fn(async ({ path, content }) => ({
+        path,
+        relativePath: path.replace("/work/aurora/", ""),
+        name: path.split("/").at(-1),
+        extension: `.${path.split(".").at(-1)}`,
+        kind: path.endsWith(".md") ? "markdown" : "text",
+        content,
+        editable: true,
+        size: content.length,
+        mtimeMs: 2
+      }))
+    },
     projects: { list: vi.fn().mockResolvedValue([project]), open: vi.fn().mockResolvedValue(project) },
     threads: {
-      list: vi.fn().mockResolvedValue({ data: [threadValue], nextCursor: null }),
-      read: vi.fn().mockResolvedValue({ thread: threadValue }),
+      list: vi.fn().mockResolvedValue({ data: threadValues, nextCursor: null }),
+      read: vi.fn(async ({ threadId }) => ({ thread: threadValues.find((candidate) => candidate.id === threadId) ?? threadValues[0] })),
       children: vi.fn().mockResolvedValue({ data: [], nextCursor: null }),
       create: vi.fn().mockResolvedValue({ thread: { ...thread, id: "thread-new", name: null, preview: "", turns: [] } }),
       archive: vi.fn().mockResolvedValue({})
@@ -49,6 +96,7 @@ function createApi(threadValue = thread) {
     },
     approvals: { resolve: vi.fn().mockResolvedValue({ ok: true }) },
     requests: { respond: vi.fn().mockResolvedValue({ ok: true }) },
+    elicitations: { respond: vi.fn().mockResolvedValue({ ok: true }) },
     review: { read: vi.fn().mockResolvedValue({ repository: project.repository, diff: "diff --git a/src/auth.js b/src/auth.js\n--- a/src/auth.js\n+++ b/src/auth.js\n@@ -1 +1 @@\n-old\n+new" }) },
     models: { list: vi.fn().mockResolvedValue([]) },
     extensions: { list: vi.fn().mockResolvedValue({ skills: [], apps: [], mcp: [], errors: [] }) },
@@ -64,7 +112,7 @@ beforeEach(() => {
 });
 
 describe("Loom app shell", () => {
-  it("loads real task data and moves between review and extensions", async () => {
+  it("loads real task data and moves between review and settings", async () => {
     render(<App />);
     expect(document.querySelector(".window-drag-region")).toHaveAttribute("aria-hidden", "true");
     expect(await screen.findByText("I traced the current flow.")).toBeInTheDocument();
@@ -82,9 +130,154 @@ describe("Loom app shell", () => {
     expect(screen.getByText("new").closest(".file-diff-row")).toHaveClass("add");
     expect(document.querySelector(".file-diff-stat")).toHaveTextContent("+1−1");
 
-    fireEvent.click(screen.getByRole("button", { name: "Extensions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Primary navigation" })).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Settings navigation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to task" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Capabilities/ }));
     expect(await screen.findByRole("heading", { name: "Capabilities" })).toBeInTheDocument();
     expect(window.loom.extensions.list).toHaveBeenCalled();
+  });
+
+  it("wires settings controls to real app preferences", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Default permissions" }), { target: { value: "read-only" } });
+    expect(localStorage.getItem("loom.permissionMode")).toBe("read-only");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show shortcut hints" }));
+    expect(document.querySelector(".loom-app")).toHaveAttribute("data-show-shortcuts", "false");
+    fireEvent.change(screen.getByRole("combobox", { name: "Interface density" }), { target: { value: "comfortable" } });
+    expect(document.querySelector(".loom-app")).toHaveAttribute("data-density", "comfortable");
+
+    const saved = JSON.parse(localStorage.getItem("loom.preferences"));
+    expect(saved).toMatchObject({ showShortcutHints: false, density: "comfortable" });
+  });
+
+  it("checks GitHub releases from the Updates settings page", async () => {
+    const api = createApi();
+    api.updates.status.mockResolvedValue({ supported: true, state: "idle", currentVersion: "0.1.0", availableVersion: null, percent: 0, message: "Ready to check GitHub releases." });
+    api.updates.check.mockResolvedValue({ supported: true, state: "not-available", currentVersion: "0.1.0", availableVersion: null, percent: 0, message: "Loom is up to date." });
+    window.loom = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Updates/ }));
+    expect(await screen.findByRole("heading", { name: "Updates" })).toBeInTheDocument();
+    expect(screen.getByText("Loom 0.1.0")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    await waitFor(() => expect(api.updates.check).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Loom is up to date.")).toBeInTheDocument();
+  });
+
+  it("restores the default reasoning effort after an app restart", async () => {
+    const models = [{
+      id: "gpt",
+      model: "gpt-5.6",
+      displayName: "GPT-5.6",
+      isDefault: true,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }]
+    }];
+    const firstApi = createApi();
+    firstApi.app.bootstrap.mockResolvedValue({ projects: [project], models, runtime: { state: "ready", connected: true } });
+    window.loom = firstApi;
+
+    const firstLaunch = render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    const effortSelect = await screen.findByRole("combobox", { name: "Default reasoning effort" });
+    expect(effortSelect).toHaveValue("medium");
+    fireEvent.change(effortSelect, { target: { value: "high" } });
+    expect(localStorage.getItem("loom.effort")).toBe("high");
+    firstLaunch.unmount();
+
+    const restartedApi = createApi();
+    restartedApi.app.bootstrap.mockResolvedValue({ projects: [project], models, runtime: { state: "ready", connected: true } });
+    window.loom = restartedApi;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+
+    expect(await screen.findByRole("combobox", { name: "Default reasoning effort" })).toHaveValue("high");
+  });
+
+  it("keeps composer reasoning changes scoped to their thread", async () => {
+    const user = userEvent.setup();
+    const secondThread = { ...thread, id: "thread-2", name: "Prepare release notes", preview: "Prepare release notes" };
+    const models = [{
+      id: "gpt",
+      model: "gpt-5.6",
+      displayName: "GPT-5.6",
+      isDefault: true,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }]
+    }];
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({ projects: [project], models, runtime: { state: "ready", connected: true } });
+    api.threads.list.mockResolvedValue({ data: [thread, secondThread], nextCursor: null });
+    api.threads.read.mockImplementation(async ({ threadId }) => ({ thread: threadId === secondThread.id ? secondThread : thread }));
+    window.loom = api;
+
+    const firstLaunch = render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await user.click(screen.getByRole("button", { name: "Reasoning: Medium" }));
+    await user.click(screen.getByRole("option", { name: /High/ }));
+    expect(JSON.parse(localStorage.getItem("loom.threadConfiguration.thread-1"))).toMatchObject({ effort: "high" });
+
+    await user.click(screen.getByRole("button", { name: "Prepare release notes" }));
+    expect(await screen.findByRole("button", { name: "Reasoning: Medium" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refactor authentication" }));
+    expect(await screen.findByRole("button", { name: "Reasoning: High" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    expect(await screen.findByRole("combobox", { name: "Default reasoning effort" })).toHaveValue("medium");
+
+    firstLaunch.unmount();
+    const restartedApi = createApi();
+    restartedApi.app.bootstrap.mockResolvedValue({ projects: [project], models, runtime: { state: "ready", connected: true } });
+    restartedApi.threads.list.mockResolvedValue({ data: [thread, secondThread], nextCursor: null });
+    restartedApi.threads.read.mockImplementation(async ({ threadId }) => ({ thread: threadId === secondThread.id ? secondThread : thread }));
+    window.loom = restartedApi;
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Reasoning: High" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Prepare release notes" }));
+    expect(await screen.findByRole("button", { name: "Reasoning: Medium" })).toBeInTheDocument();
+  });
+
+  it("filters the model picker by Codex and Claude provider", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [
+        { model: "gpt-5.6", displayName: "GPT-5.6", provider: "codex", isDefault: true },
+        { model: "sonnet", displayName: "Claude Sonnet", provider: "claude" },
+        { model: "opus", displayName: "Claude Opus", provider: "claude" }
+      ],
+      runtime: { state: "ready", connected: true }
+    });
+    window.loom = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Model: GPT-5.6" }));
+    expect(screen.getByRole("tab", { name: "Codex" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("option", { name: /GPT-5.6/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Claude Opus/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Claude" }));
+    expect(screen.getByRole("option", { name: /Claude Opus/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /GPT-5.6/ })).not.toBeInTheDocument();
   });
 
   it("adds provider marks to model rows without changing generic Markdown tables", async () => {
@@ -124,6 +317,31 @@ describe("Loom app shell", () => {
     await waitFor(() => expect(window.loom.approvals.resolve).toHaveBeenCalledWith({ requestId: 17, decision: "accept" }));
   });
 
+  it("applies generated task names everywhere as soon as the runtime publishes them", async () => {
+    const { container } = render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    act(() => window.loom.emit({
+      type: "RuntimeEvent",
+      payload: { method: "thread/name/updated", threadId: "thread-1", name: "Authentication session repair" }
+    }));
+
+    await waitFor(() => expect(container.querySelector(".task-title")).toHaveTextContent("Authentication session repair"));
+    expect(container.querySelector(".toolbar-title strong")).toHaveTextContent("Authentication session repair");
+  });
+
+  it("repairs an untitled sidebar entry from the named active-thread snapshot", async () => {
+    const untitled = { ...thread, name: null, preview: "" };
+    const api = createApi(untitled);
+    api.threads.read.mockResolvedValue({ thread: { ...untitled, name: "Authentication session repair" } });
+    window.loom = api;
+
+    const { container } = render(<App />);
+
+    await waitFor(() => expect(container.querySelector(".task-title")).toHaveTextContent("Authentication session repair"));
+    expect(container.querySelector(".toolbar-title strong")).toHaveTextContent("Authentication session repair");
+  });
+
   it("answers structured user-input requests", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -149,6 +367,46 @@ describe("Loom app shell", () => {
     }));
   });
 
+  it("wires unrestricted permission modes and MCP elicitation forms", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    const permissions = await screen.findByRole("combobox", { name: "Default permissions" });
+    expect(within(permissions).getByRole("option", { name: "Auto-review" })).toBeInTheDocument();
+    fireEvent.change(permissions, { target: { value: "full-access" } });
+    expect(localStorage.getItem("loom.permissionMode")).toBe("full-access");
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+
+    act(() => window.loom.emit({
+      type: "AttentionRequired",
+      payload: {
+        id: "elicitation-17",
+        method: "mcpServer/elicitation/request",
+        params: {
+          threadId: "thread-1",
+          serverName: "Browser",
+          mode: "form",
+          message: "Choose how Loom should continue",
+          requestedSchema: {
+            type: "object",
+            properties: { destination: { type: "string", title: "Destination" } },
+            required: ["destination"]
+          }
+        }
+      }
+    }));
+
+    await user.type(await screen.findByRole("textbox", { name: "Destination" }), "Preview");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(window.loom.elicitations.respond).toHaveBeenCalledWith({
+      requestId: "elicitation-17",
+      action: "accept",
+      content: { destination: "Preview" }
+    }));
+  });
+
   it("keeps work traces open while running and collapses them after the final answer", async () => {
     const liveItems = [
       { id: "user-live", type: "userMessage", content: [{ type: "text", text: "Check the task" }] },
@@ -164,6 +422,7 @@ describe("Loom app shell", () => {
 
     render(<App />);
     const runningToggle = await screen.findByRole("button", { name: "Running command" });
+    expect(document.querySelector(".task-row.active [data-reasoning-orb]")).toBeInTheDocument();
     expect(runningToggle).toHaveAttribute("aria-expanded", "true");
     expect(runningToggle.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
 
@@ -182,6 +441,33 @@ describe("Loom app shell", () => {
     expect(taskProgress).toHaveTextContent("Inspect the project");
     expect(workingTrace.compareDocumentPosition(taskProgress) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(taskProgress.querySelector(".progress-step.inProgress .spin-icon")).toBeInTheDocument();
+    expect(taskProgress.querySelector(".progress-track > span")).toHaveStyle({ width: "0%" });
+    const collapseProgress = screen.getByRole("button", { name: "Collapse task progress" });
+    fireEvent.click(collapseProgress);
+    expect(taskProgress).toHaveAttribute("data-expanded", "false");
+    expect(screen.getByRole("button", { name: "Expand task progress" })).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Expand task progress" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open task map" }));
+    expect(screen.getByRole("complementary", { name: "Task inspector" })).toHaveClass("open");
+    expect(screen.getByRole("button", { name: "Hide task map" })).toBeInTheDocument();
+
+    act(() => window.loom.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "turn/plan/updated",
+        threadId: "thread-1",
+        plan: [
+          { step: "One", status: "completed" },
+          { step: "Two", status: "completed" },
+          { step: "Three", status: "completed" },
+          { step: "Four", status: "in_progress" },
+          { step: "Five", status: "in_progress" },
+          { step: "Six", status: "pending" }
+        ]
+      }
+    }));
+    await waitFor(() => expect(taskProgress).toHaveTextContent("3 / 6"));
+    expect(taskProgress.querySelector(".progress-track > span")).toHaveStyle({ width: "50%" });
 
     act(() => window.loom.emit({
       type: "AgentUpdated",
@@ -213,7 +499,8 @@ describe("Loom app shell", () => {
         plan: [{ step: "Inspect the project", status: "completed" }]
       }
     }));
-    await waitFor(() => expect(taskProgress).toHaveTextContent("1 of 1 complete"));
+    await waitFor(() => expect(taskProgress).toHaveTextContent("1 / 1"));
+    expect(taskProgress.querySelector(".progress-track > span")).toHaveStyle({ width: "100%" });
 
     act(() => window.loom.emit({
       type: "RuntimeEvent",
@@ -242,6 +529,44 @@ describe("Loom app shell", () => {
     fireEvent.click(settledToggle);
     expect(settledToggle).toHaveAttribute("aria-expanded", "true");
     expect(disclosure).toHaveAttribute("aria-hidden", "false");
+  });
+
+  it("pauses stale plan activity while a task is inactive and resumes it with the next turn", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    act(() => window.loom.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "turn/plan/updated",
+        threadId: "thread-1",
+        plan: [{ step: "Measure transport overhead", status: "in_progress" }]
+      }
+    }));
+
+    await waitFor(() => expect(document.querySelector(".conversation-column .task-progress")).toBeInTheDocument());
+    const taskProgress = document.querySelector(".conversation-column .task-progress");
+    expect(taskProgress).toHaveAttribute("data-active", "false");
+    expect(taskProgress).toHaveTextContent("Task is inactive");
+    expect(taskProgress.querySelector(".progress-step.inProgress.inactive")).toBeInTheDocument();
+    expect(taskProgress.querySelector(".progress-step .spin-icon")).not.toBeInTheDocument();
+
+    act(() => window.loom.emit({
+      type: "RuntimeEvent",
+      payload: { method: "turn/started", threadId: "thread-1", turn: { id: "turn-resumed", status: "inProgress", items: [] } }
+    }));
+    act(() => window.loom.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "turn/plan/updated",
+        threadId: "thread-1",
+        plan: [{ step: "Measure transport overhead", status: "in_progress" }]
+      }
+    }));
+
+    await waitFor(() => expect(document.querySelector(".conversation-column .task-progress")).toHaveAttribute("data-active", "true"));
+    const resumedTaskProgress = document.querySelector(".conversation-column .task-progress");
+    expect(resumedTaskProgress.querySelector(".progress-step.inProgress .spin-icon")).toBeInTheDocument();
   });
 
   it("preserves the reading position when live reasoning arrives after scrolling up", async () => {
@@ -335,6 +660,51 @@ describe("Loom app shell", () => {
     });
   });
 
+  it("opens a new task from the sidebar shortcut", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.keyDown(window, { key: "n", metaKey: true });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "New task" })).toHaveAttribute("aria-current", "page"));
+    expect(screen.getByRole("heading", { name: "What should Codex work on?" })).toBeInTheDocument();
+  });
+
+  it("discovers and autocompletes Codex commands from the slash menu", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+
+    await user.type(composer, "/");
+    const commands = screen.getByRole("listbox", { name: "Slash commands" });
+    expect(within(commands).getByRole("option", { name: /\/model/ })).toHaveAttribute("aria-selected", "true");
+    expect(within(commands).getByRole("option", { name: /\/permissions/ })).toBeInTheDocument();
+    expect(within(commands).getByRole("option", { name: /\/compact/ })).toBeInTheDocument();
+
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(composer).toHaveValue("/fast ");
+    expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
+    expect(window.loom.turns.start).not.toHaveBeenCalled();
+  });
+
+  it("filters slash commands and keeps unknown commands sendable", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+
+    await user.type(composer, "/compact");
+    const commands = screen.getByRole("listbox", { name: "Slash commands" });
+    expect(within(commands).getAllByRole("option")).toHaveLength(1);
+    expect(within(commands).getByRole("option", { name: /\/compact/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument();
+
+    await user.clear(composer);
+    await user.type(composer, "/not-a-loom-command{Enter}");
+    await waitFor(() => expect(window.loom.turns.start).toHaveBeenCalledWith(expect.objectContaining({ text: "/not-a-loom-command" })));
+  });
+
   it("does not submit a new task twice when send is clicked repeatedly", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -347,6 +717,41 @@ describe("Loom app shell", () => {
 
     await waitFor(() => expect(window.loom.turns.start).toHaveBeenCalledTimes(1));
     expect(window.loom.threads.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("pastes image attachments and sends an image-only prompt", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const image = new File([new Uint8Array([137, 80, 78, 71])], "clipboard.png", { type: "image/png" });
+
+    fireEvent.paste(composer, { clipboardData: { files: [image], items: [{ kind: "file", type: image.type, getAsFile: () => image }] } });
+
+    expect(await screen.findByRole("img", { name: "clipboard.png" })).toBeInTheDocument();
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(send).toBeEnabled();
+    fireEvent.click(send);
+
+    await waitFor(() => expect(window.loom.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      text: "",
+      images: [expect.stringMatching(/^data:image\/png;base64,/)]
+    })));
+  });
+
+  it("accepts dropped images anywhere in Loom and lets the user remove them", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const image = new File([new Uint8Array([82, 73, 70, 70])], "dropped.webp", { type: "image/webp" });
+    const transfer = { files: [image], items: [{ kind: "file", type: image.type }] };
+
+    fireEvent.dragEnter(window, { dataTransfer: transfer });
+    expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+    fireEvent.drop(window, { dataTransfer: transfer });
+
+    expect(await screen.findByRole("img", { name: "dropped.webp" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remove dropped.webp" }));
+    expect(screen.queryByRole("img", { name: "dropped.webp" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   });
 
   it("uses accessible model, reasoning, and permission pickers", async () => {
@@ -367,18 +772,23 @@ describe("Loom app shell", () => {
     expect(screen.getByRole("listbox", { name: "Reasoning" })).toBeInTheDocument();
   });
 
-  it("sends the selected permission mode with new tasks and turns", async () => {
+  it("keeps composer permission changes scoped to their thread", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Permissions: Workspace access" }));
     await user.click(screen.getByRole("option", { name: /Read only/ }));
+    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Inspect this thread without edits");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(window.loom.turns.start).toHaveBeenLastCalledWith(expect.objectContaining({ permissionMode: "read-only" })));
+
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
-    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Inspect without edits");
+    expect(screen.getByRole("button", { name: "Permissions: Workspace access" })).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Start with the default access");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() => expect(window.loom.threads.create).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "read-only" })));
-    expect(window.loom.turns.start).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "read-only" }));
+    await waitFor(() => expect(window.loom.threads.create).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "workspace-write" })));
+    expect(window.loom.turns.start).toHaveBeenLastCalledWith(expect.objectContaining({ permissionMode: "workspace-write" }));
   });
 
   it("shows events emitted immediately by a newly created thread", async () => {
@@ -559,5 +969,82 @@ describe("Loom app shell", () => {
     await waitFor(() => expect(sidebar).toHaveAttribute("data-expanded", "true"));
     fireEvent.mouseLeave(sidebar);
     expect(sidebar).toHaveAttribute("data-expanded", "true");
+  });
+
+  it("opens a tabbed preview workspace and temporarily collapses the sidebar", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const sidebar = screen.getByRole("complementary", { name: "Primary navigation" });
+
+    expect(sidebar).toHaveAttribute("data-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
+
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(document.querySelector(".task-workspace")).toHaveClass("preview-mode");
+    expect(document.querySelector(".loom-app")).toHaveAttribute("data-preview-open", "true");
+    expect(sidebar).toHaveAttribute("data-expanded", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "New browser tab" }));
+    expect(window.loom.browser.create).toHaveBeenCalledWith({ workspaceId: "thread-1" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Close preview workspace" })[0]);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
+    expect(sidebar).toHaveAttribute("data-expanded", "true");
+  });
+
+  it("keeps preview and editor state isolated per thread", async () => {
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Second task",
+      preview: "Second task",
+      turns: [{
+        id: "turn-2",
+        status: "completed",
+        items: [{ id: "agent-2", type: "agentMessage", text: "Second task response.", phase: "final_answer" }]
+      }]
+    };
+    window.loom = createApi([thread, secondThread]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open src/runtime.js" }));
+    expect(await screen.findByRole("tab", { name: "runtime.js" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Second task" }));
+    await screen.findByText("Second task response.");
+    expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "runtime.js" })).not.toBeInTheDocument();
+    expect(window.loom.browser.state).toHaveBeenCalledWith({ workspaceId: "thread-2" });
+
+    await user.click(screen.getByRole("button", { name: "Refactor authentication" }));
+    await screen.findByText("I traced the current flow.");
+    expect(await screen.findByRole("tab", { name: "runtime.js" })).toBeInTheDocument();
+  });
+
+  it("opens response file links in a tab and edits the file in place", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open src/runtime.js" }));
+    expect(await screen.findByRole("tab", { name: "runtime.js" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("export const ready = true;")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const editor = screen.getByRole("textbox", { name: "Edit runtime.js" });
+    fireEvent.change(editor, { target: { value: "export const ready = false;\n" } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(window.loom.files.write).toHaveBeenCalledWith({
+      projectId: "project-1",
+      path: "/work/aurora/src/runtime.js",
+      content: "export const ready = false;\n",
+      expectedMtimeMs: 1
+    }));
   });
 });

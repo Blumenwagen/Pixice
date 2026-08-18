@@ -1,0 +1,4 @@
+provider: github
+owner: Blumenwagen
+repo: Loom
+updaterCacheDirName: loom-updater

@@ -1,7 +1,7 @@
 export {};
 
 type LoomEvent = {
-  type: "TaskUpdated" | "AgentUpdated" | "ActivityReceived" | "AttentionRequired" | "AttentionReset" | "RuntimeError" | "RuntimeStatus";
+  type: "TaskUpdated" | "AgentUpdated" | "ActivityReceived" | "AttentionRequired" | "AttentionReset" | "RuntimeError" | "RuntimeStatus" | "BrowserState" | "BrowserOpenRequested" | "UpdateState";
   payload: any;
   at: string;
 };
@@ -16,6 +16,26 @@ declare global {
         bootstrap(): Promise<{ projects: any[]; models: any[]; runtime: any }>;
       };
       runtime: { status(): Promise<any> };
+      updates: {
+        status(): Promise<any>;
+        check(): Promise<any>;
+        download(): Promise<any>;
+        install(): Promise<{ ok: boolean }>;
+      };
+      browser: {
+        state(payload: { workspaceId: string }): Promise<any>;
+        create(payload: { workspaceId: string; url?: string }): Promise<any>;
+        close(payload: { workspaceId: string; tabId: string }): Promise<any>;
+        activate(payload: { workspaceId: string; tabId: string }): Promise<any>;
+        navigate(payload: { workspaceId: string; tabId?: string; url: string }): Promise<any>;
+        history(payload: { workspaceId: string; action: "back" | "forward" | "reload" | "stop" }): Promise<any>;
+        setViewport(payload: { workspaceId: string; visible: boolean; bounds?: { x: number; y: number; width: number; height: number } }): Promise<any>;
+        adopt(payload: { fromWorkspaceId: string; toWorkspaceId: string }): Promise<any>;
+      };
+      files: {
+        read(payload: ProjectScope & { path: string }): Promise<any>;
+        write(payload: ProjectScope & { path: string; content: string; expectedMtimeMs?: number }): Promise<any>;
+      };
       projects: {
         list(): Promise<any[]>;
         open(): Promise<any | null>;
@@ -24,12 +44,12 @@ declare global {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
         read(payload: ThreadScope): Promise<{ thread: any }>;
         children(payload: ThreadScope): Promise<{ data: any[]; nextCursor: string | null }>;
-        create(payload: ProjectScope & { model?: string; permissionMode?: "read-only" | "workspace-write" }): Promise<{ thread: any }>;
+        create(payload: ProjectScope & { model?: string; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ thread: any }>;
         archive(payload: ThreadScope): Promise<unknown>;
       };
       turns: {
-        start(payload: ThreadScope & { text: string; model?: string; effort?: string; permissionMode?: "read-only" | "workspace-write" }): Promise<{ turn: any }>;
-        steer(payload: ThreadScope & { turnId: string; text: string }): Promise<unknown>;
+        start(payload: ThreadScope & { text: string; images?: string[]; model?: string; effort?: string; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ turn: any }>;
+        steer(payload: ThreadScope & { turnId: string; text: string; images?: string[] }): Promise<unknown>;
         interrupt(payload: ThreadScope & { turnId: string }): Promise<unknown>;
       };
       approvals: {
@@ -37,6 +57,9 @@ declare global {
       };
       requests: {
         respond(payload: { requestId: string | number; answers: Record<string, { answers: string[] }> }): Promise<unknown>;
+      };
+      elicitations: {
+        respond(payload: { requestId: string | number; action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> }): Promise<unknown>;
       };
       review: { read(payload: ProjectScope): Promise<{ repository: any; diff: string }> };
       models: { list(): Promise<any[]> };

@@ -36,6 +36,18 @@ export class LoomDatabase {
       CREATE TABLE IF NOT EXISTS thread_runtime_state (
         thread_id TEXT PRIMARY KEY, plan TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS thread_names (
+        thread_id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS thread_provider_bindings (
+        thread_id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_thread_id TEXT,
+        resume_cursor TEXT, cwd TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS provider_thread_snapshots (
+        thread_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, updated_at TEXT NOT NULL,
+        FOREIGN KEY(thread_id) REFERENCES thread_provider_bindings(thread_id)
+      );
     `);
   }
 
@@ -89,7 +101,104 @@ export class LoomDatabase {
     `).run(threadId, JSON.stringify(plan ?? []), new Date().toISOString());
   }
 
+  getThreadName(threadId) {
+    return this.db.prepare("SELECT name FROM thread_names WHERE thread_id = ?").get(threadId)?.name ?? null;
+  }
+
+  saveThreadName(threadId, name) {
+    const value = String(name ?? "").trim();
+    if (!value) return;
+    this.db.prepare(`
+      INSERT INTO thread_names (thread_id, name, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET name=excluded.name, updated_at=excluded.updated_at
+    `).run(threadId, value, new Date().toISOString());
+  }
+
+  deleteThreadName(threadId) {
+    this.db.prepare("DELETE FROM thread_names WHERE thread_id = ?").run(threadId);
+  }
+
   deleteThreadRuntimeState(threadId) {
     this.db.prepare("DELETE FROM thread_runtime_state WHERE thread_id = ?").run(threadId);
+  }
+
+  saveThreadProviderBinding(binding) {
+    const now = new Date().toISOString();
+    const existing = this.getThreadProviderBinding(binding.threadId);
+    this.db.prepare(`
+      INSERT INTO thread_provider_bindings (
+        thread_id, provider, provider_thread_id, resume_cursor, cwd, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        provider=excluded.provider,
+        provider_thread_id=COALESCE(excluded.provider_thread_id, thread_provider_bindings.provider_thread_id),
+        resume_cursor=COALESCE(excluded.resume_cursor, thread_provider_bindings.resume_cursor),
+        cwd=CASE WHEN excluded.cwd = '' THEN thread_provider_bindings.cwd ELSE excluded.cwd END,
+        updated_at=excluded.updated_at
+    `).run(
+      binding.threadId,
+      binding.provider,
+      binding.providerThreadId ?? null,
+      binding.resumeCursor ?? null,
+      binding.cwd ?? "",
+      existing?.createdAt ?? now,
+      now
+    );
+    return this.getThreadProviderBinding(binding.threadId);
+  }
+
+  getThreadProviderBinding(threadId) {
+    const row = this.db.prepare("SELECT * FROM thread_provider_bindings WHERE thread_id = ?").get(threadId);
+    if (!row) return null;
+    return {
+      threadId: row.thread_id,
+      provider: row.provider,
+      providerThreadId: row.provider_thread_id,
+      resumeCursor: row.resume_cursor,
+      cwd: row.cwd,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  listThreadProviderBindings({ provider, cwd } = {}) {
+    const clauses = [];
+    const values = [];
+    if (provider) {
+      clauses.push("provider = ?");
+      values.push(provider);
+    }
+    if (cwd) {
+      clauses.push("cwd = ?");
+      values.push(cwd);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this.db.prepare(`SELECT thread_id FROM thread_provider_bindings ${where} ORDER BY updated_at DESC`)
+      .all(...values)
+      .map((row) => this.getThreadProviderBinding(row.thread_id));
+  }
+
+  deleteThreadProviderBinding(threadId) {
+    this.db.prepare("DELETE FROM provider_thread_snapshots WHERE thread_id = ?").run(threadId);
+    this.db.prepare("DELETE FROM thread_provider_bindings WHERE thread_id = ?").run(threadId);
+  }
+
+  saveProviderThreadSnapshot(threadId, snapshot) {
+    this.db.prepare(`
+      INSERT INTO provider_thread_snapshots (thread_id, snapshot, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET snapshot=excluded.snapshot, updated_at=excluded.updated_at
+    `).run(threadId, JSON.stringify(snapshot), new Date().toISOString());
+  }
+
+  getProviderThreadSnapshot(threadId) {
+    const row = this.db.prepare("SELECT snapshot FROM provider_thread_snapshots WHERE thread_id = ?").get(threadId);
+    if (!row) return null;
+    try {
+      return JSON.parse(row.snapshot);
+    } catch {
+      return null;
+    }
   }
 }
