@@ -37,4 +37,16 @@ export class CodexProvider extends EventEmitter {
   respond(id, result) {
     return this.runtime.respond(id, result);
   }
+
+  account() {
+    return this.runtime.request("account/read", { refreshToken: false });
+  }
+
+  login() {
+    return this.runtime.request("account/login/start", {
+      type: "chatgpt",
+      appBrand: "codex",
+      useHostedLoginSuccessPage: true
+    });
+  }
 }

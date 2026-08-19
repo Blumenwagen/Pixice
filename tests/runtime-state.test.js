@@ -36,6 +36,30 @@ describe("runtime state projection", () => {
     });
   });
 
+  it("projects image generation from its live preview into the completed result", () => {
+    const thread = { id: "lead", turns: [{ id: "turn", status: "inProgress", items: [] }] };
+    const started = applyRuntimePayload(thread, {
+      method: "item/started",
+      threadId: "lead",
+      turnId: "turn",
+      item: { id: "image", type: "imageGeneration", status: "inProgress", result: "", revisedPrompt: null, savedPath: null, failure: null }
+    });
+    const completed = applyRuntimePayload(started, {
+      method: "item/completed",
+      threadId: "lead",
+      turnId: "turn",
+      item: { id: "image", type: "imageGeneration", status: "completed", result: "data:image/png;base64,AA==", revisedPrompt: "A finished image", savedPath: "/tmp/image.png", failure: null }
+    });
+
+    expect(started.turns[0].items[0]).toMatchObject({ type: "imageGeneration", status: "inProgress" });
+    expect(completed.turns[0].items[0]).toMatchObject({
+      type: "imageGeneration",
+      status: "completed",
+      result: "data:image/png;base64,AA==",
+      revisedPrompt: "A finished image"
+    });
+  });
+
   it("merges a persisted turn into the live thread without duplicating its prompt", () => {
     const live = { id: "lead", turns: [{ id: "turn", status: "inProgress", items: [] }] };
     const persisted = {

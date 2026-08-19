@@ -12,6 +12,9 @@ class MemoryDatabase {
     return saved;
   }
   deleteThreadProviderBinding(threadId) { this.bindings.delete(threadId); }
+  listThreadProviderBindings({ provider } = {}) {
+    return [...this.bindings.values()].filter((binding) => !provider || binding.provider === provider);
+  }
 }
 
 class FakeProvider extends EventEmitter {
@@ -33,6 +36,8 @@ class FakeProvider extends EventEmitter {
     return {};
   }
   respond(id, result) { this.response = { id, result }; }
+  async account() { return { account: this.id === "codex" ? { type: "chatgpt", email: "dev@example.com" } : null, requiresAuth: true }; }
+  async login() { return { type: this.id, authUrl: `https://example.com/${this.id}` }; }
 }
 
 describe("ProviderRegistry", () => {
@@ -65,5 +70,30 @@ describe("ProviderRegistry", () => {
     claude.emit("server-request", { id: "claude-request:1", method: "item/tool/requestApproval", params: {} });
     registry.respond("claude-request:1", { decision: "accept" });
     expect(claude.response).toEqual({ id: "claude-request:1", result: { decision: "accept" } });
+  });
+
+  it("reports provider accounts and starts sign in with the selected provider", async () => {
+    const database = new MemoryDatabase();
+    database.saveThreadProviderBinding({ threadId: "prior-thread", provider: "claude", cwd: "/workspace" });
+    const registry = new ProviderRegistry({ database });
+    registry.register(new FakeProvider("codex", ["gpt-5.6"]));
+    registry.register(new FakeProvider("claude", ["sonnet"]));
+
+    await expect(registry.listProviders()).resolves.toEqual([
+      expect.objectContaining({ id: "codex", account: { type: "chatgpt", email: "dev@example.com" }, sessionCount: 0 }),
+      expect.objectContaining({ id: "claude", account: null, sessionCount: 1, loginAvailable: true })
+    ]);
+    await expect(registry.loginProvider("claude")).resolves.toEqual({ type: "claude", authUrl: "https://example.com/claude" });
+  });
+
+  it("never advertises models from a disconnected provider", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    registry.register(new FakeProvider("codex", ["gpt-5.6-terra"]));
+    const claude = registry.register(new FakeProvider("claude", ["claude-sonnet-4-6"]));
+    claude.connected = false;
+
+    const models = await registry.request("model/list");
+    expect(models.data.map((model) => model.provider)).toEqual(["codex"]);
+    expect(claude.calls.some((call) => call.method === "model/list")).toBe(false);
   });
 });

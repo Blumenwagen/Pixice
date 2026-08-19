@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 
 export default defineConfig(({ mode }) => ({
   // Electron loads index.html from disk; Sites serves client routes from the
@@ -9,7 +10,12 @@ export default defineConfig(({ mode }) => ({
     outDir: "dist/client",
   },
   optimizeDeps: {
-    include: ["react", "react-dom/client"],
+    include: ["motion/react", "react", "react-dom/client"],
+  },
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
   },
   server: {
     host: "0.0.0.0",

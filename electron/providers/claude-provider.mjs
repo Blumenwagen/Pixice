@@ -4,25 +4,39 @@ import { constants, accessSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { buildClaudeUserMessage } from "../runtime/user-input.mjs";
+import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import { normalizeLoomQuestions, loomQuestionToolShape } from "../runtime/question-tool.mjs";
+import { LOOM_BRIDGE_MCP_TOOLS, loomBridgeToolShapes } from "../runtime/loom-bridge.mjs";
+import { LOOM_BOARD_MCP_TOOLS, loomBoardToolShapes } from "../runtime/loom-board.mjs";
 
 const FALLBACK_MODELS = [
-  { value: "default", displayName: "Claude (recommended)", description: "Use Claude Code's recommended model." },
-  { value: "sonnet", displayName: "Claude Sonnet", description: "Fast, capable coding model." },
-  { value: "opus", displayName: "Claude Opus", description: "Most capable Claude coding model." },
-  { value: "haiku", displayName: "Claude Haiku", description: "Fastest Claude model." }
+  { value: "default", displayName: "Claude (recommended)", description: "Use Claude Code's recommended model." }
 ];
 
-function mergeClaudeModels(discovered = []) {
-  const models = new Map(FALLBACK_MODELS.map((model) => [model.value, model]));
+function normalizeClaudeModels(discovered = []) {
+  const models = new Map();
   for (const model of discovered) {
     const value = model.value ?? model.id ?? model.model;
     if (!value) continue;
-    models.set(value, { ...models.get(value), ...model, value });
+    models.set(value, { ...model, value });
   }
   return [...models.values()];
 }
 
+function serializeClaudeModels(models) {
+  return models.map((model) => ({
+    id: model.value,
+    model: model.value,
+    displayName: model.displayName,
+    description: model.description,
+    isDefault: model.value === "default",
+    defaultReasoningEffort: model.supportsEffort ? "high" : null,
+    supportedReasoningEfforts: (model.supportedEffortLevels ?? []).map((effort) => ({ reasoningEffort: effort, description: effort }))
+  }));
+}
+
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "WebSearch", "WebFetch"]);
+const LOOM_QUESTION_MCP_TOOL = "mcp__loom__request_user_input";
 
 export function resolveClaudeCodeExecutable({
   explicitPath = process.env.LOOM_CLAUDE_PATH,
@@ -119,7 +133,7 @@ export function claudePermissionSettings(mode) {
     permissionMode: "default",
     allowDangerouslySkipPermissions: false,
     sandbox: { enabled: true },
-    tools: [...READ_TOOLS, "AskUserQuestion"]
+    tools: [...READ_TOOLS, "AskUserQuestion", LOOM_QUESTION_MCP_TOOL, ...LOOM_BRIDGE_MCP_TOOLS, ...LOOM_BOARD_MCP_TOOLS]
   };
 }
 
@@ -133,6 +147,7 @@ export function claudeQueryOptions({
   developerInstructions,
   clientVersion,
   canUseTool,
+  mcpServers,
   pathToClaudeCodeExecutable
 }) {
   const permissions = claudePermissionSettings(permissionMode);
@@ -151,6 +166,7 @@ export function claudeQueryOptions({
       ? { type: "preset", preset: "claude_code", append: developerInstructions }
       : { type: "preset", preset: "claude_code" },
     canUseTool,
+    mcpServers,
     env: {
       ...process.env,
       CLAUDE_AGENT_SDK_CLIENT_APP: `loom/${clientVersion}`
@@ -206,7 +222,10 @@ export class ClaudeProvider extends EventEmitter {
     database,
     clientVersion,
     developerInstructionsPath,
+    developerInstructions = null,
     queryFactory = null,
+    loomBridge = null,
+    loomBoard = null,
     pathToClaudeCodeExecutable = resolveClaudeCodeExecutable(),
     requireExternalExecutable = false
   }) {
@@ -215,13 +234,17 @@ export class ClaudeProvider extends EventEmitter {
     this.database = database;
     this.clientVersion = clientVersion;
     this.developerInstructionsPath = developerInstructionsPath;
+    this.developerInstructions = developerInstructions;
     this.queryFactory = queryFactory;
+    this.loomBridge = loomBridge;
+    this.loomBoard = loomBoard;
     this.pathToClaudeCodeExecutable = pathToClaudeCodeExecutable;
     this.requireExternalExecutable = requireExternalExecutable;
     this.sessions = new Map();
     this.pendingRequests = new Map();
     this.models = null;
     this.started = false;
+    this.authSession = null;
   }
 
   get connected() {
@@ -245,16 +268,68 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   async stop() {
+    this.#closeAuthSession();
     for (const context of this.sessions.values()) {
       context.queue?.close();
       context.abortController?.abort();
       context.query?.close?.();
     }
     this.sessions.clear();
-    for (const pending of this.pendingRequests.values()) pending.resolve({ behavior: "deny", message: "Loom stopped the Claude session", interrupt: true });
+    for (const pending of this.pendingRequests.values()) {
+      pending.resolve(pending.kind === "loom-question"
+        ? { cancelled: true, answers: {} }
+        : { behavior: "deny", message: "Loom stopped the Claude session", interrupt: true });
+    }
     this.pendingRequests.clear();
     this.started = false;
     this.emit("status", { state: "stopped" });
+  }
+
+  async account() {
+    if (!this.started) throw new Error("Claude provider is not available");
+    let query;
+    const queue = new AsyncPromptQueue();
+    try {
+      query = this.queryFactory({
+        prompt: queue,
+        options: this.#probeOptions()
+      });
+      const account = await Promise.race([
+        query.accountInfo(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Claude account discovery timed out")), 8_000))
+      ]);
+      return {
+        account: account && Object.values(account).some(Boolean) ? { type: "claude", ...account } : null,
+        requiresAuth: true
+      };
+    } finally {
+      queue.close();
+      query?.close?.();
+    }
+  }
+
+  async login() {
+    if (!this.started) throw new Error("Claude provider is not available");
+    this.#closeAuthSession();
+    const queue = new AsyncPromptQueue();
+    const query = this.queryFactory({ prompt: queue, options: this.#probeOptions() });
+    this.authSession = { queue, query };
+    try {
+      const response = await query.claudeAuthenticate(true);
+      const authUrl = response?.authUrl ?? response?.url;
+      if (!authUrl) throw new Error("Claude did not return a sign-in URL");
+      void query.claudeOAuthWaitForCompletion()
+        .then(() => {
+          this.models = null;
+          this.emit("status", { state: "ready", message: "Claude account connected" });
+        })
+        .catch((error) => this.emit("diagnostic", `Claude sign in did not complete: ${error.message}`))
+        .finally(() => this.#closeAuthSession(query));
+      return { ...response, type: "claude", authUrl };
+    } catch (error) {
+      this.#closeAuthSession(query);
+      throw error;
+    }
   }
 
   async request(method, params = {}) {
@@ -280,6 +355,12 @@ export class ClaudeProvider extends EventEmitter {
       pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answers: result.answers ?? {} } });
       return;
     }
+    if (pending.kind === "loom-question") {
+      pending.resolve(result.action === "cancel"
+        ? { cancelled: true, answers: {} }
+        : { cancelled: false, answers: result.answers ?? {} });
+      return;
+    }
     if (result.decision === "accept" || result.decision === "acceptForSession") {
       pending.resolve({
         behavior: "allow",
@@ -292,7 +373,8 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   async #listModels(params) {
-    if (this.models) return { data: this.models };
+    if (this.models) return { data: serializeClaudeModels(this.models) };
+    let models;
     let probe;
     const queue = new AsyncPromptQueue();
     try {
@@ -313,31 +395,43 @@ export class ClaudeProvider extends EventEmitter {
         probe.supportedModels(),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Claude model discovery timed out")), 8_000))
       ]);
-      this.models = mergeClaudeModels(discovered);
+      models = normalizeClaudeModels(discovered);
+      if (!models.length) throw new Error("Claude returned no supported models");
+      this.models = models;
     } catch (error) {
-      this.models = FALLBACK_MODELS;
+      models = FALLBACK_MODELS;
       this.emit("diagnostic", `Claude model discovery fell back to aliases: ${error.message}`);
     } finally {
       queue.close();
       probe?.close?.();
     }
-    return {
-      data: this.models.map((model) => ({
-        id: model.value,
-        model: model.value,
-        displayName: model.displayName,
-        description: model.description,
-        isDefault: model.value === "default",
-        defaultReasoningEffort: model.supportsEffort ? "high" : null,
-        supportedReasoningEfforts: (model.supportedEffortLevels ?? []).map((effort) => ({ reasoningEffort: effort, description: effort }))
-      }))
-    };
+    return { data: serializeClaudeModels(models) };
   }
 
-  #listThreads({ cwd } = {}) {
+  #probeOptions() {
+    return claudeQueryOptions({
+      cwd: process.cwd(),
+      permissionMode: "read-only",
+      sessionId: randomUUID(),
+      developerInstructions: this.#developerInstructions(),
+      clientVersion: this.clientVersion,
+      canUseTool: async () => ({ behavior: "deny", message: "Account discovery cannot run tools" }),
+      pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable
+    });
+  }
+
+  #closeAuthSession(expectedQuery) {
+    if (!this.authSession || (expectedQuery && this.authSession.query !== expectedQuery)) return;
+    this.authSession.queue.close();
+    this.authSession.query.close?.();
+    this.authSession = null;
+  }
+
+  #listThreads({ cwd, ancestorThreadId } = {}) {
     const data = this.database.listThreadProviderBindings({ provider: this.id, cwd })
       .map((binding) => this.database.getProviderThreadSnapshot(binding.threadId))
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((thread) => !ancestorThreadId || thread.parentThreadId === ancestorThreadId);
     return { data, nextCursor: null };
   }
 
@@ -354,6 +448,7 @@ export class ClaudeProvider extends EventEmitter {
       source: "appServer",
       createdAt,
       updatedAt: createdAt,
+      parentThreadId: params.parentThreadId ?? null,
       status: threadStatus("idle"),
       turns: []
     };
@@ -458,6 +553,11 @@ export class ClaudeProvider extends EventEmitter {
       developerInstructions: this.#developerInstructions(),
       clientVersion: this.clientVersion,
       canUseTool: (toolName, input, details) => this.#canUseTool(context, toolName, input, details),
+      mcpServers: {
+        loom: this.#loomQuestionServer(context),
+        ...(this.loomBridge ? { loom_bridge: this.#loomBridgeServer(context) } : {}),
+        ...(this.loomBoard ? { loom_board: this.#loomBoardServer(context) } : {})
+      },
       pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable
     });
     options.abortController = context.abortController;
@@ -560,6 +660,45 @@ export class ClaudeProvider extends EventEmitter {
 
   #handleResult(context, message) {
     const turn = context.currentTurn;
+    const modelUsage = message.modelUsage ?? message.model_usage ?? {};
+    const usageEntries = Object.entries(modelUsage);
+    if (usageEntries.length) {
+      for (const [model, usage] of usageEntries) {
+        this.#emitEvent("ActivityReceived", {
+          method: "provider/usage/recorded",
+          threadId: context.thread.id,
+          turnId: turn.id,
+          responseId: `${message.uuid}:${model}`,
+          model,
+          usage: {
+            inputTokens: usage.inputTokens ?? 0,
+            cachedInputTokens: usage.cacheReadInputTokens ?? 0,
+            cacheWriteInputTokens: usage.cacheCreationInputTokens ?? 0,
+            outputTokens: usage.outputTokens ?? 0,
+            reasoningOutputTokens: 0
+          },
+          costUsd: usage.costUSD,
+          costSource: "provider-reported"
+        });
+      }
+    } else if (message.usage) {
+      this.#emitEvent("ActivityReceived", {
+        method: "provider/usage/recorded",
+        threadId: context.thread.id,
+        turnId: turn.id,
+        responseId: message.uuid,
+        model: context.model,
+        usage: {
+          inputTokens: message.usage.input_tokens ?? 0,
+          cachedInputTokens: message.usage.cache_read_input_tokens ?? 0,
+          cacheWriteInputTokens: message.usage.cache_creation_input_tokens ?? 0,
+          outputTokens: message.usage.output_tokens ?? 0,
+          reasoningOutputTokens: 0
+        },
+        costUsd: message.total_cost_usd,
+        costSource: "provider-reported"
+      });
+    }
     for (const item of context.toolItems.values()) {
       item.status = message.is_error ? "failed" : "completed";
       this.#emitEvent(item.type === "collabAgentToolCall" ? "AgentUpdated" : "TaskUpdated", {
@@ -604,6 +743,9 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   #canUseTool(context, toolName, input, details) {
+    if (toolName === LOOM_QUESTION_MCP_TOOL || LOOM_BRIDGE_MCP_TOOLS.has(toolName)) {
+      return Promise.resolve({ behavior: "allow", updatedInput: input });
+    }
     if (context.permissionMode === "read-only" && READ_TOOLS.has(toolName)) {
       return Promise.resolve({ behavior: "allow", updatedInput: input });
     }
@@ -635,6 +777,98 @@ export class ClaudeProvider extends EventEmitter {
       if (details.signal?.aborted) return abort();
       details.signal?.addEventListener("abort", abort, { once: true });
       this.pendingRequests.set(id, { resolve, kind, input, suggestions: details.suggestions });
+      this.emit("server-request", request);
+    });
+  }
+
+  #loomQuestionServer(context) {
+    return createSdkMcpServer({
+      name: "loom",
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: [tool(
+        "request_user_input",
+        "Ask the user one to three short multiple-choice questions in Loom's composer and wait for their answers. Available in every mode. Put the recommended choice first and mark exactly one option per question as recommended.",
+        loomQuestionToolShape,
+        async (input) => {
+          const result = await this.#requestLoomQuestion(context, input);
+          return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        }
+      )]
+    });
+  }
+
+  #loomBridgeServer(context) {
+    const run = (name) => async (input) => {
+      const result = await this.loomBridge.handleToolCall({
+        namespace: "loom_bridge",
+        tool: name,
+        threadId: context.thread.id,
+        turnId: context.currentTurn?.id,
+        arguments: input
+      });
+      return {
+        content: (result.contentItems ?? []).map((item) => item.type === "inputImage"
+          ? { type: "image", source: { type: "base64", media_type: "image/png", data: item.imageUrl?.split(",")[1] ?? "" } }
+          : { type: "text", text: item.text ?? "" }),
+        isError: result.success === false
+      };
+    };
+    return createSdkMcpServer({
+      name: "loom_bridge",
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: [
+        tool("list_models", "List only connected GPT and Claude models available for cross-model Loom delegation, including capability ratings and a recommendation. Normally prefer GPT for cost efficiency; prefer Claude only when requested, when it is the only connected family, or for UI design and taste.", loomBridgeToolShapes.list_models, run("list_models")),
+        tool("spawn_thread", "Spawn a new Loom thread on a connected selected model, wait for it to finish, and return its answer. Cross-family direction is supported in either direction.", loomBridgeToolShapes.spawn_thread, run("spawn_thread")),
+        tool("send_update", "Send a progress update from a bridge-created child thread to its parent.", loomBridgeToolShapes.send_update, run("send_update"))
+      ]
+    });
+  }
+
+  #loomBoardServer(context) {
+    const run = (name) => async (input) => {
+      const result = await this.loomBoard.handleToolCall({
+        namespace: "loom_board",
+        tool: name,
+        threadId: context.thread.id,
+        turnId: context.currentTurn?.id,
+        arguments: input
+      });
+      return {
+        content: (result.contentItems ?? []).map((item) => ({ type: "text", text: item.text ?? "" })),
+        isError: result.success === false
+      };
+    };
+    return createSdkMcpServer({
+      name: "loom_board",
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: [
+        tool("list_tasks", "Inspect the current project's kanban tasks in board order.", loomBoardToolShapes.list_tasks, run("list_tasks")),
+        tool("create_task", "Add a task to the current project's kanban without starting a new thread.", loomBoardToolShapes.create_task, run("create_task")),
+        tool("update_task", "Edit a kanban task's title or description.", loomBoardToolShapes.update_task, run("update_task")),
+        tool("move_task", "Move or reorder a kanban task.", loomBoardToolShapes.move_task, run("move_task")),
+        tool("delete_task", "Delete a kanban task without deleting its linked thread.", loomBoardToolShapes.delete_task, run("delete_task")),
+        tool("attach_thread", "Attach a Loom thread to a kanban task. Defaults to the active thread.", loomBoardToolShapes.attach_thread, run("attach_thread"))
+      ]
+    });
+  }
+
+  #requestLoomQuestion(context, input) {
+    const questions = normalizeLoomQuestions(input);
+    const id = `claude-loom-question:${randomUUID()}`;
+    const request = {
+      id,
+      method: "loom/requestUserInput",
+      params: {
+        threadId: context.thread.id,
+        turnId: context.currentTurn?.id,
+        questions
+      }
+    };
+    return new Promise((resolve) => {
+      this.pendingRequests.set(id, { resolve, kind: "loom-question", input });
       this.emit("server-request", request);
     });
   }
@@ -691,6 +925,14 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   #developerInstructions() {
+    if (this.developerInstructions) {
+      try {
+        return String(this.developerInstructions()).trim();
+      } catch (error) {
+        this.emit("diagnostic", `Claude could not compose Loom developer instructions: ${error.message}`);
+        return "";
+      }
+    }
     if (!this.developerInstructionsPath) return "";
     try {
       return readFileSync(this.developerInstructionsPath, "utf8").trim();

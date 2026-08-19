@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { reconstructHierarchy } from "../src/state/hierarchy.js";
-import { projectCollabAgents } from "../src/state/runtime.js";
+import { isSidebarThread, projectCollabAgents } from "../src/state/runtime.js";
 import { normalizeCodexEvent } from "../electron/runtime/capability-adapter.mjs";
 
 describe("agent hierarchy projection", () => {
@@ -39,5 +39,40 @@ describe("agent hierarchy projection", () => {
       agentsStates: { child: { status: "completed", message: "Audit complete" } }
     });
     expect(completed[1]).toMatchObject({ status: "completed", agentStatusMessage: "Audit complete" });
+  });
+
+  it("keeps Loom bridge provenance in the live child projection", () => {
+    const threads = projectCollabAgents([{ id: "lead", parentThreadId: null }], {
+      type: "collabAgentToolCall",
+      tool: "spawnAgent",
+      bridge: true,
+      model: "claude:claude-sonnet-4-6",
+      effort: "high",
+      senderThreadId: "lead",
+      receiverThreadIds: ["child"],
+      prompt: "Review the UI",
+      agentsStates: { child: { status: "running", message: null } }
+    });
+
+    expect(threads[1]).toMatchObject({
+      parentThreadId: "lead",
+      bridge: {
+        kind: "loomBridge",
+        parentThreadId: "lead",
+        model: "claude:claude-sonnet-4-6",
+        effort: "high"
+      }
+    });
+  });
+
+  it("shows Loom bridge children in the sidebar without promoting ordinary subagents", () => {
+    expect(isSidebarThread({ id: "lead", parentThreadId: null })).toBe(true);
+    expect(isSidebarThread({
+      id: "bridge-child",
+      parentThreadId: "lead",
+      bridge: { kind: "loomBridge", parentThreadId: "lead" }
+    })).toBe(true);
+    expect(isSidebarThread({ id: "starting-bridge", parentThreadId: "lead", bridgeModel: "codex:gpt-5.6-terra" })).toBe(true);
+    expect(isSidebarThread({ id: "subagent", parentThreadId: "lead" })).toBe(false);
   });
 });

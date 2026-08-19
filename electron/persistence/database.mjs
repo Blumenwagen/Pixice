@@ -1,12 +1,71 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 
+function localDayKey(value) {
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function startOfLocalDay(value = new Date()) {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function usageTotals(rows) {
+  return rows.reduce((totals, row) => {
+    totals.inputTokens += row.input_tokens;
+    totals.cachedInputTokens += row.cached_input_tokens;
+    totals.cacheWriteInputTokens += row.cache_write_input_tokens;
+    totals.outputTokens += row.output_tokens;
+    totals.reasoningOutputTokens += row.reasoning_output_tokens;
+    totals.totalTokens += row.input_tokens + row.cached_input_tokens + row.cache_write_input_tokens + row.output_tokens;
+    if (row.cost_usd !== null) totals.costUsd += row.cost_usd;
+    totals.events += 1;
+    if (row.cost_usd === null) {
+      totals.unpricedEvents += 1;
+      totals.unpricedTokens += row.input_tokens + row.cached_input_tokens + row.cache_write_input_tokens + row.output_tokens;
+    }
+    return totals;
+  }, {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    events: 0,
+    unpricedEvents: 0,
+    unpricedTokens: 0
+  });
+}
+
 function mapProject(row) {
   if (!row) return null;
   return {
     id: row.id,
     canonicalPath: row.canonical_path,
     displayName: row.display_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapBoardTask(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    title: row.title,
+    description: row.description,
+    column: row.column_id,
+    position: row.position,
+    threadId: row.thread_id,
+    createdByThreadId: row.created_by_thread_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -39,6 +98,21 @@ export class LoomDatabase {
       CREATE TABLE IF NOT EXISTS thread_names (
         thread_id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS thread_board_state (
+        thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, column_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS thread_board_state_project ON thread_board_state(project_id, column_id, updated_at);
+      CREATE TABLE IF NOT EXISTS board_tasks (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '', column_id TEXT NOT NULL,
+        position INTEGER NOT NULL, thread_id TEXT, created_by_thread_id TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS board_tasks_project ON board_tasks(project_id, column_id, position);
+      CREATE UNIQUE INDEX IF NOT EXISTS board_tasks_thread ON board_tasks(thread_id) WHERE thread_id IS NOT NULL;
       CREATE TABLE IF NOT EXISTS thread_provider_bindings (
         thread_id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_thread_id TEXT,
         resume_cursor TEXT, cwd TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
@@ -48,11 +122,63 @@ export class LoomDatabase {
         thread_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, updated_at TEXT NOT NULL,
         FOREIGN KEY(thread_id) REFERENCES thread_provider_bindings(thread_id)
       );
+      CREATE TABLE IF NOT EXISTS thread_links (
+        child_thread_id TEXT PRIMARY KEY, parent_thread_id TEXT NOT NULL,
+        kind TEXT NOT NULL, model TEXT, effort TEXT, created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS thread_links_parent ON thread_links(parent_thread_id);
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS usage_events (
+        id TEXT PRIMARY KEY, thread_id TEXT, turn_id TEXT, provider TEXT NOT NULL,
+        model TEXT, service_tier TEXT, recorded_at TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL, cost_source TEXT NOT NULL,
+        pricing_model TEXT, metadata TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX IF NOT EXISTS usage_events_recorded_at ON usage_events(recorded_at);
+      CREATE INDEX IF NOT EXISTS usage_events_model ON usage_events(provider, model);
     `);
   }
 
   listProjects() {
     return this.db.prepare("SELECT * FROM projects ORDER BY updated_at DESC").all().map(mapProject);
+  }
+
+  getAppSettings() {
+    const settings = {};
+    for (const row of this.db.prepare("SELECT key, value FROM app_settings").all()) {
+      try {
+        settings[row.key] = JSON.parse(row.value);
+      } catch {
+        // Ignore malformed values so one old preference cannot block startup.
+      }
+    }
+    return settings;
+  }
+
+  saveAppSettings(patch) {
+    const updatedAt = new Date().toISOString();
+    const statement = this.db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `);
+    this.db.exec("BEGIN");
+    try {
+      for (const [key, value] of Object.entries(patch)) {
+        statement.run(key, JSON.stringify(value), updatedAt);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return this.getAppSettings();
   }
 
   getProject(id) {
@@ -117,6 +243,122 @@ export class LoomDatabase {
 
   deleteThreadName(threadId) {
     this.db.prepare("DELETE FROM thread_names WHERE thread_id = ?").run(threadId);
+  }
+
+  listThreadBoardState(projectId) {
+    return this.db.prepare(`
+      SELECT thread_id, project_id, column_id, updated_at
+      FROM thread_board_state
+      WHERE project_id = ?
+      ORDER BY updated_at ASC, thread_id ASC
+    `).all(projectId).map((row) => ({
+      threadId: row.thread_id,
+      projectId: row.project_id,
+      column: row.column_id,
+      updatedAt: row.updated_at
+    }));
+  }
+
+  saveThreadBoardState({ threadId, projectId, column }) {
+    const updatedAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO thread_board_state (thread_id, project_id, column_id, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        project_id=excluded.project_id,
+        column_id=excluded.column_id,
+        updated_at=excluded.updated_at
+    `).run(threadId, projectId, column, updatedAt);
+    return { threadId, projectId, column, updatedAt };
+  }
+
+  deleteThreadBoardState(threadId) {
+    this.db.prepare("DELETE FROM thread_board_state WHERE thread_id = ?").run(threadId);
+  }
+
+  listBoardTasks(projectId) {
+    return this.db.prepare(`
+      SELECT * FROM board_tasks
+      WHERE project_id = ?
+      ORDER BY CASE column_id
+        WHEN 'backlog' THEN 0
+        WHEN 'ready' THEN 1
+        WHEN 'active' THEN 2
+        WHEN 'done' THEN 3
+        ELSE 4
+      END, position ASC, created_at ASC
+    `).all(projectId).map(mapBoardTask);
+  }
+
+  getBoardTask(taskId) {
+    return mapBoardTask(this.db.prepare("SELECT * FROM board_tasks WHERE id = ?").get(taskId));
+  }
+
+  createBoardTask({ id, projectId, title, description = "", column = "backlog", threadId = null, createdByThreadId = null }) {
+    const now = new Date().toISOString();
+    const position = (this.db.prepare(`
+      SELECT COALESCE(MAX(position), 0) + 1024 AS position
+      FROM board_tasks WHERE project_id = ? AND column_id = ?
+    `).get(projectId, column)?.position) ?? 1024;
+    this.db.prepare(`
+      INSERT INTO board_tasks (
+        id, project_id, title, description, column_id, position,
+        thread_id, created_by_thread_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, projectId, title, description, column, position, threadId, createdByThreadId, now, now);
+    return this.getBoardTask(id);
+  }
+
+  updateBoardTask(taskId, patch) {
+    const current = this.getBoardTask(taskId);
+    if (!current) return null;
+    const title = patch.title ?? current.title;
+    const description = patch.description ?? current.description;
+    const threadId = Object.hasOwn(patch, "threadId") ? patch.threadId : current.threadId;
+    this.db.prepare(`
+      UPDATE board_tasks
+      SET title = ?, description = ?, thread_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(title, description, threadId, new Date().toISOString(), taskId);
+    return this.getBoardTask(taskId);
+  }
+
+  moveBoardTask(taskId, column, beforeTaskId = null) {
+    const task = this.getBoardTask(taskId);
+    if (!task) return null;
+    const destination = this.listBoardTasks(task.projectId)
+      .filter((candidate) => candidate.column === column && candidate.id !== taskId);
+    let index = beforeTaskId ? destination.findIndex((candidate) => candidate.id === beforeTaskId) : destination.length;
+    if (index < 0) index = destination.length;
+    destination.splice(index, 0, { ...task, column });
+    const now = new Date().toISOString();
+    const statement = this.db.prepare(`
+      UPDATE board_tasks SET column_id = ?, position = ?, updated_at = ? WHERE id = ?
+    `);
+    this.db.exec("BEGIN");
+    try {
+      destination.forEach((candidate, candidateIndex) => {
+        statement.run(column, (candidateIndex + 1) * 1024, candidate.id === taskId ? now : candidate.updatedAt, candidate.id);
+      });
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return this.getBoardTask(taskId);
+  }
+
+  deleteBoardTask(taskId) {
+    const task = this.getBoardTask(taskId);
+    if (!task) return null;
+    this.db.prepare("DELETE FROM board_tasks WHERE id = ?").run(taskId);
+    return task;
+  }
+
+  detachBoardTasksForThread(threadId) {
+    this.db.prepare(`
+      UPDATE board_tasks SET thread_id = NULL, updated_at = ? WHERE thread_id = ?
+    `).run(new Date().toISOString(), threadId);
   }
 
   deleteThreadRuntimeState(threadId) {
@@ -184,6 +426,43 @@ export class LoomDatabase {
     this.db.prepare("DELETE FROM thread_provider_bindings WHERE thread_id = ?").run(threadId);
   }
 
+  saveThreadLink({ childThreadId, parentThreadId, kind = "loomBridge", model = null, effort = null }) {
+    const createdAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO thread_links (child_thread_id, parent_thread_id, kind, model, effort, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(child_thread_id) DO UPDATE SET
+        parent_thread_id=excluded.parent_thread_id,
+        kind=excluded.kind,
+        model=excluded.model,
+        effort=excluded.effort
+    `).run(childThreadId, parentThreadId, kind, model, effort, createdAt);
+    return this.getThreadLink(childThreadId);
+  }
+
+  getThreadLink(childThreadId) {
+    const row = this.db.prepare("SELECT * FROM thread_links WHERE child_thread_id = ?").get(childThreadId);
+    if (!row) return null;
+    return {
+      childThreadId: row.child_thread_id,
+      parentThreadId: row.parent_thread_id,
+      kind: row.kind,
+      model: row.model,
+      effort: row.effort,
+      createdAt: row.created_at
+    };
+  }
+
+  listThreadLinks(parentThreadId) {
+    return this.db.prepare("SELECT child_thread_id FROM thread_links WHERE parent_thread_id = ? ORDER BY created_at ASC")
+      .all(parentThreadId)
+      .map((row) => this.getThreadLink(row.child_thread_id));
+  }
+
+  deleteThreadLink(threadId) {
+    this.db.prepare("DELETE FROM thread_links WHERE child_thread_id = ? OR parent_thread_id = ?").run(threadId, threadId);
+  }
+
   saveProviderThreadSnapshot(threadId, snapshot) {
     this.db.prepare(`
       INSERT INTO provider_thread_snapshots (thread_id, snapshot, updated_at)
@@ -200,5 +479,116 @@ export class LoomDatabase {
     } catch {
       return null;
     }
+  }
+
+  recordUsageEvent(event) {
+    const numeric = (value) => Math.max(0, Math.round(Number(value) || 0));
+    const costUsd = Number.isFinite(event.costUsd) ? Math.max(0, event.costUsd) : null;
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO usage_events (
+        id, thread_id, turn_id, provider, model, service_tier, recorded_at,
+        input_tokens, cached_input_tokens, cache_write_input_tokens,
+        output_tokens, reasoning_output_tokens, cost_usd, cost_source,
+        pricing_model, metadata
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.id,
+      event.threadId ?? null,
+      event.turnId ?? null,
+      event.provider,
+      event.model ?? null,
+      event.serviceTier ?? null,
+      event.recordedAt ?? new Date().toISOString(),
+      numeric(event.inputTokens),
+      numeric(event.cachedInputTokens),
+      numeric(event.cacheWriteInputTokens),
+      numeric(event.outputTokens),
+      numeric(event.reasoningOutputTokens),
+      costUsd,
+      event.costSource ?? (costUsd === null ? "unpriced" : "calculated"),
+      event.pricingModel ?? null,
+      JSON.stringify(event.metadata ?? {})
+    );
+    return result.changes > 0;
+  }
+
+  getUsageSummary({ days = 30 } = {}) {
+    const rangeDays = Math.max(7, Math.min(365, Math.round(Number(days) || 30)));
+    const rows = this.db.prepare("SELECT * FROM usage_events ORDER BY recorded_at ASC").all();
+    const today = startOfLocalDay();
+    const selectedStart = new Date(today);
+    selectedStart.setDate(selectedStart.getDate() - rangeDays + 1);
+    const selectedRows = rows.filter((row) => new Date(row.recorded_at) >= selectedStart);
+    const todayKey = localDayKey(today);
+    const weekStart = new Date(today);
+    weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    const currentWeekRows = rows.filter((row) => new Date(row.recorded_at) >= weekStart);
+    const currentMonthRows = rows.filter((row) => new Date(row.recorded_at) >= monthStart);
+    const todayRows = rows.filter((row) => localDayKey(row.recorded_at) === todayKey);
+    const all = usageTotals(rows);
+    const selected = usageTotals(selectedRows);
+    const currentWeek = usageTotals(currentWeekRows);
+    const currentMonth = usageTotals(currentMonthRows);
+    const todayTotals = usageTotals(todayRows);
+    const firstDate = rows.length ? startOfLocalDay(rows[0].recorded_at) : today;
+    const elapsedDays = Math.max(1, Math.round((today - firstDate) / 86_400_000) + 1);
+    const dailyAverage = all.costUsd / elapsedDays;
+    const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+
+    const byDay = new Map();
+    for (const row of rows) {
+      const key = localDayKey(row.recorded_at);
+      const aggregate = byDay.get(key) ?? [];
+      aggregate.push(row);
+      byDay.set(key, aggregate);
+    }
+    const dailySeries = (start, count) => Array.from({ length: count }, (_, index) => {
+      const date = new Date(start);
+      date.setDate(start.getDate() + index);
+      const dateKey = localDayKey(date);
+      return { date: dateKey, ...usageTotals(byDay.get(dateKey) ?? []) };
+    });
+    const daily = dailySeries(selectedStart, rangeDays);
+    const heatmapStart = new Date(today);
+    heatmapStart.setDate(heatmapStart.getDate() - 364);
+    const heatmapDaily = dailySeries(heatmapStart, 365);
+
+    const groupRows = (keyOf) => {
+      const groups = new Map();
+      for (const row of selectedRows) {
+        const key = keyOf(row);
+        const group = groups.get(key) ?? { rows: [], provider: row.provider, model: row.model };
+        group.rows.push(row);
+        groups.set(key, group);
+      }
+      return [...groups.values()].map((group) => ({
+        provider: group.provider,
+        model: group.model,
+        ...usageTotals(group.rows)
+      })).sort((left, right) => right.costUsd - left.costUsd || right.totalTokens - left.totalTokens);
+    };
+
+    return {
+      rangeDays,
+      recordingStartedAt: rows[0]?.recorded_at ?? null,
+      updatedAt: rows.at(-1)?.recorded_at ?? null,
+      stats: {
+        todayCostUsd: todayTotals.costUsd,
+        currentWeekCostUsd: currentWeek.costUsd,
+        currentMonthCostUsd: currentMonth.costUsd,
+        projectedMonthCostUsd: today.getDate() ? (currentMonth.costUsd / today.getDate()) * daysInMonth : 0,
+        dailyAverageCostUsd: dailyAverage,
+        weeklyAverageCostUsd: dailyAverage * 7,
+        monthlyAverageCostUsd: dailyAverage * (365.25 / 12),
+        allTimeCostUsd: all.costUsd,
+        allTimeTokens: all.totalTokens
+      },
+      selected,
+      daily,
+      heatmapDaily,
+      models: groupRows((row) => `${row.provider}:${row.model ?? "unknown"}`),
+      providers: groupRows((row) => row.provider)
+    };
   }
 }

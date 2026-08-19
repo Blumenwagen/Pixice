@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "codexVersion": "PIN_AT_RELEASE",
-  "protocolVersion": "generated-with-bundled-runtime",
+  "codexVersion": "0.148.0-alpha.9",
+  "protocolVersion": "0.148.0-alpha.9-app-server",
   "platforms": {
-    "darwin-arm64": { "path": "darwin-arm64/codex", "sha256": "REQUIRED_AT_RELEASE", "codeModeHostPath": "darwin-arm64/codex-code-mode-host", "codeModeHostSha256": "REQUIRED_AT_RELEASE" },
+    "darwin-arm64": { "path": "darwin-arm64/codex", "sha256": "6170ff5578170ee9b74ad92bfcff96e6186f41d02b60815a7c2b01ad424c754f", "codeModeHostPath": "darwin-arm64/codex-code-mode-host", "codeModeHostSha256": "8c7d8fdc0536f3182ecb578ab454ebaf8e193e0be45561651df3f300688f6eb4" },
     "darwin-x64": { "path": "darwin-x64/codex", "sha256": "REQUIRED_AT_RELEASE", "codeModeHostPath": "darwin-x64/codex-code-mode-host", "codeModeHostSha256": "REQUIRED_AT_RELEASE" },
     "win32-x64": { "path": "win32-x64/codex.exe", "sha256": "REQUIRED_AT_RELEASE", "codeModeHostPath": "win32-x64/codex-code-mode-host.exe", "codeModeHostSha256": "REQUIRED_AT_RELEASE" },
     "linux-x64": { "path": "linux-x64/codex", "sha256": "REQUIRED_AT_RELEASE", "codeModeHostPath": "linux-x64/codex-code-mode-host", "codeModeHostSha256": "REQUIRED_AT_RELEASE" }

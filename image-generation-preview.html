@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loom image generation preview</title>
+    <style>
+      html, body, #preview-root { min-height: 100%; margin: 0; }
+      body { background: #171717; }
+      #preview-root { padding: 54px; }
+    </style>
+  </head>
+  <body>
+    <div id="preview-root"></div>
+    <script type="module">
+      import React from "react";
+      import { createRoot } from "react-dom/client";
+      import { ImageGeneration } from "/src/components/ImageGeneration.jsx";
+      import "/src/styles.css";
+
+      createRoot(document.getElementById("preview-root")).render(
+        React.createElement(ImageGeneration, {
+          prompt: "a calm mountain lake at dawn",
+          resolution: "1024 × 1024",
+          status: "inProgress"
+        })
+      );
+    </script>
+  </body>
+</html>

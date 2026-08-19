@@ -10,20 +10,31 @@ import { CodexRuntime } from "./runtime/codex-runtime.mjs";
 import { ThreadSessionRegistry } from "./runtime/thread-session-registry.mjs";
 import { ThreadNamer } from "./runtime/thread-namer.mjs";
 import { buildCodexUserInput } from "./runtime/user-input.mjs";
+import { AGENT_BEHAVIOR_IDS, agentBehaviorCatalog, composeAgentInstructions } from "./runtime/agent-behavior.mjs";
 import { CodexProvider } from "./providers/codex-provider.mjs";
 import { ClaudeProvider, resolveClaudeCodeExecutable, resolvePackagedClaudeCodeExecutable } from "./providers/claude-provider.mjs";
 import { ProviderRegistry } from "./providers/provider-registry.mjs";
 import { BrowserWorkspace, browserDynamicTools } from "./browser/browser-workspace.mjs";
+import {
+  isLoomQuestionToolCall,
+  LOOM_QUESTION_METHOD,
+  loomQuestionRequest,
+  loomQuestionToolResult,
+  questionDynamicTools
+} from "./runtime/question-tool.mjs";
+import { LoomBridge, LOOM_BRIDGE_NAMESPACE, loomBridgeDynamicTools } from "./runtime/loom-bridge.mjs";
+import { LoomBoard, LOOM_BOARD_NAMESPACE, loomBoardDynamicTools } from "./runtime/loom-board.mjs";
 import { LoomAppUpdater } from "./updater/app-updater.mjs";
 import { LoomDatabase } from "./persistence/database.mjs";
 import { inspectRepository, readDiff } from "./git/worktrees.mjs";
+import { calculateUsageCost, listPricingCatalog, PRICING_VERIFIED_AT } from "./usage/pricing.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
 const isDev = !app.isPackaged;
 const threadSourceKinds = [
   "cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview",
-  "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"
+  "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "loomBridge", "unknown"
 ];
 
 let mainWindow;
@@ -33,10 +44,13 @@ let codexRuntime;
 let threadNamer;
 let browserWorkspace;
 let appUpdater;
+let loomBridge;
+let loomBoard;
 let database;
 let quitting = false;
 let runtimeStatus = { state: "starting" };
 const activeTurns = new Map();
+const turnUsageMetadata = new Map();
 const threadSessions = new ThreadSessionRegistry();
 const threadPlans = new Map();
 const threadMonitorCache = new Map();
@@ -44,11 +58,25 @@ const threadProjects = new Map();
 const pendingRequests = new Map();
 const pendingTaskNames = new Set();
 const scheduledThreadNames = new Set();
+const loomDynamicTools = [...browserDynamicTools, ...questionDynamicTools, ...loomBridgeDynamicTools, ...loomBoardDynamicTools];
 let runtimeGeneration = 0;
+let developerInstructionsPath;
+let agentBehaviorsDirectory;
 
 const idPayload = z.object({ projectId: z.string().min(1) });
 const threadPayload = idPayload.extend({ threadId: z.string().min(1) });
+const boardColumnSchema = z.enum(["backlog", "ready", "active", "done"]);
+const boardTaskPayload = idPayload.extend({ taskId: z.string().min(1) });
+const boardTaskTitleSchema = z.string().trim().min(1).max(240);
+const boardTaskDescriptionSchema = z.string().trim().max(10_000);
 const permissionModeSchema = z.enum(["read-only", "workspace-write", "auto-approve", "full-access"]);
+const agentBehaviorsSchema = z.object(Object.fromEntries(AGENT_BEHAVIOR_IDS.map((id) => [id, z.boolean().optional()]))).strict();
+const appDefaultsSchema = z.object({
+  defaultModel: z.string().trim().min(1).max(128).optional(),
+  defaultEffort: z.string().trim().regex(/^[a-z][a-z0-9_-]*$/i).max(32).optional(),
+  defaultPermissionMode: permissionModeSchema.optional(),
+  agentBehaviors: agentBehaviorsSchema.optional()
+}).strict().refine((value) => Object.keys(value).length > 0, "At least one default must be provided");
 const imageDataUrlSchema = z.string().max(30 * 1024 * 1024).refine(
   (value) => /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[a-z0-9+/=]+$/i.test(value),
   "Image must be a supported base64 data URL"
@@ -63,6 +91,14 @@ const requirePromptInput = (value, context) => {
   }
 };
 const send = (type, payload = {}) => mainWindow?.webContents.send("loom:event", { type, payload, at: new Date().toISOString() });
+
+function currentAgentInstructions() {
+  return composeAgentInstructions({
+    baseInstructionsPath: developerInstructionsPath,
+    behaviorsDirectory: agentBehaviorsDirectory,
+    settings: database?.getAppSettings().agentBehaviors
+  });
+}
 
 function permissionSettings(mode, project) {
   if (mode === "full-access") {
@@ -209,6 +245,10 @@ function rememberThread(project, thread, { loaded = false } = {}) {
 
 function withPersistedThreadName(thread) {
   if (!thread?.id) return thread;
+  const link = database.getThreadLink?.(thread.id);
+  if (link && thread.parentThreadId !== link.parentThreadId) {
+    thread = { ...thread, parentThreadId: link.parentThreadId, bridge: link };
+  }
   let name = database.getThreadName(thread.id);
   const runtimeName = thread.name?.trim();
   if (!name && runtimeName) {
@@ -366,9 +406,109 @@ async function listModels() {
   return response.data ?? [];
 }
 
+function canonicalInputTokens(usage, inputIncludesCached) {
+  const input = Math.max(0, Number(usage?.inputTokens) || 0);
+  if (!inputIncludesCached) return input;
+  return Math.max(0, input - (Number(usage?.cachedInputTokens) || 0) - (Number(usage?.cacheWriteInputTokens) || 0));
+}
+
+function recordUsage(payload) {
+  const provider = payload.provider ?? runtime.providerForThread?.(payload.threadId) ?? "codex";
+  const metadata = turnUsageMetadata.get(payload.threadId) ?? {};
+  if (payload.method === "thread/tokenUsage/updated" && provider === "codex") {
+    const usage = payload.tokenUsage?.last;
+    const total = payload.tokenUsage?.total;
+    if (!usage || !total) return false;
+    const model = metadata.model ?? null;
+    const serviceTier = metadata.serviceTier ?? null;
+    const recordedAt = new Date().toISOString();
+    const pricing = calculateUsageCost({
+      provider,
+      model,
+      serviceTier,
+      ...usage,
+      inputIncludesCached: true,
+      recordedAt
+    });
+    const fingerprint = [
+      total.inputTokens,
+      total.cachedInputTokens,
+      total.cacheWriteInputTokens ?? 0,
+      total.outputTokens,
+      total.reasoningOutputTokens,
+      total.totalTokens
+    ].join(":");
+    return database.recordUsageEvent({
+      id: `codex:${payload.threadId}:${payload.turnId}:${fingerprint}`,
+      threadId: payload.threadId,
+      turnId: payload.turnId,
+      provider,
+      model,
+      serviceTier,
+      recordedAt,
+      inputTokens: canonicalInputTokens(usage, true),
+      cachedInputTokens: usage.cachedInputTokens,
+      cacheWriteInputTokens: usage.cacheWriteInputTokens,
+      outputTokens: usage.outputTokens,
+      reasoningOutputTokens: usage.reasoningOutputTokens,
+      costUsd: pricing?.costUsd,
+      costSource: pricing ? "api-equivalent" : "unpriced",
+      pricingModel: pricing?.pricingModel,
+      metadata: { longContext: pricing?.longContext ?? false }
+    });
+  }
+  if (payload.method === "provider/usage/recorded") {
+    const usage = payload.usage ?? {};
+    const recordedAt = new Date().toISOString();
+    const model = payload.model ?? metadata.model ?? null;
+    const serviceTier = payload.serviceTier ?? metadata.serviceTier ?? null;
+    const calculated = calculateUsageCost({
+      provider,
+      model,
+      serviceTier,
+      ...usage,
+      inputIncludesCached: false,
+      recordedAt
+    });
+    const reportedCost = Number(payload.costUsd);
+    const hasReportedCost = Number.isFinite(reportedCost) && reportedCost >= 0;
+    return database.recordUsageEvent({
+      id: `${provider}:${payload.responseId ?? `${payload.threadId}:${payload.turnId}`}`,
+      threadId: payload.threadId,
+      turnId: payload.turnId,
+      provider,
+      model,
+      serviceTier,
+      recordedAt,
+      inputTokens: canonicalInputTokens(usage, false),
+      cachedInputTokens: usage.cachedInputTokens,
+      cacheWriteInputTokens: usage.cacheWriteInputTokens,
+      outputTokens: usage.outputTokens,
+      reasoningOutputTokens: usage.reasoningOutputTokens,
+      costUsd: hasReportedCost ? reportedCost : calculated?.costUsd,
+      costSource: hasReportedCost ? "provider-reported" : calculated ? "api-equivalent" : "unpriced",
+      pricingModel: calculated?.pricingModel,
+      metadata: { longContext: calculated?.longContext ?? false }
+    });
+  }
+  return false;
+}
+
+async function startProviderLogin(provider) {
+  const result = await runtime.loginProvider(provider);
+  const authUrl = result?.authUrl ?? result?.url ?? result?.verificationUrl;
+  if (!authUrl) throw new Error(`${provider} did not return a sign-in URL`);
+  const destination = new URL(authUrl);
+  if (destination.protocol !== "https:" && destination.protocol !== "http:") {
+    throw new Error("Provider returned an unsupported sign-in URL");
+  }
+  await shell.openExternal(destination.toString());
+  return { provider, opened: true, loginId: result.loginId ?? null };
+}
+
 async function ensureThreadLoaded(project, threadId) {
   const cwd = await threadSessions.ensure(threadId, async () => {
-    const response = await runtime.request("thread/resume", { threadId });
+    const response = await runtime.request("thread/resume", { threadId, developerInstructions: currentAgentInstructions(), dynamicTools: loomDynamicTools });
     const resumedCwd = response.thread?.cwd;
     if (!resumedCwd) throw new Error("Runtime returned a thread without a working directory");
     return realpathSync(resumedCwd);
@@ -381,9 +521,25 @@ function registerIpc() {
   ipcMain.handle("app:bootstrap", async () => ({
     projects: await listProjects(),
     models: await listModels().catch(() => []),
-    runtime: { ...runtimeStatus, connected: runtime.connected }
+    runtime: { ...runtimeStatus, connected: runtime.connected },
+    settings: database.getAppSettings(),
+    agentBehaviors: agentBehaviorCatalog()
   }));
+  ipcMain.handle("app:settings:update", (_event, payload) => database.saveAppSettings(appDefaultsSchema.parse(payload)));
   ipcMain.handle("runtime:status", () => ({ ...runtimeStatus, connected: runtime.connected }));
+  ipcMain.handle("providers:list", () => runtime.listProviders());
+  ipcMain.handle("usage:summary", (_event, payload) => {
+    const { days } = z.object({ days: z.number().int().min(7).max(365).default(30) }).parse(payload ?? {});
+    return {
+      ...database.getUsageSummary({ days }),
+      pricingVerifiedAt: PRICING_VERIFIED_AT,
+      pricing: listPricingCatalog()
+    };
+  });
+  ipcMain.handle("providers:login", (_event, payload) => {
+    const { provider } = z.object({ provider: z.string().trim().min(1).max(64) }).parse(payload);
+    return startProviderLogin(provider);
+  });
   ipcMain.handle("updates:status", () => appUpdater.snapshot());
   ipcMain.handle("updates:check", () => appUpdater.check());
   ipcMain.handle("updates:download", () => appUpdater.download());
@@ -439,6 +595,75 @@ function registerIpc() {
       updatedAt: now
     });
     return projectWithRepository(project);
+  });
+
+  ipcMain.handle("board:list", (_event, payload) => {
+    const { projectId } = idPayload.parse(payload);
+    getProject(projectId);
+    return { data: database.listBoardTasks(projectId) };
+  });
+  ipcMain.handle("board:create", (_event, payload) => {
+    const value = idPayload.extend({
+      title: boardTaskTitleSchema,
+      description: boardTaskDescriptionSchema.default(""),
+      column: boardColumnSchema.default("backlog")
+    }).parse(payload);
+    getProject(value.projectId);
+    const task = database.createBoardTask({ id: randomUUID(), ...value });
+    send("BoardUpdated", { action: "created", projectId: value.projectId, task });
+    return task;
+  });
+  ipcMain.handle("board:update", (_event, payload) => {
+    const value = boardTaskPayload.extend({
+      title: boardTaskTitleSchema.optional(),
+      description: boardTaskDescriptionSchema.optional()
+    }).refine((candidate) => candidate.title !== undefined || candidate.description !== undefined, "A board task change is required").parse(payload);
+    getProject(value.projectId);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== value.projectId) throw new Error("Kanban task not found in this project");
+    const updated = database.updateBoardTask(value.taskId, value);
+    send("BoardUpdated", { action: "updated", projectId: value.projectId, task: updated });
+    return updated;
+  });
+  ipcMain.handle("board:move", (_event, payload) => {
+    const value = boardTaskPayload.extend({
+      column: boardColumnSchema,
+      beforeTaskId: z.string().min(1).optional()
+    }).parse(payload);
+    getProject(value.projectId);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== value.projectId) throw new Error("Kanban task not found in this project");
+    if (value.beforeTaskId) {
+      const beforeTask = database.getBoardTask(value.beforeTaskId);
+      if (!beforeTask || beforeTask.projectId !== value.projectId) throw new Error("The target task is outside this project");
+      if (beforeTask.column !== value.column) throw new Error("The target task is not in the destination column");
+    }
+    const moved = database.moveBoardTask(value.taskId, value.column, value.beforeTaskId ?? null);
+    send("BoardUpdated", { action: "moved", projectId: value.projectId, task: moved });
+    return moved;
+  });
+  ipcMain.handle("board:delete", (_event, payload) => {
+    const value = boardTaskPayload.parse(payload);
+    getProject(value.projectId);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== value.projectId) throw new Error("Kanban task not found in this project");
+    const deleted = database.deleteBoardTask(value.taskId);
+    send("BoardUpdated", { action: "deleted", projectId: value.projectId, task: deleted });
+    return deleted;
+  });
+  ipcMain.handle("board:attach", (_event, payload) => {
+    const value = boardTaskPayload.extend({ threadId: z.string().min(1) }).parse(payload);
+    const project = getProject(value.projectId);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== value.projectId) throw new Error("Kanban task not found in this project");
+    const knownProjectId = threadProjects.get(value.threadId);
+    const binding = database.getThreadProviderBinding(value.threadId);
+    if ((knownProjectId && knownProjectId !== value.projectId) || (binding?.cwd && !isWithin(project.canonicalPath, binding.cwd))) {
+      throw new Error("Thread is outside the selected project");
+    }
+    const updated = database.updateBoardTask(value.taskId, { threadId: value.threadId });
+    send("BoardUpdated", { action: "updated", projectId: value.projectId, task: updated });
+    return updated;
   });
 
   ipcMain.handle("threads:list", async (_event, payload) => {
@@ -497,6 +722,7 @@ function registerIpc() {
   ipcMain.handle("threads:create", async (_event, payload) => {
     const value = idPayload.extend({
       model: z.string().optional(),
+      serviceTier: z.string().nullable().optional(),
       permissionMode: permissionModeSchema.default("workspace-write")
     }).parse(payload);
     const project = getProject(value.projectId);
@@ -505,11 +731,13 @@ function registerIpc() {
       cwd: project.canonicalPath,
       runtimeWorkspaceRoots: [project.canonicalPath],
       model: value.model || null,
+      ...(value.serviceTier !== undefined ? { serviceTier: value.serviceTier } : {}),
       permissionMode: value.permissionMode,
       approvalPolicy: permissions.approvalPolicy,
       approvalsReviewer: permissions.approvalsReviewer,
       sandbox: permissions.sandbox,
-      dynamicTools: browserDynamicTools,
+      developerInstructions: currentAgentInstructions(),
+      dynamicTools: loomDynamicTools,
       threadSource: "loom"
     });
     rememberThread(project, response.thread, { loaded: true });
@@ -523,7 +751,11 @@ function registerIpc() {
     const response = await runtime.request("thread/archive", { threadId });
     threadSessions.delete(threadId);
     threadProjects.delete(threadId);
+    turnUsageMetadata.delete(threadId);
     browserWorkspace.destroyWorkspace(threadId);
+    database.deleteThreadLink(threadId);
+    database.deleteThreadBoardState(threadId);
+    database.detachBoardTasksForThread(threadId);
     return response;
   });
 
@@ -531,6 +763,7 @@ function registerIpc() {
     const value = threadPayload.extend({
       ...promptInputSchema,
       model: z.string().optional(),
+      serviceTier: z.string().nullable().optional(),
       effort: z.string().optional(),
       permissionMode: permissionModeSchema.default("workspace-write")
     }).superRefine(requirePromptInput).parse(payload);
@@ -543,6 +776,7 @@ function registerIpc() {
       cwd: project.canonicalPath,
       runtimeWorkspaceRoots: [project.canonicalPath],
       model: value.model || null,
+      ...(value.serviceTier !== undefined ? { serviceTier: value.serviceTier } : {}),
       effort: value.effort || null,
       permissionMode: value.permissionMode,
       approvalPolicy: permissions.approvalPolicy,
@@ -550,6 +784,12 @@ function registerIpc() {
       sandboxPolicy: permissions.sandboxPolicy
     });
     activeTurns.set(value.threadId, response.turn.id);
+    turnUsageMetadata.set(value.threadId, {
+      turnId: response.turn.id,
+      model: value.model || null,
+      serviceTier: value.serviceTier ?? null,
+      provider: runtime.providerForThread(value.threadId)
+    });
     updateTrayMenu();
     if (pendingTaskNames.delete(value.threadId)) {
       scheduleThreadName({ project, threadId: value.threadId, source: value.text || `${value.images.length} attached image${value.images.length === 1 ? "" : "s"}`, kind: "task" });
@@ -602,6 +842,28 @@ function registerIpc() {
     if (!pending || pending.generation !== runtimeGeneration) throw new Error("Input request is no longer pending");
     if (!pending.request.method?.includes("requestUserInput")) throw new Error("Pending request does not accept user input");
     runtime.respond(value.requestId, { answers: value.answers });
+    pendingRequests.delete(key);
+    return { ok: true };
+  });
+  ipcMain.handle("questions:respond", (_event, payload) => {
+    const value = z.object({
+      requestId: z.union([z.string(), z.number()]),
+      action: z.enum(["answer", "cancel"]).default("answer"),
+      answers: z.record(z.string().trim().min(1).max(10_000)).default({})
+    }).parse(payload);
+    const key = requestKey(value.requestId);
+    const pending = pendingRequests.get(key);
+    if (!pending || pending.generation !== runtimeGeneration) throw new Error("Question is no longer pending");
+    if (pending.kind === "loom-question-tool") {
+      runtime.respond(value.requestId, loomQuestionToolResult(value));
+    } else if (pending.kind === "loom-question") {
+      runtime.respond(value.requestId, value);
+    } else if (pending.request.method?.includes("requestUserInput")) {
+      const answers = Object.fromEntries(Object.entries(value.answers).map(([id, answer]) => [id, { answers: [answer] }]));
+      runtime.respond(value.requestId, { answers });
+    } else {
+      throw new Error("Pending request is not a question");
+    }
     pendingRequests.delete(key);
     return { ok: true };
   });
@@ -691,9 +953,12 @@ function registerIpc() {
 
 app.whenReady().then(async () => {
   database = new LoomDatabase(app.getPath("userData"));
-  const developerInstructionsPath = isDev
+  developerInstructionsPath = isDev
     ? path.join(__dirname, "../resources/runtime/loom-developer-instructions.md")
     : path.join(process.resourcesPath, "runtime/loom-developer-instructions.md");
+  agentBehaviorsDirectory = isDev
+    ? path.join(__dirname, "../resources/runtime/agent-behaviors")
+    : path.join(process.resourcesPath, "runtime/agent-behaviors");
   codexRuntime = new CodexRuntime({
     resourcesPath: process.resourcesPath,
     clientVersion: app.getVersion(),
@@ -702,10 +967,49 @@ app.whenReady().then(async () => {
   });
   runtime = new ProviderRegistry({ database });
   runtime.register(new CodexProvider(codexRuntime));
+  const boardThreadContext = (threadId) => {
+    const binding = database.getThreadProviderBinding(threadId);
+    const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
+    return project ? { projectId: project.id, cwd: project.canonicalPath } : null;
+  };
+  loomBoard = new LoomBoard({
+    database,
+    threadContext: boardThreadContext,
+    onChange: (payload) => send("BoardUpdated", payload)
+  });
+  loomBridge = new LoomBridge({
+    runtime,
+    database,
+    dynamicTools: () => loomDynamicTools,
+    threadContext: (threadId) => {
+      const binding = database.getThreadProviderBinding(threadId);
+      const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
+      if (!project) return null;
+      return {
+        projectId: project.id,
+        cwd: project.canonicalPath,
+        developerInstructions: currentAgentInstructions(),
+        permissionSettings: (mode) => permissionSettings(mode, project)
+      };
+    },
+    onThreadCreated: ({ context, thread, prompt, model }) => {
+      const project = database.getProject(context.projectId);
+      if (!project) return;
+      rememberThread(project, thread, { loaded: true });
+      turnUsageMetadata.set(thread.id, { turnId: null, model: model.id, serviceTier: null, provider: model.provider });
+      scheduleThreadName({ project, threadId: thread.id, source: prompt, kind: "thread" });
+    },
+    onActivity: (payload) => send("AgentUpdated", {
+      ...payload,
+      projectId: threadProjects.get(payload.threadId)
+    })
+  });
   runtime.register(new ClaudeProvider({
     database,
     clientVersion: app.getVersion(),
-    developerInstructionsPath,
+    developerInstructions: currentAgentInstructions,
+    loomBridge,
+    loomBoard,
     pathToClaudeCodeExecutable: resolveClaudeCodeExecutable()
       ?? (app.isPackaged ? resolvePackagedClaudeCodeExecutable({ resourcesPath: process.resourcesPath }) : undefined),
     requireExternalExecutable: app.isPackaged
@@ -729,6 +1033,7 @@ app.whenReady().then(async () => {
       activeTurns.clear();
       pendingTaskNames.clear();
       scheduledThreadNames.clear();
+      turnUsageMetadata.clear();
       runtimeGeneration += 1;
       updateTrayMenu();
       send("AttentionReset");
@@ -739,6 +1044,23 @@ app.whenReady().then(async () => {
   runtime.on("event", (event) => {
     const { method, threadId, turn } = event.payload ?? {};
     if (threadNamer.rememberInternalThread(event.payload?.thread) || threadNamer.isInternalThread(threadId)) return;
+    const collabItem = event.payload?.item;
+    if ((collabItem?.type === "collabAgentToolCall" || collabItem?.type === "collabToolCall") && collabItem.receiverThreadIds?.length) {
+      const parentUsage = turnUsageMetadata.get(collabItem.senderThreadId ?? threadId) ?? {};
+      for (const receiverThreadId of collabItem.receiverThreadIds) {
+        turnUsageMetadata.set(receiverThreadId, {
+          turnId: null,
+          model: collabItem.model ?? parentUsage.model ?? null,
+          serviceTier: parentUsage.serviceTier ?? null,
+          provider: event.payload?.provider ?? parentUsage.provider ?? "codex"
+        });
+      }
+    }
+    try {
+      if (recordUsage(event.payload ?? {})) send("UsageUpdated", { recordedAt: new Date().toISOString() });
+    } catch (error) {
+      codexRuntime.emit("diagnostic", `Usage recording failed: ${error.message}`);
+    }
     if (method === "thread/name/updated" && threadId && event.payload?.name) {
       database.saveThreadName(threadId, event.payload.name);
     }
@@ -756,8 +1078,11 @@ app.whenReady().then(async () => {
       threadMonitorCache.delete(threadId);
       threadSessions.delete(threadId);
       threadProjects.delete(threadId);
+      turnUsageMetadata.delete(threadId);
       database.deleteThreadRuntimeState(threadId);
       database.deleteThreadProviderBinding(threadId);
+      database.deleteThreadLink(threadId);
+      database.detachBoardTasksForThread(threadId);
       browserWorkspace?.destroyWorkspace(threadId);
       if (method === "thread/deleted") database.deleteThreadName(threadId);
     }
@@ -778,16 +1103,42 @@ app.whenReady().then(async () => {
     });
   });
   runtime.on("server-request", (request) => {
+    if (request.method === "item/tool/call" && request.params?.namespace === LOOM_BOARD_NAMESPACE) {
+      void loomBoard.handleToolCall(request.params)
+        .then((response) => runtime.respond(request.id, response))
+        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
+      return;
+    }
+    if (request.method === "item/tool/call" && request.params?.namespace === LOOM_BRIDGE_NAMESPACE) {
+      void loomBridge.handleToolCall(request.params)
+        .then((response) => runtime.respond(request.id, response))
+        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
+      return;
+    }
     if (request.method === "item/tool/call" && request.params?.namespace === "loom_browser") {
       void browserWorkspace.handleToolCall(request.params)
         .then((response) => runtime.respond(request.id, response))
         .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
       return;
     }
-    pendingRequests.set(requestKey(request.id), { request, generation: runtimeGeneration });
-    send("AttentionRequired", { ...request, projectId: threadProjects.get(request.params?.threadId) });
+    let displayRequest = request;
+    let kind = "runtime-request";
+    if (isLoomQuestionToolCall(request)) {
+      try {
+        displayRequest = loomQuestionRequest(request);
+        kind = "loom-question-tool";
+      } catch (error) {
+        runtime.respond(request.id, {
+          success: false,
+          contentItems: [{ type: "inputText", text: `Invalid Loom question: ${error.message}` }]
+        });
+        return;
+      }
+    } else if (request.method === LOOM_QUESTION_METHOD) kind = "loom-question";
+    pendingRequests.set(requestKey(request.id), { request, kind, generation: runtimeGeneration });
+    send("AttentionRequired", { ...displayRequest, projectId: threadProjects.get(request.params?.threadId) });
     if (Notification.isSupported()) {
-      new Notification({ title: "Loom needs your attention", body: request.method }).show();
+      new Notification({ title: kind.startsWith("loom-question") ? "A task has a question" : "Loom needs your attention", body: displayRequest.method }).show();
     }
   });
   runtime.on("recoverable-error", (error) => send("RuntimeError", error));

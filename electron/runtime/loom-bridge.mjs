@@ -1,0 +1,324 @@
+import { z } from "zod";
+import { buildCodexUserInput } from "./user-input.mjs";
+import { bridgeEligibleModels, recommendBridgeModel } from "./model-capabilities.mjs";
+
+export const LOOM_BRIDGE_NAMESPACE = "loom_bridge";
+export const LOOM_BRIDGE_MCP_TOOLS = new Set([
+  "mcp__loom_bridge__list_models",
+  "mcp__loom_bridge__spawn_thread",
+  "mcp__loom_bridge__send_update"
+]);
+
+const listModelsShape = {
+  task: z.string().trim().max(2_000).optional()
+};
+
+const spawnThreadShape = {
+  prompt: z.string().trim().min(1).max(100_000),
+  model: z.string().trim().min(1).max(160),
+  effort: z.string().trim().regex(/^[a-z][a-z0-9_-]*$/i).max(32).optional(),
+  permissionMode: z.enum(["read-only", "workspace-write", "auto-approve", "full-access"]).default("workspace-write")
+};
+
+const sendUpdateShape = {
+  message: z.string().trim().min(1).max(10_000)
+};
+
+export const loomBridgeToolShapes = {
+  list_models: listModelsShape,
+  spawn_thread: spawnThreadShape,
+  send_update: sendUpdateShape
+};
+
+const listModelsInputSchema = {
+  type: "object",
+  properties: {
+    task: { type: "string", maxLength: 2000, description: "Optional task summary used to frame the model choice." }
+  },
+  additionalProperties: false
+};
+
+const spawnThreadInputSchema = {
+  type: "object",
+  properties: {
+    prompt: { type: "string", minLength: 1, maxLength: 100000, description: "The complete task for the new Loom thread." },
+    model: { type: "string", minLength: 1, maxLength: 160, description: "Qualified model id returned by list_models." },
+    effort: { type: "string", pattern: "^[a-zA-Z][a-zA-Z0-9_-]*$", maxLength: 32, description: "A reasoning effort supported by the selected model." },
+    permissionMode: {
+      type: "string",
+      enum: ["read-only", "workspace-write", "auto-approve", "full-access"],
+      description: "Permission scope for the new thread. Defaults to workspace-write."
+    }
+  },
+  required: ["prompt", "model"],
+  additionalProperties: false
+};
+
+const sendUpdateInputSchema = {
+  type: "object",
+  properties: {
+    message: { type: "string", minLength: 1, maxLength: 10000, description: "A concise progress update for the parent thread." }
+  },
+  required: ["message"],
+  additionalProperties: false
+};
+
+export const loomBridgeDynamicTools = [{
+  type: "namespace",
+  name: LOOM_BRIDGE_NAMESPACE,
+  description: "Spawn a separate Loom thread on a deliberately selected GPT or Claude model. Normally prefer GPT for cost efficiency. Prefer Claude only when explicitly requested, when Claude is the only connected family, or for work centered on UI design or taste. Either family may direct the other through another bridge thread. Call list_models before spawning so model choice and availability are evidence-based.",
+  tools: [
+    {
+      type: "function",
+      name: "list_models",
+      description: "List only currently connected models available to the Loom bridge, Loom's internal 1-5 capability ratings, and a policy-based recommendation for the supplied task. GPT is intentionally limited to 5.6 Luna, Terra, and Sol; every connected Claude model reported by Claude Code is eligible.",
+      inputSchema: listModelsInputSchema
+    },
+    {
+      type: "function",
+      name: "spawn_thread",
+      description: "Create a child Loom thread, run the prompt with the selected model and reasoning effort, wait for completion, and return its final answer. The thread remains visible and reusable in Loom.",
+      inputSchema: spawnThreadInputSchema
+    },
+    {
+      type: "function",
+      name: "send_update",
+      description: "Send a meaningful progress update from a spawned Loom bridge thread to its parent. This is only valid inside a bridge-created child thread.",
+      inputSchema: sendUpdateInputSchema
+    }
+  ]
+}];
+
+function textResult(value, success = true) {
+  return {
+    success,
+    contentItems: [{ type: "inputText", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }]
+  };
+}
+
+function finalAnswer(turn) {
+  return [...(turn?.items ?? [])]
+    .reverse()
+    .find((item) => item.type === "agentMessage" && item.text?.trim())
+    ?.text?.trim() ?? "";
+}
+
+function completionStatus(status) {
+  if (status === "completed") return "completed";
+  if (status === "failed") return "errored";
+  return status === "cancelled" ? "interrupted" : status;
+}
+
+export class LoomBridge {
+  constructor({ runtime, database, threadContext, dynamicTools, onThreadCreated, onActivity }) {
+    this.runtime = runtime;
+    this.database = database;
+    this.threadContext = threadContext;
+    this.dynamicTools = dynamicTools;
+    this.onThreadCreated = onThreadCreated;
+    this.onActivity = onActivity;
+    this.pending = new Map();
+    this.runtime.on("event", (event) => this.#onRuntimeEvent(event));
+  }
+
+  async handleToolCall(params) {
+    try {
+      if (!params?.threadId) throw new Error("Loom bridge tools require a thread-scoped call");
+      const input = params.arguments ?? {};
+      if (params.tool === "list_models") return textResult(await this.#listModels(listModelsShape, input));
+      if (params.tool === "spawn_thread") return textResult(await this.#spawnThread(params, z.object(spawnThreadShape).parse(input)));
+      if (params.tool === "send_update") return textResult(this.#sendUpdate(params, z.object(sendUpdateShape).parse(input)));
+      throw new Error(`Unknown Loom bridge tool: ${params.tool}`);
+    } catch (error) {
+      return textResult({ error: error.message }, false);
+    }
+  }
+
+  async #listModels(shape, input) {
+    z.object(shape).parse(input);
+    const response = await this.runtime.request("model/list", { limit: 100 });
+    const eligible = bridgeEligibleModels(response.data ?? []);
+    const recommendation = recommendBridgeModel(eligible, input.task);
+    const models = eligible.map((model) => ({
+      id: model.id,
+      model: model.model,
+      provider: model.provider,
+      availability: "connected",
+      displayName: model.displayName ?? model.model,
+      description: model.description,
+      supportedReasoningEfforts: model.supportedReasoningEfforts ?? [],
+      profile: model.bridge
+    }));
+    return {
+      models,
+      connectedFamilies: [...new Set(models.map((model) => model.provider === "codex" ? "gpt" : model.provider))],
+      recommendation,
+      guidance: {
+        defaultPolicy: "Normally prefer a GPT model because GPT 5.6 is more cost-effective.",
+        claudeExceptions: [
+          "The user specifically asks for Claude.",
+          "Claude is the only connected model family.",
+          "The task is primarily about UI design or taste."
+        ],
+        routineAndHighVolume: "Prefer GPT 5.6 Luna.",
+        balancedImplementation: "Prefer GPT 5.6 Terra.",
+        deepTechnicalWork: "Prefer GPT 5.6 Sol.",
+        uiAndProductTaste: "Prefer Claude Sonnet or Opus when one is connected; GPT remains capable if Claude is unavailable.",
+        crossFamilyDirection: "A Claude bridge thread may direct or review a GPT bridge thread, and vice versa.",
+        note: "Only models from connected providers are returned. Ratings are Loom routing heuristics on a 1-5 scale, not vendor benchmarks."
+      }
+    };
+  }
+
+  async #spawnThread(params, input) {
+    const context = this.threadContext(params.threadId);
+    if (!context?.projectId || !context.cwd) throw new Error("The parent thread is not attached to an open Loom project");
+    const catalog = (await this.#listModels(listModelsShape, {})).models;
+    const matches = catalog.filter((model) => model.id === input.model || model.model === input.model);
+    if (matches.length !== 1) {
+      throw new Error(matches.length ? "Use the qualified model id returned by list_models" : `Model ${input.model} is not eligible or unavailable`);
+    }
+    const selected = matches[0];
+    const effortValues = (selected.supportedReasoningEfforts ?? []).map((entry) => entry.reasoningEffort ?? entry.effort ?? entry);
+    if (input.effort && effortValues.length && !effortValues.includes(input.effort)) {
+      throw new Error(`${input.effort} is not supported by ${selected.displayName}`);
+    }
+    const permissions = context.permissionSettings(input.permissionMode);
+    const started = await this.runtime.request("thread/start", {
+      cwd: context.cwd,
+      runtimeWorkspaceRoots: [context.cwd],
+      parentThreadId: params.threadId,
+      model: selected.id,
+      permissionMode: input.permissionMode,
+      approvalPolicy: permissions.approvalPolicy,
+      approvalsReviewer: permissions.approvalsReviewer,
+      sandbox: permissions.sandbox,
+      developerInstructions: context.developerInstructions,
+      dynamicTools: this.dynamicTools(),
+      threadSource: "loomBridge"
+    });
+    const child = { ...started.thread, parentThreadId: params.threadId, bridgeModel: selected.id };
+    this.database.saveThreadLink({
+      childThreadId: child.id,
+      parentThreadId: params.threadId,
+      model: selected.id,
+      effort: input.effort ?? null
+    });
+    this.onThreadCreated?.({ context, thread: child, prompt: input.prompt, model: selected });
+    this.#publishAgentState({
+      parentThreadId: params.threadId,
+      childThreadId: child.id,
+      prompt: input.prompt,
+      model: selected.id,
+      effort: input.effort,
+      status: "running",
+      message: `Running on ${selected.displayName}`
+    });
+
+    const completion = new Promise((resolve) => this.pending.set(child.id, {
+      resolve,
+      parentThreadId: params.threadId,
+      model: selected.id,
+      effort: input.effort ?? null,
+      prompt: input.prompt
+    }));
+    try {
+      const turn = await this.runtime.request("turn/start", {
+        threadId: child.id,
+        input: buildCodexUserInput(input.prompt, []),
+        cwd: context.cwd,
+        runtimeWorkspaceRoots: [context.cwd],
+        model: selected.id,
+        effort: input.effort || null,
+        permissionMode: input.permissionMode,
+        approvalPolicy: permissions.approvalPolicy,
+        approvalsReviewer: permissions.approvalsReviewer,
+        sandboxPolicy: permissions.sandboxPolicy
+      });
+      const record = this.pending.get(child.id);
+      if (record) record.turnId = turn.turn.id;
+    } catch (error) {
+      this.pending.delete(child.id);
+      this.#publishAgentState({
+        parentThreadId: params.threadId,
+        childThreadId: child.id,
+        prompt: input.prompt,
+        model: selected.id,
+        status: "errored",
+        message: error.message
+      });
+      throw error;
+    }
+    return completion;
+  }
+
+  #sendUpdate(params, input) {
+    const link = this.database.getThreadLink(params.threadId);
+    if (!link || link.kind !== "loomBridge") throw new Error("This thread was not created by the Loom bridge");
+    this.#publishAgentState({
+      parentThreadId: link.parentThreadId,
+      childThreadId: params.threadId,
+      model: link.model,
+      effort: link.effort,
+      status: "running",
+      message: input.message
+    });
+    return { delivered: true, parentThreadId: link.parentThreadId };
+  }
+
+  async #onRuntimeEvent(event) {
+    const payload = event?.payload ?? {};
+    if (payload.method !== "turn/completed" || !payload.threadId) return;
+    const pending = this.pending.get(payload.threadId);
+    if (!pending || (pending.turnId && pending.turnId !== payload.turn?.id)) return;
+    this.pending.delete(payload.threadId);
+    let turn = payload.turn;
+    if (!finalAnswer(turn)) {
+      try {
+        const response = await this.runtime.request("thread/read", { threadId: payload.threadId, includeTurns: true });
+        turn = response.thread?.turns?.at(-1) ?? turn;
+      } catch {
+        // The completion event still carries enough status information to settle the bridge.
+      }
+    }
+    const status = turn?.status ?? "completed";
+    const answer = finalAnswer(turn);
+    const message = answer || turn?.error?.message || `Bridge thread ${status}`;
+    this.#publishAgentState({
+      parentThreadId: pending.parentThreadId,
+      childThreadId: payload.threadId,
+      prompt: pending.prompt,
+      model: pending.model,
+      effort: pending.effort,
+      status: completionStatus(status),
+      message
+    });
+    pending.resolve({
+      threadId: payload.threadId,
+      status,
+      model: pending.model,
+      effort: pending.effort,
+      answer,
+      error: turn?.error?.message ?? null
+    });
+  }
+
+  #publishAgentState({ parentThreadId, childThreadId, prompt, model, effort, status, message }) {
+    this.onActivity?.({
+      method: "loom/bridge/updated",
+      threadId: parentThreadId,
+      item: {
+        id: `loom-bridge:${childThreadId}`,
+        type: "collabAgentToolCall",
+        tool: status === "running" && prompt ? "spawnAgent" : "loomBridge",
+        bridge: true,
+        senderThreadId: parentThreadId,
+        receiverThreadIds: [childThreadId],
+        prompt,
+        model,
+        effort,
+        agentsStates: { [childThreadId]: { status, message } }
+      }
+    });
+  }
+}

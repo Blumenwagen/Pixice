@@ -31,6 +31,7 @@ const thread = {
 function createApi(threadValue = thread) {
   let eventListener = null;
   const threadValues = Array.isArray(threadValue) ? threadValue : [threadValue];
+  let boardTasks = [];
   const browserState = {
     native: false,
     activeTabId: "browser-1",
@@ -39,8 +40,63 @@ function createApi(threadValue = thread) {
   const scopedBrowserState = (payload = {}) => ({ ...browserState, workspaceId: payload.workspaceId });
   const api = {
     emit(event) { eventListener?.(event); },
-    app: { bootstrap: vi.fn().mockResolvedValue({ projects: [project], models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], runtime: { state: "ready", connected: true } }) },
+    app: {
+      bootstrap: vi.fn().mockResolvedValue({ projects: [project], models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], runtime: { state: "ready", connected: true }, settings: {} }),
+      saveSettings: vi.fn().mockResolvedValue({})
+    },
     runtime: { status: vi.fn().mockResolvedValue({ state: "ready", connected: true }) },
+    providers: {
+      list: vi.fn().mockResolvedValue([
+        { id: "codex", connected: true, status: { state: "ready", message: "Codex app server" }, account: { type: "chatgpt", email: "dev@example.com", planType: "plus" }, requiresAuth: true, sessionCount: 3, loginAvailable: true },
+        { id: "claude", connected: true, status: { state: "ready", message: "Claude Agent SDK" }, account: null, requiresAuth: true, sessionCount: 0, loginAvailable: true }
+      ]),
+      login: vi.fn().mockResolvedValue({ provider: "claude", opened: true })
+    },
+    usage: {
+      summary: vi.fn().mockResolvedValue({
+        rangeDays: 30,
+        recordingStartedAt: "2026-08-01T10:00:00.000Z",
+        updatedAt: "2026-08-19T10:00:00.000Z",
+        pricingVerifiedAt: "2026-08-19",
+        stats: {
+          todayCostUsd: 1.24,
+          currentWeekCostUsd: 8.75,
+          currentMonthCostUsd: 31.5,
+          projectedMonthCostUsd: 51.39,
+          dailyAverageCostUsd: 1.66,
+          weeklyAverageCostUsd: 11.61,
+          monthlyAverageCostUsd: 50.52,
+          allTimeCostUsd: 96.42,
+          allTimeTokens: 2_400_000
+        },
+        selected: {
+          inputTokens: 800_000,
+          cachedInputTokens: 1_200_000,
+          cacheWriteInputTokens: 40_000,
+          outputTokens: 360_000,
+          reasoningOutputTokens: 180_000,
+          totalTokens: 2_400_000,
+          costUsd: 31.5,
+          events: 24,
+          unpricedEvents: 0,
+          unpricedTokens: 0
+        },
+        daily: Array.from({ length: 30 }, (_, index) => ({ date: `2026-08-${String(index + 1).padStart(2, "0")}`, costUsd: index / 10, totalTokens: index * 1_000 })),
+        heatmapDaily: Array.from({ length: 365 }, (_, index) => {
+          const date = new Date(2025, 7, 20);
+          date.setDate(date.getDate() + index);
+          return { date: date.toISOString().slice(0, 10), costUsd: index % 9 === 0 ? index / 100 : 0, totalTokens: index * 750, events: index % 9 === 0 ? 1 : 0 };
+        }),
+        models: [
+          { provider: "codex", model: "gpt-5.6-sol", costUsd: 23.5, totalTokens: 1_600_000 },
+          { provider: "claude", model: "claude-sonnet-5", costUsd: 8, totalTokens: 800_000 }
+        ],
+        pricing: [
+          { provider: "codex", model: "gpt-5.6-sol", label: "GPT-5.6 Sol", rates: { input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 30 }, fastRates: { input: 10, cachedInput: 1, cacheWriteInput: 12.5, output: 60 } },
+          { provider: "claude", model: "claude-sonnet-5", label: "Claude Sonnet 5", rates: { input: 2, cachedInput: 0.2, cacheWriteInput: 2.5, output: 10 }, fastRates: null }
+        ]
+      })
+    },
     updates: {
       status: vi.fn().mockResolvedValue({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Loom builds." }),
       check: vi.fn().mockResolvedValue({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Loom builds." }),
@@ -82,6 +138,31 @@ function createApi(threadValue = thread) {
       }))
     },
     projects: { list: vi.fn().mockResolvedValue([project]), open: vi.fn().mockResolvedValue(project) },
+    board: {
+      list: vi.fn(async () => ({ data: boardTasks })),
+      create: vi.fn(async (payload) => {
+        const task = { id: `task-${boardTasks.length + 1}`, ...payload, description: payload.description ?? "", position: (boardTasks.length + 1) * 1024, threadId: null, createdAt: "2026-08-19T12:00:00.000Z", updatedAt: "2026-08-19T12:00:00.000Z" };
+        boardTasks = [...boardTasks, task];
+        return task;
+      }),
+      update: vi.fn(async (payload) => {
+        boardTasks = boardTasks.map((task) => task.id === payload.taskId ? { ...task, ...payload, id: task.id } : task);
+        return boardTasks.find((task) => task.id === payload.taskId);
+      }),
+      move: vi.fn(async (payload) => {
+        boardTasks = boardTasks.map((task) => task.id === payload.taskId ? { ...task, column: payload.column, updatedAt: "2026-08-19T12:00:00.000Z" } : task);
+        return boardTasks.find((task) => task.id === payload.taskId);
+      }),
+      delete: vi.fn(async ({ taskId }) => {
+        const task = boardTasks.find((candidate) => candidate.id === taskId);
+        boardTasks = boardTasks.filter((candidate) => candidate.id !== taskId);
+        return task;
+      }),
+      attach: vi.fn(async ({ taskId, threadId }) => {
+        boardTasks = boardTasks.map((task) => task.id === taskId ? { ...task, threadId } : task);
+        return boardTasks.find((task) => task.id === taskId);
+      })
+    },
     threads: {
       list: vi.fn().mockResolvedValue({ data: threadValues, nextCursor: null }),
       read: vi.fn(async ({ threadId }) => ({ thread: threadValues.find((candidate) => candidate.id === threadId) ?? threadValues[0] })),
@@ -96,6 +177,7 @@ function createApi(threadValue = thread) {
     },
     approvals: { resolve: vi.fn().mockResolvedValue({ ok: true }) },
     requests: { respond: vi.fn().mockResolvedValue({ ok: true }) },
+    questions: { respond: vi.fn().mockResolvedValue({ ok: true }) },
     elicitations: { respond: vi.fn().mockResolvedValue({ ok: true }) },
     review: { read: vi.fn().mockResolvedValue({ repository: project.repository, diff: "diff --git a/src/auth.js b/src/auth.js\n--- a/src/auth.js\n+++ b/src/auth.js\n@@ -1 +1 @@\n-old\n+new" }) },
     models: { list: vi.fn().mockResolvedValue([]) },
@@ -112,6 +194,241 @@ beforeEach(() => {
 });
 
 describe("Loom app shell", () => {
+  it("creates, orders, and starts durable board tasks without making a thread first", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    expect(await screen.findByRole("heading", { name: "Plan work before it runs" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Aurora task board" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add task" }));
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Plan release notes" } });
+    fireEvent.click(within(screen.getByRole("region", { name: "Backlog" })).getByRole("button", { name: "Add task" }));
+
+    const card = await screen.findByRole("button", { name: "Plan release notes" });
+    expect(window.loom.board.create).toHaveBeenCalledWith({
+      projectId: "project-1",
+      title: "Plan release notes",
+      description: "",
+      column: "backlog"
+    });
+    fireEvent.keyDown(card, { key: "ArrowLeft" });
+    expect(window.loom.board.move).not.toHaveBeenCalled();
+    fireEvent.keyDown(card, { key: "ArrowRight" });
+
+    await waitFor(() => expect(window.loom.board.move).toHaveBeenCalledWith({
+      projectId: "project-1",
+      taskId: "task-1",
+      column: "ready"
+    }));
+
+    const ready = screen.getByRole("region", { name: "Ready" });
+    fireEvent.click(await within(ready).findByRole("button", { name: "Start Plan release notes" }));
+    await waitFor(() => expect(window.loom.board.attach).toHaveBeenCalledWith({
+      projectId: "project-1",
+      taskId: "task-1",
+      threadId: "thread-new"
+    }));
+    expect(window.loom.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      threadId: "thread-new",
+      text: "Plan release notes"
+    }));
+  });
+
+  it("shows a bridge-created Loom thread in the sidebar like a regular task", async () => {
+    const bridgeThread = {
+      ...thread,
+      id: "bridge-thread",
+      name: "Cross-model UI review",
+      parentThreadId: thread.id,
+      bridge: { kind: "loomBridge", parentThreadId: thread.id, model: "claude:claude-sonnet-4-6" }
+    };
+    const subagentThread = {
+      ...thread,
+      id: "subagent-thread",
+      name: "Internal test audit",
+      parentThreadId: thread.id
+    };
+    window.loom = createApi([thread, bridgeThread, subagentThread]);
+
+    render(<App />);
+
+    const bridgeTask = await screen.findByRole("button", { name: "Cross-model UI review" });
+    expect(screen.queryByRole("button", { name: "Internal test audit" })).not.toBeInTheDocument();
+
+    fireEvent.click(bridgeTask);
+    await waitFor(() => expect(window.loom.threads.read).toHaveBeenCalledWith({
+      projectId: project.id,
+      threadId: bridgeThread.id
+    }));
+    expect(bridgeTask).toHaveAttribute("aria-current", "page");
+  });
+
+  it("adds a newly spawned bridge thread to the sidebar immediately", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    act(() => window.loom.emit({
+      type: "AgentUpdated",
+      payload: {
+        method: "loom/bridge/updated",
+        projectId: project.id,
+        threadId: thread.id,
+        item: {
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          bridge: true,
+          senderThreadId: thread.id,
+          receiverThreadIds: ["bridge-thread"],
+          prompt: "Review the interface hierarchy",
+          model: "claude:claude-sonnet-4-6",
+          agentsStates: { "bridge-thread": { status: "running", message: "Reviewing" } }
+        }
+      }
+    }));
+
+    expect(await screen.findByRole("button", { name: "Review the interface hierarchy" })).toBeInTheDocument();
+  });
+
+  it("labels prompts and answers relayed through a Loom bridge thread", async () => {
+    const bridgeThread = {
+      ...thread,
+      id: "bridge-thread",
+      name: "Cross-model UI review",
+      bridge: { kind: "loomBridge", parentThreadId: "main-thread", model: "claude:claude-sonnet-4-6" },
+      turns: [{
+        id: "bridge-turn",
+        status: "completed",
+        items: [
+          { id: "bridge-prompt", type: "userMessage", content: [{ type: "text", text: "Review the interface hierarchy" }] },
+          { id: "bridge-answer", type: "agentMessage", text: "Increase the spacing between sections.", phase: "final_answer" }
+        ]
+      }]
+    };
+    window.loom = createApi(bridgeThread);
+
+    const { container } = render(<App />);
+
+    const opened = await screen.findByText("Task opened by another Loom agent");
+    const sent = await screen.findByText("Sent answer to main agent");
+    expect(opened).toHaveClass("bridge-prompt-status");
+    expect(sent).toHaveClass("bridge-answer-status");
+    expect(container.querySelector(".bridge-prompt-status + .user-message")).toHaveTextContent("Review the interface hierarchy");
+    expect(sent.closest(".assistant-message")).toHaveTextContent("Increase the spacing between sections.");
+  });
+
+  it("uses a subtle fade-through when entering and leaving settings", async () => {
+    const originalAnimate = HTMLElement.prototype.animate;
+    const originalGetAnimations = HTMLElement.prototype.getAnimations;
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const animations = [];
+    HTMLElement.prototype.animate = vi.fn(function animate(keyframes, options) {
+      if (this.classList.contains("loom-app")) animations.push({ keyframes, options });
+      return { finished: Promise.resolve(), cancel: vi.fn() };
+    });
+    HTMLElement.prototype.getAnimations = vi.fn(() => []);
+    window.requestAnimationFrame = (callback) => window.setTimeout(callback, 0);
+
+    try {
+      render(<App />);
+      await screen.findByText("I traced the current flow.");
+
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+      expect(await screen.findByRole("complementary", { name: "Primary navigation" })).toBeInTheDocument();
+
+      expect(document.querySelector(".view-curtain")).not.toBeInTheDocument();
+      await waitFor(() => expect(animations.map(({ options }) => options.duration)).toEqual([90, 180, 90, 180]));
+      expect(animations.flatMap(({ keyframes }) => keyframes).every((frame) => frame.transform.startsWith("scale("))).toBe(true);
+    } finally {
+      if (originalAnimate) HTMLElement.prototype.animate = originalAnimate;
+      else delete HTMLElement.prototype.animate;
+      if (originalGetAnimations) HTMLElement.prototype.getAnimations = originalGetAnimations;
+      else delete HTMLElement.prototype.getAnimations;
+      if (originalRequestAnimationFrame) window.requestAnimationFrame = originalRequestAnimationFrame;
+      else delete window.requestAnimationFrame;
+    }
+  });
+
+  it("recovers if a settings transition animation never finishes", async () => {
+    const originalAnimate = HTMLElement.prototype.animate;
+    const originalGetAnimations = HTMLElement.prototype.getAnimations;
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const stuckAnimation = { finished: new Promise(() => {}), cancel: vi.fn() };
+    let animationCount = 0;
+    HTMLElement.prototype.animate = vi.fn(function animate() {
+      if (!this.classList.contains("loom-app")) return { finished: Promise.resolve(), cancel: vi.fn() };
+      animationCount += 1;
+      return animationCount === 1 ? stuckAnimation : { finished: Promise.resolve(), cancel: vi.fn() };
+    });
+    HTMLElement.prototype.getAnimations = vi.fn(() => [stuckAnimation]);
+    window.requestAnimationFrame = (callback) => window.setTimeout(callback, 0);
+
+    try {
+      const { container } = render(<App />);
+      await screen.findByText("I traced the current flow.");
+
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(await screen.findByRole("heading", { name: "General" }, { timeout: 1000 })).toBeInTheDocument();
+      await waitFor(() => expect(container.querySelector(".loom-app")).toHaveAttribute("data-view-transitioning", "false"));
+      expect(stuckAnimation.cancel).toHaveBeenCalled();
+    } finally {
+      if (originalAnimate) HTMLElement.prototype.animate = originalAnimate;
+      else delete HTMLElement.prototype.animate;
+      if (originalGetAnimations) HTMLElement.prototype.getAnimations = originalGetAnimations;
+      else delete HTMLElement.prototype.getAnimations;
+      if (originalRequestAnimationFrame) window.requestAnimationFrame = originalRequestAnimationFrame;
+      else delete window.requestAnimationFrame;
+    }
+  });
+
+  it("renders Codex image generation in progress and swaps in the completed image", async () => {
+    const imageThread = {
+      ...thread,
+      status: { type: "active" },
+      turns: [{
+        id: "turn-image",
+        status: "inProgress",
+        items: [
+          { id: "user-image", type: "userMessage", content: [{ type: "text", text: "Make a lake image" }] },
+          { id: "tool-image", type: "dynamicToolCall", tool: "image_gen__imagegen", status: "completed", arguments: { prompt: "a calm mountain lake at dawn", size: "1536x1024" } },
+          { id: "generated-image", type: "imageGeneration", status: "inProgress", result: "", revisedPrompt: null, savedPath: null, failure: null }
+        ]
+      }]
+    };
+    window.loom = createApi(imageThread);
+
+    render(<App />);
+    expect(await screen.findByRole("img", { name: "Generating image" })).toBeInTheDocument();
+    expect(screen.getByText("“a calm mountain lake at dawn”")).toBeInTheDocument();
+    expect(screen.getByText("1536 × 1024")).toBeInTheDocument();
+
+    act(() => window.loom.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "item/completed",
+        threadId: "thread-1",
+        turnId: "turn-image",
+        item: {
+          id: "generated-image",
+          type: "imageGeneration",
+          status: "completed",
+          result: "data:image/png;base64,AA==",
+          revisedPrompt: "a glassy lake beneath a pink dawn sky",
+          savedPath: "/tmp/lake.png",
+          failure: null
+        }
+      }
+    }));
+
+    const result = await screen.findByRole("img", { name: "a glassy lake beneath a pink dawn sky" });
+    expect(result).toHaveAttribute("src", "data:image/png;base64,AA==");
+    expect(screen.getByText("Generated image")).toBeInTheDocument();
+  });
+
   it("loads real task data and moves between review and settings", async () => {
     render(<App />);
     expect(document.querySelector(".window-drag-region")).toHaveAttribute("aria-hidden", "true");
@@ -160,6 +477,76 @@ describe("Loom app shell", () => {
     expect(saved).toMatchObject({ showShortcutHints: false, density: "comfortable" });
   });
 
+  it("persists agent behavior packs for every Loom agent", async () => {
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: { agentBehaviors: { structuredPlanning: true, parallelDelegation: false, verification: true } },
+      agentBehaviors: [
+        { id: "structuredPlanning", label: "Structured planning", description: "Plan multi-step work.", defaultEnabled: true },
+        { id: "parallelDelegation", label: "Parallel delegation", description: "Use focused helper agents.", defaultEnabled: false },
+        { id: "verification", label: "Verification before handoff", description: "Run proportionate checks.", defaultEnabled: true }
+      ]
+    });
+    window.loom = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Agent Behavior/ }));
+    expect(await screen.findByRole("heading", { name: "Agent Behavior" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Parallel delegation" })).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Parallel delegation" }));
+    expect(api.app.saveSettings).toHaveBeenCalledWith({
+      agentBehaviors: { structuredPlanning: true, parallelDelegation: true, verification: true }
+    });
+  });
+
+  it("shows provider accounts, previous sessions, and opens sign in", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Providers/ }));
+
+    expect(await screen.findByRole("heading", { name: "Providers" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "OpenAI Codex" })).toBeInTheDocument();
+    expect(screen.getByText("dev@example.com · plus")).toBeInTheDocument();
+    expect(screen.getByText("3 previous sessions")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Anthropic Claude" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(window.loom.providers.login).toHaveBeenCalledWith({ provider: "claude" });
+    expect(screen.getByRole("button", { name: "Check sign-in" })).toBeInTheDocument();
+  });
+
+  it("shows measured token usage, cost averages, charts, and the current rate card", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Usage/ }));
+
+    expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument();
+    await waitFor(() => expect(window.loom.usage.summary).toHaveBeenCalledWith({ days: 30 }));
+    expect(screen.getByLabelText("$31.50", { selector: ".usage-hero-heading .number-ticker" })).toBeInTheDocument();
+    expect(screen.getByLabelText("$96.42", { selector: ".usage-hero-lifetime .number-ticker" })).toBeInTheDocument();
+    expect(screen.getByText("Weekly average")).toBeInTheDocument();
+    expect(screen.getByRole("grid", { name: "Daily API-equivalent spend heat map over the last 365 days" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Daily API-equivalent spend over 30 days" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "API-equivalent cost by model" })).toBeInTheDocument();
+    expect(screen.getByText("GPT-5.6 Sol", { selector: ".usage-rate-row strong" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Anthropic" }));
+    expect(screen.getByText("Claude Sonnet 5", { selector: ".usage-rate-row strong" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "7d" }));
+    await waitFor(() => expect(window.loom.usage.summary).toHaveBeenLastCalledWith({ days: 7 }));
+  });
+
   it("checks GitHub releases from the Updates settings page", async () => {
     const api = createApi();
     api.updates.status.mockResolvedValue({ supported: true, state: "idle", currentVersion: "0.1.0", availableVersion: null, percent: 0, message: "Ready to check GitHub releases." });
@@ -178,7 +565,7 @@ describe("Loom app shell", () => {
     expect(await screen.findByText("Loom is up to date.")).toBeInTheDocument();
   });
 
-  it("restores the default reasoning effort after an app restart", async () => {
+  it("restores persistent model, reasoning, and permission defaults after an app update", async () => {
     const models = [{
       id: "gpt",
       model: "gpt-5.6",
@@ -186,28 +573,50 @@ describe("Loom app shell", () => {
       isDefault: true,
       defaultReasoningEffort: "medium",
       supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }]
+    }, {
+      id: "gpt-54",
+      model: "gpt-5.4",
+      displayName: "GPT-5.4",
+      isDefault: false,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }]
     }];
     const firstApi = createApi();
-    firstApi.app.bootstrap.mockResolvedValue({ projects: [project], models, runtime: { state: "ready", connected: true } });
+    firstApi.app.bootstrap.mockResolvedValue({
+      projects: [project], models, runtime: { state: "ready", connected: true },
+      settings: { defaultModel: "gpt-5.6", defaultEffort: "medium", defaultPermissionMode: "workspace-write" }
+    });
     window.loom = firstApi;
 
     const firstLaunch = render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.keyDown(window, { key: ",", metaKey: true });
+    const modelSelect = await screen.findByRole("combobox", { name: "Default model" });
     const effortSelect = await screen.findByRole("combobox", { name: "Default reasoning effort" });
+    const permissionSelect = await screen.findByRole("combobox", { name: "Default permissions" });
+    fireEvent.change(modelSelect, { target: { value: "gpt-5.4" } });
     expect(effortSelect).toHaveValue("medium");
     fireEvent.change(effortSelect, { target: { value: "high" } });
-    expect(localStorage.getItem("loom.effort")).toBe("high");
+    fireEvent.change(permissionSelect, { target: { value: "full-access" } });
+    expect(firstApi.app.saveSettings).toHaveBeenCalledWith({ defaultModel: "gpt-5.4", defaultEffort: "medium" });
+    expect(firstApi.app.saveSettings).toHaveBeenCalledWith({ defaultEffort: "high" });
+    expect(firstApi.app.saveSettings).toHaveBeenCalledWith({ defaultPermissionMode: "full-access" });
     firstLaunch.unmount();
+    localStorage.clear();
 
     const restartedApi = createApi();
-    restartedApi.app.bootstrap.mockResolvedValue({ projects: [project], models, runtime: { state: "ready", connected: true } });
+    restartedApi.app.bootstrap.mockResolvedValue({
+      projects: [project], models, runtime: { state: "ready", connected: true },
+      settings: { defaultModel: "gpt-5.4", defaultEffort: "high", defaultPermissionMode: "full-access" }
+    });
     window.loom = restartedApi;
     render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.keyDown(window, { key: ",", metaKey: true });
 
+    expect(await screen.findByRole("combobox", { name: "Default model" })).toHaveValue("gpt-5.4");
     expect(await screen.findByRole("combobox", { name: "Default reasoning effort" })).toHaveValue("high");
+    expect(await screen.findByRole("combobox", { name: "Default permissions" })).toHaveValue("full-access");
   });
 
   it("keeps composer reasoning changes scoped to their thread", async () => {
@@ -360,10 +769,10 @@ describe("Loom app shell", () => {
     }));
 
     await user.click(await screen.findByRole("radio", { name: /Safe/ }));
-    await user.click(screen.getByRole("button", { name: "Submit answers" }));
-    await waitFor(() => expect(window.loom.requests.respond).toHaveBeenCalledWith({
+    await waitFor(() => expect(window.loom.questions.respond).toHaveBeenCalledWith({
       requestId: "question-17",
-      answers: { strategy: { answers: ["Safe"] } }
+      action: "answer",
+      answers: { strategy: "Safe" }
     }));
   });
 
@@ -620,6 +1029,40 @@ describe("Loom app shell", () => {
     await waitFor(() => expect(scroller.scrollTop).toBe(1400));
   });
 
+  it("jumps to a selected prompt from the thread preview rail", async () => {
+    const longThread = {
+      ...thread,
+      turns: [1, 2, 3].map((number) => ({
+        id: `turn-${number}`,
+        status: "completed",
+        items: [
+          { id: `user-${number}`, type: "userMessage", content: [{ type: "text", text: `Prompt ${number}` }] },
+          { id: `agent-${number}`, type: "agentMessage", text: `Response ${number}`, phase: "final_answer" },
+        ],
+      })),
+    };
+    window.loom = createApi(longThread);
+
+    render(<App />);
+    await screen.findByText("Response 3");
+    const scroller = document.querySelector(".conversation-scroll");
+    const target = document.getElementById("prompt-user-2");
+    scroller.scrollTo = vi.fn();
+    scroller.getBoundingClientRect = () => ({ top: 58 });
+    target.getBoundingClientRect = () => ({ top: 500 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Jump to prompt 2: Prompt 2" }));
+
+    expect(scroller.scrollTo).toHaveBeenCalledWith({ top: 414, behavior: "smooth" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Prompts in this thread" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Close preview workspace" })[0]);
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Prompts in this thread" })).toBeInTheDocument());
+  });
+
   it("shows the morphing reasoning orb while waiting for the first activity event", async () => {
     const waitingThread = {
       ...thread,
@@ -770,6 +1213,72 @@ describe("Loom app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Reasoning: High" }));
     expect(screen.getByRole("listbox", { name: "Reasoning" })).toBeInTheDocument();
+  });
+
+  it("enables fast mode for supported Codex models and sends the priority service tier", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [{
+        id: "codex:gpt-5.6",
+        model: "gpt-5.6",
+        displayName: "GPT-5.6",
+        provider: "codex",
+        isDefault: true,
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+        serviceTiers: [{ id: "priority", name: "Fast", description: "Faster inference with increased usage." }]
+      }],
+      runtime: { state: "ready", connected: true }
+    });
+    api.turns.start.mockResolvedValue({ turn: { id: "turn-fast", status: "completed", items: [] } });
+    window.loom = api;
+
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+
+    const fastToggle = screen.getByRole("button", { name: "Fast mode" });
+    expect(fastToggle).toHaveAttribute("aria-pressed", "false");
+    await user.click(fastToggle);
+    expect(fastToggle).toHaveAttribute("aria-pressed", "true");
+
+    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Ship this quickly");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(api.threads.create).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: "priority" })));
+    expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: "priority" }));
+
+    await waitFor(() => expect(fastToggle).toBeEnabled());
+    await user.click(fastToggle);
+    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Return to standard speed");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(api.turns.start).toHaveBeenLastCalledWith(expect.objectContaining({ serviceTier: null })));
+  });
+
+  it("does not show fast mode for Claude models", async () => {
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [{
+        id: "claude:claude-sonnet-4-6",
+        model: "claude-sonnet-4-6",
+        displayName: "Claude Sonnet 4.6",
+        provider: "claude",
+        isDefault: true,
+        supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+        serviceTiers: [{ id: "priority", name: "Fast", description: "Ignored for non-Codex providers." }]
+      }],
+      runtime: { state: "ready", connected: true }
+    });
+    window.loom = api;
+
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    expect(screen.queryByRole("button", { name: "Fast mode" })).not.toBeInTheDocument();
   });
 
   it("keeps composer permission changes scoped to their thread", async () => {
@@ -1046,5 +1555,59 @@ describe("Loom app shell", () => {
       content: "export const ready = false;\n",
       expectedMtimeMs: 1
     }));
+  });
+
+  it("replaces the active composer with a sequential question flow", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    expect(screen.getByRole("textbox", { name: "Message Codex" })).toBeInTheDocument();
+
+    act(() => window.loom.emit({
+      type: "AttentionRequired",
+      payload: {
+        id: "question-1",
+        method: "loom/requestUserInput",
+        projectId: project.id,
+        params: {
+          threadId: thread.id,
+          questions: [
+            {
+              id: "approach",
+              header: "Approach",
+              question: "How should Loom proceed?",
+              options: [
+                { label: "Build it", description: "Implement the complete flow.", recommended: true },
+                { label: "Plan only", description: "Stop after the implementation plan.", recommended: false }
+              ]
+            },
+            {
+              id: "scope",
+              header: "Scope",
+              question: "Where should it be available?",
+              options: [
+                { label: "Every model", description: "Expose it across all providers.", recommended: true },
+                { label: "Codex only", description: "Limit the first release.", recommended: false }
+              ]
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(await screen.findByText("How should Loom proceed?")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Message Codex" })).not.toBeInTheDocument();
+    expect(screen.getByText("Recommended")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: /Build it/ }));
+    expect(await screen.findByText("Where should it be available?", {}, { timeout: 1000 })).toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: /Every model/ }));
+
+    await waitFor(() => expect(window.loom.questions.respond).toHaveBeenCalledWith({
+      requestId: "question-1",
+      action: "answer",
+      answers: { approach: "Build it", scope: "Every model" }
+    }));
+    expect(await screen.findByRole("textbox", { name: "Message Codex" })).toBeInTheDocument();
   });
 });

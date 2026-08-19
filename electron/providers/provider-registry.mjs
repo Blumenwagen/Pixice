@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { annotateBridgeModel } from "../runtime/model-capabilities.mjs";
 
 const THREAD_METHOD_PREFIXES = ["thread/", "turn/"];
 
@@ -61,9 +62,44 @@ export class ProviderRegistry extends EventEmitter {
     await Promise.allSettled([...this.providers.values()].map((provider) => provider.stop()));
   }
 
+  async listProviders() {
+    return Promise.all([...this.providers.values()].map(async (provider) => {
+      let account = null;
+      let requiresAuth = true;
+      let accountError = null;
+      try {
+        const result = provider.account ? await provider.account() : null;
+        account = result?.account ?? null;
+        requiresAuth = result?.requiresAuth ?? true;
+      } catch (error) {
+        accountError = error.message;
+      }
+      const sessionCount = this.database.listThreadProviderBindings
+        ? this.database.listThreadProviderBindings({ provider: provider.id }).length
+        : 0;
+      return {
+        id: provider.id,
+        connected: provider.connected,
+        status: this.statuses.get(provider.id) ?? { state: provider.connected ? "ready" : "unavailable" },
+        account,
+        requiresAuth,
+        accountError,
+        sessionCount,
+        loginAvailable: typeof provider.login === "function"
+      };
+    }));
+  }
+
+  loginProvider(providerId) {
+    const provider = this.providers.get(providerId);
+    if (!provider) throw new Error(`Provider ${providerId} is unavailable`);
+    if (typeof provider.login !== "function") throw new Error(`${providerId} does not support sign in`);
+    return provider.login();
+  }
+
   async request(method, params = {}) {
     if (method === "model/list") return this.#listModels(params);
-    if (method === "thread/list" && !params.provider && !params.ancestorThreadId) return this.#listThreads(params);
+    if (method === "thread/list" && !params.provider) return this.#listThreads(params);
 
     const provider = this.#providerForRequest(method, params);
     const prepared = this.#prepareParams(provider.id, params);
@@ -116,17 +152,17 @@ export class ProviderRegistry extends EventEmitter {
 
   async #listModels(params) {
     const settled = await Promise.allSettled([...this.providers.values()].map(async (provider) => {
-      if (!provider.connected && provider.id !== "claude") return [];
+      if (!provider.connected) return [];
       const response = await provider.request("model/list", params);
       return (response?.data ?? []).map((model) => {
         const rawId = modelId(model);
         if (rawId) this.modelProviders.set(rawId, provider.id);
-        return {
+        return annotateBridgeModel({
           ...model,
           id: rawId ? `${provider.id}:${rawId}` : rawId,
           model: rawId,
           provider: provider.id
-        };
+        });
       });
     }));
     const data = settled.flatMap((result) => result.status === "fulfilled" ? result.value : []);
@@ -135,11 +171,12 @@ export class ProviderRegistry extends EventEmitter {
 
   async #listThreads(params) {
     const settled = await Promise.allSettled([...this.providers.values()].map(async (provider) => {
-      if (!provider.connected && provider.id !== "claude") return [];
+      if (!provider.connected) return [];
       const response = await provider.request("thread/list", params);
       return (response?.data ?? []).map((thread) => {
         this.#saveBinding(provider.id, { threadId: thread.id, providerThreadId: thread.providerThreadId, cwd: thread.cwd });
-        return tagProvider(thread, provider.id);
+        const link = this.database.getThreadLink?.(thread.id);
+        return tagProvider(link ? { ...thread, parentThreadId: link.parentThreadId, bridge: link } : thread, provider.id);
       });
     }));
     return {

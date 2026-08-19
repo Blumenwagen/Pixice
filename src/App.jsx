@@ -1,19 +1,27 @@
 import { Children, cloneElement, createContext, useCallback, useEffect, useId, useMemo, useRef, useState, useContext } from "react";
 import {
-  ArrowClockwise, Bell, Brain, CaretDown, CaretLeft, CaretRight, Check, CheckCircle,
+  ArrowClockwise, Bell, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
   Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
   GitDiff, Globe, Info, Lightning, List, LockKey, MagnifyingGlass, PaperPlaneTilt, Pause,
-  ImageSquare, PlugsConnected, Plus, ShieldCheck, Sparkle, SpinnerGap, Stack,
+  ImageSquare, PencilSimple, PlugsConnected, Plus, ShieldCheck, Sparkle, SpinnerGap, Stack,
   TerminalWindow, Trash, TreeStructure, Warning, X
-} from "@phosphor-icons/react";
+} from "./components/icons/index.jsx";
 import loomIcon from "./assets/loom-icon.png";
 import { ReasoningOrb } from "./components/ReasoningOrb.jsx";
 import { StreamingText } from "./components/StreamingText.jsx";
 import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
+import { InlineVisualization, parseVisualizationSpec } from "./components/InlineVisualization.jsx";
+import { DitherAreaChart, DitherBarChart } from "./components/dither-kit/DitherChart.jsx";
+import { UsageHeatMap } from "./components/dither-kit/UsageHeatMap.jsx";
+import { NumberTicker } from "./components/NumberTicker.jsx";
+import { ImageGeneration } from "./components/ImageGeneration.jsx";
+import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
+import { KanbanBoard } from "./components/KanbanBoard.jsx";
 import {
   applyRuntimePayload,
   descendantsOf,
   flattenItems,
+  isSidebarThread,
   mergeThreadSnapshot,
   parseDiff,
   projectCollabAgents,
@@ -25,6 +33,7 @@ const EMPTY_EXTENSIONS = { skills: [], apps: [], mcp: [], errors: [] };
 const EMPTY_BROWSER_STATE = { native: false, activeTabId: null, tabs: [] };
 const EMPTY_PREVIEW_WORKSPACE = { open: false, browserState: EMPTY_BROWSER_STATE, fileTabs: [], activeTabId: null };
 const EMPTY_UPDATE_STATUS = { supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Loom builds." };
+const EMPTY_AGENT_BEHAVIORS = [];
 const WorkspaceOpenContext = createContext(null);
 const MIN_SIDEBAR_WIDTH = 224;
 const MAX_SIDEBAR_WIDTH = 360;
@@ -42,6 +51,36 @@ const DEFAULT_PREFERENCES = {
   showShortcutHints: true,
   reduceMotion: false
 };
+
+const VIEW_ANIMATION_TIMEOUT_MS = 300;
+
+function waitForAnimation(animation, timeoutMs = VIEW_ANIMATION_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = window.setTimeout(finish, timeoutMs);
+    Promise.resolve(animation?.finished).then(finish, finish);
+  });
+}
+
+function waitForViewPaint() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = window.setTimeout(finish, 100);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(finish));
+  });
+}
 
 // Mirrors the slash-command discovery surface in the installed Codex runtime.
 // Loom only presents and autocompletes these commands; Codex remains responsible
@@ -106,14 +145,6 @@ function supportedReasoningEfforts(model) {
   return model?.supportedReasoningEfforts?.map((option) => option.reasoningEffort ?? option.effort ?? option) ?? [];
 }
 
-function storedReasoningEffort(model) {
-  const saved = localStorage.getItem("loom.effort");
-  const supported = supportedReasoningEfforts(model);
-  return saved && (!supported.length || supported.includes(saved))
-    ? saved
-    : model?.defaultReasoningEffort || supported[0] || "high";
-}
-
 function threadConfigurationKey(threadId) {
   return `loom.threadConfiguration.${threadId}`;
 }
@@ -137,6 +168,17 @@ function resolveReasoningEffort(candidate, model, fallback) {
   if (candidate && (!supported.length || supported.includes(candidate))) return candidate;
   if (fallback && (!supported.length || supported.includes(fallback))) return fallback;
   return model?.defaultReasoningEffort || supported[0] || "high";
+}
+
+function modelProvider(model) {
+  return model?.provider ?? (modelBrand(model?.model)?.id === "anthropic" ? "claude" : "codex");
+}
+
+function fastServiceTier(model) {
+  if (!model || modelProvider(model) !== "codex") return null;
+  const tiers = model.serviceTiers?.length ? model.serviceTiers : model.additionalSpeedTiers ?? [];
+  const tierIds = tiers.map((tier) => typeof tier === "string" ? tier : tier.id);
+  return tierIds.find((tier) => tier === "priority") ?? tierIds.find((tier) => tier === "fast") ?? null;
 }
 
 function clampSidebarWidth(width) {
@@ -331,6 +373,7 @@ function Sidebar({
         <div className="rail-group">
           <div className="rail-group-label"><i />Workspace</div>
           <SidebarNavItem icon={Plus} label="New task" tone="new-task" shortcut={newTaskShortcut} active={Boolean(selectedProjectId) && activeView === "task" && !selectedThreadId} disabled={!selectedProjectId} onClick={onNewTask} />
+          <SidebarNavItem icon={Stack} label="Board" active={activeView === "board"} disabled={!selectedProjectId} onClick={() => onView("board")} />
           <SidebarNavItem icon={Bell} label="Attention" active={activeView === "attention"} badge={attentionCount} badgeTone="attention" onClick={() => onView("attention")} />
           <SidebarNavItem icon={GitDiff} label="Review" active={activeView === "review"} badge={changedCount} disabled={!selectedProjectId} onClick={() => onView("review")} />
         </div>
@@ -413,11 +456,11 @@ function Sidebar({
   );
 }
 
-function AppToolbar({ title, subtitle, inspectorOpen, onInspectorToggle, showInspector = false, previewOpen, onPreviewToggle, showPreview = false }) {
+function AppToolbar({ icon: Icon = Folder, title, subtitle, inspectorOpen, onInspectorToggle, showInspector = false, previewOpen, onPreviewToggle, showPreview = false }) {
   return (
     <header className="app-toolbar">
       <div className="toolbar-title">
-        <Folder size={16} />
+        <Icon size={16} />
         <span><strong>{title}</strong>{subtitle && <small>{subtitle}</small>}</span>
       </div>
       <div className="toolbar-actions">
@@ -740,6 +783,28 @@ function ActivityItem({ item }) {
   return null;
 }
 
+function precedingImageGenerationTool(items, index) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const candidate = items[cursor];
+    if (candidate.type === "userMessage") break;
+    if ((candidate.type === "mcpToolCall" || candidate.type === "dynamicToolCall") && /image(?:_gen|gen|generation)/i.test(candidate.tool ?? "")) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function imageGenerationPrompt(items, index, item) {
+  const tool = precedingImageGenerationTool(items, index);
+  return item.revisedPrompt || item.prompt || item.arguments?.prompt || item.input?.prompt || tool?.arguments?.prompt || tool?.input?.prompt || null;
+}
+
+function imageGenerationResolution(items, index, item) {
+  const tool = precedingImageGenerationTool(items, index);
+  const resolution = item.resolution || item.size || item.arguments?.size || item.input?.size || tool?.arguments?.size || tool?.input?.size;
+  return resolution ? String(resolution).replace(/\s*[x×]\s*/i, " × ") : "1024 × 1024";
+}
+
 function MessageReference({ label, target }) {
   const onOpen = useContext(WorkspaceOpenContext);
   const supported = /^(https?:\/\/|file:\/\/)/i.test(target) || (!/^[a-z][a-z\d+.-]*:/i.test(target) && !target.startsWith("#"));
@@ -814,7 +879,7 @@ function appendTrailing(blocks, trailing) {
   return next;
 }
 
-function MarkdownMessage({ text, trailing }) {
+export function MarkdownMessage({ text, trailing }) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const blocks = [];
   let index = 0;
@@ -835,7 +900,8 @@ function MarkdownMessage({ text, trailing }) {
         index += 1;
       }
       index += 1;
-      blocks.push(<pre className="message-code" key={`code-${index}`}><code data-language={language || undefined}>{code.join("\n")}</code></pre>);
+      const source = code.join("\n");
+      blocks.push(<FencedMessageBlock source={source} language={language} key={`fence-${index}`} />);
       continue;
     }
 
@@ -898,6 +964,13 @@ function MarkdownMessage({ text, trailing }) {
   return <div className="markdown-body">{appendTrailing(blocks, trailing)}</div>;
 }
 
+function FencedMessageBlock({ source, language }) {
+  const visualization = useMemo(() => parseVisualizationSpec(source, language), [language, source]);
+  return visualization
+    ? <InlineVisualization spec={visualization} />
+    : <pre className="message-code"><code data-language={language || undefined}>{source}</code></pre>;
+}
+
 function responseDisplayKey(threadId, turnId, item, index = 0) {
   return `${threadId}:${turnId}:${item.renderId ?? item.id ?? `agent-${index}`}`;
 }
@@ -927,6 +1000,10 @@ function threadRevision(thread) {
         item.phase,
         item.text,
         item.aggregatedOutput,
+        item.result,
+        item.revisedPrompt,
+        item.savedPath,
+        item.failure,
         item.content?.map((part) => part.text ?? part.url ?? part.path).join("\n"),
         item.summary,
         item.changes
@@ -935,7 +1012,7 @@ function threadRevision(thread) {
   ]);
 }
 
-function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds }) {
+function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false }) {
   const [animate] = useState(() => !seenResponseIds.has(responseKey));
   useEffect(() => {
     seenResponseIds.add(responseKey);
@@ -948,29 +1025,46 @@ function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds }) {
           {(shown, caret) => <MarkdownMessage text={shown} trailing={caret} />}
         </StreamingText>
       ) : <MarkdownMessage text={item.text} />}
+      {sentToMain && <div className="bridge-answer-status"><CheckCircle size={11} weight="fill" />Sent answer to main agent</div>}
     </article>
   );
 }
 
-function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds }) {
+function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds, imagePrompt = null, imageResolution = null, promptAnchorId = null, openedByAgent = false, sentToMain = false }) {
   if (item.type === "userMessage") {
     const text = item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n");
     const images = item.content?.filter((part) => part.type === "image" && part.url) ?? [];
     if (!text && images.length === 0) return null;
     return (
-      <div className="message user-message">
-        {images.length > 0 && (
-          <div className="user-message-images" aria-label={`${images.length} attached image${images.length === 1 ? "" : "s"}`}>
-            {images.map((image, index) => <img src={image.url} alt={`Attached image ${index + 1}`} key={`${image.url.slice(0, 48)}-${index}`} />)}
-          </div>
-        )}
-        {text && <span>{text}</span>}
+      <div className={`user-message-block${openedByAgent ? " bridge-origin" : ""}`}>
+        {openedByAgent && <div className="bridge-prompt-status"><GitBranch size={11} />Task opened by another Loom agent</div>}
+        <div className="message user-message" id={promptAnchorId ?? undefined} data-prompt-id={item.id ?? undefined}>
+          {images.length > 0 && (
+            <div className="user-message-images" aria-label={`${images.length} attached image${images.length === 1 ? "" : "s"}`}>
+              {images.map((image, index) => <img src={image.url} alt={`Attached image ${index + 1}`} key={`${image.url.slice(0, 48)}-${index}`} />)}
+            </div>
+          )}
+          {text && <span>{text}</span>}
+        </div>
       </div>
     );
   }
   if (item.type === "agentMessage") {
     if (!item.text) return null;
-    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} />;
+    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} sentToMain={sentToMain} />;
+  }
+  if (item.type === "imageGeneration") {
+    return (
+      <ImageGeneration
+        prompt={imagePrompt}
+        resolution={imageResolution}
+        result={item.result}
+        savedPath={item.savedPath}
+        revisedPrompt={item.revisedPrompt}
+        status={item.status}
+        failure={item.failure}
+      />
+    );
   }
   if (item.type === "plan") return null;
   return <ActivityItem item={item} />;
@@ -980,6 +1074,49 @@ const TRACE_ITEM_TYPES = new Set(["reasoning", "commandExecution", "fileChange",
 
 function turnIsRunning(status) {
   return status === "inProgress" || status === "running" || status === "active";
+}
+
+function promptAnchorId(turn, item, index) {
+  const source = item.renderId ?? item.id ?? `${turn.renderId ?? turn.id ?? "turn"}-${index}`;
+  return `prompt-${encodeURIComponent(String(source))}`;
+}
+
+function userMessageText(item) {
+  return (item.content ?? [])
+    .filter((part) => part.type === "text" && part.text)
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+}
+
+function compactPreviewText(text) {
+  return String(text ?? "")
+    .replace(/```[\s\S]*?```/g, " Code sample. ")
+    .replace(/(?:^|\s)[#>*_`~-]+/g, " ")
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function promptPreviewItems(thread) {
+  return (thread?.turns ?? []).flatMap((turn) => {
+    const turnItems = turn.items ?? [];
+    return turnItems.flatMap((item, index) => {
+      if (item.type !== "userMessage") return [];
+      const text = compactPreviewText(userMessageText(item));
+      const imageCount = (item.content ?? []).filter((part) => part.type === "image").length;
+      if (!text && imageCount === 0) return [];
+      const response = [...turnItems.slice(index + 1)]
+        .reverse()
+        .find((candidate) => candidate.type === "agentMessage" && candidate.text);
+      return [{
+        id: item.renderId ?? item.id ?? `${turn.renderId ?? turn.id ?? "turn"}-${index}`,
+        anchorId: promptAnchorId(turn, item, index),
+        label: text || `${imageCount} attached image${imageCount === 1 ? "" : "s"}`,
+        description: compactPreviewText(response?.text) || (turnIsRunning(turn.status) ? "Codex is working on this prompt." : "Open this prompt in the conversation."),
+      }];
+    });
+  });
 }
 
 const PERMISSION_OPTIONS = [
@@ -1230,9 +1367,12 @@ function WorkingTrace({ items, running, settled }) {
   );
 }
 
-function TurnConversation({ threadId, turn, seenResponseIds }) {
+function TurnConversation({ thread, turn, turnIndex, seenResponseIds }) {
   const items = turn.items ?? [];
+  const threadId = thread.id;
   const running = turnIsRunning(turn.status);
+  const bridgeTurn = turnIndex === 0 && (thread.bridge?.kind === "loomBridge" || thread.bridgeModel);
+  const firstUserIndex = items.findIndex((item) => item.type === "userMessage");
   const explicitFinalIndex = items.findLastIndex((item) => item.type === "agentMessage" && item.phase === "final_answer");
   const fallbackFinalIndex = explicitFinalIndex === -1 && turn.status === "completed"
     ? items.findLastIndex((item) => item.type === "agentMessage" && item.text)
@@ -1266,6 +1406,11 @@ function TurnConversation({ threadId, turn, seenResponseIds }) {
         forceFinal={isFinal}
         responseKey={responseDisplayKey(threadId, turn.renderId ?? turn.id, item, index)}
         seenResponseIds={seenResponseIds}
+        imagePrompt={item.type === "imageGeneration" ? imageGenerationPrompt(items, index, item) : null}
+        imageResolution={item.type === "imageGeneration" ? imageGenerationResolution(items, index, item) : null}
+        promptAnchorId={item.type === "userMessage" ? promptAnchorId(turn, item, index) : null}
+        openedByAgent={bridgeTurn && index === firstUserIndex}
+        sentToMain={bridgeTurn && isFinal && turn.status === "completed"}
         key={item.renderId ?? item.id ?? `${item.type}-${index}`}
       />
     );
@@ -1278,7 +1423,133 @@ function TurnConversation({ threadId, turn, seenResponseIds }) {
   return rendered;
 }
 
-function Composer({ disabled, busy, draftKey, preserveDrafts, running, models, selectedModel, onModelChange, effort, onEffortChange, permissionMode, onPermissionModeChange, onSubmit, onInterrupt }) {
+function isQuestionRequest(request) {
+  return request?.method?.includes("requestUserInput") && Array.isArray(request.params?.questions) && request.params.questions.length > 0;
+}
+
+function optionIsRecommended(option) {
+  return option?.recommended === true || /\(recommended\)\s*$/i.test(option?.label ?? "");
+}
+
+function optionDisplayLabel(option) {
+  return String(option?.label ?? "").replace(/\s*\(recommended\)\s*$/i, "").trim();
+}
+
+function ComposerQuestion({ request, onResolve }) {
+  const questions = request.params.questions;
+  const [step, setStep] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [phase, setPhase] = useState("idle");
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customAnswer, setCustomAnswer] = useState("");
+  const timersRef = useRef([]);
+  const customInputRef = useRef(null);
+  const question = questions[Math.min(step, questions.length - 1)];
+  const questionId = question.id ?? `question-${step + 1}`;
+
+  useEffect(() => {
+    setStep(0);
+    setAnswers({});
+    setPhase("idle");
+    setCustomOpen(false);
+    setCustomAnswer("");
+    return () => timersRef.current.splice(0).forEach(window.clearTimeout);
+  }, [request.id]);
+
+  useEffect(() => {
+    if (customOpen) customInputRef.current?.focus();
+  }, [customOpen]);
+
+  const after = (callback, delay) => {
+    const timer = window.setTimeout(callback, delay);
+    timersRef.current.push(timer);
+  };
+
+  const complete = (action, nextAnswers = answers) => {
+    if (phase === "leaving") return;
+    setPhase("leaving");
+    after(async () => {
+      const accepted = await onResolve(request, { action, answers: action === "cancel" ? {} : nextAnswers });
+      if (accepted === false) setPhase("idle");
+    }, 150);
+  };
+
+  const choose = (answer) => {
+    if (phase === "leaving" || !String(answer).trim()) return;
+    const nextAnswers = { ...answers, [questionId]: String(answer).trim() };
+    setAnswers(nextAnswers);
+    setPhase("leaving");
+    after(() => {
+      if (step === questions.length - 1) {
+        void onResolve(request, { action: "answer", answers: nextAnswers }).then((accepted) => {
+          if (accepted === false) setPhase("idle");
+        });
+        return;
+      }
+      setStep((current) => current + 1);
+      setCustomOpen(false);
+      setCustomAnswer("");
+      setPhase("entering");
+      after(() => setPhase("idle"), 20);
+    }, 150);
+  };
+
+  return (
+    <section className="composer-question" aria-live="polite">
+      <div className="question-step" data-phase={phase} key={questionId}>
+        <header className="question-header">
+          <div>
+            <span>{question.header ?? `Question ${step + 1}`}</span>
+            <h2>{question.question ?? `Question ${step + 1}`}</h2>
+          </div>
+          <button type="button" className="question-close" aria-label="Skip questions" onClick={() => complete("cancel")}><X size={18} /></button>
+        </header>
+
+        <div className="question-options" role="radiogroup" aria-label={question.question}>
+          {(question.options ?? []).map((option, index) => {
+            const recommended = optionIsRecommended(option);
+            return (
+              <button
+                type="button"
+                className="question-option"
+                data-recommended={recommended}
+                role="radio"
+                aria-checked="false"
+                onClick={() => choose(option.label)}
+                key={`${option.label}-${index}`}
+              >
+                <span className="question-option-number">{index + 1}</span>
+                <span className="question-option-copy">
+                  <strong>{optionDisplayLabel(option)}{recommended && <em>Recommended</em>}</strong>
+                  {option.description && <small>{option.description}</small>}
+                </span>
+                <CaretRight className="question-option-arrow" size={20} />
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="question-footer">
+          {customOpen ? (
+            <form className="question-custom-form" onSubmit={(event) => { event.preventDefault(); choose(customAnswer); }}>
+              <PencilSimple size={16} />
+              <input ref={customInputRef} aria-label="Custom answer" value={customAnswer} onChange={(event) => setCustomAnswer(event.target.value)} placeholder="Type a different answer" />
+              <button type="submit" disabled={!customAnswer.trim()} aria-label="Use custom answer"><CaretRight size={18} /></button>
+            </form>
+          ) : (
+            <button type="button" className="question-custom" onClick={() => setCustomOpen(true)}><PencilSimple size={17} /><span>Type a different answer</span></button>
+          )}
+          <div className="question-progress" aria-label={`Question ${step + 1} of ${questions.length}`}>
+            {questions.map((candidate, index) => <i className={index === step ? "active" : index < step ? "complete" : ""} key={candidate.id ?? index} />)}
+          </div>
+          <button type="button" className="question-skip" onClick={() => complete("cancel")}>Skip</button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, onSubmit, onInterrupt }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState([]);
   const [draggingImages, setDraggingImages] = useState(false);
@@ -1290,6 +1561,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, models, s
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const selected = models.find((model) => model.model === selectedModel);
+  const fastTier = fastServiceTier(selected);
   const efforts = selected?.supportedReasoningEfforts ?? [];
   const modelOptions = models.map((model) => ({
     value: model.model,
@@ -1335,12 +1607,12 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, models, s
 
   useEffect(() => {
     const onDragEnter = (event) => {
-      if (disabled || !transferHasImages(event.dataTransfer)) return;
+      if (disabled || questionRequest || !transferHasImages(event.dataTransfer)) return;
       event.preventDefault();
       setDraggingImages(true);
     };
     const onDragOver = (event) => {
-      if (disabled || !transferHasImages(event.dataTransfer)) return;
+      if (disabled || questionRequest || !transferHasImages(event.dataTransfer)) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
       setDraggingImages(true);
@@ -1349,7 +1621,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, models, s
       if (!event.relatedTarget) setDraggingImages(false);
     };
     const onDrop = (event) => {
-      if (disabled || !transferHasImages(event.dataTransfer)) return;
+      if (disabled || questionRequest || !transferHasImages(event.dataTransfer)) return;
       event.preventDefault();
       setDraggingImages(false);
       addImageFiles(imageFilesFromTransfer(event.dataTransfer));
@@ -1364,7 +1636,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, models, s
       window.removeEventListener("dragleave", onDragLeave);
       window.removeEventListener("drop", onDrop);
     };
-  }, [addImageFiles, disabled]);
+  }, [addImageFiles, disabled, questionRequest]);
   const slashMatch = text.match(/^\/([^\s]*)$/);
   const slashQuery = slashMatch?.[1].toLowerCase() ?? null;
   const matchingCommands = slashQuery === null ? [] : SLASH_COMMANDS.filter((command) => {
@@ -1400,6 +1672,13 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, models, s
       if (preserveDrafts) localStorage.setItem(storageKey, value);
     }
   };
+  if (questionRequest) {
+    return (
+      <div className="composer" data-question-active="true">
+        <ComposerQuestion request={questionRequest} onResolve={onQuestionResolve} />
+      </div>
+    );
+  }
   return (
     <div className="composer" data-dragging-images={draggingImages}>
       {draggingImages && (
@@ -1526,6 +1805,20 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, models, s
           />
         </div>
         <div className="composer-actions">
+          {fastTier && (
+            <button
+              type="button"
+              className="composer-fast-toggle"
+              aria-label="Fast mode"
+              aria-pressed={fastMode}
+              title="Use faster inference with increased usage"
+              disabled={disabled || running}
+              onClick={() => onFastModeChange(!fastMode)}
+            >
+              <Lightning size={14} weight={fastMode ? "fill" : "regular"} />
+              <span>Fast</span>
+            </button>
+          )}
           <ComposerPicker
             label="Model"
             hint="Choose the right engine"
@@ -1601,6 +1894,7 @@ function ConversationWorkspace({
   composerProps
 }) {
   const items = flattenItems(thread);
+  const promptItems = useMemo(() => promptPreviewItems(thread), [thread]);
   const latestPlanText = [...items].reverse().find((item) => item.type === "plan")?.text;
   const agents = thread ? descendantsOf(threads, thread.id) : [];
   const touchedFiles = new Set(items.flatMap((item) => {
@@ -1611,20 +1905,53 @@ function ConversationWorkspace({
   const scrollRef = useRef(null);
   const followLatestRef = useRef(true);
   const followedThreadRef = useRef(thread?.id);
+  const [activePromptId, setActivePromptId] = useState("");
+  const updateActivePrompt = useCallback(() => {
+    const node = scrollRef.current;
+    if (!node || promptItems.length === 0) return;
+    const scrollerTop = node.getBoundingClientRect().top;
+    const readingLine = scrollerTop + Math.min(node.clientHeight * 0.32, 180);
+    let nextId = promptItems[0].id;
+    for (const item of promptItems) {
+      const target = document.getElementById(item.anchorId);
+      if (!target || target.getBoundingClientRect().top > readingLine) break;
+      nextId = item.id;
+    }
+    if (node.scrollHeight - node.scrollTop - node.clientHeight <= 48) {
+      nextId = promptItems.at(-1)?.id ?? nextId;
+    }
+    setActivePromptId((current) => current === nextId ? current : nextId);
+  }, [promptItems]);
   const liveLength = items.map((item) => (item.text?.length ?? 0) + (item.aggregatedOutput?.length ?? 0) + (Array.isArray(item.summary) ? item.summary.join("").length : 0)).join(":");
   useEffect(() => {
     if (followedThreadRef.current !== thread?.id) {
       followedThreadRef.current = thread?.id;
       followLatestRef.current = true;
+      setActivePromptId(promptItems.at(-1)?.id ?? "");
     }
     const node = scrollRef.current;
     if (node && followLatestRef.current) node.scrollTop = node.scrollHeight;
-  }, [thread?.id, items.length, liveLength]);
+    const frame = window.requestAnimationFrame(updateActivePrompt);
+    return () => window.cancelAnimationFrame(frame);
+  }, [thread?.id, items.length, liveLength, promptItems, updateActivePrompt]);
 
   const handleConversationScroll = () => {
     const node = scrollRef.current;
     if (!node) return;
     followLatestRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+    updateActivePrompt();
+  };
+
+  const handlePromptSelect = (item) => {
+    const node = scrollRef.current;
+    const target = document.getElementById(item.anchorId);
+    if (!node || !target) return;
+    const top = node.scrollTop + target.getBoundingClientRect().top - node.getBoundingClientRect().top - 28;
+    const reduceMotion = document.querySelector(".loom-app")?.dataset.reduceMotion === "true"
+      || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    followLatestRef.current = false;
+    setActivePromptId(item.id);
+    node.scrollTo({ top: Math.max(0, top), behavior: reduceMotion ? "auto" : "smooth" });
   };
 
   return (
@@ -1641,6 +1968,13 @@ function ConversationWorkspace({
           onPreviewToggle={onPreviewToggle}
           showPreview={Boolean(project)}
         />
+        {!previewOpen && thread && (
+          <PromptPreviewRail
+            items={promptItems}
+            activeId={activePromptId}
+            onItemSelect={handlePromptSelect}
+          />
+        )}
         <div className="conversation-scroll" ref={scrollRef} onScroll={handleConversationScroll}>
           {loading ? (
             <div className="loading-state"><SpinnerGap className="spin-icon" size={20} />Loading conversation…</div>
@@ -1650,7 +1984,7 @@ function ConversationWorkspace({
             <div className="conversation-column">
               <div className="message-stream">
                 {items.length === 0 && <p className="quiet-empty">This task has no messages yet.</p>}
-                {(thread.turns ?? []).map((turn) => <TurnConversation threadId={thread.id} turn={turn} seenResponseIds={seenResponseIds} key={turn.renderId ?? turn.id} />)}
+                {(thread.turns ?? []).map((turn, turnIndex) => <TurnConversation thread={thread} turn={turn} turnIndex={turnIndex} seenResponseIds={seenResponseIds} key={turn.renderId ?? turn.id} />)}
               </div>
               {showTaskProgress && (
                 <PlanPanel
@@ -1877,7 +2211,7 @@ function Inspector({ open, thread, threads, plan, attention, onResolve }) {
           {agents.length === 0 && <p className="inspector-empty">No delegated agents yet.</p>}
         </div>
       </section>
-      {attention.filter((request) => request.params?.threadId === thread.id).map((request) => <ApprovalCard request={request} onResolve={onResolve} key={request.id} />)}
+      {attention.filter((request) => request.params?.threadId === thread.id && !isQuestionRequest(request)).map((request) => <ApprovalCard request={request} onResolve={onResolve} key={request.id} />)}
     </aside>
   );
 }
@@ -2016,11 +2350,317 @@ function CapabilitiesSettings({ extensions, loading, onRefresh }) {
   );
 }
 
+function providerAccountDetail(provider) {
+  const account = provider.account;
+  if (!account) return provider.accountError || "No account detected";
+  const identity = account.email || account.organization || (account.type === "apiKey" ? "API key" : "Connected account");
+  const plan = account.planType || account.subscriptionType;
+  return plan ? `${identity} · ${String(plan).replaceAll("_", " ")}` : identity;
+}
+
+function ProvidersSettings({ providers, models, loading, onRefresh, onLogin }) {
+  const [busyProvider, setBusyProvider] = useState(null);
+  const [pendingProvider, setPendingProvider] = useState(null);
+  const bridgeModels = models.filter((model) => model.bridge?.eligible);
+
+  useEffect(() => {
+    if (pendingProvider && providers.some((provider) => provider.id === pendingProvider && provider.account)) {
+      setPendingProvider(null);
+    }
+  }, [pendingProvider, providers]);
+
+  useEffect(() => {
+    if (!pendingProvider) return undefined;
+    const refreshOnFocus = () => onRefresh();
+    window.addEventListener("focus", refreshOnFocus);
+    return () => window.removeEventListener("focus", refreshOnFocus);
+  }, [onRefresh, pendingProvider]);
+
+  const startLogin = async (providerId) => {
+    if (pendingProvider === providerId) {
+      await onRefresh();
+      return;
+    }
+    setBusyProvider(providerId);
+    try {
+      const opened = await onLogin(providerId);
+      if (opened !== false) setPendingProvider(providerId);
+    } finally {
+      setBusyProvider(null);
+    }
+  };
+
+  return (
+    <div className="providers-pane">
+      <div className="settings-controls">
+        <p className="providers-intro">Accounts stay with the provider. Loom only opens its sign-in flow and reads the resulting account status.</p>
+        <IconButton label="Refresh providers" onClick={onRefresh} disabled={loading}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
+      </div>
+      <div className="provider-list" aria-label="AI providers">
+        {providers.map((provider) => {
+          const providerModels = models.filter((model) => modelProvider(model) === provider.id).length;
+          const connected = Boolean(provider.account) || !provider.requiresAuth;
+          const waiting = pendingProvider === provider.id;
+          const busy = busyProvider === provider.id;
+          const label = provider.id === "codex" ? "OpenAI Codex" : provider.id === "claude" ? "Anthropic Claude" : provider.id;
+          return (
+            <article className="provider-card" key={provider.id}>
+              <span className="provider-brand"><ModelBrandIcon model={provider.id === "claude" ? "claude" : "gpt"} provider={provider.id} /></span>
+              <div className="provider-copy">
+                <div className="provider-heading">
+                  <h2>{label}</h2>
+                  <span className={`settings-status ${connected ? "ready" : "offline"}`}><i />{connected ? "Connected" : provider.status?.state === "unavailable" ? "Unavailable" : "Sign in required"}</span>
+                </div>
+                <p>{providerAccountDetail(provider)}</p>
+                <div className="provider-meta">
+                  <span>{providerModels} model{providerModels === 1 ? "" : "s"}</span>
+                  <span>{provider.sessionCount} previous session{provider.sessionCount === 1 ? "" : "s"}</span>
+                  {provider.status?.message && <span>{provider.status.message}</span>}
+                </div>
+              </div>
+              {!connected && provider.loginAvailable && (
+                <button className="settings-action primary provider-login" disabled={busy || provider.status?.state === "unavailable"} onClick={() => startLogin(provider.id)}>
+                  {busy ? <><SpinnerGap className="spin-icon" size={15} />Opening…</> : waiting ? "Check sign-in" : "Sign in"}
+                </button>
+              )}
+            </article>
+          );
+        })}
+        {!loading && providers.length === 0 && <p className="settings-empty">No providers are available.</p>}
+      </div>
+      {bridgeModels.length > 0 && (
+        <section className="bridge-model-overview" aria-labelledby="bridge-model-title">
+          <header>
+            <span><h2 id="bridge-model-title">Loom bridge routing</h2><p>Internal fit ratings used when agents choose a model for a new Loom thread.</p></span>
+            <small>1–5 heuristic</small>
+          </header>
+          <div className="bridge-model-list">
+            {bridgeModels.map((model) => (
+              <article className="bridge-model-row" key={model.id ?? `${model.provider}:${model.model}`}>
+                <span className="bridge-model-brand"><ModelBrandIcon model={model.model} provider={model.provider} /></span>
+                <span className="bridge-model-copy">
+                  <strong>{model.displayName ?? model.model}</strong>
+                  <small>{model.bridge.summary}</small>
+                </span>
+                <span className="bridge-ratings" aria-label={`${model.displayName ?? model.model} capability ratings`}>
+                  {["coding", "reasoning", "ui", "taste", "speed", "costEfficiency"].map((metric) => (
+                    <span key={metric}><i>{metric === "costEfficiency" ? "Cost" : metric === "ui" ? "UI" : metric[0].toUpperCase() + metric.slice(1)}</i><b>{model.bridge.ratings[metric]}</b></span>
+                  ))}
+                </span>
+              </article>
+            ))}
+          </div>
+          <p className="bridge-model-note">Connected models only. Loom normally prefers cost-effective GPT 5.6 Luna, Terra, or Sol; Claude is preferred when requested, when it is the only family available, or for UI and taste work.</p>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function formatUsd(value, compact = false) {
+  const amount = Number(value) || 0;
+  if (compact && amount >= 1_000) return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(amount);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: amount > 0 && amount < 0.01 ? 3 : 2,
+    maximumFractionDigits: amount > 0 && amount < 0.01 ? 4 : 2
+  }).format(amount);
+}
+
+function formatApiRate(value) {
+  const amount = Number(value) || 0;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4
+  }).format(amount);
+}
+
+function formatTokens(value) {
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value) || 0);
+}
+
+function UsageCostTicker({ value, compact = false, className = "" }) {
+  const scale = 10_000;
+  return (
+    <NumberTicker
+      value={(Number(value) || 0) * scale}
+      format={(scaledValue) => formatUsd(scaledValue / scale, compact)}
+      blur
+      className={className}
+    />
+  );
+}
+
+function UsageTokenTicker({ value, className = "" }) {
+  return <NumberTicker value={Number(value) || 0} format={formatTokens} blur className={className} />;
+}
+
+function usageModelLabel(model) {
+  if (!model) return "Unidentified model";
+  return model
+    .replace(/^claude-/, "Claude ")
+    .replace(/^gpt-/, "GPT-")
+    .replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "")
+    .replace(/\b(opus|sonnet|haiku|fable|mythos)\b/g, (value) => value[0].toUpperCase() + value.slice(1));
+}
+
+function chartDateLabel(value) {
+  if (!value) return "";
+  return new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRefresh }) {
+  const [rateProvider, setRateProvider] = useState("codex");
+  if (loading && !summary) return <div className="loading-state inline"><SpinnerGap className="spin-icon" size={18} />Calculating usage…</div>;
+  if (error && !summary) return <div className="usage-error"><Warning size={18} /><span><strong>Usage could not be loaded</strong><small>{error}</small></span><button className="settings-action" onClick={onRefresh}>Try again</button></div>;
+
+  const data = summary ?? {
+    stats: {}, selected: {}, daily: [], heatmapDaily: [], models: [], pricing: [], pricingVerifiedAt: null, recordingStartedAt: null
+  };
+  const stats = data.stats ?? {};
+  const selected = data.selected ?? {};
+  const modelRows = (data.models ?? []).slice(0, 8).map((row, index) => ({
+    ...row,
+    label: usageModelLabel(row.model),
+    cost: row.costUsd,
+    color: row.provider === "claude" ? (index % 2 ? "pink" : "orange") : (index % 2 ? "purple" : "blue")
+  }));
+  const tokenMix = [
+    { label: "Uncached input", value: selected.inputTokens ?? 0, color: "blue" },
+    { label: "Cached input", value: selected.cachedInputTokens ?? 0, color: "green" },
+    { label: "Cache writes", value: selected.cacheWriteInputTokens ?? 0, color: "orange" },
+    { label: "Output", value: selected.outputTokens ?? 0, color: "pink" }
+  ];
+  const totalMix = tokenMix.reduce((total, item) => total + item.value, 0);
+  const heatmapDaily = data.heatmapDaily ?? data.daily ?? [];
+  const heatmapActiveDays = heatmapDaily.filter((item) => item.events > 0 || item.costUsd > 0).length;
+  const heatmapPeak = heatmapDaily.reduce((peak, item) => Math.max(peak, Number(item.costUsd) || 0), 0);
+  const rateRows = (data.pricing ?? []).filter((entry) => entry.provider === rateProvider);
+  const coverage = selected.events ? ((selected.events - selected.unpricedEvents) / selected.events) * 100 : 100;
+
+  return (
+    <div className="usage-pane">
+      <section className="usage-hero" aria-label="Usage overview">
+        <div className="usage-hero-totals">
+          <div className="usage-hero-heading">
+            <span>Month to date</span>
+            <strong><UsageCostTicker value={stats.currentMonthCostUsd} compact /></strong>
+            <small>{formatUsd(stats.projectedMonthCostUsd)} projected at the current pace</small>
+          </div>
+          <div className="usage-hero-heading usage-hero-lifetime">
+            <span>Total spend · all time</span>
+            <strong><UsageCostTicker value={stats.allTimeCostUsd} compact /></strong>
+            <small>{data.recordingStartedAt ? `tracked since ${new Date(data.recordingStartedAt).toLocaleDateString()}` : "starts with the next completed turn"}</small>
+          </div>
+        </div>
+        <div className="usage-hero-status"><i />Measured tokens · API-equivalent USD</div>
+        <div className="usage-stat-grid">
+          <article><span>Today</span><strong><UsageCostTicker value={stats.todayCostUsd} /></strong><small>local calendar day</small></article>
+          <article><span>This week</span><strong><UsageCostTicker value={stats.currentWeekCostUsd} /></strong><small>since Monday</small></article>
+          <article><span>Daily average</span><strong><UsageCostTicker value={stats.dailyAverageCostUsd} /></strong><small>since tracking began</small></article>
+          <article><span>Weekly average</span><strong><UsageCostTicker value={stats.weeklyAverageCostUsd} /></strong><small>normalized from history</small></article>
+          <article><span>Monthly average</span><strong><UsageCostTicker value={stats.monthlyAverageCostUsd} /></strong><small>30.44-day average</small></article>
+          <article><span>Tokens tracked</span><strong><UsageTokenTicker value={stats.allTimeTokens} /></strong><small>{data.recordingStartedAt ? `since ${new Date(data.recordingStartedAt).toLocaleDateString()}` : "starts with the next turn"}</small></article>
+        </div>
+      </section>
+
+      <section className="usage-heatmap-card">
+        <header>
+          <span><h2>Spend calendar</h2><p>API-equivalent cost over the last 365 days</p></span>
+          <strong><span><NumberTicker value={heatmapActiveDays} blur /> active day{heatmapActiveDays === 1 ? "" : "s"}</span><small>Peak <UsageCostTicker value={heatmapPeak} /></small></strong>
+        </header>
+        <UsageHeatMap
+          data={heatmapDaily}
+          valueFormatter={(value) => formatUsd(value)}
+          ariaLabel="Daily API-equivalent spend heat map over the last 365 days"
+        />
+      </section>
+
+      <section className="usage-chart-card">
+        <header>
+          <span><h2>Spend over time</h2><p><UsageCostTicker value={selected.costUsd} /> across <UsageTokenTicker value={selected.totalTokens} /> tokens</p></span>
+          <div className="segmented usage-range" aria-label="Usage range">
+            {[7, 30, 90].map((days) => <button className={rangeDays === days ? "selected" : ""} onClick={() => onRangeChange(days)} key={days}>{days}d</button>)}
+          </div>
+        </header>
+        <DitherAreaChart
+          data={data.daily ?? []}
+          series={[{ key: "costUsd", label: "API cost", color: "blue", variant: "gradient" }]}
+          labelKey="date"
+          labelFormatter={chartDateLabel}
+          valueFormatter={(value) => formatUsd(value)}
+          ariaLabel={`Daily API-equivalent spend over ${rangeDays} days`}
+          height={220}
+        />
+      </section>
+
+      <div className="usage-chart-grid">
+        <section className="usage-chart-card compact">
+          <header><span><h2>Cost by model</h2><p>Top models in this range</p></span></header>
+          <DitherBarChart
+            data={modelRows}
+            series={[{ key: "cost", label: "Cost", color: "purple", variant: "hatched" }]}
+            valueFormatter={(value) => formatUsd(value)}
+            ariaLabel="API-equivalent cost by model"
+            height={175}
+          />
+        </section>
+        <section className="usage-token-card">
+          <header><h2>Token composition</h2><p>Reasoning tokens are included in output.</p></header>
+          <div className="usage-token-total"><strong><UsageTokenTicker value={totalMix} /></strong><span>tokens in range</span></div>
+          <div className={`usage-token-stack${totalMix ? "" : " empty"}`} aria-label="Token composition">
+            {tokenMix.map((item) => <i key={item.label} title={`${item.label}: ${item.value.toLocaleString()}`} style={{ width: `${totalMix ? (item.value / totalMix) * 100 : 0}%`, "--token-color": `var(--dither-${item.color})` }} />)}
+          </div>
+          <div className="usage-token-legend">
+            {tokenMix.map((item) => <span key={item.label}><i style={{ "--token-color": `var(--dither-${item.color})` }} /><b>{item.label}</b><strong><UsageTokenTicker value={item.value} /></strong></span>)}
+          </div>
+          <p className="usage-cache-note">{selected.cachedInputTokens ? `${Math.round((selected.cachedInputTokens / Math.max(1, selected.inputTokens + selected.cachedInputTokens)) * 100)}% of readable input came from cache.` : "Cached input savings will appear here when reported."}</p>
+        </section>
+      </div>
+
+      <section className="settings-group usage-rates">
+        <header className="usage-rates-header">
+          <span><h2>Current API rate card</h2><p>USD per 1M text tokens · verified {data.pricingVerifiedAt ?? "with provider docs"}</p></span>
+          <div className="segmented" aria-label="Rate provider">
+            <button className={rateProvider === "codex" ? "selected" : ""} onClick={() => setRateProvider("codex")}>OpenAI</button>
+            <button className={rateProvider === "claude" ? "selected" : ""} onClick={() => setRateProvider("claude")}>Anthropic</button>
+          </div>
+        </header>
+        <div className="settings-card usage-rate-card">
+          <div className="usage-rate-row usage-rate-heading"><span>Model</span><span>Input</span><span>Cached</span><span>Cache write</span><span>Output</span></div>
+          <div className="usage-rate-scroll">
+            {rateRows.map((entry) => (
+              <div className="usage-rate-row" key={`${entry.provider}:${entry.model}`}>
+                <span><strong>{entry.label}</strong><small>{entry.model}{entry.fastRates ? " · fast supported" : ""}</small></span>
+                <span>{formatApiRate(entry.rates.input)}</span>
+                <span>{formatApiRate(entry.rates.cachedInput)}</span>
+                <span>{formatApiRate(entry.rates.cacheWriteInput)}</span>
+                <span>{formatApiRate(entry.rates.output)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <div className="usage-accuracy-note">
+        <Info size={17} />
+        <span><strong>{coverage.toFixed(coverage === 100 ? 0 : 1)}% cost coverage in this range</strong><small>Claude provider totals are used when reported. Codex is priced from measured uncached input, cached input, cache writes, and output tokens. Subscription quotas, regional uplifts, and tool fees that a runtime does not report are not treated as invoice charges.</small></span>
+      </div>
+    </div>
+  );
+}
+
 const SETTINGS_PAGES = [
   { id: "general", label: "General", description: "Task defaults and safety", icon: Gear, keywords: "permissions model reasoning delete drafts" },
+  { id: "agent-behavior", label: "Agent Behavior", description: "Guidance loaded for every agent", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification" },
   { id: "orchestration", label: "Orchestration", description: "How delegated work surfaces", icon: TreeStructure, keywords: "agents progress task map approvals" },
   { id: "appearance", label: "Appearance", description: "Density, hints, and motion", icon: Eye, keywords: "compact comfortable shortcuts animation" },
   { id: "updates", label: "Updates", description: "Version and GitHub releases", icon: ArrowClockwise, keywords: "version release download install github update" },
+  { id: "providers", label: "Providers", description: "Accounts, models, and sessions", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions" },
+  { id: "usage", label: "Usage", description: "Tokens, trends, and API cost", icon: ChartLineUp, keywords: "cost spend pricing tokens input output cache daily weekly monthly charts" },
   { id: "runtime", label: "Runtime", description: "Codex connection and context", icon: Gauge, keywords: "status models project connected" },
   { id: "capabilities", label: "Capabilities", description: "Skills, apps, and MCP", icon: PlugsConnected, keywords: "extensions plugins tools servers" },
   { id: "shortcuts", label: "Shortcuts", description: "Fast paths through Loom", icon: Code, keywords: "keyboard new task settings" }
@@ -2061,8 +2701,21 @@ function SettingsWorkspace({
   onPermissionModeChange,
   preferences,
   onPreferenceChange,
+  agentBehaviorCatalog,
+  agentBehaviors,
+  onAgentBehaviorChange,
   extensions,
   extensionsLoading,
+  providers,
+  providersLoading,
+  onRefreshProviders,
+  onProviderLogin,
+  usageSummary,
+  usageLoading,
+  usageError,
+  usageRangeDays,
+  onUsageRangeChange,
+  onRefreshUsage,
   onRefreshCapabilities,
   onRefreshModels,
   updateStatus,
@@ -2105,6 +2758,19 @@ function SettingsWorkspace({
             <SettingsToggle label="Keep message drafts" checked={preferences.preserveDrafts} onChange={(value) => onPreferenceChange("preserveDrafts", value)} />
           </SettingsRow>
         </SettingsGroup>
+      </>
+    );
+  } else if (page === "agent-behavior") {
+    pageContent = (
+      <>
+        <SettingsGroup title="Behavior packs" description="Bundled Markdown guidance added to every new or resumed Loom agent.">
+          {agentBehaviorCatalog.map((behavior) => (
+            <SettingsRow key={behavior.id} title={behavior.label} description={behavior.description}>
+              <SettingsToggle label={behavior.label} checked={agentBehaviors[behavior.id] ?? behavior.defaultEnabled} onChange={(value) => onAgentBehaviorChange(behavior.id, value)} />
+            </SettingsRow>
+          ))}
+        </SettingsGroup>
+        <p className="settings-footnote">New agents use changes immediately. Existing sessions pick them up when Loom next resumes them; an active turn keeps its current guidance.</p>
       </>
     );
   } else if (page === "orchestration") {
@@ -2182,6 +2848,10 @@ function SettingsWorkspace({
         </SettingsGroup>
       </>
     );
+  } else if (page === "providers") {
+    pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} />;
+  } else if (page === "usage") {
+    pageContent = <UsageSettings summary={usageSummary} loading={usageLoading} error={usageError} rangeDays={usageRangeDays} onRangeChange={onUsageRangeChange} onRefresh={onRefreshUsage} />;
   } else if (page === "capabilities") {
     pageContent = <CapabilitiesSettings extensions={extensions} loading={extensionsLoading} onRefresh={onRefreshCapabilities} />;
   } else {
@@ -2196,7 +2866,7 @@ function SettingsWorkspace({
   return (
     <main className="main-canvas workspace settings-workspace">
       <div className="settings-content-scroll">
-        <div className="settings-content">
+        <div className={`settings-content${page === "usage" ? " usage-settings-content" : ""}`}>
           <header className="settings-page-title"><span>Settings</span><h1>{selectedPage.label}</h1><p>{selectedPage.description}</p></header>
           {pageContent}
         </div>
@@ -2217,6 +2887,27 @@ function AttentionWorkspace({ attention, onResolve }) {
   );
 }
 
+function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate, onUpdate, onMove, onDelete, onOpenThread, onStartTask }) {
+  return (
+    <main className="main-canvas workspace">
+      <AppToolbar icon={Stack} title="Board" subtitle={project?.displayName} />
+      <KanbanBoard
+        project={project}
+        threads={threads}
+        tasks={tasks}
+        attention={attention}
+        loading={loading}
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onMove={onMove}
+        onDelete={onDelete}
+        onOpenThread={onOpenThread}
+        onStartTask={onStartTask}
+      />
+    </main>
+  );
+}
+
 export function App() {
   const api = window.loom;
   const [projects, setProjects] = useState([]);
@@ -2229,19 +2920,29 @@ export function App() {
   const threadLoadRequestRef = useRef(0);
   const threadsLoadRequestRef = useRef(0);
   const reviewLoadRequestRef = useRef(0);
+  const boardLoadRequestRef = useRef(0);
   const extensionsLoadRequestRef = useRef(0);
+  const usageLoadRequestRef = useRef(0);
   const submittingRef = useRef(false);
   const seenResponseIdsRef = useRef(new Set());
   const [thread, setThread] = useState(null);
   const [plan, setPlan] = useState([]);
   const [attention, setAttention] = useState([]);
   const [review, setReview] = useState({ repository: null, diff: "" });
+  const [boardTasks, setBoardTasks] = useState([]);
   const [extensions, setExtensions] = useState(EMPTY_EXTENSIONS);
+  const [providers, setProviders] = useState([]);
+  const [usageSummary, setUsageSummary] = useState(null);
+  const [usageError, setUsageError] = useState(null);
+  const [usageRangeDays, setUsageRangeDays] = useState(30);
+  const [usageRefreshKey, setUsageRefreshKey] = useState(0);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [defaultEffort, setDefaultEffort] = useState("");
+  const [defaultsHydrated, setDefaultsHydrated] = useState(false);
   const [effort, setEffort] = useState("");
+  const [fastMode, setFastMode] = useState(false);
   const [defaultPermissionMode, setDefaultPermissionMode] = useState(() => {
     const saved = localStorage.getItem("loom.permissionMode");
     return PERMISSION_OPTIONS.some((option) => option.value === saved) ? saved : "workspace-write";
@@ -2249,12 +2950,15 @@ export function App() {
   const [permissionMode, setPermissionMode] = useState(defaultPermissionMode);
   const [preferences, setPreferences] = useState(loadPreferences);
   const preferencesRef = useRef(preferences);
+  const [agentBehaviorCatalog, setAgentBehaviorCatalog] = useState(EMPTY_AGENT_BEHAVIORS);
+  const [agentBehaviors, setAgentBehaviors] = useState({});
   const [runtime, setRuntime] = useState({ state: "starting", connected: false });
   const [activeView, setActiveView] = useState("task");
   const [settingsPage, setSettingsPage] = useState("general");
   const [viewTransitionPending, setViewTransitionPending] = useState(false);
   const viewTransitionPendingRef = useRef(false);
-  const viewCurtainRef = useRef(null);
+  const viewTransitionTargetRef = useRef("task");
+  const viewSurfaceRef = useRef(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [previewWorkspaces, setPreviewWorkspaces] = useState({});
   const [updateStatus, setUpdateStatus] = useState(EMPTY_UPDATE_STATUS);
@@ -2265,9 +2969,17 @@ export function App() {
   });
   const [draftMode, setDraftMode] = useState(false);
   const draftModeRef = useRef(false);
-  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, extensions: false });
+  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, board: false, extensions: false, providers: false, usage: false });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+
+  const savePersistentDefaults = useCallback((patch) => {
+    if (patch.defaultModel !== undefined) localStorage.setItem("loom.model", patch.defaultModel);
+    if (patch.defaultEffort !== undefined) localStorage.setItem("loom.effort", patch.defaultEffort);
+    if (patch.defaultPermissionMode !== undefined) localStorage.setItem("loom.permissionMode", patch.defaultPermissionMode);
+    if (!api?.app?.saveSettings) return;
+    void api.app.saveSettings(patch).catch((cause) => setError(cause.message));
+  }, [api]);
 
   const previewWorkspaceId = selectedThreadId ?? (selectedProjectId ? `draft:${selectedProjectId}` : null);
   const previewWorkspace = previewWorkspaces[previewWorkspaceId] ?? EMPTY_PREVIEW_WORKSPACE;
@@ -2310,8 +3022,8 @@ export function App() {
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const activeTurn = [...(thread?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
-  const rootThreads = threads
-    .filter((candidate) => !candidate.parentThreadId)
+  const sidebarThreads = threads
+    .filter(isSidebarThread)
     .map((candidate) => candidate.id === thread?.id
       ? { ...candidate, status: { type: activeTurn ? "active" : "idle", activeFlags: [] } }
       : candidate);
@@ -2343,37 +3055,58 @@ export function App() {
     setPreferences((current) => ({ ...current, [key]: value }));
   }, []);
 
-  const changeView = useCallback(async (nextView) => {
-    if (nextView === activeView || viewTransitionPendingRef.current) return;
-    if (nextView !== "task") setPreviewOpen(false);
-    const crossesSettingsBoundary = activeView === "settings" || nextView === "settings";
-    const curtain = viewCurtainRef.current;
-    const reduceMotion = preferencesRef.current.reduceMotion || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    if (!crossesSettingsBoundary || !curtain?.animate || reduceMotion) {
-      setActiveView(nextView);
-      return;
-    }
+  const changeAgentBehavior = useCallback((id, value) => {
+    setAgentBehaviors((current) => {
+      const next = { ...current, [id]: value };
+      savePersistentDefaults({ agentBehaviors: next });
+      return next;
+    });
+  }, [savePersistentDefaults]);
 
-    const enteringSettings = nextView === "settings";
-    const start = enteringSettings ? "translate3d(110%, 0, 0)" : "translate3d(-110%, 0, 0)";
-    const end = enteringSettings ? "translate3d(-110%, 0, 0)" : "translate3d(110%, 0, 0)";
+  const changeView = useCallback(async (nextView) => {
+    viewTransitionTargetRef.current = nextView;
+    if (viewTransitionPendingRef.current || nextView === activeView) return;
+
+    const surface = viewSurfaceRef.current;
+    const reduceMotion = preferencesRef.current.reduceMotion || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     viewTransitionPendingRef.current = true;
     setViewTransitionPending(true);
-    curtain.hidden = false;
+    let currentView = activeView;
     try {
-      await curtain.animate(
-        [{ transform: start }, { transform: "translate3d(0, 0, 0)" }],
-        { duration: 180, easing: "cubic-bezier(.55, 0, .25, 1)", fill: "forwards" }
-      ).finished;
-      setActiveView(nextView);
-      await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
-      await curtain.animate(
-        [{ transform: "translate3d(0, 0, 0)" }, { transform: end }],
-        { duration: 240, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "forwards" }
-      ).finished;
+      while (viewTransitionTargetRef.current !== currentView) {
+        const targetView = viewTransitionTargetRef.current;
+        if (targetView !== "task") setPreviewOpen(false);
+        const crossesSettingsBoundary = currentView === "settings" || targetView === "settings";
+
+        if (!crossesSettingsBoundary || !surface?.animate || reduceMotion) {
+          setActiveView(targetView);
+          currentView = targetView;
+          continue;
+        }
+
+        const exitAnimation = surface.animate(
+          [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.995)" }],
+          { duration: 90, easing: "ease-out", fill: "forwards" }
+        );
+        await waitForAnimation(exitAnimation);
+        setActiveView(targetView);
+        currentView = targetView;
+        await waitForViewPaint();
+        const enterAnimation = surface.animate(
+          [{ opacity: 0, transform: "scale(.995)" }, { opacity: 1, transform: "scale(1)" }],
+          { duration: 180, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "forwards" }
+        );
+        await waitForAnimation(enterAnimation);
+        exitAnimation.cancel();
+        enterAnimation.cancel();
+      }
+    } catch {
+      const targetView = viewTransitionTargetRef.current;
+      setActiveView(targetView);
     } finally {
-      curtain.getAnimations().forEach((animation) => animation.cancel());
-      curtain.hidden = true;
+      surface?.getAnimations?.().forEach((animation) => animation.cancel());
+      surface?.style.removeProperty("opacity");
+      surface?.style.removeProperty("transform");
       viewTransitionPendingRef.current = false;
       setViewTransitionPending(false);
     }
@@ -2394,11 +3127,11 @@ export function App() {
       if (requestId !== threadsLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       const next = response.data ?? [];
       setThreads(next);
-      const roots = next.filter((candidate) => !candidate.parentThreadId);
+      const sidebarCandidates = next.filter(isSidebarThread);
       setSelectedThreadId((current) => {
-        const selected = current && roots.some((candidate) => candidate.id === current)
+        const selected = current && sidebarCandidates.some((candidate) => candidate.id === current)
           ? current
-          : draftModeRef.current ? null : roots[0]?.id ?? null;
+          : draftModeRef.current ? null : sidebarCandidates[0]?.id ?? null;
         selectedThreadIdRef.current = selected;
         return selected;
       });
@@ -2498,6 +3231,26 @@ export function App() {
     }
   }, [api]);
 
+  const loadBoard = useCallback(async (projectId) => {
+    if (!api?.board || !projectId) {
+      setBoardTasks([]);
+      return;
+    }
+    const requestId = ++boardLoadRequestRef.current;
+    setLoading((state) => ({ ...state, board: true }));
+    try {
+      const result = await api.board.list({ projectId });
+      if (requestId !== boardLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
+      setBoardTasks(result.data ?? []);
+    } catch (cause) {
+      if (requestId !== boardLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
+      setError(cause.message);
+      setBoardTasks([]);
+    } finally {
+      if (requestId === boardLoadRequestRef.current) setLoading((state) => ({ ...state, board: false }));
+    }
+  }, [api]);
+
   const loadExtensions = useCallback(async () => {
     if (!api) return;
     const requestId = ++extensionsLoadRequestRef.current;
@@ -2516,6 +3269,40 @@ export function App() {
     }
   }, [api, selectedProjectId, selectedThreadId]);
 
+  const loadProviders = useCallback(async () => {
+    if (!api?.providers) return;
+    setLoading((state) => ({ ...state, providers: true }));
+    try {
+      setProviders(await api.providers.list());
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setLoading((state) => ({ ...state, providers: false }));
+    }
+  }, [api]);
+
+  const refreshProviders = useCallback(async () => {
+    await loadProviders();
+    await loadModels();
+  }, [loadModels, loadProviders]);
+
+  const loadUsage = useCallback(async (days = usageRangeDays) => {
+    if (!api?.usage) return;
+    const requestId = ++usageLoadRequestRef.current;
+    setLoading((state) => ({ ...state, usage: true }));
+    setUsageError(null);
+    try {
+      const result = await api.usage.summary({ days });
+      if (requestId !== usageLoadRequestRef.current) return;
+      setUsageSummary(result);
+    } catch (cause) {
+      if (requestId !== usageLoadRequestRef.current) return;
+      setUsageError(cause.message);
+    } finally {
+      if (requestId === usageLoadRequestRef.current) setLoading((state) => ({ ...state, usage: false }));
+    }
+  }, [api, usageRangeDays]);
+
   useEffect(() => {
     if (!api) {
       setRuntime({ state: "unavailable", connected: false });
@@ -2526,9 +3313,47 @@ export function App() {
     let cancelled = false;
     api.app.bootstrap().then((result) => {
       if (cancelled) return;
+      const nextModels = result.models ?? [];
+      const persisted = result.settings ?? {};
+      const legacyModel = localStorage.getItem("loom.model") || "";
+      const legacyEffort = localStorage.getItem("loom.effort") || "";
+      const legacyPermission = localStorage.getItem("loom.permissionMode") || "";
+      const requestedModel = persisted.defaultModel || legacyModel;
+      const resolvedModel = nextModels.find((model) => model.model === requestedModel)
+        ?? nextModels.find((model) => model.isDefault)
+        ?? nextModels[0];
+      const resolvedEffort = resolvedModel
+        ? resolveReasoningEffort(persisted.defaultEffort || legacyEffort, resolvedModel)
+        : persisted.defaultEffort || legacyEffort;
+      const requestedPermission = persisted.defaultPermissionMode || legacyPermission;
+      const resolvedPermission = PERMISSION_OPTIONS.some((option) => option.value === requestedPermission)
+        ? requestedPermission
+        : "workspace-write";
+      const resolvedDefaults = {
+        ...(resolvedModel?.model ? { defaultModel: resolvedModel.model } : {}),
+        ...(resolvedEffort ? { defaultEffort: resolvedEffort } : {}),
+        defaultPermissionMode: resolvedPermission
+      };
+      const behaviorCatalog = result.agentBehaviors ?? EMPTY_AGENT_BEHAVIORS;
+      const persistedBehaviors = persisted.agentBehaviors ?? {};
+      const resolvedBehaviors = Object.fromEntries(behaviorCatalog.map((behavior) => [
+        behavior.id,
+        typeof persistedBehaviors[behavior.id] === "boolean" ? persistedBehaviors[behavior.id] : behavior.defaultEnabled
+      ]));
+
       setProjects(result.projects ?? []);
-      setModels(result.models ?? []);
+      setModels(nextModels);
+      setDefaultModel(resolvedModel?.model ?? requestedModel);
+      setDefaultEffort(resolvedEffort);
+      setDefaultPermissionMode(resolvedPermission);
+      setPermissionMode(resolvedPermission);
+      setAgentBehaviorCatalog(behaviorCatalog);
+      setAgentBehaviors(resolvedBehaviors);
+      setDefaultsHydrated(true);
       setRuntime(result.runtime ?? { state: "unavailable", connected: false });
+      if (Object.entries(resolvedDefaults).some(([key, value]) => persisted[key] !== value)) {
+        savePersistentDefaults(resolvedDefaults);
+      }
       const saved = localStorage.getItem("loom.activeProjectId");
       const selected = result.projects?.find((project) => project.id === saved)?.id ?? result.projects?.[0]?.id ?? null;
       setSelectedProjectId(selected);
@@ -2536,7 +3361,7 @@ export function App() {
       if (!cancelled) setLoading((state) => ({ ...state, app: false }));
     });
     return () => { cancelled = true; };
-  }, [api]);
+  }, [api, savePersistentDefaults]);
 
   useEffect(() => {
     if (!api?.browser || !previewWorkspaceId) return;
@@ -2563,20 +3388,23 @@ export function App() {
   }, [api]);
 
   useEffect(() => {
-    if (!models.length) return;
-    const saved = localStorage.getItem("loom.model");
-    const model = models.find((candidate) => candidate.model === saved) ?? models.find((candidate) => candidate.isDefault) ?? models[0];
-    const nextDefaultEffort = storedReasoningEffort(model);
-    setDefaultModel((current) => current || model.model);
-    setDefaultEffort((current) => current || nextDefaultEffort);
-    if (!selectedModel) {
+    if (!models.length || !defaultsHydrated) return;
+    const model = models.find((candidate) => candidate.model === defaultModel) ?? models.find((candidate) => candidate.isDefault) ?? models[0];
+    const nextDefaultEffort = resolveReasoningEffort(defaultEffort, model, model.defaultReasoningEffort);
+    if (model.model !== defaultModel || nextDefaultEffort !== defaultEffort) {
+      setDefaultModel(model.model);
+      setDefaultEffort(nextDefaultEffort);
+      savePersistentDefaults({ defaultModel: model.model, defaultEffort: nextDefaultEffort });
+    }
+    if (!models.some((candidate) => candidate.model === selectedModel)) {
       const savedThread = loadThreadConfiguration(selectedThreadIdRef.current);
       const selectedThreadModel = models.find((candidate) => candidate.model === savedThread?.model) ?? model;
       setSelectedModel(selectedThreadModel.model);
       setEffort(resolveReasoningEffort(savedThread?.effort, selectedThreadModel, nextDefaultEffort));
+      setFastMode(Boolean(savedThread?.fastMode));
       setPermissionMode(PERMISSION_OPTIONS.some((option) => option.value === savedThread?.permissionMode) ? savedThread.permissionMode : defaultPermissionMode);
     }
-  }, [defaultPermissionMode, models, selectedModel]);
+  }, [defaultEffort, defaultModel, defaultPermissionMode, defaultsHydrated, models, savePersistentDefaults, selectedModel]);
 
   useEffect(() => {
     if (!models.length || !defaultModel || !defaultEffort || draftMode) return;
@@ -2586,6 +3414,7 @@ export function App() {
       ?? models[0];
     setSelectedModel(model.model);
     setEffort(resolveReasoningEffort(savedThread?.effort, model, defaultEffort));
+    setFastMode(Boolean(savedThread?.fastMode));
     setPermissionMode(PERMISSION_OPTIONS.some((option) => option.value === savedThread?.permissionMode)
       ? savedThread.permissionMode
       : defaultPermissionMode);
@@ -2594,6 +3423,7 @@ export function App() {
   useEffect(() => {
     if (!selectedProjectId) {
       setThreads([]);
+      setBoardTasks([]);
       selectedThreadIdRef.current = null;
       setSelectedThreadId(null);
       setThread(null);
@@ -2603,7 +3433,8 @@ export function App() {
     localStorage.setItem("loom.activeProjectId", selectedProjectId);
     loadThreads(selectedProjectId);
     loadReview(selectedProjectId);
-  }, [selectedProjectId, loadReview, loadThreads]);
+    loadBoard(selectedProjectId);
+  }, [selectedProjectId, loadBoard, loadReview, loadThreads]);
 
   useEffect(() => {
     setPlan([]);
@@ -2658,8 +3489,10 @@ export function App() {
 
   useEffect(() => {
     if (activeView === "settings") loadExtensions();
+    if (activeView === "settings" && settingsPage === "providers") loadProviders();
+    if (activeView === "settings" && settingsPage === "usage") loadUsage(usageRangeDays);
     if (activeView === "review" && selectedProjectId) loadReview(selectedProjectId);
-  }, [activeView, loadExtensions, loadReview, selectedProjectId]);
+  }, [activeView, loadExtensions, loadProviders, loadReview, loadUsage, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey]);
 
   useEffect(() => {
     if (!api) return;
@@ -2681,7 +3514,8 @@ export function App() {
       }
       if (event.type === "AttentionRequired") {
         setAttention((current) => current.some((request) => request.id === event.payload.id) ? current : [...current, event.payload]);
-        if (preferencesRef.current.bringApprovalsForward) setActiveView("attention");
+        const questionForCurrentThread = isQuestionRequest(event.payload) && event.payload.params?.threadId === selectedThreadIdRef.current;
+        if (preferencesRef.current.bringApprovalsForward && !questionForCurrentThread) setActiveView("attention");
         return;
       }
       if (event.type === "AttentionReset") {
@@ -2706,8 +3540,16 @@ export function App() {
         }
         return;
       }
+      if (event.type === "BoardUpdated") {
+        if (!event.payload?.projectId || event.payload.projectId === selectedProjectId) loadBoard(selectedProjectId);
+        return;
+      }
       if (event.type === "UpdateState") {
         setUpdateStatus(event.payload);
+        return;
+      }
+      if (event.type === "UsageUpdated") {
+        setUsageRefreshKey((value) => value + 1);
         return;
       }
 
@@ -2749,7 +3591,7 @@ export function App() {
         }
       }
     });
-  }, [api, loadAgents, loadModels, loadReview, loadThreads, normalizePlan, refreshThread, selectedProjectId, updatePreviewWorkspace]);
+  }, [api, loadAgents, loadBoard, loadModels, loadReview, loadThreads, normalizePlan, refreshThread, selectedProjectId, updatePreviewWorkspace]);
 
   const openProject = async () => {
     if (!api) return;
@@ -2787,6 +3629,7 @@ export function App() {
     setDraftMode(true);
     setSelectedModel(defaultModel);
     setEffort(defaultEffort);
+    setFastMode(false);
     setPermissionMode(defaultPermissionMode);
     selectedThreadIdRef.current = null;
     setSelectedThreadId(null);
@@ -2813,6 +3656,7 @@ export function App() {
       if (selectedProjectIdRef.current !== projectId) return;
       const remaining = threads.filter((candidate) => candidate.id !== threadId);
       setThreads((current) => current.filter((candidate) => candidate.id !== threadId));
+      setBoardTasks((current) => current.map((task) => task.threadId === threadId ? { ...task, threadId: null } : task));
       if (selectedThreadIdRef.current === threadId) {
         const next = remaining.find((candidate) => !candidate.parentThreadId) ?? null;
         selectedThreadIdRef.current = next?.id ?? null;
@@ -2827,13 +3671,109 @@ export function App() {
     }
   };
 
+  const createBoardTask = async ({ title, description, column }) => {
+    if (!api?.board || !selectedProjectId) return;
+    const projectId = selectedProjectId;
+    try {
+      const task = await api.board.create({ projectId, title, description, column });
+      if (selectedProjectIdRef.current !== projectId) return;
+      setBoardTasks((current) => current.some((candidate) => candidate.id === task.id) ? current : [...current, task]);
+      setError(null);
+      return task;
+    } catch (cause) {
+      setError(cause.message);
+      throw cause;
+    }
+  };
+
+  const updateBoardTask = async (taskId, patch) => {
+    if (!api?.board || !selectedProjectId) return;
+    const projectId = selectedProjectId;
+    try {
+      let task = await api.board.update({ projectId, taskId, title: patch.title, description: patch.description });
+      if (patch.column && patch.column !== task.column) task = await api.board.move({ projectId, taskId, column: patch.column });
+      if (selectedProjectIdRef.current !== projectId) return;
+      setBoardTasks((current) => current.map((candidate) => candidate.id === taskId ? task : candidate));
+      setError(null);
+      return task;
+    } catch (cause) {
+      setError(cause.message);
+      throw cause;
+    }
+  };
+
+  const moveBoardTask = async (taskId, column, beforeTaskId) => {
+    if (!api?.board || !selectedProjectId) return;
+    const projectId = selectedProjectId;
+    try {
+      await api.board.move({ projectId, taskId, column, ...(beforeTaskId ? { beforeTaskId } : {}) });
+      if (selectedProjectIdRef.current === projectId) await loadBoard(projectId);
+      setError(null);
+    } catch (cause) {
+      setError(cause.message);
+      throw cause;
+    }
+  };
+
+  const deleteBoardTask = async (taskId) => {
+    if (!api?.board || !selectedProjectId) return;
+    const projectId = selectedProjectId;
+    try {
+      await api.board.delete({ projectId, taskId });
+      if (selectedProjectIdRef.current !== projectId) return;
+      setBoardTasks((current) => current.filter((candidate) => candidate.id !== taskId));
+      setError(null);
+    } catch (cause) {
+      setError(cause.message);
+      throw cause;
+    }
+  };
+
+  const startBoardTask = async (task) => {
+    if (!api?.board || !api?.threads || !selectedProjectId || !runtime.connected) return;
+    const projectId = selectedProjectId;
+    try {
+      const created = await api.threads.create({
+        projectId,
+        model: defaultModel || undefined,
+        permissionMode: defaultPermissionMode
+      });
+      const threadId = created.thread.id;
+      saveThreadConfiguration(threadId, { model: defaultModel, effort: defaultEffort, fastMode: false, permissionMode: defaultPermissionMode });
+      await api.board.attach({ projectId, taskId: task.id, threadId });
+      await api.board.move({ projectId, taskId: task.id, column: "active" });
+      const prompt = task.description ? `${task.title}\n\n${task.description}` : task.title;
+      const response = await api.turns.start({
+        projectId,
+        threadId,
+        text: prompt,
+        images: [],
+        model: defaultModel || undefined,
+        effort: defaultEffort,
+        permissionMode: defaultPermissionMode
+      });
+      if (selectedProjectIdRef.current !== projectId) return;
+      optimisticThreadsRef.current.set(threadId, created.thread);
+      setThreads((current) => current.some((candidate) => candidate.id === threadId) ? current : [created.thread, ...current]);
+      setBoardTasks((current) => current.map((candidate) => candidate.id === task.id ? { ...candidate, column: "active", threadId } : candidate));
+      selectedThreadIdRef.current = threadId;
+      setSelectedThreadId(threadId);
+      setDraftMode(false);
+      setThread(applyRuntimePayload(created.thread, { method: "turn/started", threadId, turn: response.turn }));
+      setActiveView("task");
+      setError(null);
+    } catch (cause) {
+      setError(cause.message);
+      throw cause;
+    }
+  };
+
   const changeDefaultModel = (modelName) => {
     setDefaultModel(modelName);
-    localStorage.setItem("loom.model", modelName);
     const model = models.find((candidate) => candidate.model === modelName);
-    const nextEffort = resolveReasoningEffort(defaultEffort, model, storedReasoningEffort(model));
+    const nextEffort = resolveReasoningEffort(defaultEffort, model, model?.defaultReasoningEffort);
     setDefaultEffort(nextEffort);
-    localStorage.setItem("loom.effort", nextEffort);
+    savePersistentDefaults({ defaultModel: modelName, defaultEffort: nextEffort });
   };
 
   const changeThreadModel = (modelName) => {
@@ -2841,27 +3781,32 @@ export function App() {
     const model = models.find((candidate) => candidate.model === modelName);
     const nextEffort = resolveReasoningEffort(effort, model, defaultEffort);
     setEffort(nextEffort);
-    saveThreadConfiguration(selectedThreadId, { model: modelName, effort: nextEffort, permissionMode });
+    saveThreadConfiguration(selectedThreadId, { model: modelName, effort: nextEffort, fastMode, permissionMode });
   };
 
   const changeDefaultEffort = (nextEffort) => {
     setDefaultEffort(nextEffort);
-    localStorage.setItem("loom.effort", nextEffort);
+    savePersistentDefaults({ defaultEffort: nextEffort });
   };
 
   const changeThreadEffort = (nextEffort) => {
     setEffort(nextEffort);
-    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort: nextEffort, permissionMode });
+    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort: nextEffort, fastMode, permissionMode });
+  };
+
+  const changeThreadFastMode = (enabled) => {
+    setFastMode(enabled);
+    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort, fastMode: enabled, permissionMode });
   };
 
   const changeDefaultPermissionMode = (mode) => {
     setDefaultPermissionMode(mode);
-    localStorage.setItem("loom.permissionMode", mode);
+    savePersistentDefaults({ defaultPermissionMode: mode });
   };
 
   const changeThreadPermissionMode = (mode) => {
     setPermissionMode(mode);
-    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort, permissionMode: mode });
+    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort, fastMode, permissionMode: mode });
   };
 
   const togglePreview = useCallback(async () => {
@@ -2934,10 +3879,18 @@ export function App() {
     submittingRef.current = true;
     setSubmitting(true);
     let optimisticThreadId = null;
+    const selectedModelInfo = models.find((model) => model.model === selectedModel);
+    const selectedFastTier = fastServiceTier(selectedModelInfo);
+    const serviceTier = selectedFastTier ? (fastMode ? selectedFastTier : null) : undefined;
     try {
       let targetThreadId = startingThreadId;
       if (!targetThreadId) {
-        const created = await api.threads.create({ projectId, model: selectedModel || undefined, permissionMode });
+        const created = await api.threads.create({
+          projectId,
+          model: selectedModel || undefined,
+          ...(serviceTier !== undefined ? { serviceTier } : {}),
+          permissionMode
+        });
         targetThreadId = created.thread.id;
         const draftWorkspaceId = `draft:${projectId}`;
         await api.browser?.adopt({ fromWorkspaceId: draftWorkspaceId, toWorkspaceId: targetThreadId });
@@ -2948,7 +3901,7 @@ export function App() {
           delete next[draftWorkspaceId];
           return next;
         });
-        saveThreadConfiguration(targetThreadId, { model: selectedModel, effort, permissionMode });
+        saveThreadConfiguration(targetThreadId, { model: selectedModel, effort, fastMode, permissionMode });
         optimisticThreadId = targetThreadId;
         if (selectedProjectIdRef.current === projectId) {
           optimisticThreadsRef.current.set(targetThreadId, created.thread);
@@ -2973,6 +3926,7 @@ export function App() {
           text,
           images,
           model: selectedModel || undefined,
+          ...(serviceTier !== undefined ? { serviceTier } : {}),
           effort,
           permissionMode
         });
@@ -3016,6 +3970,28 @@ export function App() {
     }
   };
 
+  const resolveQuestion = async (request, response) => {
+    try {
+      await api.questions.respond({ requestId: request.id, ...response });
+      setAttention((current) => current.filter((candidate) => candidate.id !== request.id));
+      return true;
+    } catch (cause) {
+      setError(cause.message);
+      return false;
+    }
+  };
+
+  const loginProvider = async (provider) => {
+    if (!api?.providers) return false;
+    try {
+      const result = await api.providers.login({ provider });
+      return result.opened;
+    } catch (cause) {
+      setError(cause.message);
+      return false;
+    }
+  };
+
   const openExternal = async (kind) => {
     if (!api || !selectedProjectId) return;
     try {
@@ -3027,17 +4003,22 @@ export function App() {
     }
   };
 
+  const questionRequest = attention.find((request) => isQuestionRequest(request) && request.params?.threadId === selectedThreadId) ?? null;
   const composerProps = {
     disabled: !runtime.connected || !selectedProject,
     busy: submitting,
     draftKey: `${selectedProjectId ?? "none"}:${selectedThreadId ?? "new"}`,
     preserveDrafts: preferences.preserveDrafts,
     running: Boolean(activeTurn),
+    questionRequest,
+    onQuestionResolve: resolveQuestion,
     models,
     selectedModel,
     onModelChange: changeThreadModel,
     effort,
     onEffortChange: changeThreadEffort,
+    fastMode,
+    onFastModeChange: changeThreadFastMode,
     permissionMode,
     onPermissionModeChange: changeThreadPermissionMode,
     onSubmit: submit,
@@ -3045,7 +4026,23 @@ export function App() {
   };
 
   let content;
-  if (activeView === "review") {
+  if (activeView === "board") {
+    content = (
+      <BoardWorkspace
+        project={selectedProject}
+        threads={threads}
+        tasks={boardTasks}
+        attention={attention}
+        loading={loading.threads || loading.board}
+        onCreate={createBoardTask}
+        onUpdate={updateBoardTask}
+        onMove={moveBoardTask}
+        onDelete={deleteBoardTask}
+        onOpenThread={selectThread}
+        onStartTask={startBoardTask}
+      />
+    );
+  } else if (activeView === "review") {
     content = <ReviewWorkspace project={selectedProject} review={review} loading={loading.review} onRefresh={() => loadReview(selectedProjectId)} onExternal={openExternal} />;
   } else if (activeView === "settings") {
     content = (
@@ -3062,8 +4059,21 @@ export function App() {
         onPermissionModeChange={changeDefaultPermissionMode}
         preferences={preferences}
         onPreferenceChange={changePreference}
+        agentBehaviorCatalog={agentBehaviorCatalog}
+        agentBehaviors={agentBehaviors}
+        onAgentBehaviorChange={changeAgentBehavior}
         extensions={extensions}
         extensionsLoading={loading.extensions}
+        providers={providers}
+        providersLoading={loading.providers}
+        onRefreshProviders={refreshProviders}
+        onProviderLogin={loginProvider}
+        usageSummary={usageSummary}
+        usageLoading={loading.usage}
+        usageError={usageError}
+        usageRangeDays={usageRangeDays}
+        onUsageRangeChange={setUsageRangeDays}
+        onRefreshUsage={() => loadUsage(usageRangeDays)}
         onRefreshCapabilities={loadExtensions}
         onRefreshModels={() => loadModels().catch((cause) => setError(cause.message))}
         updateStatus={updateStatus}
@@ -3108,6 +4118,7 @@ export function App() {
   return (
     <div className="loom-stage">
       <div
+        ref={viewSurfaceRef}
         className={`loom-app view-${activeView}`}
         data-sidebar-expanded={sidebarExpanded}
         data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread)}
@@ -3126,7 +4137,7 @@ export function App() {
             projects={projects}
             selectedProjectId={selectedProjectId}
             onSelectProject={selectProject}
-            tasks={rootThreads}
+            tasks={sidebarThreads}
             selectedThreadId={selectedThreadId}
             onSelectThread={selectThread}
             onDeleteThread={deleteThread}
@@ -3146,7 +4157,6 @@ export function App() {
         {content}
         {activeView === "task" && !previewOpen && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
       </div>
-      <div ref={viewCurtainRef} className="view-curtain" hidden aria-hidden="true" />
       {error && (
         <div className="runtime-toast" role="alert">
           <Warning size={17} />

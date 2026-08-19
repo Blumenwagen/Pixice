@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loom prompt rail preview</title>
+    <style>
+      html, body, #preview-root { height: 100%; margin: 0; }
+      body { overflow: hidden; background: #111; }
+    </style>
+  </head>
+  <body>
+    <div id="preview-root"></div>
+    <script type="module">
+      import React, { useState } from "react";
+      import { createRoot } from "react-dom/client";
+      import { PromptPreviewRail } from "/src/components/PromptPreviewRail.jsx";
+      import "/src/styles.css";
+
+      const prompts = [
+        ["Audit the current thread experience", "I traced the conversation layout and found the main interaction points."],
+        ["Make the task status easier to scan", "The status now stays visible without competing with the response."],
+        ["Can the composer feel more compact?", "I tightened the controls and kept the primary action within easy reach."],
+        ["Add image generation support like Codex", "The generation state now appears inline with a live dotted preview."],
+        ["The preview needs reduced-motion support", "Motion preferences now remove morphing and keep the state legible."],
+        ["Add a rail for navigating longer threads", "The rail maps every prompt and previews the matching exchange."],
+        ["Keep it aligned with the conversation", "It is pinned to the viewport beside the centered message column."],
+        ["Verify hover, keyboard, and touch", "Mouse and keyboard jump directly; touch offers a readable first-tap preview."],
+      ].map(([label, description], index) => ({
+        id: `prompt-${index + 1}`,
+        anchorId: `preview-prompt-${index + 1}`,
+        label,
+        description,
+      }));
+
+      function Preview() {
+        const [activeId, setActiveId] = useState(prompts[5].id);
+        return React.createElement("div", { className: "loom-app", style: { height: "100%", display: "block" } },
+          React.createElement("main", { className: "main-canvas", style: { height: "calc(100% - 8px)", marginLeft: 8 } },
+            React.createElement("header", { className: "app-toolbar" },
+              React.createElement("div", { className: "toolbar-title" }, React.createElement("span", null,
+                React.createElement("strong", null, "Build Loom desktop"),
+                React.createElement("small", null, "Loom"),
+              )),
+            ),
+            React.createElement(PromptPreviewRail, {
+              items: prompts,
+              activeId,
+              onItemSelect: (item) => {
+                setActiveId(item.id);
+                document.getElementById(item.anchorId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+              },
+            }),
+            React.createElement("div", { className: "conversation-scroll" },
+              React.createElement("div", { className: "conversation-column" },
+                React.createElement("div", { className: "message-stream" },
+                  prompts.map((item, index) => React.createElement(React.Fragment, { key: item.id },
+                    React.createElement("div", { id: item.anchorId, className: "message user-message" }, item.label),
+                    React.createElement("article", { className: "message assistant-message final_answer" },
+                      React.createElement("div", { className: "markdown-body" },
+                        React.createElement("p", null, item.description),
+                        React.createElement("p", null, index === 5
+                          ? "Hover the rail to preview earlier prompts, or select a tick to jump to that exchange."
+                          : "The conversation remains readable while the rail stays available at the left edge."),
+                      ),
+                    ),
+                  )),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+
+      createRoot(document.getElementById("preview-root")).render(React.createElement(Preview));
+    </script>
+  </body>
+</html>

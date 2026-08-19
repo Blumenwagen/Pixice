@@ -1,7 +1,7 @@
 export {};
 
 type LoomEvent = {
-  type: "TaskUpdated" | "AgentUpdated" | "ActivityReceived" | "AttentionRequired" | "AttentionReset" | "RuntimeError" | "RuntimeStatus" | "BrowserState" | "BrowserOpenRequested" | "UpdateState";
+  type: "TaskUpdated" | "AgentUpdated" | "ActivityReceived" | "AttentionRequired" | "AttentionReset" | "RuntimeError" | "RuntimeStatus" | "BrowserState" | "BrowserOpenRequested" | "BoardUpdated" | "UpdateState" | "UsageUpdated";
   payload: any;
   at: string;
 };
@@ -13,9 +13,15 @@ declare global {
   interface Window {
     loom?: {
       app: {
-        bootstrap(): Promise<{ projects: any[]; models: any[]; runtime: any }>;
+        bootstrap(): Promise<{ projects: any[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; defaultEnabled: boolean }> }>;
+        saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };
+      providers: {
+        list(): Promise<any[]>;
+        login(payload: { provider: string }): Promise<{ provider: string; opened: boolean; loginId?: string | null }>;
+      };
+      usage: { summary(payload: { days: number }): Promise<any> };
       updates: {
         status(): Promise<any>;
         check(): Promise<any>;
@@ -40,15 +46,23 @@ declare global {
         list(): Promise<any[]>;
         open(): Promise<any | null>;
       };
+      board: {
+        list(payload: ProjectScope): Promise<{ data: Array<{ id: string; projectId: string; title: string; description: string; column: "backlog" | "ready" | "active" | "done"; position: number; threadId: string | null; createdByThreadId: string | null; createdAt: string; updatedAt: string }> }>;
+        create(payload: ProjectScope & { title: string; description?: string; column?: "backlog" | "ready" | "active" | "done" }): Promise<any>;
+        update(payload: ProjectScope & { taskId: string; title?: string; description?: string }): Promise<any>;
+        move(payload: ProjectScope & { taskId: string; column: "backlog" | "ready" | "active" | "done"; beforeTaskId?: string }): Promise<any>;
+        delete(payload: ProjectScope & { taskId: string }): Promise<any>;
+        attach(payload: ProjectScope & { taskId: string; threadId: string }): Promise<any>;
+      };
       threads: {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
         read(payload: ThreadScope): Promise<{ thread: any }>;
         children(payload: ThreadScope): Promise<{ data: any[]; nextCursor: string | null }>;
-        create(payload: ProjectScope & { model?: string; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ thread: any }>;
+        create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ thread: any }>;
         archive(payload: ThreadScope): Promise<unknown>;
       };
       turns: {
-        start(payload: ThreadScope & { text: string; images?: string[]; model?: string; effort?: string; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ turn: any }>;
+        start(payload: ThreadScope & { text: string; images?: string[]; model?: string; serviceTier?: string | null; effort?: string; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ turn: any }>;
         steer(payload: ThreadScope & { turnId: string; text: string; images?: string[] }): Promise<unknown>;
         interrupt(payload: ThreadScope & { turnId: string }): Promise<unknown>;
       };
@@ -57,6 +71,9 @@ declare global {
       };
       requests: {
         respond(payload: { requestId: string | number; answers: Record<string, { answers: string[] }> }): Promise<unknown>;
+      };
+      questions: {
+        respond(payload: { requestId: string | number; action: "answer" | "cancel"; answers: Record<string, string> }): Promise<unknown>;
       };
       elicitations: {
         respond(payload: { requestId: string | number; action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> }): Promise<unknown>;

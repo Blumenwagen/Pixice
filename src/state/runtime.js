@@ -10,6 +10,12 @@ export function threadTitle(thread) {
   return thread?.name?.trim() || thread?.preview?.trim() || "Untitled task";
 }
 
+export function isSidebarThread(thread) {
+  return !thread?.parentThreadId
+    || thread?.bridge?.kind === "loomBridge"
+    || Boolean(thread?.bridgeModel);
+}
+
 export function flattenItems(thread) {
   return (thread?.turns ?? []).flatMap((turn) =>
     (turn.items ?? []).map((item) => ({ ...item, turnId: turn.id, turnStatus: turn.status }))
@@ -27,6 +33,7 @@ function itemFingerprint(item) {
   if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") {
     return `${item.type}:${item.server ?? ""}:${item.tool ?? item.name ?? ""}:${JSON.stringify(item.arguments ?? item.input ?? "")}`;
   }
+  if (item.type === "imageGeneration") return "imageGeneration";
   return null;
 }
 
@@ -203,6 +210,12 @@ export function projectCollabAgents(threads, item) {
       name: existing?.name ?? null,
       status: collabThreadStatus(agentState?.status, item.tool),
       agentStatusMessage: agentState?.message ?? existing?.agentStatusMessage ?? null,
+      bridge: existing?.bridge ?? (item.bridge ? {
+        kind: "loomBridge",
+        parentThreadId: item.senderThreadId,
+        model: item.model ?? null,
+        effort: item.effort ?? null
+      } : null),
       liveProjection: existing?.liveProjection ?? true
     });
   });
