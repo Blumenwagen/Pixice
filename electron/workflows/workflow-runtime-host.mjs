@@ -75,7 +75,7 @@ export async function installWorkflowRuntimeHost({
   onAgentActivity
 }) {
   if (!process.versions.electron) return null;
-  const { app, BrowserWindow, ipcMain } = await import("electron");
+  const { app, BrowserWindow, ipcMain, Notification, safeStorage } = await import("electron");
   const send = eventSender(BrowserWindow);
   const settings = () => database.getAppSettings?.() ?? {};
   const developerInstructions = () => {
@@ -129,7 +129,15 @@ export async function installWorkflowRuntimeHost({
       if (!project) throw new Error("Project not found");
       return project;
     },
+    credentialCrypto: safeStorage,
+    notify: async ({ title, body, urgency, silent }) => {
+      if (!Notification.isSupported()) return false;
+      new Notification({ title, body, urgency, silent }).show();
+      return true;
+    },
     onChange: (payload) => send("WorkflowUpdated", payload),
+    onTriggersChange: (payload) => send("WorkflowTriggersUpdated", payload),
+    onCredentialsChange: (payload) => send("WorkflowCredentialsUpdated", payload),
     onOpen: (payload) => send("WorkflowOpenRequested", {
       ...payload,
       workspaceId: controllingWorkflowWorkspace(database, payload.threadId)
@@ -149,13 +157,10 @@ export async function installWorkflowRuntimeHost({
     },
     onAgentActivity
   });
+  await integration.ready;
 
   app.once("before-quit", () => {
-    try {
-      integration.close();
-    } catch {
-      // The operating system will close the SQLite handle during process shutdown.
-    }
+    void integration.close().catch(() => null);
   });
   return integration;
 }
