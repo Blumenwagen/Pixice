@@ -1,9 +1,10 @@
 import { z } from "zod";
+import { WORKFLOW_NODE_TYPES } from "./workflow-node-catalog.mjs";
 
 const identifier = z.string().trim().min(1).max(160);
 const node = z.object({
   id: identifier,
-  type: z.enum(["manualTrigger", "loomAgent", "output"]),
+  type: z.enum(WORKFLOW_NODE_TYPES),
   name: z.string().trim().min(1).max(160),
   description: z.string().max(2_000).default(""),
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
