@@ -43,11 +43,27 @@ function eventSender(BrowserWindow) {
   };
 }
 
-function controllingWorkspace(database, threadId) {
-  const link = threadId ? database.getThreadLink?.(threadId) : null;
-  const parent = link?.parentThreadId;
-  if (parent && !parent.startsWith("workflow:")) return parent;
-  return threadId;
+export function controllingWorkflowWorkspace(database, threadId) {
+  let current = threadId;
+  const visited = new Set();
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    const parent = database.getThreadLink?.(current)?.parentThreadId;
+    if (!parent || parent.startsWith("workflow:")) return current;
+    current = parent;
+  }
+  return current ?? threadId;
+}
+
+export function projectWorkflowThread(payload) {
+  if (payload.executionMode !== "background" || payload.thread.parentThreadId) return payload;
+  return {
+    ...payload,
+    thread: {
+      ...payload.thread,
+      parentThreadId: `workflow:${payload.workflow.id}`
+    }
+  };
 }
 
 export async function installWorkflowRuntimeHost({
@@ -116,11 +132,21 @@ export async function installWorkflowRuntimeHost({
     onChange: (payload) => send("WorkflowUpdated", payload),
     onOpen: (payload) => send("WorkflowOpenRequested", {
       ...payload,
-      workspaceId: controllingWorkspace(database, payload.threadId)
+      workspaceId: controllingWorkflowWorkspace(database, payload.threadId)
     }),
     onRun: (payload) => send("WorkflowRunUpdated", payload),
     onForeground: (payload) => send("WorkflowForegroundRequested", payload),
-    onThreadCreated,
+    onThreadCreated: (payload) => {
+      const projected = projectWorkflowThread(payload);
+      onThreadCreated?.(projected);
+      if (projected.executionMode === "background") {
+        send("TaskUpdated", {
+          method: "thread/started",
+          projectId: projected.workflow.projectId,
+          thread: projected.thread
+        });
+      }
+    },
     onAgentActivity
   });
 
