@@ -1,0 +1,59 @@
+name: one-shot-claude-thread-instructions
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - phine/loom-development
+    paths:
+      - .github/workflows/one-shot-claude-thread-instructions.yml
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: phine/loom-development
+          fetch-depth: 0
+      - name: Preserve thread-specific Claude instructions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          provider = Path("electron/providers/claude-provider.mjs")
+          content = provider.read_text(encoding="utf-8")
+          replacements = [
+              (
+                  '      permissionMode: params.permissionMode || "workspace-write",\n      query: null,',
+                  '      permissionMode: params.permissionMode || "workspace-write",\n      developerInstructions: params.developerInstructions || null,\n      query: null,',
+              ),
+              (
+                  '      developerInstructions: this.#developerInstructions(),\n      clientVersion: this.clientVersion,\n      canUseTool: (toolName, input, details) => this.#canUseTool(context, toolName, input, details),',
+                  '      developerInstructions: context.developerInstructions || this.#developerInstructions(),\n      clientVersion: this.clientVersion,\n      canUseTool: (toolName, input, details) => this.#canUseTool(context, toolName, input, details),',
+              ),
+              (
+                  '      permissionMode: "workspace-write",\n      query: null,',
+                  '      permissionMode: "workspace-write",\n      developerInstructions: null,\n      query: null,',
+              ),
+          ]
+          for old, new in replacements:
+              count = content.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected one Claude provider replacement, found {count}: {old[:70]!r}")
+              content = content.replace(old, new, 1)
+          provider.write_text(content, encoding="utf-8")
+          PY
+      - name: Commit compatibility fix and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "Loom Workflow Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/one-shot-claude-thread-instructions.yml
+          git add electron/providers/claude-provider.mjs
+          git commit -m "Preserve thread-specific Claude instructions"
+          git push origin HEAD:phine/loom-development
