@@ -63,10 +63,13 @@ export function WorkflowHost({ children }) {
 
   const refreshCatalog = useCallback(async () => {
     if (!api) return;
-    const [nextProjects, nextModels] = await Promise.all([
-      api.projects?.list?.().catch(() => []),
-      api.models?.list?.().catch(() => [])
-    ]);
+    const projectRequest = api.projects?.list
+      ? api.projects.list().catch(() => [])
+      : Promise.resolve([]);
+    const modelRequest = api.models?.list
+      ? api.models.list().catch(() => [])
+      : Promise.resolve([]);
+    const [nextProjects, nextModels] = await Promise.all([projectRequest, modelRequest]);
     setProjects(nextProjects ?? []);
     setModels(nextModels ?? []);
   }, [api]);
@@ -154,22 +157,23 @@ export function WorkflowHost({ children }) {
     window.setTimeout(() => document.querySelector('[aria-label="Close preview workspace"]')?.click(), 0);
   }, [api, preview?.threadId]);
 
-  const selectForegroundThread = useCallback(async (payload) => {
-    if (!api?.threads || !payload?.threadId || !payload.projectId) return false;
+  const selectThreadById = useCallback(async ({ projectId: targetProjectId, threadId }) => {
+    if (!api?.threads || !threadId || !targetProjectId) return false;
+    if (threadId === currentThreadIdRef.current && document.querySelector(".task-row.active .task-select")) return true;
     for (let attempt = 0; attempt < 12; attempt += 1) {
       try {
-        const response = await api.threads.list({ projectId: payload.projectId });
+        const response = await api.threads.list({ projectId: targetProjectId });
         const candidates = (response.data ?? []).filter(sidebarThread);
-        const targetIndex = candidates.findIndex((thread) => thread.id === payload.threadId);
+        const targetIndex = candidates.findIndex((thread) => thread.id === threadId);
         const buttons = [...document.querySelectorAll(".task-tree .task-select")];
         if (targetIndex >= 0 && buttons[targetIndex]) {
           buttons[targetIndex].click();
-          currentThreadIdRef.current = payload.threadId;
+          currentThreadIdRef.current = threadId;
           await new Promise((resolve) => window.setTimeout(resolve, 120));
           return true;
         }
       } catch {
-        // The thread list may still be reconciling the creation event.
+        // The thread list may still be reconciling a newly created foreground thread.
       }
       await new Promise((resolve) => window.setTimeout(resolve, 140));
     }
@@ -182,20 +186,25 @@ export function WorkflowHost({ children }) {
       const payload = event.payload ?? {};
       if (event.type === "RuntimeStatus" && payload.connected) void refreshCatalog();
       if (event.type === "WorkflowOpenRequested") {
-        const workspaceId = payload.workspaceId ?? payload.threadId ?? currentThreadIdRef.current;
-        setPreview({
-          projectId: payload.projectId,
-          workflowId: payload.workflowId,
-          workflowName: payload.workflowName,
-          threadId: workspaceId,
-          reason: payload.reason ?? "open"
-        });
-        void ensurePreviewOpen(workspaceId);
+        void (async () => {
+          const workspaceId = payload.workspaceId ?? payload.threadId ?? currentThreadIdRef.current;
+          if (workspaceId && workspaceId !== currentThreadIdRef.current) {
+            await selectThreadById({ projectId: payload.projectId, threadId: workspaceId });
+          }
+          setPreview({
+            projectId: payload.projectId,
+            workflowId: payload.workflowId,
+            workflowName: payload.workflowName,
+            threadId: workspaceId,
+            reason: payload.reason ?? "open"
+          });
+          await ensurePreviewOpen(workspaceId);
+        })();
         return;
       }
       if (event.type === "WorkflowForegroundRequested") {
         void (async () => {
-          await selectForegroundThread(payload);
+          await selectThreadById(payload);
           setPreview({
             projectId: payload.projectId,
             workflowId: payload.workflowId,
@@ -207,7 +216,7 @@ export function WorkflowHost({ children }) {
         })();
       }
     });
-  }, [api, ensurePreviewOpen, refreshCatalog, selectForegroundThread]);
+  }, [api, ensurePreviewOpen, refreshCatalog, selectThreadById]);
 
   useEffect(() => {
     if (!preview?.threadId || !api?.browser) return undefined;
