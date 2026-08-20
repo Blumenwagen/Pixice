@@ -19,6 +19,7 @@ export function installWorkflowIntegration({
   onChange,
   onOpen,
   onRun,
+  onForeground,
   onThreadCreated,
   onAgentActivity,
   assertProject
@@ -34,6 +35,7 @@ export function installWorkflowIntegration({
     onChange,
     onOpen,
     onRun,
+    onForeground,
     onThreadCreated,
     onAgentActivity
   });
