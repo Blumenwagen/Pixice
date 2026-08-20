@@ -43,6 +43,13 @@ function eventSender(BrowserWindow) {
   };
 }
 
+function controllingWorkspace(database, threadId) {
+  const link = threadId ? database.getThreadLink?.(threadId) : null;
+  const parent = link?.parentThreadId;
+  if (parent && !parent.startsWith("workflow:")) return parent;
+  return threadId;
+}
+
 export async function installWorkflowRuntimeHost({
   runtime,
   database,
@@ -109,7 +116,7 @@ export async function installWorkflowRuntimeHost({
     onChange: (payload) => send("WorkflowUpdated", payload),
     onOpen: (payload) => send("WorkflowOpenRequested", {
       ...payload,
-      workspaceId: payload.threadId
+      workspaceId: controllingWorkspace(database, payload.threadId)
     }),
     onRun: (payload) => send("WorkflowRunUpdated", payload),
     onForeground: (payload) => send("WorkflowForegroundRequested", payload),
