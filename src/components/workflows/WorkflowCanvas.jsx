@@ -168,6 +168,7 @@ function NodePicker({ query, onQueryChange, onAdd, onClose }) {
 }
 
 function WorkflowInspector({ workflow, onChange, onClose }) {
+  const automaticTriggerCount = workflow.graph.nodes.filter((node) => node.type === "scheduleTrigger" || node.type === "webhookTrigger").length;
   return (
     <aside className={styles.inspector} aria-label="Workflow inspector">
       <header className={styles.inspectorHeader}>
@@ -184,6 +185,13 @@ function WorkflowInspector({ workflow, onChange, onClose }) {
           <span>Description</span>
           <textarea value={workflow.description ?? ""} maxLength={10000} rows={6} onChange={(event) => onChange({ ...workflow, description: event.target.value })} />
         </label>
+        <label className={styles.toggleField}>
+          <input type="checkbox" checked={Boolean(workflow.enabled)} onChange={(event) => onChange({ ...workflow, enabled: event.target.checked })} />
+          <span>
+            <strong>Enable automatic triggers</strong>
+            <small>{automaticTriggerCount ? `${automaticTriggerCount} Schedule or Webhook trigger${automaticTriggerCount === 1 ? "" : "s"} will be hosted while Loom is running.` : "Add a Schedule or Local Webhook node before enabling this workflow."}</small>
+          </span>
+        </label>
         <div className={styles.workflowFacts}>
           <span><strong>{workflow.graph.nodes.length}</strong><small>nodes</small></span>
           <span><strong>{workflow.graph.edges.length}</strong><small>connections</small></span>
@@ -196,7 +204,7 @@ function WorkflowInspector({ workflow, onChange, onClose }) {
 function RunPopover({ value, error, onChange, onRun, onClose }) {
   return (
     <div className={styles.runPopover} role="dialog" aria-label="Run workflow">
-      <header><span><strong>Run workflow</strong><small>Supply a JSON value to every Manual Trigger node.</small></span><IconButton label="Close run options" onClick={onClose}><X size={13} /></IconButton></header>
+      <header><span><strong>Test workflow</strong><small>Supply a JSON value to the Manual Trigger, or the first trigger when no Manual Trigger exists.</small></span><IconButton label="Close run options" onClick={onClose}><X size={13} /></IconButton></header>
       <textarea aria-label="Workflow input JSON" rows={8} value={value} onChange={(event) => onChange(event.target.value)} spellCheck="false" />
       {error && <p><Warning size={13} />{error}</p>}
       <button type="button" className={styles.primaryButton} onClick={onRun}><PaperPlaneTilt size={14} />Start run</button>
@@ -204,7 +212,18 @@ function RunPopover({ value, error, onChange, onRun, onClose }) {
   );
 }
 
-export function WorkflowCanvas({ workflow, models = [], run = null, savingState = "saved", compact = false, onChange, onRun, onCancel }) {
+export function WorkflowCanvas({
+  workflow,
+  models = [],
+  workflows = [],
+  api = globalThis.loom ?? null,
+  run = null,
+  savingState = "saved",
+  compact = false,
+  onChange,
+  onRun,
+  onCancel
+}) {
   const canvasRef = useRef(null);
   const [canvasSize, setCanvasSize] = useState({ width: 1000, height: 700 });
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -428,6 +447,7 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
             {savingState === "saving" ? <SpinnerGap className={styles.spin} size={13} /> : savingState === "error" ? <Warning size={13} /> : <Check size={13} />}
             {savingState === "saving" ? "Saving" : savingState === "error" ? "Save failed" : "Saved"}
           </span>
+          {workflow.enabled && <span className={styles.runBadge} data-status="completed"><Circle size={11} />Automatic</span>}
           {run && <span className={styles.runBadge} data-status={run.status}>{runStatusIcon(run.status)}{workflowStatusLabel(run.status)}</span>}
         </div>
         <div className={styles.canvasActions}>
@@ -528,7 +548,7 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
             <div className={styles.emptyCanvas}>
               <span><Plus size={22} /></span>
               <strong>Build your first useful workflow</strong>
-              <small>Call APIs, transform data, branch on conditions, inspect Git, manage files or board tasks, and hand work to Loom Agents.</small>
+              <small>Trigger on time or local webhooks, call APIs, aggregate data, query SQLite, loop through subworkflows, notify yourself, inspect Git, manage files or board tasks, and hand ambiguous work to Loom Agents.</small>
               <button type="button" className={styles.primaryButton} onClick={() => setNodePickerOpen(true)}><Plus size={14} />Browse nodes</button>
             </div>
           )}
@@ -539,6 +559,10 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
           <WorkflowNodeInspector
             node={selectedNode}
             models={models}
+            api={api}
+            projectId={workflow.projectId}
+            workflows={workflows}
+            currentWorkflowId={workflow.id}
             onUpdate={(patch) => updateNode(selectedNode.id, patch)}
             onDelete={() => deleteNode(selectedNode.id)}
             onClose={() => setInspectorOpen(false)}
