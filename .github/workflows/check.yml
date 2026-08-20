@@ -46,7 +46,7 @@ jobs:
             LOOM_CAPTURE_PATH="$PWD/artifacts/workflow-preview.png" \
             LOOM_CAPTURE_WIDTH=1440 \
             LOOM_CAPTURE_HEIGHT=960 \
-            pnpm exec electron scripts/capture-workflow-preview.mjs
+            pnpm exec electron --no-sandbox --disable-gpu scripts/capture-workflow-preview.mjs
       - name: Upload workflow preview
         if: always()
         uses: actions/upload-artifact@v4
