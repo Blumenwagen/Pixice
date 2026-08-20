@@ -8,6 +8,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { normalizeLoomQuestions, loomQuestionToolShape } from "../runtime/question-tool.mjs";
 import { LOOM_BRIDGE_MCP_TOOLS, loomBridgeToolShapes } from "../runtime/loom-bridge.mjs";
 import { LOOM_BOARD_MCP_TOOLS, loomBoardToolShapes } from "../runtime/loom-board.mjs";
+import { loomWorkflowTools } from "../workflows/loom-workflows.mjs";
 
 const FALLBACK_MODELS = [
   { value: "default", displayName: "Claude (recommended)", description: "Use Claude Code's recommended model." }
@@ -821,7 +822,13 @@ export class ClaudeProvider extends EventEmitter {
       tools: [
         tool("list_models", "List only connected GPT and Claude models available for cross-model Loom delegation, including capability ratings and a recommendation. Normally prefer GPT for cost efficiency; prefer Claude only when requested, when it is the only connected family, or for UI design and taste.", loomBridgeToolShapes.list_models, run("list_models")),
         tool("spawn_thread", "Spawn a new Loom thread on a connected selected model, wait for it to finish, and return its answer. Cross-family direction is supported in either direction.", loomBridgeToolShapes.spawn_thread, run("spawn_thread")),
-        tool("send_update", "Send a progress update from a bridge-created child thread to its parent.", loomBridgeToolShapes.send_update, run("send_update"))
+        tool("send_update", "Send a progress update from a bridge-created child thread to its parent.", loomBridgeToolShapes.send_update, run("send_update")),
+        ...loomWorkflowTools.map((definition) => tool(
+          definition.name,
+          definition.description,
+          loomBridgeToolShapes[definition.name],
+          run(definition.name)
+        ))
       ]
     });
   }
