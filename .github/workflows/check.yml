@@ -17,6 +17,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -33,14 +34,15 @@ jobs:
       - name: Capture workflow preview
         if: steps.project-check.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 2
         shell: bash
         run: |
           mkdir -p artifacts
           pnpm exec vite --host 127.0.0.1 > /tmp/loom-vite.log 2>&1 &
           VITE_PID=$!
           trap 'kill "$VITE_PID" 2>/dev/null || true' EXIT
-          pnpm exec wait-on 'http://127.0.0.1:5173/?workflow-preview'
-          xvfb-run -a env \
+          pnpm exec wait-on --timeout 30000 'http://127.0.0.1:5173/?workflow-preview'
+          timeout 45s xvfb-run -a env \
             LOOM_CAPTURE_PATH="$PWD/artifacts/workflow-preview.png" \
             LOOM_CAPTURE_WIDTH=1440 \
             LOOM_CAPTURE_HEIGHT=960 \
