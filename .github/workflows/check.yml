@@ -48,7 +48,7 @@ jobs:
             LOOM_CAPTURE_HEIGHT=960 \
             pnpm exec electron scripts/capture-workflow-preview.mjs
       - name: Upload workflow preview
-        if: always() && hashFiles('artifacts/workflow-preview.png') != ''
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: workflow-preview-${{ github.sha }}
