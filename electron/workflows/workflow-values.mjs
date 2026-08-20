@@ -140,8 +140,15 @@ export function workflowInputValue(inputs = []) {
   return inputs.map((entry) => entry.value);
 }
 
-export function workflowExpressionContext({ inputs = [], runInput = {}, nodeOutputs = {}, now = new Date().toISOString() } = {}) {
+export function workflowExpressionContext({
+  inputs = [],
+  runInput = {},
+  nodeOutputs = {},
+  now = new Date().toISOString(),
+  extra = {}
+} = {}) {
   return {
+    ...extra,
     input: workflowInputValue(inputs),
     inputs: inputs.map((entry) => entry.value),
     run: runInput,
