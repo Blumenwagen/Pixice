@@ -1,0 +1,17 @@
+.loom-app[data-workflows-active="true"] .rail-nav-item.active:not(.workflow-nav-item) {
+  color: var(--muted);
+  background: transparent;
+}
+
+.loom-app[data-workflows-active="true"] .workflow-nav-item.active {
+  color: var(--foreground);
+  background: rgba(255, 255, 255, .06);
+}
+
+.workflow-nav-item .rail-icon {
+  color: color-mix(in oklab, var(--thread-bright) 72%, var(--muted));
+}
+
+.workflow-nav-item.active .rail-icon {
+  color: var(--thread-bright);
+}
