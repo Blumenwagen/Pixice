@@ -17,7 +17,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -28,15 +28,41 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - id: project-check
+      - name: Focused workflow tests
+        id: workflow-tests
         continue-on-error: true
         shell: bash
         run: |
           mkdir -p artifacts
           set -o pipefail
-          pnpm check 2>&1 | tee artifacts/check.log
+          pnpm exec vitest run \
+            tests/workflow-values.test.js \
+            tests/workflow-node-executors.test.js \
+            tests/workflow-model.test.js \
+            tests/loom-workflows.test.js \
+            tests/workflow-canvas.test.jsx \
+            tests/workflow-runtime-host.test.js \
+            tests/workflow-host.test.jsx \
+            tests/claude-workflow-tools.test.js \
+            --reporter=verbose 2>&1 | tee artifacts/workflow-tests.log
+      - name: Full Vitest suite
+        id: full-tests
+        if: steps.workflow-tests.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm exec vitest run 2>&1 | tee artifacts/full-tests.log
+      - name: Sites production check
+        id: sites-check
+        if: steps.workflow-tests.outcome == 'success' && steps.full-tests.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm test:sites 2>&1 | tee artifacts/sites-check.log
       - name: Capture workflow preview
-        if: steps.project-check.outcome == 'success'
+        if: steps.workflow-tests.outcome == 'success' && steps.full-tests.outcome == 'success' && steps.sites-check.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
         shell: bash
@@ -52,29 +78,48 @@ jobs:
             pnpm exec electron --no-sandbox --disable-gpu scripts/capture-workflow-preview.mjs
       - name: Upload workflow artifacts
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: workflow-check-${{ github.sha }}
           path: |
-            artifacts/check.log
+            artifacts/*.log
             artifacts/workflow-preview.png
           if-no-files-found: warn
           retention-days: 7
-      - name: Publish commit status
+      - name: Publish commit statuses
         if: always() && github.event_name != 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
-            const success = '${{ steps.project-check.outcome }}' === 'success';
+            const contexts = [
+              ['loom/workflow-tests', '${{ steps.workflow-tests.outcome }}'],
+              ['loom/full-tests', '${{ steps.full-tests.outcome }}'],
+              ['loom/sites', '${{ steps.sites-check.outcome }}']
+            ];
+            const target_url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            for (const [name, outcome] of contexts) {
+              const skipped = outcome === 'skipped';
+              await github.rest.repos.createCommitStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha: context.sha,
+                state: skipped ? 'pending' : outcome === 'success' ? 'success' : 'failure',
+                context: name,
+                description: skipped ? 'Waiting for prerequisite checks' : outcome === 'success' ? 'Passed' : 'Failed',
+                target_url
+              });
+            }
+            const success = contexts.every(([, outcome]) => outcome === 'success');
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
               sha: context.sha,
               state: success ? 'success' : 'failure',
               context: 'loom/check',
-              description: success ? 'pnpm check passed' : 'pnpm check failed',
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+              description: success ? 'All project checks passed' : 'One or more project checks failed',
+              target_url
             });
       - name: Fail after publishing status
-        if: steps.project-check.outcome != 'success'
+        if: steps.workflow-tests.outcome != 'success' || steps.full-tests.outcome != 'success' || steps.sites-check.outcome != 'success'
         run: exit 1
