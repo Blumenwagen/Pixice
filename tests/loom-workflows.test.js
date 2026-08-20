@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,12 +20,15 @@ class FakeRuntime extends EventEmitter {
   connected = true;
   sequence = 0;
   requests = [];
+  skills = [];
+  modelProvider = "codex";
 
   async request(method, payload) {
     this.requests.push({ method, payload });
     if (method === "model/list") {
-      return { data: [{ id: "codex:gpt-test", model: "gpt-test", provider: "codex", displayName: "GPT Test", isDefault: true }] };
+      return { data: [{ id: `${this.modelProvider}:gpt-test`, model: "gpt-test", provider: this.modelProvider, displayName: "GPT Test", isDefault: true }] };
     }
+    if (method === "skills/list") return { data: this.skills };
     if (method === "thread/start") {
       this.sequence += 1;
       return { thread: { id: `workflow-thread-${this.sequence}`, cwd: payload.cwd } };
@@ -50,7 +53,14 @@ class FakeRuntime extends EventEmitter {
   }
 }
 
-function createCapability({ runtime, store, saveThreadLink = vi.fn(), onForeground = vi.fn(), onAgentActivity = vi.fn() }) {
+function createCapability({
+  runtime,
+  store,
+  projectRoot = "/workspace",
+  saveThreadLink = vi.fn(),
+  onForeground = vi.fn(),
+  onAgentActivity = vi.fn()
+}) {
   const onOpen = vi.fn();
   const onChange = vi.fn();
   const onRun = vi.fn();
@@ -58,18 +68,18 @@ function createCapability({ runtime, store, saveThreadLink = vi.fn(), onForegrou
     runtime,
     store,
     database: { saveThreadLink },
-    threadContext: () => ({ projectId: "project-1", cwd: "/workspace" }),
+    threadContext: () => ({ projectId: "project-1", cwd: projectRoot }),
     projectContext: () => ({
-      cwd: "/workspace",
+      cwd: projectRoot,
       defaultModel: "gpt-test",
       defaultEffort: "high",
       defaultPermissionMode: "workspace-write",
-      developerInstructions: "test",
+      developerInstructions: "base Loom instructions",
       permissionSettings: () => ({
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
         sandbox: "workspace-write",
-        sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/workspace"] }
+        sandboxPolicy: { type: "workspaceWrite", writableRoots: [projectRoot] }
       })
     }),
     dynamicTools: () => [],
@@ -96,7 +106,7 @@ describe("Loom workflow capability", () => {
       arguments: {}
     }));
     expect(catalog.nodes.map((node) => node.type)).toEqual(expect.arrayContaining([
-      "httpRequest", "transform", "condition", "switch", "merge", "delay", "file", "git", "board"
+      "useSkill", "httpRequest", "transform", "condition", "switch", "merge", "delay", "file", "git", "board"
     ]));
 
     const created = resultValue(await capability.workflows.handleToolCall({
@@ -145,6 +155,100 @@ describe("Loom workflow capability", () => {
     expect(capability.onOpen).toHaveBeenCalledTimes(4);
     expect(capability.onChange).toHaveBeenCalledTimes(2);
     expect(capability.onRun).toHaveBeenCalled();
+    store.close();
+  });
+
+  it("attaches multiple installed and Markdown Skills to one Agent without turning them into workflow data", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-skills-"));
+    temporaryDirectories.push(directory);
+    const userData = path.join(directory, "user-data");
+    const projectRoot = path.join(directory, "project");
+    const installedSkill = path.join(directory, "installed", "release-review");
+    mkdirSync(userData, { recursive: true });
+    mkdirSync(path.join(projectRoot, "docs"), { recursive: true });
+    mkdirSync(installedSkill, { recursive: true });
+    writeFileSync(path.join(installedSkill, "SKILL.md"), "# Release review\nAlways inspect the changelog.", "utf8");
+    writeFileSync(path.join(projectRoot, "docs", "security.md"), "# Security review\nNever expose credentials.", "utf8");
+
+    const store = new WorkflowStore(userData);
+    const runtime = new FakeRuntime();
+    runtime.skills = [{
+      cwd: projectRoot,
+      skills: [{ id: "release-review", name: "Release Review", description: "Review release readiness", path: installedSkill }]
+    }];
+    const capability = createCapability({ runtime, store, projectRoot });
+    const graph = {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      nodes: [
+        { id: "trigger", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
+        { id: "installed", type: "useSkill", name: "Release Skill", description: "", position: { x: 0, y: 180 }, config: { source: "installed", skillRef: installedSkill, skillName: "Release Review" } },
+        { id: "markdown", type: "useSkill", name: "Security Skill", description: "", position: { x: 0, y: 360 }, config: { source: "markdown", path: "docs/security.md", skillName: "Security Review" } },
+        { id: "agent", type: "loomAgent", name: "Review Agent", description: "", position: { x: 360, y: 120 }, config: { prompt: "Review this release.", model: null, effort: null, permissionMode: "workspace-write", executionMode: "background" } },
+        { id: "output", type: "output", name: "Result", description: "", position: { x: 720, y: 120 }, config: {} }
+      ],
+      edges: [
+        { id: "data", source: "trigger", target: "agent", sourcePort: "output", targetPort: "input" },
+        { id: "installed-edge", source: "installed", target: "agent", sourcePort: "skill", targetPort: "skill" },
+        { id: "markdown-edge", source: "markdown", target: "agent", sourcePort: "skill", targetPort: "skill" },
+        { id: "answer", source: "agent", target: "output", sourcePort: "output", targetPort: "input" }
+      ]
+    };
+    const workflow = capability.workflows.create({ projectId: "project-1", name: "Skilled review", graph });
+    const run = capability.workflows.startRun({ projectId: "project-1", workflowId: workflow.id, input: { version: "1.2.3" } });
+    const completed = await capability.workflows.waitForRun(run.id);
+
+    expect(completed).toMatchObject({ status: "completed", output: "workflow answer" });
+    const threadStart = runtime.requests.find((request) => request.method === "thread/start");
+    expect(threadStart.payload.developerInstructions).toContain("base Loom instructions");
+    expect(threadStart.payload.developerInstructions).toContain("Attached Skill 1: Release Review");
+    expect(threadStart.payload.developerInstructions).toContain("Always inspect the changelog");
+    expect(threadStart.payload.developerInstructions).toContain("Attached Skill 2: Security Review");
+    expect(threadStart.payload.developerInstructions).toContain("Never expose credentials");
+    const turnStart = runtime.requests.find((request) => request.method === "turn/start");
+    expect(JSON.stringify(turnStart.payload.input)).toContain("Review this release");
+    expect(JSON.stringify(turnStart.payload.input)).not.toContain("Always inspect the changelog");
+
+    expect(completed.nodeRuns.agent.attachedSkills).toEqual([
+      expect.objectContaining({ source: "installed", name: "Release Review", bytes: expect.any(Number) }),
+      expect.objectContaining({ source: "markdown", name: "Security Review", path: path.join("docs", "security.md") })
+    ]);
+    expect(completed.nodeRuns.agent.attachedSkills[0]).not.toHaveProperty("content");
+    expect(completed.nodeRuns.installed.output).not.toHaveProperty("content");
+    expect(completed.nodeRuns.markdown.output).not.toHaveProperty("content");
+    expect(runtime.requests.filter((request) => request.method === "skills/list")).toHaveLength(1);
+    store.close();
+  });
+
+  it("does not let an attachment activate an Agent whose data branch was skipped", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-inactive-skill-"));
+    temporaryDirectories.push(directory);
+    const store = new WorkflowStore(directory);
+    const runtime = new FakeRuntime();
+    const capability = createCapability({ runtime, store });
+    const graph = {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      nodes: [
+        { id: "trigger", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
+        { id: "condition", type: "condition", name: "Run?", description: "", position: { x: 260, y: 0 }, config: { left: "{{input.run}}", operator: "isTrue", right: "" } },
+        { id: "skill", type: "useSkill", name: "Unused Skill", description: "", position: { x: 260, y: 240 }, config: { source: "installed", skillRef: "missing", skillName: "Missing" } },
+        { id: "agent", type: "loomAgent", name: "Conditional Agent", description: "", position: { x: 560, y: 0 }, config: {} },
+        { id: "output", type: "output", name: "Result", description: "", position: { x: 860, y: 0 }, config: {} }
+      ],
+      edges: [
+        { id: "start-condition", source: "trigger", target: "condition", sourcePort: "output", targetPort: "input" },
+        { id: "false-agent", source: "condition", target: "agent", sourcePort: "true", targetPort: "input" },
+        { id: "skill-agent", source: "skill", target: "agent", sourcePort: "skill", targetPort: "skill" },
+        { id: "agent-output", source: "agent", target: "output", sourcePort: "output", targetPort: "input" }
+      ]
+    };
+    const workflow = capability.workflows.create({ projectId: "project-1", name: "Conditional skilled agent", graph });
+    const run = capability.workflows.startRun({ projectId: "project-1", workflowId: workflow.id, input: { run: false } });
+    const completed = await capability.workflows.waitForRun(run.id);
+
+    expect(completed.status).toBe("completed");
+    expect(completed.nodeRuns.agent).toMatchObject({ status: "skipped", skipReason: "No active incoming branch" });
+    expect(runtime.requests.some((request) => request.method === "skills/list")).toBe(false);
+    expect(runtime.requests.some((request) => request.method === "thread/start")).toBe(false);
     store.close();
   });
 
