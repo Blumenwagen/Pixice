@@ -1,7 +1,25 @@
 export {};
 
 type LoomEvent = {
-  type: "TaskUpdated" | "AgentUpdated" | "ActivityReceived" | "AttentionRequired" | "AttentionReset" | "RuntimeError" | "RuntimeStatus" | "BrowserState" | "BrowserOpenRequested" | "BoardUpdated" | "WorkflowUpdated" | "WorkflowRunUpdated" | "WorkflowOpenRequested" | "WorkflowForegroundRequested" | "UpdateState" | "UsageUpdated";
+  type:
+    | "TaskUpdated"
+    | "AgentUpdated"
+    | "ActivityReceived"
+    | "AttentionRequired"
+    | "AttentionReset"
+    | "RuntimeError"
+    | "RuntimeStatus"
+    | "BrowserState"
+    | "BrowserOpenRequested"
+    | "BoardUpdated"
+    | "WorkflowUpdated"
+    | "WorkflowRunUpdated"
+    | "WorkflowOpenRequested"
+    | "WorkflowForegroundRequested"
+    | "WorkflowTriggersUpdated"
+    | "WorkflowCredentialsUpdated"
+    | "UpdateState"
+    | "UsageUpdated";
   payload: any;
   at: string;
 };
@@ -10,16 +28,23 @@ type ProjectScope = { projectId: string };
 type ThreadScope = ProjectScope & { threadId: string };
 type WorkflowNodeType =
   | "manualTrigger"
+  | "scheduleTrigger"
+  | "webhookTrigger"
   | "loomAgent"
   | "output"
   | "httpRequest"
   | "transform"
+  | "aggregate"
   | "condition"
   | "switch"
   | "merge"
   | "delay"
+  | "loop"
   | "file"
   | "git"
+  | "database"
+  | "executeWorkflow"
+  | "notification"
   | "board";
 type WorkflowAgentExecutionMode = "background" | "foreground";
 type WorkflowNode = {
@@ -47,6 +72,7 @@ type WorkflowDocument = {
   projectId: string;
   name: string;
   description: string;
+  enabled: boolean;
   graph: WorkflowGraph;
   createdByThreadId: string | null;
   createdAt: string;
@@ -79,9 +105,38 @@ type WorkflowRun = {
   output: unknown;
   error: string | null;
   sourceThreadId: string | null;
+  triggerNodeId: string | null;
+  parentRunId: string | null;
+  parentNodeId: string | null;
+  callStack: string[];
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
+};
+type WorkflowCredentialType = "bearer" | "basic" | "apiKey" | "headers";
+type WorkflowCredential = {
+  id: string;
+  projectId: string;
+  name: string;
+  type: WorkflowCredentialType;
+  hasSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+type WorkflowTriggerStatus = {
+  workflowId: string;
+  workflowName: string;
+  projectId: string;
+  nodeId: string;
+  nodeName: string;
+  type: "schedule" | "webhook";
+  status: "active" | "error" | string;
+  error: string | null;
+  nextRunAt: string | null;
+  url: string | null;
+  lastTriggeredAt: string | null;
+  lastRunId: string | null;
+  lastResult: string | null;
 };
 
 declare global {
@@ -132,11 +187,18 @@ declare global {
       workflows: {
         list(payload: ProjectScope): Promise<{ data: WorkflowDocument[] }>;
         read(payload: ProjectScope & { workflowId: string }): Promise<{ workflow: WorkflowDocument; runs: WorkflowRun[] }>;
-        create(payload: ProjectScope & { name: string; description?: string }): Promise<WorkflowDocument>;
-        save(payload: ProjectScope & { workflowId: string; name: string; description: string; graph: WorkflowGraph; expectedUpdatedAt?: string }): Promise<WorkflowDocument>;
+        create(payload: ProjectScope & { name: string; description?: string; enabled?: boolean }): Promise<WorkflowDocument>;
+        save(payload: ProjectScope & { workflowId: string; name: string; description: string; enabled: boolean; graph: WorkflowGraph; expectedUpdatedAt?: string }): Promise<WorkflowDocument>;
         delete(payload: ProjectScope & { workflowId: string }): Promise<WorkflowDocument>;
-        run(payload: ProjectScope & { workflowId: string; input?: unknown }): Promise<WorkflowRun>;
+        run(payload: ProjectScope & { workflowId: string; input?: unknown; triggerNodeId?: string }): Promise<WorkflowRun>;
         cancel(payload: ProjectScope & { runId: string }): Promise<WorkflowRun>;
+        triggers(payload: ProjectScope): Promise<{ data: WorkflowTriggerStatus[] }>;
+      };
+      workflowCredentials: {
+        list(projectId: string): Promise<{ data: WorkflowCredential[] }>;
+        create(payload: ProjectScope & { name: string; type: WorkflowCredentialType; values: Record<string, unknown> }): Promise<WorkflowCredential>;
+        update(payload: ProjectScope & { credentialId: string; name?: string; type?: WorkflowCredentialType; values?: Record<string, unknown> }): Promise<WorkflowCredential>;
+        delete(projectId: string, credentialId: string): Promise<WorkflowCredential | null>;
       };
       threads: {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
