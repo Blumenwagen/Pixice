@@ -83,12 +83,21 @@ function createCapability({ runtime, store, saveThreadLink = vi.fn(), onForegrou
 }
 
 describe("Loom workflow capability", () => {
-  it("lets an agent create, inspect, edit, open, and run a background workflow agent", async () => {
+  it("lets an agent discover, create, inspect, edit, open, and run a background workflow agent", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-agent-"));
     temporaryDirectories.push(directory);
     const store = new WorkflowStore(directory);
     const runtime = new FakeRuntime();
     const capability = createCapability({ runtime, store });
+
+    const catalog = resultValue(await capability.workflows.handleToolCall({
+      threadId: "thread-parent",
+      tool: "describe_nodes",
+      arguments: {}
+    }));
+    expect(catalog.nodes.map((node) => node.type)).toEqual(expect.arrayContaining([
+      "httpRequest", "transform", "condition", "switch", "merge", "delay", "file", "git", "board"
+    ]));
 
     const created = resultValue(await capability.workflows.handleToolCall({
       threadId: "thread-parent",
@@ -136,6 +145,48 @@ describe("Loom workflow capability", () => {
     expect(capability.onOpen).toHaveBeenCalledTimes(4);
     expect(capability.onChange).toHaveBeenCalledTimes(2);
     expect(capability.onRun).toHaveBeenCalled();
+    store.close();
+  });
+
+  it("runs only the selected condition branch and merges it downstream", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-branch-"));
+    temporaryDirectories.push(directory);
+    const store = new WorkflowStore(directory);
+    const runtime = new FakeRuntime();
+    const capability = createCapability({ runtime, store });
+    const trigger = "trigger";
+    const condition = "condition";
+    const success = "success";
+    const failure = "failure";
+    const merge = "merge";
+    const output = "output";
+    const graph = {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      nodes: [
+        { id: trigger, type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
+        { id: condition, type: "condition", name: "Successful response?", description: "", position: { x: 300, y: 0 }, config: { left: "{{input.status}}", operator: "greaterThanOrEqual", right: "200" } },
+        { id: success, type: "transform", name: "Success", description: "", position: { x: 600, y: -100 }, config: { mode: "json", template: '{"route":"success","status":"{{input.status}}"}' } },
+        { id: failure, type: "transform", name: "Failure", description: "", position: { x: 600, y: 120 }, config: { mode: "json", template: '{"route":"failure","status":"{{input.status}}"}' } },
+        { id: merge, type: "merge", name: "Join", description: "", position: { x: 900, y: 0 }, config: { mode: "first" } },
+        { id: output, type: "output", name: "Result", description: "", position: { x: 1200, y: 0 }, config: {} }
+      ],
+      edges: [
+        { id: "one", source: trigger, target: condition, sourcePort: "output", targetPort: "input" },
+        { id: "two", source: condition, target: success, sourcePort: "true", targetPort: "input" },
+        { id: "three", source: condition, target: failure, sourcePort: "false", targetPort: "input" },
+        { id: "four", source: success, target: merge, sourcePort: "output", targetPort: "input" },
+        { id: "five", source: failure, target: merge, sourcePort: "output", targetPort: "input" },
+        { id: "six", source: merge, target: output, sourcePort: "output", targetPort: "input" }
+      ]
+    };
+    const workflow = capability.workflows.create({ projectId: "project-1", name: "Route response", graph });
+    const run = capability.workflows.startRun({ projectId: "project-1", workflowId: workflow.id, input: { status: 201 } });
+    const completed = await capability.workflows.waitForRun(run.id);
+
+    expect(completed).toMatchObject({ status: "completed", output: { route: "success", status: 201 } });
+    expect(completed.nodeRuns[success]).toMatchObject({ status: "completed" });
+    expect(completed.nodeRuns[failure]).toMatchObject({ status: "skipped", skipReason: "No active incoming branch" });
+    expect(completed.nodeRuns[condition].activePorts).toEqual(["true"]);
     store.close();
   });
 
@@ -187,6 +238,7 @@ describe("Loom workflow capability", () => {
     expect(loomWorkflowDynamicTools[0]).toMatchObject({ type: "namespace", name: "loom_workflows" });
     expect(loomWorkflowDynamicTools[0].tools.map((tool) => tool.name)).toEqual([
       "list_workflows",
+      "describe_nodes",
       "inspect_workflow",
       "create_workflow",
       "save_workflow",
