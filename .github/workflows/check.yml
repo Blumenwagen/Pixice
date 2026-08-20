@@ -17,7 +17,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 14
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -28,26 +28,66 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Focused workflow tests
-        id: workflow_tests
+      - run: mkdir -p artifacts
+      - name: Workflow values tests
+        id: values
         continue-on-error: true
         shell: bash
         run: |
-          mkdir -p artifacts
           set -o pipefail
-          pnpm exec vitest run \
-            tests/workflow-values.test.js \
-            tests/workflow-node-executors.test.js \
-            tests/workflow-model.test.js \
-            tests/loom-workflows.test.js \
-            tests/workflow-canvas.test.jsx \
-            tests/workflow-runtime-host.test.js \
-            tests/workflow-host.test.jsx \
-            tests/claude-workflow-tools.test.js \
-            --reporter=verbose 2>&1 | tee artifacts/workflow-tests.log
+          pnpm exec vitest run tests/workflow-values.test.js --reporter=verbose 2>&1 | tee artifacts/workflow-values.log
+      - name: Workflow node executor tests
+        id: executors
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm exec vitest run tests/workflow-node-executors.test.js --reporter=verbose 2>&1 | tee artifacts/workflow-node-executors.log
+      - name: Workflow model tests
+        id: model
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm exec vitest run tests/workflow-model.test.js --reporter=verbose 2>&1 | tee artifacts/workflow-model.log
+      - name: Workflow runtime tests
+        id: runtime
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm exec vitest run tests/loom-workflows.test.js tests/workflow-runtime-host.test.js --reporter=verbose 2>&1 | tee artifacts/workflow-runtime.log
+      - name: Workflow canvas tests
+        id: canvas
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm exec vitest run tests/workflow-canvas.test.jsx --reporter=verbose 2>&1 | tee artifacts/workflow-canvas.log
+      - name: Workflow host tests
+        id: host
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm exec vitest run tests/workflow-host.test.jsx --reporter=verbose 2>&1 | tee artifacts/workflow-host.log
+      - name: Claude workflow tool tests
+        id: claude_tools
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm exec vitest run tests/claude-workflow-tools.test.js --reporter=verbose 2>&1 | tee artifacts/claude-workflow-tools.log
       - name: Full Vitest suite
         id: full_tests
-        if: steps.workflow_tests.outcome == 'success'
+        if: >-
+          steps.values.outcome == 'success' &&
+          steps.executors.outcome == 'success' &&
+          steps.model.outcome == 'success' &&
+          steps.runtime.outcome == 'success' &&
+          steps.canvas.outcome == 'success' &&
+          steps.host.outcome == 'success' &&
+          steps.claude_tools.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
@@ -55,14 +95,14 @@ jobs:
           pnpm exec vitest run 2>&1 | tee artifacts/full-tests.log
       - name: Sites production check
         id: sites_check
-        if: steps.workflow_tests.outcome == 'success' && steps.full_tests.outcome == 'success'
+        if: steps.full_tests.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           pnpm test:sites 2>&1 | tee artifacts/sites-check.log
       - name: Capture workflow preview
-        if: steps.workflow_tests.outcome == 'success' && steps.full_tests.outcome == 'success' && steps.sites_check.outcome == 'success'
+        if: steps.full_tests.outcome == 'success' && steps.sites_check.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
         shell: bash
@@ -93,7 +133,13 @@ jobs:
         with:
           script: |
             const contexts = [
-              ['loom/workflow-tests', '${{ steps.workflow_tests.outcome }}'],
+              ['loom/workflow-values', '${{ steps.values.outcome }}'],
+              ['loom/workflow-executors', '${{ steps.executors.outcome }}'],
+              ['loom/workflow-model', '${{ steps.model.outcome }}'],
+              ['loom/workflow-runtime', '${{ steps.runtime.outcome }}'],
+              ['loom/workflow-canvas', '${{ steps.canvas.outcome }}'],
+              ['loom/workflow-host', '${{ steps.host.outcome }}'],
+              ['loom/workflow-claude', '${{ steps.claude_tools.outcome }}'],
               ['loom/full-tests', '${{ steps.full_tests.outcome }}'],
               ['loom/sites', '${{ steps.sites_check.outcome }}']
             ];
@@ -110,7 +156,10 @@ jobs:
                 target_url
               });
             }
-            const success = contexts.every(([, outcome]) => outcome === 'success');
+            const required = contexts.slice(0, 7);
+            const success = required.every(([, outcome]) => outcome === 'success')
+              && '${{ steps.full_tests.outcome }}' === 'success'
+              && '${{ steps.sites_check.outcome }}' === 'success';
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -121,5 +170,14 @@ jobs:
               target_url
             });
       - name: Fail after publishing status
-        if: steps.workflow_tests.outcome != 'success' || steps.full_tests.outcome != 'success' || steps.sites_check.outcome != 'success'
+        if: >-
+          steps.values.outcome != 'success' ||
+          steps.executors.outcome != 'success' ||
+          steps.model.outcome != 'success' ||
+          steps.runtime.outcome != 'success' ||
+          steps.canvas.outcome != 'success' ||
+          steps.host.outcome != 'success' ||
+          steps.claude_tools.outcome != 'success' ||
+          steps.full_tests.outcome != 'success' ||
+          steps.sites_check.outcome != 'success'
         run: exit 1
