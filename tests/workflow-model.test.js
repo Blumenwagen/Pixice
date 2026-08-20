@@ -7,11 +7,31 @@ import {
 } from "../electron/workflows/workflow-model.mjs";
 
 describe("workflow model", () => {
-  it("creates an executable Loom Agent workflow", () => {
+  it("creates an executable background Loom Agent workflow", () => {
     const workflow = createDefaultWorkflow({ projectId: "project-1", name: "Ship release" });
     expect(workflow.name).toBe("Ship release");
     expect(workflow.graph.nodes.map((node) => node.type)).toEqual(["manualTrigger", "loomAgent", "output"]);
+    expect(workflow.graph.nodes.find((node) => node.type === "loomAgent")?.config.executionMode).toBe("background");
     expect(workflowExecutionLayers(workflow)).toHaveLength(3);
+  });
+
+  it("normalizes older agent nodes and rejects invalid execution modes", () => {
+    const graph = {
+      nodes: [
+        { id: "start", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
+        { id: "agent", type: "loomAgent", name: "Agent", description: "", position: { x: 1, y: 1 }, config: { prompt: "Work" } }
+      ],
+      edges: [{ id: "edge", source: "start", target: "agent", sourcePort: "output", targetPort: "input" }],
+      viewport: { x: 0, y: 0, zoom: 1 }
+    };
+    expect(validateWorkflowGraph(graph).nodes[1].config).toMatchObject({
+      executionMode: "background",
+      permissionMode: "workspace-write"
+    });
+    expect(() => validateWorkflowGraph({
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === "agent" ? { ...node, config: { executionMode: "detached" } } : node)
+    })).toThrow(/execution mode/i);
   });
 
   it("rejects broken references and cyclic graphs", () => {
