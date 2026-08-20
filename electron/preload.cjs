@@ -47,7 +47,7 @@ contextBridge.exposeInMainWorld("loom", Object.freeze({
     list: invoke("workflow-credentials:list"),
     create: invoke("workflow-credentials:create"),
     update: invoke("workflow-credentials:update"),
-    delete: (projectId, credentialId) => ipcRenderer.invoke("workflow-credentials:delete", { projectId, credentialId })
+    delete: invoke("workflow-credentials:delete")
   }),
   threads: Object.freeze({
     list: invoke("threads:list"),
