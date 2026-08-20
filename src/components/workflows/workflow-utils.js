@@ -1,6 +1,9 @@
 export const WORKFLOW_NODE_WIDTH = 286;
 export const WORKFLOW_NODE_HEIGHT = 112;
 
+const commonInput = [{ id: "input", label: "Input" }];
+const commonOutput = [{ id: "output", label: "Output" }];
+
 export const WORKFLOW_NODE_META = {
   manualTrigger: {
     label: "Manual Trigger",
@@ -12,7 +15,46 @@ export const WORKFLOW_NODE_META = {
     defaultDescription: "Start with input supplied by the user or calling agent.",
     defaultConfig: {},
     inputPorts: [],
-    outputPorts: [{ id: "output", label: "Output" }]
+    outputPorts: commonOutput
+  },
+  scheduleTrigger: {
+    label: "Schedule Trigger",
+    action: "Run on time",
+    category: "Triggers",
+    icon: "gauge",
+    tone: "violet",
+    defaultName: "Schedule",
+    defaultDescription: "Run automatically on an interval or cron schedule while Loom is open.",
+    defaultConfig: {
+      mode: "interval",
+      every: 15,
+      unit: "minutes",
+      cron: "0 * * * *",
+      runOnStartup: false,
+      overlapPolicy: "skip"
+    },
+    inputPorts: [],
+    outputPorts: [{ id: "output", label: "Schedule" }]
+  },
+  webhookTrigger: {
+    label: "Local Webhook",
+    action: "Receive request",
+    category: "Triggers",
+    icon: "plugs",
+    tone: "violet",
+    defaultName: "Local webhook",
+    defaultDescription: "Receive a loopback-only HTTP request on 127.0.0.1.",
+    defaultConfig: {
+      method: "POST",
+      port: 5679,
+      path: "/hook",
+      responseMode: "immediate",
+      timeoutMs: 30000,
+      authCredentialId: null,
+      maxBytes: 1000000
+    },
+    inputPorts: [],
+    outputPorts: [{ id: "output", label: "Request" }]
   },
   loomAgent: {
     label: "Loom Agent",
@@ -29,7 +71,7 @@ export const WORKFLOW_NODE_META = {
       permissionMode: "workspace-write",
       executionMode: "background"
     },
-    inputPorts: [{ id: "input", label: "Input" }],
+    inputPorts: commonInput,
     outputPorts: [{ id: "output", label: "Answer" }]
   },
   httpRequest: {
@@ -50,76 +92,11 @@ export const WORKFLOW_NODE_META = {
       responseType: "auto",
       failOnHttpError: true,
       timeoutMs: 30000,
-      maxBytes: 5000000
+      maxBytes: 5000000,
+      credentialId: null
     },
-    inputPorts: [{ id: "input", label: "Input" }],
+    inputPorts: commonInput,
     outputPorts: [{ id: "output", label: "Response" }]
-  },
-  transform: {
-    label: "Transform",
-    action: "Map data",
-    category: "Data",
-    icon: "sparkle",
-    tone: "pink",
-    defaultName: "Transform data",
-    defaultDescription: "Create typed JSON or text from workflow expressions.",
-    defaultConfig: {
-      mode: "json",
-      template: "{\n  \"value\": \"{{input}}\"\n}",
-      mergeInput: false
-    },
-    inputPorts: [{ id: "input", label: "Input" }],
-    outputPorts: [{ id: "output", label: "Value" }]
-  },
-  condition: {
-    label: "Condition",
-    action: "If / else",
-    category: "Flow",
-    icon: "branch",
-    tone: "yellow",
-    defaultName: "Condition",
-    defaultDescription: "Route data through the true or false branch.",
-    defaultConfig: { left: "{{input}}", operator: "isTrue", right: "" },
-    inputPorts: [{ id: "input", label: "Input" }],
-    outputPorts: [{ id: "true", label: "True" }, { id: "false", label: "False" }]
-  },
-  switch: {
-    label: "Switch",
-    action: "Route cases",
-    category: "Flow",
-    icon: "tree",
-    tone: "yellow",
-    defaultName: "Switch",
-    defaultDescription: "Route data to the first matching named case.",
-    defaultConfig: {
-      value: "{{input}}",
-      rules: [{ id: "case-1", label: "Case 1", operator: "equals", compare: "value" }]
-    },
-    inputPorts: [{ id: "input", label: "Input" }]
-  },
-  merge: {
-    label: "Merge",
-    action: "Join branches",
-    category: "Flow",
-    icon: "stack",
-    tone: "green",
-    defaultName: "Merge branches",
-    defaultDescription: "Join active values from parallel or conditional branches.",
-    defaultConfig: { mode: "array" },
-    inputPorts: [{ id: "input", label: "Input" }],
-    outputPorts: [{ id: "output", label: "Merged" }]
-  },
-  delay: {
-    label: "Delay",
-    action: "Wait",
-    category: "Flow",
-    icon: "gauge",
-    tone: "neutral",
-    defaultName: "Delay",
-    defaultDescription: "Wait for a configured duration before continuing.",
-    defaultConfig: { amount: 1, unit: "seconds" },
-    inputPorts: [{ id: "input", label: "Input" }],
-    outputPorts: [{ id: "output", label: "Continue" }]
   },
   file: {
     label: "Project File",
@@ -138,7 +115,7 @@ export const WORKFLOW_NODE_META = {
       allowWrite: false,
       maxBytes: 5000000
     },
-    inputPorts: [{ id: "input", label: "Input" }],
+    inputPorts: commonInput,
     outputPorts: [{ id: "output", label: "Result" }]
   },
   git: {
@@ -150,8 +127,161 @@ export const WORKFLOW_NODE_META = {
     defaultName: "Git status",
     defaultDescription: "Inspect Git status, diffs, changed files, history, or a commit.",
     defaultConfig: { operation: "status", target: "HEAD", pathspec: "", staged: false, maxEntries: 20 },
-    inputPorts: [{ id: "input", label: "Input" }],
+    inputPorts: commonInput,
     outputPorts: [{ id: "output", label: "Git data" }]
+  },
+  database: {
+    label: "SQLite",
+    action: "Query database",
+    category: "Actions",
+    icon: "database",
+    tone: "green",
+    defaultName: "SQLite query",
+    defaultDescription: "Query or explicitly mutate a project-scoped SQLite database.",
+    defaultConfig: {
+      operation: "query",
+      databasePath: "data.sqlite",
+      sql: "SELECT 1 AS value",
+      parameters: "[]",
+      allowWrite: false,
+      maxRows: 1000
+    },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Rows" }]
+  },
+  executeWorkflow: {
+    label: "Execute Workflow",
+    action: "Run subworkflow",
+    category: "Actions",
+    icon: "workflow",
+    tone: "green",
+    defaultName: "Execute workflow",
+    defaultDescription: "Run another Loom workflow and wait for its result.",
+    defaultConfig: {
+      workflowId: "",
+      input: "{{input}}",
+      returnMode: "output",
+      continueOnError: false,
+      timeoutMs: 300000
+    },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Result" }]
+  },
+  notification: {
+    label: "Desktop Notification",
+    action: "Notify user",
+    category: "Actions",
+    icon: "bell",
+    tone: "blue",
+    defaultName: "Desktop notification",
+    defaultDescription: "Show a native notification from deterministic workflow data.",
+    defaultConfig: {
+      title: "Loom workflow",
+      body: "{{input.message ?? input}}",
+      urgency: "normal",
+      silent: false
+    },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Notification" }]
+  },
+  transform: {
+    label: "Transform",
+    action: "Map data",
+    category: "Data",
+    icon: "sparkle",
+    tone: "pink",
+    defaultName: "Transform data",
+    defaultDescription: "Create typed JSON or text from workflow expressions.",
+    defaultConfig: {
+      mode: "json",
+      template: "{\n  \"value\": \"{{input}}\"\n}",
+      mergeInput: false
+    },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Value" }]
+  },
+  aggregate: {
+    label: "Aggregate",
+    action: "Collect data",
+    category: "Data",
+    icon: "stack",
+    tone: "pink",
+    defaultName: "Aggregate data",
+    defaultDescription: "Collect, count, calculate, group, deduplicate, or merge array values.",
+    defaultConfig: { source: "{{input}}", operation: "collect", field: "", groupBy: "" },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Aggregate" }]
+  },
+  condition: {
+    label: "Condition",
+    action: "If / else",
+    category: "Flow",
+    icon: "branch",
+    tone: "yellow",
+    defaultName: "Condition",
+    defaultDescription: "Route data through the true or false branch.",
+    defaultConfig: { left: "{{input}}", operator: "isTrue", right: "" },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "true", label: "True" }, { id: "false", label: "False" }]
+  },
+  switch: {
+    label: "Switch",
+    action: "Route cases",
+    category: "Flow",
+    icon: "tree",
+    tone: "yellow",
+    defaultName: "Switch",
+    defaultDescription: "Route data to the first matching named case.",
+    defaultConfig: {
+      value: "{{input}}",
+      rules: [{ id: "case-1", label: "Case 1", operator: "equals", compare: "value" }]
+    },
+    inputPorts: commonInput
+  },
+  merge: {
+    label: "Merge",
+    action: "Join branches",
+    category: "Flow",
+    icon: "stack",
+    tone: "green",
+    defaultName: "Merge branches",
+    defaultDescription: "Join active values from parallel or conditional branches.",
+    defaultConfig: { mode: "array" },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Merged" }]
+  },
+  delay: {
+    label: "Delay",
+    action: "Wait",
+    category: "Flow",
+    icon: "gauge",
+    tone: "neutral",
+    defaultName: "Delay",
+    defaultDescription: "Wait for a configured duration before continuing.",
+    defaultConfig: { amount: 1, unit: "seconds" },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Continue" }]
+  },
+  loop: {
+    label: "Loop / Batch",
+    action: "Process items",
+    category: "Flow",
+    icon: "refresh",
+    tone: "yellow",
+    defaultName: "Loop items",
+    defaultDescription: "Run another workflow for every item or batch with bounded concurrency.",
+    defaultConfig: {
+      workflowId: "",
+      source: "{{input}}",
+      mode: "items",
+      batchSize: 10,
+      concurrency: 1,
+      input: "{{item}}",
+      continueOnError: false,
+      timeoutMs: 300000
+    },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Results" }]
   },
   board: {
     label: "Loom Board",
@@ -170,7 +300,7 @@ export const WORKFLOW_NODE_META = {
       beforeTaskId: "",
       attachSourceThread: false
     },
-    inputPorts: [{ id: "input", label: "Input" }],
+    inputPorts: commonInput,
     outputPorts: [{ id: "output", label: "Task data" }]
   },
   output: {
@@ -182,7 +312,7 @@ export const WORKFLOW_NODE_META = {
     defaultName: "Workflow output",
     defaultDescription: "Expose the final value returned by this workflow.",
     defaultConfig: {},
-    inputPorts: [{ id: "input", label: "Input" }],
+    inputPorts: commonInput,
     outputPorts: []
   }
 };
