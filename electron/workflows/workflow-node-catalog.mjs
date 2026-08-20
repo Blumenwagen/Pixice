@@ -1,3 +1,5 @@
+import { WORKFLOW_CONDITION_OPERATORS } from "./workflow-values.mjs";
+
 export const WORKFLOW_NODE_TYPES = [
   "manualTrigger",
   "loomAgent",
@@ -67,6 +69,7 @@ const DEFAULT_CONFIGS = {
     path: "README.md",
     content: "{{input}}",
     createDirectories: true,
+    recursive: false,
     allowWrite: false,
     maxBytes: 5_000_000
   },
@@ -106,7 +109,13 @@ function enumValue(value, values, fallback) {
   return values.includes(value) ? value : fallback;
 }
 
-function switchRules(value) {
+function strictEnumValue(value, values, fallback, label, node) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (values.includes(value)) return value;
+  throw new Error(`${node.name || node.id} has an invalid ${label}: ${value}`);
+}
+
+function switchRules(value, node) {
   if (!Array.isArray(value)) return clone(DEFAULT_CONFIGS.switch.rules);
   const seen = new Set();
   return value.slice(0, 8).map((rule, index) => {
@@ -121,7 +130,7 @@ function switchRules(value) {
     return {
       id,
       label: stringValue(rule?.label, `Case ${index + 1}`).trim().slice(0, 120) || `Case ${index + 1}`,
-      operator: stringValue(rule?.operator, "equals"),
+      operator: strictEnumValue(rule?.operator, WORKFLOW_CONDITION_OPERATORS, "equals", "switch operator", node),
       compare: stringValue(rule?.compare, "")
     };
   });
@@ -140,8 +149,8 @@ export function normalizeWorkflowNodeConfig(node) {
       prompt: stringValue(source.prompt, DEFAULT_CONFIGS.loomAgent.prompt),
       model: source.model ? String(source.model) : null,
       effort: source.effort ? String(source.effort) : null,
-      permissionMode: enumValue(source.permissionMode, WORKFLOW_PERMISSION_MODES, "workspace-write"),
-      executionMode: enumValue(source.executionMode, WORKFLOW_AGENT_EXECUTION_MODES, "background")
+      permissionMode: strictEnumValue(source.permissionMode, WORKFLOW_PERMISSION_MODES, "workspace-write", "permission mode", node),
+      executionMode: strictEnumValue(source.executionMode, WORKFLOW_AGENT_EXECUTION_MODES, "background", "execution mode", node)
     };
   }
   if (node.type === "httpRequest") {
@@ -171,7 +180,7 @@ export function normalizeWorkflowNodeConfig(node) {
     return {
       ...source,
       left: stringValue(source.left, "{{input}}"),
-      operator: stringValue(source.operator, "isTrue"),
+      operator: strictEnumValue(source.operator, WORKFLOW_CONDITION_OPERATORS, "isTrue", "condition operator", node),
       right: stringValue(source.right, "")
     };
   }
@@ -179,7 +188,7 @@ export function normalizeWorkflowNodeConfig(node) {
     return {
       ...source,
       value: stringValue(source.value, "{{input}}"),
-      rules: switchRules(source.rules)
+      rules: switchRules(source.rules, node)
     };
   }
   if (node.type === "merge") {
@@ -199,6 +208,7 @@ export function normalizeWorkflowNodeConfig(node) {
       path: stringValue(source.path, "README.md"),
       content: stringValue(source.content, "{{input}}"),
       createDirectories: source.createDirectories !== false,
+      recursive: Boolean(source.recursive),
       allowWrite: Boolean(source.allowWrite),
       maxBytes: finiteNumber(source.maxBytes, 5_000_000, 1_024, 25_000_000)
     };
