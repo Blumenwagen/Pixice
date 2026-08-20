@@ -7,6 +7,7 @@ import {
   defaultWorkflowNodeConfig,
   normalizeWorkflowNodeConfig,
   workflowNodeInputPorts,
+  workflowNodeIsAttachment,
   workflowNodeIsTrigger,
   workflowNodeOutputPorts
 } from "./workflow-node-catalog.mjs";
@@ -66,6 +67,14 @@ export const workflowRunInputSchema = z.object({
   value: z.unknown().optional()
 }).passthrough().default({});
 
+function validateSkillEdge(edge, source, target) {
+  const isSkillConnection = source.type === "useSkill" || edge.sourcePort === "skill" || edge.targetPort === "skill";
+  if (!isSkillConnection) return;
+  if (source.type !== "useSkill" || edge.sourcePort !== "skill" || target.type !== "loomAgent" || edge.targetPort !== "skill") {
+    throw new Error(`Workflow edge ${edge.id} must connect Use Skill · Skill directly to Loom Agent · Skill`);
+  }
+}
+
 export function validateWorkflowGraph(graph) {
   const parsed = workflowGraphSchema.parse(graph);
   const normalized = {
@@ -94,6 +103,7 @@ export function validateWorkflowGraph(graph) {
     if (!workflowNodeInputPorts(target).includes(edge.targetPort)) {
       throw new Error(`Workflow edge ${edge.id} references missing input port ${edge.targetPort} on ${target.name}`);
     }
+    validateSkillEdge(edge, source, target);
     const pair = `${edge.source}:${edge.sourcePort}->${edge.target}:${edge.targetPort}`;
     if (edgePairs.has(pair)) throw new Error("Workflow contains a duplicate connection");
     edgePairs.add(pair);
@@ -137,6 +147,10 @@ export function workflowExecutionLayers(workflow) {
 
 export function workflowTriggerNodes(workflow) {
   return (workflow.graph ?? workflow).nodes.filter(workflowNodeIsTrigger);
+}
+
+export function workflowAttachmentNodes(workflow) {
+  return (workflow.graph ?? workflow).nodes.filter(workflowNodeIsAttachment);
 }
 
 export function workflowInputsForNode(workflow, nodeId, outputs) {
