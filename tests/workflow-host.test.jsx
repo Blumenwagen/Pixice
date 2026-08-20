@@ -103,9 +103,12 @@ describe("WorkflowHost", () => {
 
   it("opens an agent-requested workflow inside the controlling thread Preview", async () => {
     const onTaskClick = vi.fn();
-    const { api, emit } = createApi();
+    const { api, emit } = createApi([
+      { id: "thread-other", name: "Other task", parentThreadId: null },
+      { id: "thread-lead", name: "Lead task", parentThreadId: null }
+    ]);
     window.loom = api;
-    render(<WorkflowHost><Shell onTaskClick={onTaskClick} /></WorkflowHost>);
+    render(<WorkflowHost><Shell taskNames={["Other task", "Lead task"]} onTaskClick={onTaskClick} /></WorkflowHost>);
     await screen.findByRole("button", { name: "Workflows" });
 
     emit("WorkflowOpenRequested", {
