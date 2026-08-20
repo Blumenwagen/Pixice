@@ -3,6 +3,7 @@ import { z } from "zod";
 import { buildCodexUserInput } from "../runtime/user-input.mjs";
 import {
   WORKFLOW_NODE_TYPES,
+  workflowNodeIsAttachment,
   workflowNodeIsTrigger
 } from "./workflow-node-catalog.mjs";
 import { WORKFLOW_NODE_GUIDE } from "./workflow-node-guide.mjs";
@@ -20,6 +21,11 @@ import {
   workflowNodePrompt,
   workflowTriggerNodes
 } from "./workflow-model.mjs";
+import {
+  resolveWorkflowSkillAttachment,
+  workflowSkillDeveloperInstructions,
+  workflowSkillPublicMetadata
+} from "./workflow-skill-node.mjs";
 
 export const LOOM_WORKFLOW_NAMESPACE = "loom_workflows";
 const WORKFLOW_TOOL_NAMES = [
@@ -212,7 +218,7 @@ export const loomWorkflowTools = [
 export const loomWorkflowDynamicTools = [{
   type: "namespace",
   name: LOOM_WORKFLOW_NAMESPACE,
-  description: "Build and run Loom-native visual automations with local triggers, APIs, encrypted credentials, deterministic data operations, SQLite, subworkflows, loops, notifications, board actions, and Loom Agents.",
+  description: "Build and run Loom-native visual automations with local triggers, APIs, encrypted credentials, deterministic data operations, SQLite, subworkflows, loops, notifications, attached Skills, board actions, and Loom Agents.",
   tools: loomWorkflowTools
 }];
 
@@ -379,7 +385,8 @@ export class LoomWorkflows {
       threads: new Set(),
       childRuns: new Set(),
       activeTriggerIds: new Set(selectedTriggers),
-      callStack: nextCallStack
+      callStack: nextCallStack,
+      skillAttachments: new Map()
     };
     this.activeRuns.set(run.id, state);
     const promise = this.#executeRun(workflow, run, state)
@@ -507,7 +514,11 @@ export class LoomWorkflows {
     const nodeStatuses = new Map();
     const nodesById = new Map(workflow.graph.nodes.map((node) => [node.id, node]));
     const incomingByNode = new Map(workflow.graph.nodes.map((node) => [node.id, []]));
-    for (const edge of workflow.graph.edges) incomingByNode.get(edge.target)?.push(edge);
+    const outgoingByNode = new Map(workflow.graph.nodes.map((node) => [node.id, []]));
+    for (const edge of workflow.graph.edges) {
+      incomingByNode.get(edge.target)?.push(edge);
+      outgoingByNode.get(edge.source)?.push(edge);
+    }
     const project = this.projectContext(workflow.projectId, run.sourceThreadId);
 
     try {
@@ -517,10 +528,13 @@ export class LoomWorkflows {
         await Promise.all(layer.map(async (nodeId) => {
           const node = nodesById.get(nodeId);
           const incomingEdges = incomingByNode.get(node.id) ?? [];
+          const outgoingEdges = outgoingByNode.get(node.id) ?? [];
           const inputs = workflowInputsForNode(workflow, nodeId, outputs);
           const shouldRun = workflowNodeIsTrigger(node)
             ? state.activeTriggerIds.has(node.id)
-            : incomingEdges.length > 0 && inputs.length > 0;
+            : workflowNodeIsAttachment(node)
+              ? outgoingEdges.length > 0
+              : incomingEdges.length > 0 && inputs.length > 0;
 
           if (!shouldRun) {
             outputs.set(node.id, workflowNodeResult(null, {}));
@@ -530,7 +544,11 @@ export class LoomWorkflows {
               input: [],
               output: null,
               activePorts: [],
-              skipReason: workflowNodeIsTrigger(node) ? "Trigger was not selected" : "No active incoming branch",
+              skipReason: workflowNodeIsTrigger(node)
+                ? "Trigger was not selected"
+                : workflowNodeIsAttachment(node)
+                  ? "Attachment is not connected to an agent"
+                  : "No active incoming branch",
               completedAt: new Date().toISOString()
             });
             return;
@@ -539,7 +557,7 @@ export class LoomWorkflows {
           this.#updateNodeRun(run.id, node.id, {
             status: "running",
             startedAt: new Date().toISOString(),
-            input: workflowNodeIsTrigger(node) ? run.input : inputs.map((entry) => entry.value),
+            input: workflowNodeIsTrigger(node) ? run.input : workflowNodeIsAttachment(node) ? [] : inputs.map((entry) => entry.value),
             ...(node.type === "loomAgent" ? { executionMode: node.config?.executionMode ?? "background" } : {})
           });
           try {
@@ -575,6 +593,7 @@ export class LoomWorkflows {
       const outputNodes = workflow.graph.nodes.filter((node) => node.type === "output" && nodeStatuses.get(node.id) === "completed");
       const sinkNodes = workflow.graph.nodes.filter((node) => (
         nodeStatuses.get(node.id) === "completed"
+        && !workflowNodeIsAttachment(node)
         && !workflow.graph.edges.some((edge) => edge.source === node.id)
       ));
       const resultNodes = outputNodes.length ? outputNodes : sinkNodes;
@@ -605,6 +624,17 @@ export class LoomWorkflows {
   async #executeNode({ workflow, node, inputs, run, state, outputs, project }) {
     this.#assertActive(state);
     if (workflowNodeIsTrigger(node)) return workflowNodeResult(run.input);
+    if (workflowNodeIsAttachment(node)) {
+      const metadata = {
+        source: node.config?.source ?? "installed",
+        reference: node.config?.skillRef || node.config?.path || null,
+        name: node.config?.skillName || node.name,
+        path: node.config?.path || null
+      };
+      return workflowNodeResult(metadata, {
+        skill: { kind: "workflowSkillReference", nodeId: node.id }
+      });
+    }
     if (node.type === "output") {
       const value = inputs.length === 0
         ? null
@@ -668,10 +698,43 @@ export class LoomWorkflows {
     }
   }
 
+  async #resolveAgentSkills({ workflow, inputs, state, projectRoot }) {
+    const attachments = [];
+    const seen = new Set();
+    for (const input of inputs.filter((entry) => entry.targetPort === "skill")) {
+      if (seen.has(input.sourceNodeId)) continue;
+      seen.add(input.sourceNodeId);
+      const skillNode = workflow.graph.nodes.find((candidate) => candidate.id === input.sourceNodeId);
+      if (!skillNode || skillNode.type !== "useSkill") {
+        throw new Error("A Loom Agent Skill port received an invalid attachment node");
+      }
+      let pending = state.skillAttachments.get(skillNode.id);
+      if (!pending) {
+        pending = resolveWorkflowSkillAttachment({
+          node: skillNode,
+          runtime: this.runtime,
+          projectRoot
+        });
+        state.skillAttachments.set(skillNode.id, pending);
+      }
+      attachments.push(await pending);
+    }
+    return attachments;
+  }
+
   async #runAgentNode({ workflow, node, inputs, run, state }) {
     if (!this.runtime.connected) throw new Error("No connected agent runtime is available");
     const context = this.projectContext(workflow.projectId, run.sourceThreadId);
     if (!context?.cwd) throw new Error("Workflow project is no longer available");
+    const dataInputs = inputs.filter((entry) => entry.targetPort !== "skill");
+    const skillAttachments = await this.#resolveAgentSkills({
+      workflow,
+      inputs,
+      state,
+      projectRoot: context.cwd
+    });
+    const skillInstructions = workflowSkillDeveloperInstructions(skillAttachments);
+    const developerInstructions = [context.developerInstructions, skillInstructions].filter(Boolean).join("\n\n");
     const modelResponse = await this.runtime.request("model/list", { limit: 100 });
     const models = modelResponse.data ?? [];
     const requestedModel = String(node.config?.model ?? context.defaultModel ?? "").trim();
@@ -686,7 +749,8 @@ export class LoomWorkflows {
       : context.defaultPermissionMode ?? "workspace-write";
     const executionMode = node.config?.executionMode === "foreground" ? "foreground" : "background";
     const permissions = context.permissionSettings(permissionMode);
-    const prompt = workflowNodePrompt(node, inputs, run.input);
+    const prompt = workflowNodePrompt(node, dataInputs, run.input);
+    const agentContext = { ...context, developerInstructions };
     const threadRequest = {
       cwd: context.cwd,
       runtimeWorkspaceRoots: [context.cwd],
@@ -695,7 +759,7 @@ export class LoomWorkflows {
       approvalPolicy: permissions.approvalPolicy,
       approvalsReviewer: permissions.approvalsReviewer,
       sandbox: permissions.sandbox,
-      developerInstructions: context.developerInstructions,
+      developerInstructions,
       dynamicTools: this.dynamicTools(),
       threadSource: "loomBridge"
     };
@@ -717,7 +781,7 @@ export class LoomWorkflows {
       });
     }
 
-    this.onThreadCreated?.({ context, thread, prompt, model: selected, workflow, run, node, executionMode });
+    this.onThreadCreated?.({ context: agentContext, thread, prompt, model: selected, workflow, run, node, executionMode });
     this.#publishAgentState({
       executionMode,
       parentThreadId: run.sourceThreadId,
@@ -728,7 +792,7 @@ export class LoomWorkflows {
       model: modelId,
       effort,
       status: "running",
-      message: `Running ${node.name} on ${selected.displayName ?? selected.model}`
+      message: `Running ${node.name} on ${selected.displayName ?? selected.model}${skillAttachments.length ? ` with ${skillAttachments.length} attached Skill${skillAttachments.length === 1 ? "" : "s"}` : ""}`
     });
 
     state.threads.add(thread.id);
@@ -765,7 +829,8 @@ export class LoomWorkflows {
         turnId: turn.turn.id,
         model: modelId,
         effort,
-        executionMode
+        executionMode,
+        attachedSkills: skillAttachments.map(workflowSkillPublicMetadata)
       });
       if (executionMode === "foreground") {
         this.onForeground?.({
