@@ -4,6 +4,7 @@ export const WORKFLOW_NODE_TYPES = [
   "manualTrigger",
   "scheduleTrigger",
   "webhookTrigger",
+  "useSkill",
   "loomAgent",
   "output",
   "httpRequest",
@@ -23,6 +24,7 @@ export const WORKFLOW_NODE_TYPES = [
 ];
 
 export const WORKFLOW_TRIGGER_NODE_TYPES = ["manualTrigger", "scheduleTrigger", "webhookTrigger"];
+export const WORKFLOW_ATTACHMENT_NODE_TYPES = ["useSkill"];
 export const WORKFLOW_PERMISSION_MODES = ["read-only", "workspace-write", "auto-approve", "full-access"];
 export const WORKFLOW_AGENT_EXECUTION_MODES = ["background", "foreground"];
 export const WORKFLOW_CREDENTIAL_TYPES = ["bearer", "basic", "apiKey", "headers"];
@@ -45,6 +47,13 @@ const DEFAULT_CONFIGS = {
     timeoutMs: 30_000,
     authCredentialId: null,
     maxBytes: 1_000_000
+  },
+  useSkill: {
+    source: "installed",
+    skillRef: "",
+    skillName: "",
+    path: "",
+    maxBytes: 500_000
   },
   loomAgent: {
     prompt: "Complete the workflow task using the incoming context.",
@@ -246,6 +255,16 @@ export function normalizeWorkflowNodeConfig(node) {
       maxBytes: integerValue(source.maxBytes, 1_000_000, 1_024, 25_000_000)
     };
   }
+  if (node.type === "useSkill") {
+    return {
+      ...source,
+      source: enumValue(source.source, ["installed", "markdown"], "installed"),
+      skillRef: stringValue(source.skillRef, "").trim().slice(0, 2_000),
+      skillName: stringValue(source.skillName, "").trim().slice(0, 240),
+      path: stringValue(source.path, "").trim().slice(0, 2_000),
+      maxBytes: integerValue(source.maxBytes, 500_000, 1_024, 2_000_000)
+    };
+  }
   if (node.type === "loomAgent") {
     return {
       ...source,
@@ -395,11 +414,14 @@ export function normalizeWorkflowNodeConfig(node) {
 }
 
 export function workflowNodeInputPorts(node) {
-  return workflowNodeIsTrigger(node) ? [] : ["input"];
+  if (workflowNodeIsTrigger(node) || workflowNodeIsAttachment(node)) return [];
+  if (node.type === "loomAgent") return ["input", "skill"];
+  return ["input"];
 }
 
 export function workflowNodeOutputPorts(node) {
   if (node.type === "output") return [];
+  if (node.type === "useSkill") return ["skill"];
   if (node.type === "condition") return ["true", "false"];
   if (node.type === "switch") return [...normalizeWorkflowNodeConfig(node).rules.map((rule) => rule.id), "default"];
   return ["output"];
@@ -407,4 +429,8 @@ export function workflowNodeOutputPorts(node) {
 
 export function workflowNodeIsTrigger(node) {
   return WORKFLOW_TRIGGER_NODE_TYPES.includes(node.type);
+}
+
+export function workflowNodeIsAttachment(node) {
+  return WORKFLOW_ATTACHMENT_NODE_TYPES.includes(node.type);
 }
