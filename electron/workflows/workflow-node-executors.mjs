@@ -9,11 +9,14 @@ import {
   writeFile
 } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
+import { applyWorkflowCredential } from "./workflow-credential-store.mjs";
 import { normalizeWorkflowNodeConfig } from "./workflow-node-catalog.mjs";
 import {
   workflowEvaluateCondition,
   workflowExpressionContext,
+  workflowGetPath,
   workflowInputValue,
   workflowParseJsonTemplate,
   workflowRenderTemplate
@@ -53,11 +56,12 @@ function nodeOutputsObject(nodeOutputs) {
   return nodeOutputs ?? {};
 }
 
-function expressionContext({ inputs, run, nodeOutputs }) {
+function expressionContext({ inputs, run, nodeOutputs, variables = {} }) {
   return workflowExpressionContext({
     inputs,
     runInput: run.input,
-    nodeOutputs: nodeOutputsObject(nodeOutputs)
+    nodeOutputs: nodeOutputsObject(nodeOutputs),
+    extra: variables
   });
 }
 
@@ -100,7 +104,7 @@ function assertHttpUrl(rawUrl) {
     throw new Error(`HTTP Request URL is invalid: ${error.message}`);
   }
   if (!new Set(["http:", "https:"]).has(url.protocol)) throw new Error("HTTP Request supports only http:// and https:// URLs");
-  if (url.username || url.password) throw new Error("Put HTTP credentials in headers instead of the URL");
+  if (url.username || url.password) throw new Error("Put HTTP credentials in a reusable credential instead of the URL");
   return url;
 }
 
@@ -132,7 +136,7 @@ async function responseBytes(response, maxBytes) {
   return bytes;
 }
 
-async function executeHttpRequest({ config, context, fetchImpl = globalThis.fetch }) {
+async function executeHttpRequest({ config, context, projectId, credentialResolver, fetchImpl = globalThis.fetch }) {
   if (typeof fetchImpl !== "function") throw new Error("HTTP requests are unavailable in this runtime");
   const url = assertHttpUrl(renderString(config.url, context));
   const query = objectValue(workflowParseJsonTemplate(config.query, context, "HTTP query"), "HTTP query");
@@ -143,6 +147,12 @@ async function executeHttpRequest({ config, context, fetchImpl = globalThis.fetc
   }
 
   const headers = new Headers(objectValue(workflowParseJsonTemplate(config.headers, context, "HTTP headers"), "HTTP headers"));
+  const credential = config.credentialId
+    ? await credentialResolver?.(projectId, config.credentialId)
+    : null;
+  if (config.credentialId && !credential) throw new Error("The selected HTTP credential is unavailable");
+  applyWorkflowCredential(credential, { url, headers });
+
   let body;
   if (!new Set(["GET", "HEAD"]).has(config.method) && config.bodyMode !== "none") {
     if (config.bodyMode === "json") {
@@ -202,7 +212,7 @@ function projectPath(root, configuredPath) {
   const resolvedRoot = path.resolve(root);
   const candidate = path.resolve(resolvedRoot, configuredPath || ".");
   const relative = path.relative(resolvedRoot, candidate);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("File nodes may access only the current Loom project");
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Workflow nodes may access only the current Loom project");
   return { root: resolvedRoot, candidate, relative: relative || "." };
 }
 
@@ -228,7 +238,7 @@ async function assertRealPathInside(root, candidate, allowMissing = false) {
   }
   const realRoot = await realpath(root);
   const relative = path.relative(realRoot, realCandidate);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("File path escapes the current Loom project through a symbolic link");
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Workflow path escapes the current Loom project through a symbolic link");
   return realCandidate;
 }
 
@@ -365,6 +375,98 @@ async function executeGitNode({ config, context, projectRoot }) {
     : { target, staged: config.staged, diff: stdout };
 }
 
+function aggregateItems(source) {
+  if (source === undefined || source === null) return [];
+  return Array.isArray(source) ? source : [source];
+}
+
+function stableKey(value) {
+  if (value === undefined) return "undefined";
+  if (typeof value === "bigint") return `bigint:${value}`;
+  try { return `${typeof value}:${JSON.stringify(value)}`; } catch { return `${typeof value}:${String(value)}`; }
+}
+
+function executeAggregateNode({ config, context }) {
+  const items = aggregateItems(workflowRenderTemplate(config.source, context));
+  const values = config.field ? items.map((item) => workflowGetPath(item, config.field)) : items;
+  if (config.operation === "collect") return values;
+  if (config.operation === "count") return values.length;
+  if (config.operation === "unique") {
+    const seen = new Set();
+    return values.filter((value) => {
+      const key = stableKey(value);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  if (config.operation === "groupBy") {
+    const groups = {};
+    for (const item of items) {
+      const value = config.groupBy ? workflowGetPath(item, config.groupBy) : item;
+      const key = value === undefined ? "undefined" : value === null ? "null" : String(value);
+      (groups[key] ??= []).push(item);
+    }
+    return groups;
+  }
+  if (config.operation === "mergeObjects") {
+    return Object.assign({}, ...values.filter((value) => value && typeof value === "object" && !Array.isArray(value)));
+  }
+  const numbers = values.map(Number).filter(Number.isFinite);
+  if (!numbers.length) return config.operation === "sum" ? 0 : null;
+  if (config.operation === "sum") return numbers.reduce((total, value) => total + value, 0);
+  if (config.operation === "average") return numbers.reduce((total, value) => total + value, 0) / numbers.length;
+  if (config.operation === "min") return Math.min(...numbers);
+  if (config.operation === "max") return Math.max(...numbers);
+  return values;
+}
+
+function sqliteParameters(value) {
+  if (value === undefined || value === null) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === "object") return value;
+  throw new Error("Database parameters must evaluate to a JSON array or object");
+}
+
+function statementCall(statement, method, parameters) {
+  if (Array.isArray(parameters)) return statement[method](...parameters);
+  return statement[method](parameters);
+}
+
+function jsonSafeSqlite(value) {
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) return value.map(jsonSafeSqlite);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, jsonSafeSqlite(entry)]));
+  return value;
+}
+
+async function executeDatabaseNode({ config, context, projectRoot }) {
+  const configuredPath = renderString(config.databasePath, context).trim();
+  if (!configuredPath) throw new Error("Database path is required");
+  const resolved = projectPath(projectRoot, configuredPath);
+  await assertRealPathInside(resolved.root, resolved.candidate, config.operation === "execute");
+  if (config.operation === "execute" && !config.allowWrite) {
+    throw new Error("Enable “Allow database writes” before this Database node can execute a mutating statement");
+  }
+  const sql = renderString(config.sql, context).trim();
+  if (!sql) throw new Error("Database SQL cannot be empty");
+  const parameters = sqliteParameters(workflowParseJsonTemplate(config.parameters, context, "Database parameters"));
+  const database = new DatabaseSync(resolved.candidate, { open: true, readOnly: config.operation !== "execute" });
+  try {
+    database.exec("PRAGMA foreign_keys = ON");
+    const statement = database.prepare(sql);
+    if (config.operation === "query") {
+      const rows = jsonSafeSqlite(statementCall(statement, "all", parameters));
+      const truncated = rows.length > config.maxRows;
+      return { path: resolved.relative, rows: rows.slice(0, config.maxRows), rowCount: rows.length, truncated };
+    }
+    const result = jsonSafeSqlite(statementCall(statement, "run", parameters));
+    return { path: resolved.relative, changes: Number(result.changes ?? 0), lastInsertRowid: result.lastInsertRowid ?? null };
+  } finally {
+    database.close();
+  }
+}
+
 function boardTask(database, projectId, taskId) {
   const task = database.getBoardTask(taskId);
   if (!task || task.projectId !== projectId) throw new Error("Board task was not found in this workflow project");
@@ -406,6 +508,75 @@ async function executeBoardNode({ config, context, database, workflow, run }) {
   };
 }
 
+async function executeNestedNode({ config, context, executeWorkflow }) {
+  if (!config.workflowId) throw new Error("Select a workflow to execute");
+  if (typeof executeWorkflow !== "function") throw new Error("Subworkflow execution is unavailable in this runtime");
+  const input = workflowRenderTemplate(config.input, context);
+  try {
+    return await executeWorkflow({
+      workflowId: config.workflowId,
+      input,
+      timeoutMs: config.timeoutMs,
+      returnMode: config.returnMode
+    });
+  } catch (error) {
+    if (!config.continueOnError) throw error;
+    return { ok: false, error: error.message, workflowId: config.workflowId };
+  }
+}
+
+function loopUnits(source, config) {
+  if (!Array.isArray(source)) throw new Error("Loop source must evaluate to an array");
+  if (config.mode === "items") return source.map((item, index) => ({ item, index, batch: null, batchIndex: null }));
+  const units = [];
+  for (let index = 0; index < source.length; index += config.batchSize) {
+    const batch = source.slice(index, index + config.batchSize);
+    units.push({ item: batch, index, batch, batchIndex: units.length });
+  }
+  return units;
+}
+
+async function executeLoopNode({ config, context, executeWorkflow, assertActive }) {
+  if (!config.workflowId) throw new Error("Select a workflow for the Loop node");
+  if (typeof executeWorkflow !== "function") throw new Error("Loop subworkflow execution is unavailable in this runtime");
+  const items = workflowRenderTemplate(config.source, context);
+  const units = loopUnits(items, config);
+  const results = new Array(units.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (true) {
+      assertActive();
+      const unitIndex = cursor;
+      cursor += 1;
+      if (unitIndex >= units.length) return;
+      const unit = units[unitIndex];
+      const unitContext = {
+        ...context,
+        item: unit.item,
+        index: unit.index,
+        batch: unit.batch,
+        batchIndex: unit.batchIndex,
+        items
+      };
+      const input = workflowRenderTemplate(config.input, unitContext);
+      try {
+        results[unitIndex] = await executeWorkflow({
+          workflowId: config.workflowId,
+          input,
+          timeoutMs: config.timeoutMs,
+          returnMode: "output"
+        });
+      } catch (error) {
+        if (!config.continueOnError) throw error;
+        results[unitIndex] = { ok: false, error: error.message, index: unit.index, item: unit.item };
+      }
+      assertActive();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(config.concurrency, units.length) }, () => worker()));
+  return results;
+}
+
 export async function executeBuiltInWorkflowNode({
   node,
   inputs,
@@ -415,13 +586,25 @@ export async function executeBuiltInWorkflowNode({
   projectRoot,
   database,
   assertActive,
-  fetchImpl
+  fetchImpl,
+  credentialResolver,
+  notify,
+  executeWorkflow,
+  variables = {}
 }) {
   const config = normalizeWorkflowNodeConfig(node);
-  const context = expressionContext({ inputs, run, nodeOutputs });
+  const context = expressionContext({ inputs, run, nodeOutputs, variables });
   const input = workflowInputValue(inputs);
 
-  if (node.type === "httpRequest") return workflowNodeResult(await executeHttpRequest({ config, context, fetchImpl }));
+  if (node.type === "httpRequest") {
+    return workflowNodeResult(await executeHttpRequest({
+      config,
+      context,
+      projectId: workflow.projectId,
+      credentialResolver,
+      fetchImpl
+    }));
+  }
   if (node.type === "transform") {
     const transformed = config.mode === "json"
       ? workflowParseJsonTemplate(config.template, context, "Transform template")
@@ -432,6 +615,7 @@ export async function executeBuiltInWorkflowNode({
       : transformed;
     return workflowNodeResult(output);
   }
+  if (node.type === "aggregate") return workflowNodeResult(executeAggregateNode({ config, context }));
   if (node.type === "condition") {
     const left = workflowRenderTemplate(config.left, context);
     const right = workflowRenderTemplate(config.right, context);
@@ -453,8 +637,18 @@ export async function executeBuiltInWorkflowNode({
     await sleepWithCancellation(delayMilliseconds(config), assertActive);
     return workflowNodeResult(input);
   }
+  if (node.type === "loop") return workflowNodeResult(await executeLoopNode({ config, context, executeWorkflow, assertActive }));
   if (node.type === "file") return workflowNodeResult(await executeFileNode({ config, context, projectRoot }));
   if (node.type === "git") return workflowNodeResult(await executeGitNode({ config, context, projectRoot }));
+  if (node.type === "database") return workflowNodeResult(await executeDatabaseNode({ config, context, projectRoot }));
+  if (node.type === "executeWorkflow") return workflowNodeResult(await executeNestedNode({ config, context, executeWorkflow }));
+  if (node.type === "notification") {
+    if (typeof notify !== "function") throw new Error("Desktop notifications are unavailable in this runtime");
+    const title = renderString(config.title, context).trim() || "Loom workflow";
+    const body = renderString(config.body, context).trim();
+    const result = await notify({ title, body, urgency: config.urgency, silent: config.silent });
+    return workflowNodeResult({ shown: result !== false, title, body, urgency: config.urgency });
+  }
   if (node.type === "board") return workflowNodeResult(await executeBoardNode({ config, context, database, workflow, run }));
   return null;
 }
