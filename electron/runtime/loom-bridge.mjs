@@ -1,12 +1,17 @@
 import { z } from "zod";
 import { buildCodexUserInput } from "./user-input.mjs";
 import { bridgeEligibleModels, recommendBridgeModel } from "./model-capabilities.mjs";
+import { installWorkflowRuntimeHost } from "../workflows/workflow-runtime-host.mjs";
+import { loomWorkflowTools } from "../workflows/loom-workflows.mjs";
+import { loomWorkflowToolShapes } from "../workflows/workflow-tool-shapes.mjs";
 
 export const LOOM_BRIDGE_NAMESPACE = "loom_bridge";
+const WORKFLOW_TOOL_NAMES = new Set(loomWorkflowTools.map((tool) => tool.name));
 export const LOOM_BRIDGE_MCP_TOOLS = new Set([
   "mcp__loom_bridge__list_models",
   "mcp__loom_bridge__spawn_thread",
-  "mcp__loom_bridge__send_update"
+  "mcp__loom_bridge__send_update",
+  ...[...WORKFLOW_TOOL_NAMES].map((name) => `mcp__loom_bridge__${name}`)
 ]);
 
 const listModelsShape = {
@@ -27,7 +32,8 @@ const sendUpdateShape = {
 export const loomBridgeToolShapes = {
   list_models: listModelsShape,
   spawn_thread: spawnThreadShape,
-  send_update: sendUpdateShape
+  send_update: sendUpdateShape,
+  ...loomWorkflowToolShapes
 };
 
 const listModelsInputSchema = {
@@ -63,30 +69,32 @@ const sendUpdateInputSchema = {
   additionalProperties: false
 };
 
+const bridgeTools = [
+  {
+    type: "function",
+    name: "list_models",
+    description: "List only currently connected models available to the Loom bridge, Loom's internal 1-5 capability ratings, and a policy-based recommendation for the supplied task. GPT is intentionally limited to 5.6 Luna, Terra, and Sol; every connected Claude model reported by Claude Code is eligible.",
+    inputSchema: listModelsInputSchema
+  },
+  {
+    type: "function",
+    name: "spawn_thread",
+    description: "Create a child Loom thread, run the prompt with the selected model and reasoning effort, wait for completion, and return its final answer. The thread remains visible and reusable in Loom.",
+    inputSchema: spawnThreadInputSchema
+  },
+  {
+    type: "function",
+    name: "send_update",
+    description: "Send a meaningful progress update from a spawned Loom bridge thread to its parent. This is only valid inside a bridge-created child thread.",
+    inputSchema: sendUpdateInputSchema
+  }
+];
+
 export const loomBridgeDynamicTools = [{
   type: "namespace",
   name: LOOM_BRIDGE_NAMESPACE,
-  description: "Spawn a separate Loom thread on a deliberately selected GPT or Claude model. Normally prefer GPT for cost efficiency. Prefer Claude only when explicitly requested, when Claude is the only connected family, or for work centered on UI design or taste. Either family may direct the other through another bridge thread. Call list_models before spawning so model choice and availability are evidence-based.",
-  tools: [
-    {
-      type: "function",
-      name: "list_models",
-      description: "List only currently connected models available to the Loom bridge, Loom's internal 1-5 capability ratings, and a policy-based recommendation for the supplied task. GPT is intentionally limited to 5.6 Luna, Terra, and Sol; every connected Claude model reported by Claude Code is eligible.",
-      inputSchema: listModelsInputSchema
-    },
-    {
-      type: "function",
-      name: "spawn_thread",
-      description: "Create a child Loom thread, run the prompt with the selected model and reasoning effort, wait for completion, and return its final answer. The thread remains visible and reusable in Loom.",
-      inputSchema: spawnThreadInputSchema
-    },
-    {
-      type: "function",
-      name: "send_update",
-      description: "Send a meaningful progress update from a spawned Loom bridge thread to its parent. This is only valid inside a bridge-created child thread.",
-      inputSchema: sendUpdateInputSchema
-    }
-  ]
+  description: "Coordinate Loom-native agents and visual workflows. Spawn deliberately selected GPT or Claude threads, inspect or edit project workflows, and run Loom Agent nodes either quietly in the background or as normal foreground tasks. Call list_models before spawning a bridge thread so model choice and availability are evidence-based.",
+  tools: [...bridgeTools, ...loomWorkflowTools]
 }];
 
 function textResult(value, success = true) {
@@ -118,12 +126,33 @@ export class LoomBridge {
     this.onThreadCreated = onThreadCreated;
     this.onActivity = onActivity;
     this.pending = new Map();
+    this.workflowIntegration = null;
+    this.workflowError = null;
+    this.workflowReady = installWorkflowRuntimeHost({
+      runtime,
+      database,
+      threadContext,
+      dynamicTools,
+      onThreadCreated,
+      onAgentActivity: onActivity
+    }).then((integration) => {
+      this.workflowIntegration = integration;
+      return integration;
+    }).catch((error) => {
+      this.workflowError = error;
+      return null;
+    });
     this.runtime.on("event", (event) => this.#onRuntimeEvent(event));
   }
 
   async handleToolCall(params) {
     try {
       if (!params?.threadId) throw new Error("Loom bridge tools require a thread-scoped call");
+      if (WORKFLOW_TOOL_NAMES.has(params.tool)) {
+        const integration = this.workflowIntegration ?? await this.workflowReady;
+        if (!integration) throw this.workflowError ?? new Error("Loom workflows are unavailable in this runtime");
+        return integration.workflows.handleToolCall(params);
+      }
       const input = params.arguments ?? {};
       if (params.tool === "list_models") return textResult(await this.#listModels(listModelsShape, input));
       if (params.tool === "spawn_thread") return textResult(await this.#spawnThread(params, z.object(spawnThreadShape).parse(input)));
