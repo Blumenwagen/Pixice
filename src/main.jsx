@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.jsx";
+import { WorkflowHost } from "./components/workflows/WorkflowHost.jsx";
 import "./styles.css";
 
 if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("task-progress-preview")) {
@@ -10,6 +11,8 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("task
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <App />
+    <WorkflowHost>
+      <App />
+    </WorkflowHost>
   </React.StrictMode>,
 );
