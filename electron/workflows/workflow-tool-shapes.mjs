@@ -20,6 +20,7 @@ const edge = z.object({
 
 export const loomWorkflowToolShapes = {
   list_workflows: {},
+  describe_nodes: {},
   inspect_workflow: { workflowId: identifier },
   create_workflow: {
     name: z.string().trim().min(1).max(240),
