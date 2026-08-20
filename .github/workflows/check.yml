@@ -29,7 +29,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Focused workflow tests
-        id: workflow-tests
+        id: workflow_tests
         continue-on-error: true
         shell: bash
         run: |
@@ -46,23 +46,23 @@ jobs:
             tests/claude-workflow-tools.test.js \
             --reporter=verbose 2>&1 | tee artifacts/workflow-tests.log
       - name: Full Vitest suite
-        id: full-tests
-        if: steps.workflow-tests.outcome == 'success'
+        id: full_tests
+        if: steps.workflow_tests.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           pnpm exec vitest run 2>&1 | tee artifacts/full-tests.log
       - name: Sites production check
-        id: sites-check
-        if: steps.workflow-tests.outcome == 'success' && steps.full-tests.outcome == 'success'
+        id: sites_check
+        if: steps.workflow_tests.outcome == 'success' && steps.full_tests.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           pnpm test:sites 2>&1 | tee artifacts/sites-check.log
       - name: Capture workflow preview
-        if: steps.workflow-tests.outcome == 'success' && steps.full-tests.outcome == 'success' && steps.sites-check.outcome == 'success'
+        if: steps.workflow_tests.outcome == 'success' && steps.full_tests.outcome == 'success' && steps.sites_check.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
         shell: bash
@@ -93,9 +93,9 @@ jobs:
         with:
           script: |
             const contexts = [
-              ['loom/workflow-tests', '${{ steps.workflow-tests.outcome }}'],
-              ['loom/full-tests', '${{ steps.full-tests.outcome }}'],
-              ['loom/sites', '${{ steps.sites-check.outcome }}']
+              ['loom/workflow-tests', '${{ steps.workflow_tests.outcome }}'],
+              ['loom/full-tests', '${{ steps.full_tests.outcome }}'],
+              ['loom/sites', '${{ steps.sites_check.outcome }}']
             ];
             const target_url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             for (const [name, outcome] of contexts) {
@@ -121,5 +121,5 @@ jobs:
               target_url
             });
       - name: Fail after publishing status
-        if: steps.workflow-tests.outcome != 'success' || steps.full-tests.outcome != 'success' || steps.sites-check.outcome != 'success'
+        if: steps.workflow_tests.outcome != 'success' || steps.full_tests.outcome != 'success' || steps.sites_check.outcome != 'success'
         run: exit 1
