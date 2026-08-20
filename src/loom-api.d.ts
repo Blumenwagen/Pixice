@@ -1,7 +1,7 @@
 export {};
 
 type LoomEvent = {
-  type: "TaskUpdated" | "AgentUpdated" | "ActivityReceived" | "AttentionRequired" | "AttentionReset" | "RuntimeError" | "RuntimeStatus" | "BrowserState" | "BrowserOpenRequested" | "BoardUpdated" | "WorkflowUpdated" | "WorkflowRunUpdated" | "WorkflowOpenRequested" | "UpdateState" | "UsageUpdated";
+  type: "TaskUpdated" | "AgentUpdated" | "ActivityReceived" | "AttentionRequired" | "AttentionReset" | "RuntimeError" | "RuntimeStatus" | "BrowserState" | "BrowserOpenRequested" | "BoardUpdated" | "WorkflowUpdated" | "WorkflowRunUpdated" | "WorkflowOpenRequested" | "WorkflowForegroundRequested" | "UpdateState" | "UsageUpdated";
   payload: any;
   at: string;
 };
@@ -9,13 +9,14 @@ type LoomEvent = {
 type ProjectScope = { projectId: string };
 type ThreadScope = ProjectScope & { threadId: string };
 type WorkflowNodeType = "manualTrigger" | "loomAgent" | "output";
+type WorkflowAgentExecutionMode = "background" | "foreground";
 type WorkflowNode = {
   id: string;
   type: WorkflowNodeType;
   name: string;
   description: string;
   position: { x: number; y: number };
-  config: Record<string, unknown>;
+  config: Record<string, unknown> & { executionMode?: WorkflowAgentExecutionMode };
 };
 type WorkflowEdge = {
   id: string;
@@ -46,7 +47,7 @@ type WorkflowRun = {
   projectId: string;
   status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
   input: unknown;
-  nodeRuns: Record<string, { nodeId: string; status: string; input?: unknown; output?: unknown; error?: string; threadId?: string; turnId?: string; model?: string; effort?: string; startedAt?: string; completedAt?: string }>;
+  nodeRuns: Record<string, { nodeId: string; status: string; input?: unknown; output?: unknown; error?: string; threadId?: string; turnId?: string; model?: string; effort?: string; executionMode?: WorkflowAgentExecutionMode; startedAt?: string; completedAt?: string }>;
   output: unknown;
   error: string | null;
   sourceThreadId: string | null;
