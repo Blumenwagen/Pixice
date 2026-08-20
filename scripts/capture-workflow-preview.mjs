@@ -5,6 +5,11 @@ import path from "node:path";
 const outputPath = path.resolve(process.env.LOOM_CAPTURE_PATH || "artifacts/workflow-preview.png");
 const previewUrl = process.env.LOOM_PREVIEW_URL || "http://127.0.0.1:5173/?workflow-preview";
 
+if (process.env.CI) {
+  app.commandLine.appendSwitch("no-sandbox");
+  app.commandLine.appendSwitch("disable-gpu");
+}
+
 await app.whenReady();
 const window = new BrowserWindow({
   width: Number(process.env.LOOM_CAPTURE_WIDTH || 1440),
@@ -18,6 +23,7 @@ const window = new BrowserWindow({
   }
 });
 
+let exitCode = 0;
 try {
   await window.loadURL(previewUrl);
   await window.webContents.executeJavaScript(`
@@ -43,7 +49,11 @@ try {
   const image = await window.webContents.capturePage();
   mkdirSync(path.dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, image.toPNG());
+  console.log(`Workflow preview written to ${outputPath}`);
+} catch (error) {
+  exitCode = 1;
+  console.error(error);
 } finally {
   window.destroy();
-  app.quit();
+  app.exit(exitCode);
 }
