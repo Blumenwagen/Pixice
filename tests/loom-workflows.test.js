@@ -19,8 +19,10 @@ function resultValue(result) {
 class FakeRuntime extends EventEmitter {
   connected = true;
   sequence = 0;
+  requests = [];
 
   async request(method, payload) {
+    this.requests.push({ method, payload });
     if (method === "model/list") {
       return { data: [{ id: "codex:gpt-test", model: "gpt-test", provider: "codex", displayName: "GPT Test", isDefault: true }] };
     }
@@ -48,54 +50,61 @@ class FakeRuntime extends EventEmitter {
   }
 }
 
+function createCapability({ runtime, store, saveThreadLink = vi.fn(), onForeground = vi.fn(), onAgentActivity = vi.fn() }) {
+  const onOpen = vi.fn();
+  const onChange = vi.fn();
+  const onRun = vi.fn();
+  const workflows = new LoomWorkflows({
+    runtime,
+    store,
+    database: { saveThreadLink },
+    threadContext: () => ({ projectId: "project-1", cwd: "/workspace" }),
+    projectContext: () => ({
+      cwd: "/workspace",
+      defaultModel: "gpt-test",
+      defaultEffort: "high",
+      defaultPermissionMode: "workspace-write",
+      developerInstructions: "test",
+      permissionSettings: () => ({
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandbox: "workspace-write",
+        sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/workspace"] }
+      })
+    }),
+    dynamicTools: () => [],
+    onOpen,
+    onChange,
+    onRun,
+    onForeground,
+    onAgentActivity
+  });
+  return { workflows, onOpen, onChange, onRun, onForeground, onAgentActivity, saveThreadLink };
+}
+
 describe("Loom workflow capability", () => {
-  it("lets an agent create, inspect, edit, open, and run a workflow", async () => {
+  it("lets an agent create, inspect, edit, open, and run a background workflow agent", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-agent-"));
     temporaryDirectories.push(directory);
     const store = new WorkflowStore(directory);
     const runtime = new FakeRuntime();
-    const onOpen = vi.fn();
-    const onChange = vi.fn();
-    const onRun = vi.fn();
-    const saveThreadLink = vi.fn();
-    const workflows = new LoomWorkflows({
-      runtime,
-      store,
-      database: { saveThreadLink },
-      threadContext: () => ({ projectId: "project-1", cwd: "/workspace" }),
-      projectContext: () => ({
-        cwd: "/workspace",
-        defaultModel: "gpt-test",
-        defaultEffort: "high",
-        defaultPermissionMode: "workspace-write",
-        developerInstructions: "test",
-        permissionSettings: () => ({
-          approvalPolicy: "on-request",
-          approvalsReviewer: "user",
-          sandbox: "workspace-write",
-          sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/workspace"] }
-        })
-      }),
-      dynamicTools: () => [],
-      onOpen,
-      onChange,
-      onRun
-    });
+    const capability = createCapability({ runtime, store });
 
-    const created = resultValue(await workflows.handleToolCall({
+    const created = resultValue(await capability.workflows.handleToolCall({
       threadId: "thread-parent",
       tool: "create_workflow",
       arguments: { name: "Investigate regression", description: "Use a Loom Agent" }
     })).workflow;
-    expect(created.graph.nodes.some((node) => node.type === "loomAgent")).toBe(true);
+    const createdAgent = created.graph.nodes.find((node) => node.type === "loomAgent");
+    expect(createdAgent.config.executionMode).toBe("background");
 
-    const inspected = resultValue(await workflows.handleToolCall({
+    const inspected = resultValue(await capability.workflows.handleToolCall({
       threadId: "thread-parent",
       tool: "inspect_workflow",
       arguments: { workflowId: created.id }
     })).workflow;
     const agent = inspected.graph.nodes.find((node) => node.type === "loomAgent");
-    const saved = resultValue(await workflows.handleToolCall({
+    const saved = resultValue(await capability.workflows.handleToolCall({
       threadId: "thread-parent",
       tool: "save_workflow",
       arguments: {
@@ -110,16 +119,67 @@ describe("Loom workflow capability", () => {
     })).workflow;
     expect(saved.graph.nodes.find((node) => node.id === agent.id).config.prompt).toBe("Diagnose the regression.");
 
-    const completed = resultValue(await workflows.handleToolCall({
+    const completed = resultValue(await capability.workflows.handleToolCall({
       threadId: "thread-parent",
       tool: "run_workflow",
       arguments: { workflowId: created.id, input: { issue: 17 } }
     })).run;
     expect(completed).toMatchObject({ status: "completed", output: "workflow answer" });
-    expect(saveThreadLink).toHaveBeenCalledWith(expect.objectContaining({ kind: "loomWorkflow", parentThreadId: "thread-parent" }));
-    expect(onOpen).toHaveBeenCalledTimes(4);
-    expect(onChange).toHaveBeenCalledTimes(2);
-    expect(onRun).toHaveBeenCalled();
+    expect(completed.nodeRuns[agent.id]).toMatchObject({ executionMode: "background", threadId: "workflow-thread-1" });
+    expect(capability.saveThreadLink).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "loomWorkflowBackground",
+      parentThreadId: "thread-parent"
+    }));
+    expect(runtime.requests.find((request) => request.method === "thread/start")?.payload.parentThreadId).toBe("thread-parent");
+    expect(capability.onForeground).not.toHaveBeenCalled();
+    expect(capability.onAgentActivity).toHaveBeenCalled();
+    expect(capability.onOpen).toHaveBeenCalledTimes(4);
+    expect(capability.onChange).toHaveBeenCalledTimes(2);
+    expect(capability.onRun).toHaveBeenCalled();
+    store.close();
+  });
+
+  it("promotes foreground agent nodes to normal root Loom threads", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-foreground-"));
+    temporaryDirectories.push(directory);
+    const store = new WorkflowStore(directory);
+    const runtime = new FakeRuntime();
+    const capability = createCapability({ runtime, store });
+    const created = capability.workflows.create({ projectId: "project-1", name: "Foreground review" });
+    const agent = created.graph.nodes.find((node) => node.type === "loomAgent");
+    const saved = capability.workflows.save({
+      projectId: "project-1",
+      workflowId: created.id,
+      graph: {
+        ...created.graph,
+        nodes: created.graph.nodes.map((node) => node.id === agent.id
+          ? { ...node, config: { ...node.config, executionMode: "foreground" } }
+          : node)
+      },
+      expectedUpdatedAt: created.updatedAt
+    });
+
+    const run = capability.workflows.startRun({
+      projectId: "project-1",
+      workflowId: saved.id,
+      input: { review: true },
+      sourceThreadId: "thread-parent"
+    });
+    const completed = await capability.workflows.waitForRun(run.id);
+
+    expect(completed.status).toBe("completed");
+    expect(completed.nodeRuns[agent.id]).toMatchObject({ executionMode: "foreground", threadId: "workflow-thread-1" });
+    const threadRequest = runtime.requests.find((request) => request.method === "thread/start");
+    expect(threadRequest.payload).not.toHaveProperty("parentThreadId");
+    expect(capability.saveThreadLink).not.toHaveBeenCalled();
+    expect(capability.onAgentActivity).not.toHaveBeenCalled();
+    expect(capability.onForeground).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      workflowId: saved.id,
+      nodeId: agent.id,
+      threadId: "workflow-thread-1",
+      sourceThreadId: "thread-parent"
+    }));
     store.close();
   });
 
