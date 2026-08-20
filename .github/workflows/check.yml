@@ -17,7 +17,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -28,156 +28,24 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: mkdir -p artifacts
-      - name: Workflow values tests
-        id: values
+      - id: project_check
         continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pnpm exec vitest run tests/workflow-values.test.js --reporter=verbose 2>&1 | tee artifacts/workflow-values.log
-      - name: Workflow node executor tests
-        id: executors
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pnpm exec vitest run tests/workflow-node-executors.test.js --reporter=verbose 2>&1 | tee artifacts/workflow-node-executors.log
-      - name: Workflow model tests
-        id: model
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pnpm exec vitest run tests/workflow-model.test.js --reporter=verbose 2>&1 | tee artifacts/workflow-model.log
-      - name: Workflow runtime tests
-        id: runtime
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pnpm exec vitest run tests/loom-workflows.test.js tests/workflow-runtime-host.test.js --reporter=verbose 2>&1 | tee artifacts/workflow-runtime.log
-      - name: Workflow canvas tests
-        id: canvas
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pnpm exec vitest run tests/workflow-canvas.test.jsx --reporter=verbose 2>&1 | tee artifacts/workflow-canvas.log
-      - name: Workflow host tests
-        id: host
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pnpm exec vitest run tests/workflow-host.test.jsx --reporter=verbose 2>&1 | tee artifacts/workflow-host.log
-      - name: Claude workflow tool tests
-        id: claude_tools
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pnpm exec vitest run tests/claude-workflow-tools.test.js --reporter=verbose 2>&1 | tee artifacts/claude-workflow-tools.log
-      - name: Full Vitest suite
-        id: full_tests
-        if: >-
-          steps.values.outcome == 'success' &&
-          steps.executors.outcome == 'success' &&
-          steps.model.outcome == 'success' &&
-          steps.runtime.outcome == 'success' &&
-          steps.canvas.outcome == 'success' &&
-          steps.host.outcome == 'success' &&
-          steps.claude_tools.outcome == 'success'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pnpm exec vitest run 2>&1 | tee artifacts/full-tests.log
-      - name: Sites production check
-        id: sites_check
-        if: steps.full_tests.outcome == 'success'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pnpm test:sites 2>&1 | tee artifacts/sites-check.log
-      - name: Capture workflow preview
-        if: steps.full_tests.outcome == 'success' && steps.sites_check.outcome == 'success'
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: bash
-        run: |
-          pnpm exec vite --host 127.0.0.1 > /tmp/loom-vite.log 2>&1 &
-          VITE_PID=$!
-          trap 'kill "$VITE_PID" 2>/dev/null || true' EXIT
-          pnpm exec wait-on --timeout 30000 'http://127.0.0.1:5173/?workflow-preview'
-          timeout 45s xvfb-run -a env \
-            LOOM_CAPTURE_PATH="$PWD/artifacts/workflow-preview.png" \
-            LOOM_CAPTURE_WIDTH=1440 \
-            LOOM_CAPTURE_HEIGHT=960 \
-            pnpm exec electron --no-sandbox --disable-gpu scripts/capture-workflow-preview.mjs
-      - name: Upload workflow artifacts
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: workflow-check-${{ github.sha }}
-          path: |
-            artifacts/*.log
-            artifacts/workflow-preview.png
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Publish commit statuses
+        run: pnpm check
+      - name: Publish commit status
         if: always() && github.event_name != 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
-            const contexts = [
-              ['loom/workflow-values', '${{ steps.values.outcome }}'],
-              ['loom/workflow-executors', '${{ steps.executors.outcome }}'],
-              ['loom/workflow-model', '${{ steps.model.outcome }}'],
-              ['loom/workflow-runtime', '${{ steps.runtime.outcome }}'],
-              ['loom/workflow-canvas', '${{ steps.canvas.outcome }}'],
-              ['loom/workflow-host', '${{ steps.host.outcome }}'],
-              ['loom/workflow-claude', '${{ steps.claude_tools.outcome }}'],
-              ['loom/full-tests', '${{ steps.full_tests.outcome }}'],
-              ['loom/sites', '${{ steps.sites_check.outcome }}']
-            ];
-            const target_url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            for (const [name, outcome] of contexts) {
-              const skipped = outcome === 'skipped';
-              await github.rest.repos.createCommitStatus({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                sha: context.sha,
-                state: skipped ? 'pending' : outcome === 'success' ? 'success' : 'failure',
-                context: name,
-                description: skipped ? 'Waiting for prerequisite checks' : outcome === 'success' ? 'Passed' : 'Failed',
-                target_url
-              });
-            }
-            const required = contexts.slice(0, 7);
-            const success = required.every(([, outcome]) => outcome === 'success')
-              && '${{ steps.full_tests.outcome }}' === 'success'
-              && '${{ steps.sites_check.outcome }}' === 'success';
+            const success = '${{ steps.project_check.outcome }}' === 'success';
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
               sha: context.sha,
               state: success ? 'success' : 'failure',
               context: 'loom/check',
-              description: success ? 'All project checks passed' : 'One or more project checks failed',
-              target_url
+              description: success ? 'pnpm check passed' : 'pnpm check failed',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
       - name: Fail after publishing status
-        if: >-
-          steps.values.outcome != 'success' ||
-          steps.executors.outcome != 'success' ||
-          steps.model.outcome != 'success' ||
-          steps.runtime.outcome != 'success' ||
-          steps.canvas.outcome != 'success' ||
-          steps.host.outcome != 'success' ||
-          steps.claude_tools.outcome != 'success' ||
-          steps.full_tests.outcome != 'success' ||
-          steps.sites_check.outcome != 'success'
+        if: steps.project_check.outcome != 'success'
         run: exit 1
