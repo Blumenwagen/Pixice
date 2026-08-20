@@ -153,32 +153,40 @@ export function workflowAttachmentNodes(workflow) {
   return (workflow.graph ?? workflow).nodes.filter(workflowNodeIsAttachment);
 }
 
+function inputFromEdge(edge, outputs) {
+  if (!outputs.has(edge.source)) return [];
+  const sourceResult = outputs.get(edge.source);
+  if (sourceResult?.ports) {
+    if (!Object.prototype.hasOwnProperty.call(sourceResult.ports, edge.sourcePort)) return [];
+    return [{
+      edgeId: edge.id,
+      sourceNodeId: edge.source,
+      sourcePort: edge.sourcePort,
+      targetPort: edge.targetPort,
+      value: sourceResult.ports[edge.sourcePort]
+    }];
+  }
+  if (edge.sourcePort !== "output") return [];
+  return [{
+    edgeId: edge.id,
+    sourceNodeId: edge.source,
+    sourcePort: edge.sourcePort,
+    targetPort: edge.targetPort,
+    value: sourceResult
+  }];
+}
+
 export function workflowInputsForNode(workflow, nodeId, outputs) {
   const graph = workflow.graph ?? workflow;
-  return graph.edges
-    .filter((edge) => edge.target === nodeId)
-    .flatMap((edge) => {
-      if (!outputs.has(edge.source)) return [];
-      const sourceResult = outputs.get(edge.source);
-      if (sourceResult?.ports) {
-        if (!Object.prototype.hasOwnProperty.call(sourceResult.ports, edge.sourcePort)) return [];
-        return [{
-          edgeId: edge.id,
-          sourceNodeId: edge.source,
-          sourcePort: edge.sourcePort,
-          targetPort: edge.targetPort,
-          value: sourceResult.ports[edge.sourcePort]
-        }];
-      }
-      if (edge.sourcePort !== "output") return [];
-      return [{
-        edgeId: edge.id,
-        sourceNodeId: edge.source,
-        sourcePort: edge.sourcePort,
-        targetPort: edge.targetPort,
-        value: sourceResult
-      }];
-    });
+  const edges = graph.edges.filter((edge) => edge.target === nodeId);
+  const dataEdges = edges.filter((edge) => edge.targetPort !== "skill");
+  const skillEdges = edges.filter((edge) => edge.targetPort === "skill");
+  const dataInputs = dataEdges.flatMap((edge) => inputFromEdge(edge, outputs));
+
+  // Skill attachments describe how an Agent should work; they must never activate
+  // an otherwise disconnected or inactive Agent branch by themselves.
+  if (skillEdges.length && (dataEdges.length === 0 || dataInputs.length === 0)) return dataInputs;
+  return [...dataInputs, ...skillEdges.flatMap((edge) => inputFromEdge(edge, outputs))];
 }
 
 export function createDefaultWorkflow({
