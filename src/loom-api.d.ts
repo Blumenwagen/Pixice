@@ -1,13 +1,59 @@
 export {};
 
 type LoomEvent = {
-  type: "TaskUpdated" | "AgentUpdated" | "ActivityReceived" | "AttentionRequired" | "AttentionReset" | "RuntimeError" | "RuntimeStatus" | "BrowserState" | "BrowserOpenRequested" | "BoardUpdated" | "UpdateState" | "UsageUpdated";
+  type: "TaskUpdated" | "AgentUpdated" | "ActivityReceived" | "AttentionRequired" | "AttentionReset" | "RuntimeError" | "RuntimeStatus" | "BrowserState" | "BrowserOpenRequested" | "BoardUpdated" | "WorkflowUpdated" | "WorkflowRunUpdated" | "WorkflowOpenRequested" | "UpdateState" | "UsageUpdated";
   payload: any;
   at: string;
 };
 
 type ProjectScope = { projectId: string };
 type ThreadScope = ProjectScope & { threadId: string };
+type WorkflowNodeType = "manualTrigger" | "loomAgent" | "output";
+type WorkflowNode = {
+  id: string;
+  type: WorkflowNodeType;
+  name: string;
+  description: string;
+  position: { x: number; y: number };
+  config: Record<string, unknown>;
+};
+type WorkflowEdge = {
+  id: string;
+  source: string;
+  target: string;
+  sourcePort: string;
+  targetPort: string;
+};
+type WorkflowGraph = {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  viewport: { x: number; y: number; zoom: number };
+};
+type WorkflowDocument = {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string;
+  graph: WorkflowGraph;
+  createdByThreadId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  latestRun?: WorkflowRun | null;
+};
+type WorkflowRun = {
+  id: string;
+  workflowId: string;
+  projectId: string;
+  status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
+  input: unknown;
+  nodeRuns: Record<string, { nodeId: string; status: string; input?: unknown; output?: unknown; error?: string; threadId?: string; turnId?: string; model?: string; effort?: string; startedAt?: string; completedAt?: string }>;
+  output: unknown;
+  error: string | null;
+  sourceThreadId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
 
 declare global {
   interface Window {
@@ -53,6 +99,15 @@ declare global {
         move(payload: ProjectScope & { taskId: string; column: "backlog" | "ready" | "active" | "done"; beforeTaskId?: string }): Promise<any>;
         delete(payload: ProjectScope & { taskId: string }): Promise<any>;
         attach(payload: ProjectScope & { taskId: string; threadId: string }): Promise<any>;
+      };
+      workflows: {
+        list(payload: ProjectScope): Promise<{ data: WorkflowDocument[] }>;
+        read(payload: ProjectScope & { workflowId: string }): Promise<{ workflow: WorkflowDocument; runs: WorkflowRun[] }>;
+        create(payload: ProjectScope & { name: string; description?: string }): Promise<WorkflowDocument>;
+        save(payload: ProjectScope & { workflowId: string; name: string; description: string; graph: WorkflowGraph; expectedUpdatedAt?: string }): Promise<WorkflowDocument>;
+        delete(payload: ProjectScope & { workflowId: string }): Promise<WorkflowDocument>;
+        run(payload: ProjectScope & { workflowId: string; input?: unknown }): Promise<WorkflowRun>;
+        cancel(payload: ProjectScope & { runId: string }): Promise<WorkflowRun>;
       };
       threads: {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
