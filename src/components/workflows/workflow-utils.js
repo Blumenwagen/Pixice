@@ -2,6 +2,7 @@ export const WORKFLOW_NODE_WIDTH = 286;
 export const WORKFLOW_NODE_HEIGHT = 112;
 
 const commonInput = [{ id: "input", label: "Input" }];
+const agentInputs = [{ id: "input", label: "Input" }, { id: "skill", label: "Skill" }];
 const commonOutput = [{ id: "output", label: "Output" }];
 
 export const WORKFLOW_NODE_META = {
@@ -56,6 +57,24 @@ export const WORKFLOW_NODE_META = {
     inputPorts: [],
     outputPorts: [{ id: "output", label: "Request" }]
   },
+  useSkill: {
+    label: "Use Skill",
+    action: "Attach instructions",
+    category: "Loom",
+    icon: "skill",
+    tone: "orange",
+    defaultName: "Use Skill",
+    defaultDescription: "Attach an installed Skill or project Markdown instructions directly to a Loom Agent.",
+    defaultConfig: {
+      source: "installed",
+      skillRef: "",
+      skillName: "",
+      path: "",
+      maxBytes: 500000
+    },
+    inputPorts: [],
+    outputPorts: [{ id: "skill", label: "Skill" }]
+  },
   loomAgent: {
     label: "Loom Agent",
     action: "Run agent",
@@ -63,7 +82,7 @@ export const WORKFLOW_NODE_META = {
     icon: "brain",
     tone: "orange",
     defaultName: "Loom Agent",
-    defaultDescription: "Run a Loom-native coding agent with upstream workflow context.",
+    defaultDescription: "Run a Loom-native coding agent with upstream workflow context and attached Skills.",
     defaultConfig: {
       prompt: "Complete the workflow task using the incoming context.",
       model: null,
@@ -71,7 +90,7 @@ export const WORKFLOW_NODE_META = {
       permissionMode: "workspace-write",
       executionMode: "background"
     },
-    inputPorts: commonInput,
+    inputPorts: agentInputs,
     outputPorts: [{ id: "output", label: "Answer" }]
   },
   httpRequest: {
@@ -343,6 +362,17 @@ export function workflowOutputPorts(node) {
     ];
   }
   return WORKFLOW_NODE_META[node.type]?.outputPorts ?? [];
+}
+
+export function workflowCanConnect(sourceNode, sourcePort, targetNode, targetPort) {
+  const isSkillConnection = sourceNode?.type === "useSkill" || sourcePort === "skill" || targetPort === "skill";
+  if (isSkillConnection) {
+    return sourceNode?.type === "useSkill"
+      && sourcePort === "skill"
+      && targetNode?.type === "loomAgent"
+      && targetPort === "skill";
+  }
+  return Boolean(sourceNode && targetNode);
 }
 
 export function workflowNodeHeight(node) {
