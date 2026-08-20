@@ -35,6 +35,49 @@ describe("workflow model", () => {
     })).toThrow(/execution mode/i);
   });
 
+  it("allows multiple Use Skill nodes only on a Loom Agent Skill input", () => {
+    const nodes = [
+      { id: "start", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
+      { id: "skill-one", type: "useSkill", name: "Release Skill", description: "", position: { x: 0, y: 2 }, config: { source: "installed", skillRef: "release", skillName: "Release" } },
+      { id: "skill-two", type: "useSkill", name: "Project Guide", description: "", position: { x: 0, y: 4 }, config: { source: "markdown", path: "docs/guide.md" } },
+      { id: "agent", type: "loomAgent", name: "Agent", description: "", position: { x: 2, y: 2 }, config: {} },
+      { id: "transform", type: "transform", name: "Transform", description: "", position: { x: 4, y: 2 }, config: {} }
+    ];
+    const valid = validateWorkflowGraph({
+      nodes,
+      edges: [
+        { id: "data", source: "start", target: "agent", sourcePort: "output", targetPort: "input" },
+        { id: "skill-one-edge", source: "skill-one", target: "agent", sourcePort: "skill", targetPort: "skill" },
+        { id: "skill-two-edge", source: "skill-two", target: "agent", sourcePort: "skill", targetPort: "skill" }
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 }
+    });
+    expect(valid.nodes.find((node) => node.id === "skill-one")?.config).toMatchObject({
+      source: "installed",
+      skillRef: "release",
+      maxBytes: 500_000
+    });
+    expect(valid.edges.filter((edge) => edge.targetPort === "skill")).toHaveLength(2);
+
+    expect(() => validateWorkflowGraph({
+      nodes,
+      edges: [{ id: "wrong-agent-port", source: "skill-one", target: "agent", sourcePort: "skill", targetPort: "input" }],
+      viewport: { x: 0, y: 0, zoom: 1 }
+    })).toThrow(/directly to Loom Agent · Skill/i);
+
+    expect(() => validateWorkflowGraph({
+      nodes,
+      edges: [{ id: "wrong-source", source: "start", target: "agent", sourcePort: "output", targetPort: "skill" }],
+      viewport: { x: 0, y: 0, zoom: 1 }
+    })).toThrow(/directly to Loom Agent · Skill/i);
+
+    expect(() => validateWorkflowGraph({
+      nodes,
+      edges: [{ id: "wrong-target", source: "skill-one", target: "transform", sourcePort: "skill", targetPort: "input" }],
+      viewport: { x: 0, y: 0, zoom: 1 }
+    })).toThrow(/directly to Loom Agent · Skill/i);
+  });
+
   it("rejects broken references, invalid ports, and cyclic graphs", () => {
     expect(() => validateWorkflowGraph({
       nodes: [{ id: "a", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} }],
