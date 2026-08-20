@@ -24,11 +24,21 @@ export const WORKFLOW_NODE_GUIDE = [
     }
   },
   {
-    type: "loomAgent",
-    purpose: "Run a real Loom Agent and pass its final answer downstream.",
-    inputPorts: ["input"], outputPorts: ["output"],
+    type: "useSkill",
+    purpose: "Attach one installed Codex Skill or one project-scoped .md instruction file directly to a Loom Agent. Multiple Use Skill nodes may connect to the same Agent Skill port.",
+    inputPorts: [], outputPorts: ["skill"],
+    connection: "Connect Use Skill · skill directly to Loom Agent · skill. It is not a normal data edge.",
     config: {
-      prompt: "Template text; upstream values are appended as structured context.",
+      source: "installed | markdown", skillRef: "Stable installed-skill reference", skillName: "Display name",
+      path: "Project-relative .md path when source is markdown", maxBytes: "1024-2000000"
+    }
+  },
+  {
+    type: "loomAgent",
+    purpose: "Run a real Loom Agent and pass its final answer downstream. Its dedicated Skill input accepts any number of Use Skill attachments.",
+    inputPorts: ["input", "skill"], outputPorts: ["output"],
+    config: {
+      prompt: "Template text; ordinary upstream values are appended as structured context.",
       model: "Qualified or provider model id, or null for project default.", effort: "Reasoning effort or null.",
       permissionMode: "read-only | workspace-write | auto-approve | full-access", executionMode: "background | foreground"
     }
