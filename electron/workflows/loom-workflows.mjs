@@ -3,9 +3,9 @@ import { z } from "zod";
 import { buildCodexUserInput } from "../runtime/user-input.mjs";
 import {
   WORKFLOW_NODE_TYPES,
-  workflowNodeIsTrigger,
-  workflowNodeOutputPorts
+  workflowNodeIsTrigger
 } from "./workflow-node-catalog.mjs";
+import { WORKFLOW_NODE_GUIDE } from "./workflow-node-guide.mjs";
 import {
   executeBuiltInWorkflowNode,
   normalizeWorkflowNodeResult,
@@ -62,18 +62,21 @@ const emptySchema = z.object({}).strict();
 const workflowIdSchema = z.object({ workflowId: identifier }).strict();
 const createSchema = z.object({
   name: z.string().trim().min(1).max(240),
-  description: z.string().max(10_000).default("")
+  description: z.string().max(10_000).default(""),
+  enabled: z.boolean().default(false)
 }).strict();
 const saveSchema = z.object({
   workflowId: identifier,
   name: z.string().trim().min(1).max(240).optional(),
   description: z.string().max(10_000).optional(),
+  enabled: z.boolean().optional(),
   ...graphShape,
   expectedUpdatedAt: z.string().datetime().optional()
 }).strict();
 const runSchema = z.object({
   workflowId: identifier,
-  input: z.unknown().optional()
+  input: z.unknown().optional(),
+  triggerNodeId: identifier.optional()
 }).strict();
 
 const nodeJsonSchema = {
@@ -112,144 +115,11 @@ const edgeJsonSchema = {
   additionalProperties: false
 };
 
-const NODE_GUIDE = [
-  {
-    type: "manualTrigger",
-    purpose: "Start a workflow with input supplied by the user or calling agent.",
-    inputPorts: [],
-    outputPorts: ["output"],
-    config: {}
-  },
-  {
-    type: "loomAgent",
-    purpose: "Run a real Loom Agent and pass its final answer downstream.",
-    inputPorts: ["input"],
-    outputPorts: ["output"],
-    config: {
-      prompt: "Template text; upstream values are also appended as structured context.",
-      model: "Qualified or provider model id, or null for project default.",
-      effort: "Reasoning effort or null for model default.",
-      permissionMode: "read-only | workspace-write | auto-approve | full-access",
-      executionMode: "background | foreground"
-    }
-  },
-  {
-    type: "httpRequest",
-    purpose: "Call an HTTP or HTTPS API with templated URL, headers, query, and body.",
-    inputPorts: ["input"],
-    outputPorts: ["output"],
-    config: {
-      method: "GET | POST | PUT | PATCH | DELETE | HEAD",
-      url: "Template, for example https://api.example.com/items/{{input.id}}",
-      headers: "JSON template string",
-      query: "JSON template string",
-      bodyMode: "json | text | none",
-      body: "JSON or text template",
-      responseType: "auto | json | text",
-      failOnHttpError: "Boolean",
-      timeoutMs: "100-300000",
-      maxBytes: "1024-25000000"
-    }
-  },
-  {
-    type: "transform",
-    purpose: "Build a new JSON value or text using typed {{input.path}}, {{run.path}}, and {{nodes.nodeId.path}} expressions.",
-    inputPorts: ["input"],
-    outputPorts: ["output"],
-    config: { mode: "json | text", template: "JSON or text template", mergeInput: "Boolean" }
-  },
-  {
-    type: "condition",
-    purpose: "Route data through true or false based on a typed comparison.",
-    inputPorts: ["input"],
-    outputPorts: ["true", "false"],
-    config: {
-      left: "Value template",
-      operator: "equals | notEquals | contains | notContains | startsWith | endsWith | matches | exists | notExists | greaterThan | greaterThanOrEqual | lessThan | lessThanOrEqual | isTrue | isFalse | isEmpty | isNotEmpty",
-      right: "Value template"
-    }
-  },
-  {
-    type: "switch",
-    purpose: "Route data through the first matching named case or the default port.",
-    inputPorts: ["input"],
-    outputPorts: "One port per rules[].id plus default",
-    config: {
-      value: "Value template",
-      rules: [{ id: "success", label: "Success", operator: "equals", compare: "ok" }]
-    }
-  },
-  {
-    type: "merge",
-    purpose: "Join active branches after conditions or parallel work.",
-    inputPorts: ["input"],
-    outputPorts: ["output"],
-    config: { mode: "array | object | keyed | concatenate | first | last" }
-  },
-  {
-    type: "delay",
-    purpose: "Wait without blocking the UI, while remaining cancellable.",
-    inputPorts: ["input"],
-    outputPorts: ["output"],
-    config: { amount: "Number", unit: "milliseconds | seconds | minutes | hours" }
-  },
-  {
-    type: "file",
-    purpose: "Read, inspect, list, or explicitly write project-scoped files.",
-    inputPorts: ["input"],
-    outputPorts: ["output"],
-    config: {
-      operation: "readText | writeText | list | stat | exists",
-      path: "Project-relative path template",
-      content: "Write content template",
-      allowWrite: "Must be true for writeText",
-      createDirectories: "Boolean",
-      recursive: "Boolean for list",
-      maxBytes: "1024-25000000"
-    }
-  },
-  {
-    type: "git",
-    purpose: "Inspect repository status, diffs, changed files, history, or a commit without invoking a shell.",
-    inputPorts: ["input"],
-    outputPorts: ["output"],
-    config: {
-      operation: "status | diff | changedFiles | log | show",
-      target: "Git ref template",
-      pathspec: "Optional path template",
-      staged: "Boolean for diff or changedFiles",
-      maxEntries: "1-100 for log"
-    }
-  },
-  {
-    type: "board",
-    purpose: "List, create, edit, move, or delete durable tasks on the current Loom board.",
-    inputPorts: ["input"],
-    outputPorts: ["output"],
-    config: {
-      operation: "list | create | update | move | delete",
-      taskId: "Task id template for update, move, or delete",
-      title: "Title template",
-      description: "Description template",
-      column: "backlog | ready | active | done",
-      beforeTaskId: "Optional ordering target",
-      attachSourceThread: "Boolean for create"
-    }
-  },
-  {
-    type: "output",
-    purpose: "Expose the final active value as the workflow result.",
-    inputPorts: ["input"],
-    outputPorts: [],
-    config: {}
-  }
-];
-
 export const loomWorkflowTools = [
   {
     type: "function",
     name: "list_workflows",
-    description: "List the current project's workflows and their latest run summaries.",
+    description: "List the current project's workflows, enabled state, trigger configuration, and latest run summaries.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
@@ -261,12 +131,11 @@ export const loomWorkflowTools = [
   {
     type: "function",
     name: "inspect_workflow",
-    description: "Read a complete workflow graph. This also opens the workflow canvas in Loom.",
+    description: "Read a complete workflow graph and open its canvas in Loom.",
     inputSchema: {
       type: "object",
       properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
-      required: ["workflowId"],
-      additionalProperties: false
+      required: ["workflowId"], additionalProperties: false
     }
   },
   {
@@ -277,22 +146,23 @@ export const loomWorkflowTools = [
       type: "object",
       properties: {
         name: { type: "string", minLength: 1, maxLength: 240 },
-        description: { type: "string", maxLength: 10000 }
+        description: { type: "string", maxLength: 10000 },
+        enabled: { type: "boolean", description: "Enable automatic Schedule and Webhook triggers. Defaults to false." }
       },
-      required: ["name"],
-      additionalProperties: false
+      required: ["name"], additionalProperties: false
     }
   },
   {
     type: "function",
     name: "save_workflow",
-    description: "Replace a workflow graph after inspecting it. Preserve unrelated nodes and use expectedUpdatedAt to avoid overwriting newer edits. Opens the updated canvas in Loom.",
+    description: "Replace a workflow graph after inspecting it. Preserve unrelated nodes and use expectedUpdatedAt to avoid overwriting newer edits.",
     inputSchema: {
       type: "object",
       properties: {
         workflowId: { type: "string", minLength: 1, maxLength: 160 },
         name: { type: "string", minLength: 1, maxLength: 240 },
         description: { type: "string", maxLength: 10000 },
+        enabled: { type: "boolean" },
         nodes: { type: "array", maxItems: 200, items: nodeJsonSchema },
         edges: { type: "array", maxItems: 600, items: edgeJsonSchema },
         viewport: {
@@ -302,8 +172,7 @@ export const loomWorkflowTools = [
         },
         expectedUpdatedAt: { type: "string", description: "The updatedAt value returned by inspect_workflow." }
       },
-      required: ["workflowId", "nodes", "edges"],
-      additionalProperties: false
+      required: ["workflowId", "nodes", "edges"], additionalProperties: false
     }
   },
   {
@@ -311,24 +180,22 @@ export const loomWorkflowTools = [
     name: "delete_workflow",
     description: "Permanently delete a workflow and its run history.",
     inputSchema: {
-      type: "object",
-      properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
-      required: ["workflowId"],
-      additionalProperties: false
+      type: "object", properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
+      required: ["workflowId"], additionalProperties: false
     }
   },
   {
     type: "function",
     name: "run_workflow",
-    description: "Run a workflow now, wait for it to finish, and return every node result. HTTP, data, branching, merge, delay, project-file, Git, board, and Loom Agent nodes execute natively.",
+    description: "Run a workflow now and wait for it to finish. This can test automatic-trigger workflows without enabling them.",
     inputSchema: {
       type: "object",
       properties: {
         workflowId: { type: "string", minLength: 1, maxLength: 160 },
-        input: { description: "JSON-compatible value supplied to Manual Trigger nodes." }
+        input: { description: "JSON-compatible value supplied to the selected trigger." },
+        triggerNodeId: { type: "string", description: "Optional trigger to test. Manual triggers are preferred when omitted." }
       },
-      required: ["workflowId"],
-      additionalProperties: false
+      required: ["workflowId"], additionalProperties: false
     }
   },
   {
@@ -336,10 +203,8 @@ export const loomWorkflowTools = [
     name: "open_workflow",
     description: "Open a workflow in Loom's preview without changing or running it.",
     inputSchema: {
-      type: "object",
-      properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
-      required: ["workflowId"],
-      additionalProperties: false
+      type: "object", properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
+      required: ["workflowId"], additionalProperties: false
     }
   }
 ];
@@ -347,7 +212,7 @@ export const loomWorkflowTools = [
 export const loomWorkflowDynamicTools = [{
   type: "namespace",
   name: LOOM_WORKFLOW_NAMESPACE,
-  description: "Build and run Loom-native visual automations. Workflows support API calls, typed data transformation, branching, merging, delays, project files, Git inspection, Loom board operations, and background or foreground Loom Agents. Using a workflow tool opens that workflow in Loom's in-app preview.",
+  description: "Build and run Loom-native visual automations with local triggers, APIs, encrypted credentials, deterministic data operations, SQLite, subworkflows, loops, notifications, board actions, and Loom Agents.",
   tools: loomWorkflowTools
 }];
 
@@ -372,6 +237,15 @@ function completionStatus(status) {
   return status ?? "failed";
 }
 
+function timeoutResult(promise, timeoutMs) {
+  let timer;
+  const marker = Symbol("timeout");
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((resolve) => { timer = setTimeout(() => resolve(marker), timeoutMs); })
+  ]).then((value) => ({ timedOut: value === marker, value: value === marker ? null : value }));
+}
+
 class WorkflowCancelledError extends Error {
   constructor() {
     super("Workflow run was cancelled");
@@ -393,7 +267,9 @@ export class LoomWorkflows {
     onForeground,
     onThreadCreated,
     onAgentActivity,
-    fetchImpl = globalThis.fetch
+    fetchImpl = globalThis.fetch,
+    credentialResolver = null,
+    notify = null
   }) {
     this.runtime = runtime;
     this.store = store;
@@ -408,6 +284,8 @@ export class LoomWorkflows {
     this.onThreadCreated = onThreadCreated;
     this.onAgentActivity = onAgentActivity;
     this.fetchImpl = fetchImpl;
+    this.credentialResolver = credentialResolver;
+    this.notify = notify;
     this.pendingAgents = new Map();
     this.activeRuns = new Map();
     this.runPromises = new Map();
@@ -426,19 +304,20 @@ export class LoomWorkflows {
     return { workflow, runs: this.store.listRuns(workflow.id, 20) };
   }
 
-  create({ projectId, name, description = "", createdByThreadId = null, graph = null }) {
-    const initial = createDefaultWorkflow({ projectId, name, description, createdByThreadId });
+  create({ projectId, name, description = "", enabled = false, createdByThreadId = null, graph = null }) {
+    const initial = createDefaultWorkflow({ projectId, name, description, enabled, createdByThreadId });
     const workflow = this.store.createWorkflow(graph ? normalizeWorkflowDocument({ ...initial, graph }) : initial);
     this.#changed("created", workflow);
     return workflow;
   }
 
-  save({ projectId, workflowId, name, description, graph, expectedUpdatedAt }) {
+  save({ projectId, workflowId, name, description, enabled, graph, expectedUpdatedAt }) {
     const current = this.#workflow(projectId, workflowId);
     const workflow = this.store.saveWorkflow({
       ...current,
       ...(name !== undefined ? { name } : {}),
       ...(description !== undefined ? { description } : {}),
+      ...(enabled !== undefined ? { enabled } : {}),
       graph: validateWorkflowGraph(graph)
     }, { expectedUpdatedAt });
     this.#changed("updated", workflow);
@@ -447,20 +326,38 @@ export class LoomWorkflows {
 
   delete(projectId, workflowId) {
     const workflow = this.#workflow(projectId, workflowId);
-    const active = [...this.activeRuns.values()].some((entry) => entry.workflowId === workflow.id);
-    if (active) throw new Error("Stop the active workflow run before deleting it");
+    if (this.isWorkflowActive(workflow.id)) throw new Error("Stop the active workflow run before deleting it");
     const deleted = this.store.deleteWorkflow(workflow.id);
     this.#changed("deleted", deleted);
     return deleted;
   }
 
-  startRun({ projectId, workflowId, input = {}, sourceThreadId = null, triggerNodeId = null }) {
+  isWorkflowActive(workflowId) {
+    return [...this.activeRuns.values()].some((entry) => entry.workflowId === workflowId);
+  }
+
+  startRun({
+    projectId,
+    workflowId,
+    input = {},
+    sourceThreadId = null,
+    triggerNodeId = null,
+    parentRunId = null,
+    parentNodeId = null,
+    callStack = []
+  }) {
     const workflow = this.#workflow(projectId, workflowId);
+    if (callStack.includes(workflow.id)) throw new Error(`Subworkflow cycle detected at “${workflow.name}”`);
+    if (callStack.length >= 8) throw new Error("Subworkflow nesting is limited to eight workflows");
     const triggers = workflowTriggerNodes(workflow);
     if (!triggers.length) throw new Error("Workflow has no trigger node");
     if (triggerNodeId && !triggers.some((node) => node.id === triggerNodeId)) throw new Error("Workflow trigger was not found");
-    const activeTriggerIds = triggerNodeId ? [triggerNodeId] : triggers.map((node) => node.id);
+    const preferred = triggers.filter((node) => node.type === "manualTrigger");
+    const selectedTriggers = triggerNodeId
+      ? [triggerNodeId]
+      : (preferred.length ? preferred : [triggers[0]]).map((node) => typeof node === "string" ? node : node.id);
     const createdAt = new Date().toISOString();
+    const nextCallStack = [...callStack, workflow.id];
     const run = this.store.createRun({
       id: randomUUID(),
       workflowId: workflow.id,
@@ -469,6 +366,10 @@ export class LoomWorkflows {
       input,
       nodeRuns: {},
       sourceThreadId,
+      triggerNodeId: selectedTriggers[0] ?? null,
+      parentRunId,
+      parentNodeId,
+      callStack: nextCallStack,
       createdAt
     });
     const state = {
@@ -476,7 +377,9 @@ export class LoomWorkflows {
       workflowId: workflow.id,
       cancelled: false,
       threads: new Set(),
-      activeTriggerIds: new Set(activeTriggerIds)
+      childRuns: new Set(),
+      activeTriggerIds: new Set(selectedTriggers),
+      callStack: nextCallStack
     };
     this.activeRuns.set(run.id, state);
     const promise = this.#executeRun(workflow, run, state)
@@ -506,12 +409,15 @@ export class LoomWorkflows {
     state.cancelled = true;
     const cancelling = this.store.updateRun(runId, { status: "cancelling" });
     this.#publishRun(cancelling);
-    await Promise.allSettled([...state.threads].map((threadId) => {
-      const pending = this.pendingAgents.get(threadId);
-      return pending?.turnId
-        ? this.runtime.request("turn/interrupt", { threadId, turnId: pending.turnId })
-        : Promise.resolve();
-    }));
+    await Promise.allSettled([
+      ...[...state.threads].map((threadId) => {
+        const pending = this.pendingAgents.get(threadId);
+        return pending?.turnId
+          ? this.runtime.request("turn/interrupt", { threadId, turnId: pending.turnId })
+          : Promise.resolve();
+      }),
+      ...[...state.childRuns].map((childRunId) => this.cancelRun(projectId, childRunId))
+    ]);
     return this.store.getRun(runId);
   }
 
@@ -528,7 +434,10 @@ export class LoomWorkflows {
       }
       if (params.tool === "describe_nodes") {
         emptySchema.parse(input);
-        return textResult({ expressionSyntax: "Use {{input.path}}, {{run.path}}, {{nodes.nodeId.path}}, {{now}}, and ?? fallbacks.", nodes: NODE_GUIDE });
+        return textResult({
+          expressionSyntax: "Use {{input.path}}, {{run.path}}, {{nodes.nodeId.path}}, {{now}}, and ?? fallbacks. Loop templates additionally expose item, index, batch, batchIndex, and items.",
+          nodes: WORKFLOW_NODE_GUIDE
+        });
       }
       if (params.tool === "inspect_workflow") {
         const value = workflowIdSchema.parse(input);
@@ -550,6 +459,7 @@ export class LoomWorkflows {
           workflowId: value.workflowId,
           name: value.name,
           description: value.description,
+          enabled: value.enabled,
           graph: {
             nodes: value.nodes,
             edges: value.edges,
@@ -578,6 +488,7 @@ export class LoomWorkflows {
           projectId: context.projectId,
           workflowId: value.workflowId,
           input: value.input ?? {},
+          triggerNodeId: value.triggerNodeId ?? null,
           sourceThreadId: params.threadId
         });
         return textResult({ run: await this.waitForRun(run.id) });
@@ -628,7 +539,7 @@ export class LoomWorkflows {
           this.#updateNodeRun(run.id, node.id, {
             status: "running",
             startedAt: new Date().toISOString(),
-            input: inputs.map((entry) => entry.value),
+            input: workflowNodeIsTrigger(node) ? run.input : inputs.map((entry) => entry.value),
             ...(node.type === "loomAgent" ? { executionMode: node.config?.executionMode ?? "background" } : {})
           });
           try {
@@ -693,7 +604,7 @@ export class LoomWorkflows {
 
   async #executeNode({ workflow, node, inputs, run, state, outputs, project }) {
     this.#assertActive(state);
-    if (node.type === "manualTrigger") return workflowNodeResult(run.input);
+    if (workflowNodeIsTrigger(node)) return workflowNodeResult(run.input);
     if (node.type === "output") {
       const value = inputs.length === 0
         ? null
@@ -712,10 +623,49 @@ export class LoomWorkflows {
       projectRoot: project?.cwd,
       database: this.database,
       assertActive: () => this.#assertActive(state),
-      fetchImpl: this.fetchImpl
+      fetchImpl: this.fetchImpl,
+      credentialResolver: this.credentialResolver,
+      notify: this.notify,
+      executeWorkflow: (request) => this.#executeNestedWorkflow({
+        parentWorkflow: workflow,
+        parentRun: run,
+        parentNode: node,
+        state,
+        ...request
+      })
     });
     if (builtIn !== null) return builtIn;
     throw new Error(`Unsupported workflow node type: ${node.type}`);
+  }
+
+  async #executeNestedWorkflow({ parentWorkflow, parentRun, parentNode, state, workflowId, input, timeoutMs, returnMode }) {
+    this.#assertActive(state);
+    const target = this.#workflow(parentWorkflow.projectId, workflowId);
+    const child = this.startRun({
+      projectId: target.projectId,
+      workflowId: target.id,
+      input,
+      sourceThreadId: parentRun.sourceThreadId,
+      parentRunId: parentRun.id,
+      parentNodeId: parentNode.id,
+      callStack: state.callStack
+    });
+    state.childRuns.add(child.id);
+    try {
+      const waited = await timeoutResult(this.waitForRun(child.id), timeoutMs);
+      if (waited.timedOut) {
+        await this.cancelRun(target.projectId, child.id).catch(() => null);
+        throw new Error(`Subworkflow “${target.name}” timed out after ${timeoutMs}ms`);
+      }
+      const completed = waited.value;
+      this.#assertActive(state);
+      if (completed.status !== "completed") {
+        throw new Error(completed.error || `Subworkflow “${target.name}” ${completed.status}`);
+      }
+      return returnMode === "run" ? completed : completed.output;
+    } finally {
+      state.childRuns.delete(child.id);
+    }
   }
 
   async #runAgentNode({ workflow, node, inputs, run, state }) {
