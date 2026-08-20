@@ -30,6 +30,7 @@ type WorkflowNodeType =
   | "manualTrigger"
   | "scheduleTrigger"
   | "webhookTrigger"
+  | "useSkill"
   | "loomAgent"
   | "output"
   | "httpRequest"
@@ -47,6 +48,14 @@ type WorkflowNodeType =
   | "notification"
   | "board";
 type WorkflowAgentExecutionMode = "background" | "foreground";
+type WorkflowSkillAttachment = {
+  source: "installed" | "markdown";
+  reference: string | null;
+  name: string;
+  description: string;
+  path: string | null;
+  bytes: number;
+};
 type WorkflowNode = {
   id: string;
   type: WorkflowNodeType;
@@ -92,6 +101,7 @@ type WorkflowNodeRun = {
   model?: string;
   effort?: string;
   executionMode?: WorkflowAgentExecutionMode;
+  attachedSkills?: WorkflowSkillAttachment[];
   startedAt?: string;
   completedAt?: string;
 };
