@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createDefaultWorkflow } from "../electron/workflows/workflow-model.mjs";
 import { WorkflowCanvas } from "../src/components/workflows/WorkflowCanvas.jsx";
@@ -60,7 +60,7 @@ describe("WorkflowCanvas", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
 
-  it("offers useful action, data, flow, and Loom nodes from a searchable picker", () => {
+  it("offers useful action, data, flow, Skill, and Loom nodes from a searchable picker", () => {
     const workflow = createDefaultWorkflow({ projectId: "project-1" });
     const onChange = vi.fn();
     render(
@@ -80,19 +80,102 @@ describe("WorkflowCanvas", () => {
     expect(screen.getByRole("button", { name: /Condition/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Project File/i })).toBeInTheDocument();
     expect(screen.getByText("Git").closest("button")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Use Skill/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Loom Board/i })).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText("Search actions, data, flow…"), { target: { value: "http" } });
-    expect(screen.getByRole("button", { name: /HTTP Request/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Loom Board/i })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /HTTP Request/i }));
+    fireEvent.change(screen.getByPlaceholderText("Search actions, data, flow…"), { target: { value: "skill" } });
+    expect(screen.getByRole("button", { name: /Use Skill/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /HTTP Request/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Use Skill/i }));
 
     const next = onChange.mock.calls.at(-1)[0];
     expect(next.graph.nodes.at(-1)).toMatchObject({
-      type: "httpRequest",
-      name: "HTTP Request",
-      config: expect.objectContaining({ method: "GET", responseType: "auto" })
+      type: "useSkill",
+      name: "Use Skill",
+      config: expect.objectContaining({ source: "installed", maxBytes: 500000 })
     });
+  });
+
+  it("connects Use Skill only to an Agent Skill port", () => {
+    const workflow = {
+      ...createDefaultWorkflow({ projectId: "project-1" }),
+      graph: {
+        viewport: { x: 0, y: 0, zoom: 1 },
+        nodes: [
+          { id: "skill", type: "useSkill", name: "Release Rules", description: "", position: { x: 40, y: 180 }, config: { source: "markdown", path: "docs/release.md" } },
+          { id: "agent", type: "loomAgent", name: "Release Agent", description: "", position: { x: 420, y: 140 }, config: {} }
+        ],
+        edges: []
+      }
+    };
+    const onChange = vi.fn();
+    render(
+      <WorkflowCanvas
+        workflow={workflow}
+        models={[]}
+        onChange={onChange}
+        onRun={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect from Release Rules · Skill" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect into Release Agent · Input" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText(/Use Skill nodes connect only/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect into Release Agent · Skill" }));
+    const next = onChange.mock.calls.at(-1)[0];
+    expect(next.graph.edges).toEqual([
+      expect.objectContaining({ source: "skill", target: "agent", sourcePort: "skill", targetPort: "skill" })
+    ]);
+  });
+
+  it("discovers installed Skills and configures project Markdown attachments", async () => {
+    const workflow = {
+      ...createDefaultWorkflow({ projectId: "project-1" }),
+      graph: {
+        viewport: { x: 0, y: 0, zoom: 1 },
+        nodes: [
+          { id: "skill", type: "useSkill", name: "Use Skill", description: "", position: { x: 40, y: 120 }, config: { source: "installed", skillRef: "", skillName: "", path: "", maxBytes: 500000 } }
+        ],
+        edges: []
+      }
+    };
+    const api = {
+      extensions: {
+        list: vi.fn(async () => ({
+          skills: [{
+            cwd: "/workspace",
+            skills: [{ id: "release-review", name: "Release Review", description: "Verify release readiness", path: "/skills/release-review" }]
+          }],
+          errors: []
+        }))
+      }
+    };
+    const onChange = vi.fn();
+    render(
+      <WorkflowCanvas
+        workflow={workflow}
+        api={api}
+        models={[]}
+        onChange={onChange}
+        onRun={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("group", { name: "Use Skill: Use Skill" }));
+    await waitFor(() => expect(api.extensions.list).toHaveBeenCalledWith({ projectId: "project-1" }));
+    const installed = await screen.findByLabelText("Installed Skill");
+    fireEvent.change(installed, { target: { value: "/skills/release-review" } });
+    let next = onChange.mock.calls.at(-1)[0];
+    expect(next.graph.nodes[0].config).toMatchObject({ skillRef: "/skills/release-review", skillName: "Release Review" });
+
+    fireEvent.change(screen.getByLabelText("Instruction source"), { target: { value: "markdown" } });
+    next = onChange.mock.calls.at(-1)[0];
+    expect(next.graph.nodes[0].config).toMatchObject({ source: "markdown", skillRef: "", path: "" });
+    expect(screen.getByLabelText("Skill Markdown path")).toBeInTheDocument();
   });
 
   it("renders branch-specific ports and condition settings", () => {
