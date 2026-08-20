@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Brain,
   Check,
   CheckCircle,
   Circle,
-  Code,
   Eye,
-  Lightning,
+  MagnifyingGlass,
   PaperPlaneTilt,
   Pause,
   Plus,
@@ -16,9 +14,11 @@ import {
   Warning,
   X
 } from "../icons/index.jsx";
+import { WorkflowNodeIcon } from "./workflow-icons.jsx";
+import { WorkflowNodeInspector } from "./WorkflowNodeInspector.jsx";
 import styles from "./WorkflowWorkspace.module.css";
 import {
-  WORKFLOW_NODE_HEIGHT,
+  WORKFLOW_NODE_CATEGORIES,
   WORKFLOW_NODE_META,
   WORKFLOW_NODE_WIDTH,
   createWorkflowEdge,
@@ -29,25 +29,16 @@ import {
   parseWorkflowInput,
   stringifyWorkflowValue,
   workflowEdgePath,
+  workflowInputPorts,
+  workflowNodeHeight,
+  workflowOutputPorts,
   workflowStatusLabel
 } from "./workflow-utils.js";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancelling"]);
-const PERMISSIONS = [
-  ["read-only", "Read only"],
-  ["workspace-write", "Workspace access"],
-  ["auto-approve", "Auto-review"],
-  ["full-access", "Full access"]
-];
 
 function IconButton({ label, className = "", children, ...props }) {
   return <button type="button" className={`${styles.iconButton} ${className}`} aria-label={label} title={label} {...props}>{children}</button>;
-}
-
-function nodeIcon(type, size = 19) {
-  if (type === "manualTrigger") return <Lightning size={size} />;
-  if (type === "loomAgent") return <Brain size={size} />;
-  return <Code size={size} />;
 }
 
 function runStatusIcon(status) {
@@ -55,12 +46,41 @@ function runStatusIcon(status) {
   if (status === "completed") return <CheckCircle size={12} />;
   if (status === "failed") return <Warning size={12} />;
   if (status === "cancelled" || status === "cancelling") return <Pause size={12} />;
+  if (status === "skipped") return <Circle size={12} />;
   return null;
+}
+
+function Port({ node, port, side, connecting, onActivate }) {
+  const position = nodePort(node, side, port.id);
+  const top = position.y - node.position.y;
+  const active = side === "output" && connecting?.nodeId === node.id && connecting?.portId === port.id;
+  return (
+    <span
+      className={`${styles.portGroup} ${side === "input" ? styles.inputPortGroup : styles.outputPortGroup}`}
+      style={{ top }}
+      data-port-id={port.id}
+    >
+      {side === "output" && <small className={styles.portLabel}>{port.label}</small>}
+      <button
+        type="button"
+        className={`${styles.port} ${side === "input" ? styles.inputPort : styles.outputPort} ${active ? styles.activePort : ""} ${side === "input" && connecting ? styles.connectingPort : ""}`}
+        aria-label={`${side === "input" ? "Connect into" : "Connect from"} ${node.name} · ${port.label}`}
+        title={port.label}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onActivate(port.id);
+        }}
+      />
+    </span>
+  );
 }
 
 function WorkflowNode({ node, selected, connecting, runState, onSelect, onDragStart, onStartConnection, onFinishConnection }) {
   const meta = WORKFLOW_NODE_META[node.type];
   const executionMode = node.type === "loomAgent" ? node.config?.executionMode ?? "background" : null;
+  const inputPorts = workflowInputPorts(node);
+  const outputPorts = workflowOutputPorts(node);
   return (
     <article
       className={`${styles.node} ${selected ? styles.selectedNode : ""}`}
@@ -69,7 +89,7 @@ function WorkflowNode({ node, selected, connecting, runState, onSelect, onDragSt
       data-workflow-node="true"
       style={{
         width: WORKFLOW_NODE_WIDTH,
-        height: WORKFLOW_NODE_HEIGHT,
+        height: workflowNodeHeight(node),
         transform: `translate(${node.position.x}px, ${node.position.y}px)`
       }}
       onPointerDown={(event) => {
@@ -81,20 +101,10 @@ function WorkflowNode({ node, selected, connecting, runState, onSelect, onDragSt
       role="group"
       aria-label={`${meta.label}: ${node.name}`}
     >
-      {meta.hasInput && (
-        <button
-          type="button"
-          className={`${styles.port} ${styles.inputPort} ${connecting ? styles.connectingPort : ""}`}
-          aria-label={`Connect into ${node.name}`}
-          title={connecting ? `Connect to ${node.name}` : "Input"}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            onFinishConnection();
-          }}
-        />
-      )}
-      <span className={styles.nodeIcon}>{nodeIcon(node.type)}</span>
+      {inputPorts.map((port) => (
+        <Port key={port.id} node={node} port={port} side="input" connecting={connecting} onActivate={(portId) => onFinishConnection(portId)} />
+      ))}
+      <span className={styles.nodeIcon}><WorkflowNodeIcon type={node.type} /></span>
       <span className={styles.nodeCopy}>
         <small>{meta.label}</small>
         <em>{meta.action}</em>
@@ -106,109 +116,53 @@ function WorkflowNode({ node, selected, connecting, runState, onSelect, onDragSt
         </span>
       )}
       {runState?.status && (
-        <span className={styles.nodeRunState} title={runState.error || workflowStatusLabel(runState.status)}>
+        <span className={styles.nodeRunState} title={runState.error || runState.skipReason || workflowStatusLabel(runState.status)}>
           {runStatusIcon(runState.status)}
         </span>
       )}
-      {meta.hasOutput && (
-        <button
-          type="button"
-          className={`${styles.port} ${styles.outputPort} ${connecting ? styles.activePort : ""}`}
-          aria-label={`Connect from ${node.name}`}
-          title="Output"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            onStartConnection();
-          }}
-        />
-      )}
+      {outputPorts.map((port) => (
+        <Port key={port.id} node={node} port={port} side="output" connecting={connecting} onActivate={(portId) => onStartConnection(portId)} />
+      ))}
     </article>
   );
 }
 
-function NodeInspector({ node, models, onUpdate, onDelete, onClose }) {
-  const selectedModel = models.find((model) => model.model === node.config?.model || model.id === node.config?.model);
-  const efforts = selectedModel?.supportedReasoningEfforts?.map((option) => option.reasoningEffort ?? option.effort ?? option) ?? ["low", "medium", "high"];
-  const updateConfig = (patch) => onUpdate({ config: { ...(node.config ?? {}), ...patch } });
-  const executionMode = node.config?.executionMode ?? "background";
-
+function NodePicker({ query, onQueryChange, onAdd, onClose }) {
+  const needle = query.trim().toLowerCase();
+  const entries = Object.entries(WORKFLOW_NODE_META).filter(([_type, meta]) => (
+    !needle || `${meta.label} ${meta.action} ${meta.category} ${meta.defaultDescription}`.toLowerCase().includes(needle)
+  ));
   return (
-    <aside className={styles.inspector} aria-label="Workflow node inspector">
-      <header className={styles.inspectorHeader}>
-        <span className={styles.inspectorGlyph} data-tone={WORKFLOW_NODE_META[node.type].tone}>{nodeIcon(node.type, 17)}</span>
-        <span><small>{WORKFLOW_NODE_META[node.type].label}</small><strong>{node.name}</strong></span>
-        <IconButton label="Close node inspector" onClick={onClose}><X size={14} /></IconButton>
+    <div className={styles.nodePicker} role="dialog" aria-label="Add workflow node">
+      <header>
+        <span><strong>Add node</strong><small>Native building blocks for useful Loom automations.</small></span>
+        <IconButton label="Close node picker" onClick={onClose}><X size={13} /></IconButton>
       </header>
-      <div className={styles.inspectorBody}>
-        <label className={styles.field}>
-          <span>Name</span>
-          <input value={node.name} maxLength={160} onChange={(event) => onUpdate({ name: event.target.value })} />
-        </label>
-        <label className={styles.field}>
-          <span>Description</span>
-          <textarea value={node.description ?? ""} maxLength={2000} rows={3} onChange={(event) => onUpdate({ description: event.target.value })} />
-        </label>
-        {node.type === "loomAgent" && (
-          <>
-            <div className={styles.field}>
-              <span>Run agent as</span>
-              <div className={styles.executionModePicker} role="radiogroup" aria-label="Agent execution mode">
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={executionMode === "background"}
-                  data-selected={executionMode === "background"}
-                  onClick={() => updateConfig({ executionMode: "background" })}
-                >
-                  <Brain size={16} />
-                  <span><strong>Background</strong><small>Stay inside the workflow and source task.</small></span>
-                </button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={executionMode === "foreground"}
-                  data-selected={executionMode === "foreground"}
-                  onClick={() => updateConfig({ executionMode: "foreground" })}
-                >
-                  <Eye size={16} />
-                  <span><strong>Foreground</strong><small>Create a normal Loom task thread.</small></span>
-                </button>
+      <label className={styles.nodePickerSearch}>
+        <MagnifyingGlass size={14} />
+        <input autoFocus value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search actions, data, flow…" />
+      </label>
+      <div className={styles.nodePickerBody}>
+        {WORKFLOW_NODE_CATEGORIES.map((category) => {
+          const nodes = entries.filter(([_type, meta]) => meta.category === category);
+          if (!nodes.length) return null;
+          return (
+            <section className={styles.nodePickerGroup} key={category}>
+              <h3>{category}</h3>
+              <div>
+                {nodes.map(([type, meta]) => (
+                  <button type="button" data-tone={meta.tone} onClick={() => onAdd(type)} key={type}>
+                    <span><WorkflowNodeIcon type={type} size={16} /></span>
+                    <span><strong>{meta.label}</strong><small>{meta.action}</small></span>
+                  </button>
+                ))}
               </div>
-              <small>Both modes return their final answer to downstream nodes. Foreground threads also appear in Loom’s task list so you can steer or inspect them directly.</small>
-            </div>
-            <label className={styles.field}>
-              <span>Agent prompt</span>
-              <textarea value={String(node.config?.prompt ?? "")} rows={7} onChange={(event) => updateConfig({ prompt: event.target.value })} />
-              <small>Incoming node values are appended as structured workflow context.</small>
-            </label>
-            <label className={styles.field}>
-              <span>Model</span>
-              <select value={String(node.config?.model ?? "")} onChange={(event) => updateConfig({ model: event.target.value || null, effort: null })}>
-                <option value="">Project default</option>
-                {models.map((model) => <option value={model.model} key={model.id ?? model.model}>{model.displayName ?? model.model}</option>)}
-              </select>
-            </label>
-            <label className={styles.field}>
-              <span>Reasoning effort</span>
-              <select value={String(node.config?.effort ?? "")} onChange={(event) => updateConfig({ effort: event.target.value || null })}>
-                <option value="">Model default</option>
-                {efforts.map((effort) => <option value={effort} key={effort}>{String(effort).replace(/^./, (letter) => letter.toUpperCase())}</option>)}
-              </select>
-            </label>
-            <label className={styles.field}>
-              <span>Permissions</span>
-              <select value={String(node.config?.permissionMode ?? "workspace-write")} onChange={(event) => updateConfig({ permissionMode: event.target.value })}>
-                {PERMISSIONS.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-              </select>
-            </label>
-          </>
-        )}
+            </section>
+          );
+        })}
+        {!entries.length && <p className={styles.nodePickerEmpty}>No matching nodes.</p>}
       </div>
-      <footer className={styles.inspectorFooter}>
-        <button type="button" className={styles.dangerButton} onClick={onDelete}><Trash size={14} />Delete node</button>
-      </footer>
-    </aside>
+    </div>
   );
 }
 
@@ -259,6 +213,8 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
   const [drag, setDrag] = useState(null);
   const [pan, setPan] = useState(null);
   const [inspectorOpen, setInspectorOpen] = useState(!compact);
+  const [nodePickerOpen, setNodePickerOpen] = useState(false);
+  const [nodeQuery, setNodeQuery] = useState("");
   const [runOpen, setRunOpen] = useState(false);
   const [runInput, setRunInput] = useState("{}");
   const [runError, setRunError] = useState("");
@@ -296,7 +252,9 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
       if (event.target.closest?.("input, textarea, select")) return;
       if (event.key === "Escape") {
         setConnectingFrom(null);
+        setConnectionPointer(null);
         setSelectedEdgeId(null);
+        setNodePickerOpen(false);
         return;
       }
       if (event.key !== "Backspace" && event.key !== "Delete") return;
@@ -368,18 +326,26 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
     };
   }, [viewport]);
 
-  const addNode = (type) => {
-    const node = createWorkflowNode(type, nextNodePosition(graph, viewport, canvasSize));
+  const addNode = (type, position = nextNodePosition(graph, viewport, canvasSize)) => {
+    const node = createWorkflowNode(type, position);
     changeGraph((current) => ({ ...current, nodes: [...current.nodes, node] }));
     setSelectedNodeId(node.id);
     setSelectedEdgeId(null);
     setInspectorOpen(true);
+    setNodePickerOpen(false);
+    setNodeQuery("");
   };
 
   const updateNode = (nodeId, patch) => {
     changeGraph((current) => ({
       ...current,
-      nodes: current.nodes.map((node) => node.id === nodeId ? { ...node, ...patch } : node)
+      nodes: current.nodes.map((node) => node.id === nodeId ? { ...node, ...patch } : node),
+      edges: current.edges.filter((edge) => {
+        if (edge.source !== nodeId) return true;
+        const nextNode = current.nodes.find((candidate) => candidate.id === nodeId);
+        const updatedNode = nextNode ? { ...nextNode, ...patch } : null;
+        return updatedNode ? workflowOutputPorts(updatedNode).some((port) => port.id === edge.sourcePort) : false;
+      })
     }));
   };
 
@@ -392,13 +358,22 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
     setSelectedNodeId(null);
   };
 
-  const finishConnection = (targetId) => {
-    if (!connectingFrom || connectingFrom === targetId) {
+  const finishConnection = (targetId, targetPort) => {
+    if (!connectingFrom || connectingFrom.nodeId === targetId) {
       setConnectingFrom(null);
+      setConnectionPointer(null);
       return;
     }
-    const duplicate = graph.edges.some((edge) => edge.source === connectingFrom && edge.target === targetId);
-    if (!duplicate) changeGraph((current) => ({ ...current, edges: [...current.edges, createWorkflowEdge(connectingFrom, targetId)] }));
+    const duplicate = graph.edges.some((edge) => edge.source === connectingFrom.nodeId
+      && edge.target === targetId
+      && edge.sourcePort === connectingFrom.portId
+      && edge.targetPort === targetPort);
+    if (!duplicate) {
+      changeGraph((current) => ({
+        ...current,
+        edges: [...current.edges, createWorkflowEdge(connectingFrom.nodeId, targetId, connectingFrom.portId, targetPort)]
+      }));
+    }
     setConnectingFrom(null);
     setConnectionPointer(null);
   };
@@ -432,9 +407,9 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
     }
   };
 
-  const connectionPath = connectingFrom && nodesById.get(connectingFrom) && connectionPointer
+  const connectionPath = connectingFrom && nodesById.get(connectingFrom.nodeId) && connectionPointer
     ? (() => {
-        const source = nodePort(nodesById.get(connectingFrom), "output");
+        const source = nodePort(nodesById.get(connectingFrom.nodeId), "output", connectingFrom.portId);
         const bend = Math.max(72, Math.abs(connectionPointer.x - source.x) * 0.48);
         return `M ${source.x} ${source.y} C ${source.x + bend} ${source.y}, ${connectionPointer.x - bend} ${connectionPointer.y}, ${connectionPointer.x} ${connectionPointer.y}`;
       })()
@@ -444,12 +419,8 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
     <section className={`${styles.editor} ${compact ? styles.compactEditor : ""}`}>
       <header className={styles.canvasToolbar}>
         <div className={styles.nodePalette}>
-          <span>Add</span>
-          {Object.entries(WORKFLOW_NODE_META).map(([type, meta]) => (
-            <button type="button" data-tone={meta.tone} onClick={() => addNode(type)} key={type}>
-              {nodeIcon(type, 14)}<span>{meta.label}</span>
-            </button>
-          ))}
+          <button type="button" className={styles.addNodeButton} onClick={() => setNodePickerOpen((open) => !open)}><Plus size={14} /><span>Add node</span></button>
+          <small>{graph.nodes.length} nodes · {graph.edges.length} connections</small>
         </div>
         <div className={styles.canvasToolbarCenter}>
           <span className={styles.saveState} data-state={savingState}>
@@ -472,6 +443,7 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
             <button type="button" className={styles.primaryButton} onClick={() => setRunOpen((open) => !open)}><PaperPlaneTilt size={14} />Run</button>
           )}
         </div>
+        {nodePickerOpen && <NodePicker query={nodeQuery} onQueryChange={setNodeQuery} onAdd={addNode} onClose={() => setNodePickerOpen(false)} />}
         {runOpen && <RunPopover value={runInput} error={runError} onChange={setRunInput} onRun={startRun} onClose={() => setRunOpen(false)} />}
       </header>
 
@@ -484,6 +456,7 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
             if (event.button !== 0 || event.target.closest("[data-workflow-node], [data-workflow-edge], button, input, textarea, select")) return;
             setSelectedNodeId(null);
             setSelectedEdgeId(null);
+            setNodePickerOpen(false);
             setPan({ startClient: { x: event.clientX, y: event.clientY }, startViewport: viewport });
           }}
           onPointerMove={(event) => {
@@ -498,16 +471,10 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
           onDoubleClick={(event) => {
             if (event.target.closest("[data-workflow-node], [data-workflow-edge]")) return;
             const position = clientToWorld(event.clientX, event.clientY);
-            const node = createWorkflowNode("loomAgent", { x: position.x - WORKFLOW_NODE_WIDTH / 2, y: position.y - WORKFLOW_NODE_HEIGHT / 2 });
-            changeGraph((current) => ({ ...current, nodes: [...current.nodes, node] }));
-            setSelectedNodeId(node.id);
-            setInspectorOpen(true);
+            addNode("loomAgent", { x: position.x - WORKFLOW_NODE_WIDTH / 2, y: position.y - 56 });
           }}
         >
-          <div
-            className={styles.world}
-            style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` }}
-          >
+          <div className={styles.world} style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` }}>
             <svg className={styles.edgeLayer} width="4000" height="2600" viewBox="-1000 -650 5000 3300" aria-hidden="true">
               {graph.edges.map((edge) => {
                 const source = nodesById.get(edge.source);
@@ -517,7 +484,7 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
                 return (
                   <path
                     key={edge.id}
-                    d={workflowEdgePath(source, target)}
+                    d={workflowEdgePath(source, target, edge.sourcePort, edge.targetPort)}
                     className={`${styles.edge} ${edge.id === selectedEdgeId ? styles.selectedEdge : ""}`}
                     data-tone={tone}
                     data-workflow-edge="true"
@@ -529,14 +496,14 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
                   />
                 );
               })}
-              {connectionPath && <path d={connectionPath} className={`${styles.edge} ${styles.pendingEdge}`} data-tone={WORKFLOW_NODE_META[nodesById.get(connectingFrom)?.type]?.tone ?? "neutral"} />}
+              {connectionPath && <path d={connectionPath} className={`${styles.edge} ${styles.pendingEdge}`} data-tone={WORKFLOW_NODE_META[nodesById.get(connectingFrom?.nodeId)?.type]?.tone ?? "neutral"} />}
             </svg>
             {graph.nodes.map((node) => (
               <WorkflowNode
                 key={node.id}
                 node={node}
                 selected={node.id === selectedNodeId}
-                connecting={connectingFrom === node.id}
+                connecting={connectingFrom}
                 runState={run?.nodeRuns?.[node.id]}
                 onSelect={() => {
                   setSelectedNodeId(node.id);
@@ -548,27 +515,27 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
                   startClient: { x: event.clientX, y: event.clientY },
                   startPosition: node.position
                 })}
-                onStartConnection={() => {
-                  setConnectingFrom((current) => current === node.id ? null : node.id);
+                onStartConnection={(portId) => {
+                  setConnectingFrom((current) => current?.nodeId === node.id && current?.portId === portId ? null : { nodeId: node.id, portId });
                   setSelectedNodeId(node.id);
                 }}
-                onFinishConnection={() => finishConnection(node.id)}
+                onFinishConnection={(portId) => finishConnection(node.id, portId)}
               />
             ))}
           </div>
           {graph.nodes.length === 0 && (
             <div className={styles.emptyCanvas}>
               <span><Plus size={22} /></span>
-              <strong>Build your first workflow</strong>
-              <small>Add a trigger, a Loom Agent, and an output—or double-click the canvas to add an agent.</small>
-              <button type="button" className={styles.primaryButton} onClick={() => addNode("manualTrigger")}><Lightning size={14} />Add trigger</button>
+              <strong>Build your first useful workflow</strong>
+              <small>Call APIs, transform data, branch on conditions, inspect Git, manage files or board tasks, and hand work to Loom Agents.</small>
+              <button type="button" className={styles.primaryButton} onClick={() => setNodePickerOpen(true)}><Plus size={14} />Browse nodes</button>
             </div>
           )}
           {connectingFrom && <div className={styles.connectionHint}><Circle size={11} />Choose an input port · Esc to cancel</div>}
         </div>
 
         {inspectorOpen && selectedNode && (
-          <NodeInspector
+          <WorkflowNodeInspector
             node={selectedNode}
             models={models}
             onUpdate={(patch) => updateNode(selectedNode.id, patch)}
