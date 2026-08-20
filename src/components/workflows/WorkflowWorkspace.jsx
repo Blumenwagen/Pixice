@@ -246,14 +246,25 @@ function WorkflowEditor({ api, projectId, workflowId, models, compact = false, o
 export function WorkflowWorkspace({ api = window.loom, projectId, projectName, models = [], requestedWorkflowId = null, onWorkflowSelected }) {
   const [workflows, setWorkflows] = useState([]);
   const [selectedId, setSelectedId] = useState(requestedWorkflowId);
+  const selectedIdRef = useRef(requestedWorkflowId);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(Boolean(projectId));
   const [error, setError] = useState(null);
 
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  const selectWorkflow = useCallback((workflowId) => {
+    selectedIdRef.current = workflowId;
+    setSelectedId(workflowId);
+    onWorkflowSelected?.(workflowId);
+  }, [onWorkflowSelected]);
+
   const loadList = useCallback(async (preferredId = null) => {
     if (!api?.workflows || !projectId) {
       setWorkflows([]);
-      setSelectedId(null);
+      selectWorkflow(null);
       setLoading(false);
       return;
     }
@@ -262,16 +273,14 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
       const result = await callWithBridgeRetry(() => api.workflows.list({ projectId }));
       const next = result.data ?? [];
       setWorkflows(next);
-      setSelectedId((current) => {
-        const requested = preferredId ?? requestedWorkflowId;
-        const selected = next.some((workflow) => workflow.id === requested)
-          ? requested
-          : next.some((workflow) => workflow.id === current)
-            ? current
-            : next[0]?.id ?? null;
-        onWorkflowSelected?.(selected);
-        return selected;
-      });
+      const requested = preferredId ?? requestedWorkflowId;
+      const current = selectedIdRef.current;
+      const selected = next.some((candidate) => candidate.id === requested)
+        ? requested
+        : next.some((candidate) => candidate.id === current)
+          ? current
+          : next[0]?.id ?? null;
+      selectWorkflow(selected);
       setError(null);
     } catch (cause) {
       setError(cause.message);
@@ -279,7 +288,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
     } finally {
       setLoading(false);
     }
-  }, [api, onWorkflowSelected, projectId, requestedWorkflowId]);
+  }, [api, projectId, requestedWorkflowId, selectWorkflow]);
 
   useEffect(() => { void loadList(requestedWorkflowId); }, [loadList, requestedWorkflowId]);
 
@@ -301,8 +310,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
         description: ""
       }));
       await loadList(created.id);
-      setSelectedId(created.id);
-      onWorkflowSelected?.(created.id);
+      selectWorkflow(created.id);
       setError(null);
     } catch (cause) {
       setError(cause.message);
@@ -311,7 +319,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
 
   const deleteWorkflow = async () => {
     if (!api?.workflows || !projectId || !selectedId) return;
-    const target = workflows.find((workflow) => workflow.id === selectedId);
+    const target = workflows.find((candidate) => candidate.id === selectedId);
     if (!window.confirm(`Delete “${target?.name ?? "this workflow"}”?\n\nIts run history will also be removed.`)) return;
     try {
       await api.workflows.delete({ projectId, workflowId: selectedId });
@@ -324,9 +332,9 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return workflows;
-    return workflows.filter((workflow) => `${workflow.name} ${workflow.description}`.toLowerCase().includes(needle));
+    return workflows.filter((candidate) => `${candidate.name} ${candidate.description}`.toLowerCase().includes(needle));
   }, [query, workflows]);
-  const selected = workflows.find((workflow) => workflow.id === selectedId) ?? null;
+  const selected = workflows.find((candidate) => candidate.id === selectedId) ?? null;
 
   return (
     <div className={styles.workspaceOverlay} data-workflow-workspace="true">
@@ -342,23 +350,20 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
           </label>
           <div className={styles.workflowList}>
             {loading && <div className={styles.loadingState}><SpinnerGap className={styles.spin} size={17} />Loading…</div>}
-            {!loading && visible.map((workflow) => (
+            {!loading && visible.map((candidate) => (
               <button
                 type="button"
                 className={styles.workflowCard}
-                data-active={workflow.id === selectedId}
-                onClick={() => {
-                  setSelectedId(workflow.id);
-                  onWorkflowSelected?.(workflow.id);
-                }}
-                key={workflow.id}
+                data-active={candidate.id === selectedId}
+                onClick={() => selectWorkflow(candidate.id)}
+                key={candidate.id}
               >
                 <span className={styles.workflowCardIcon}><TreeStructure size={15} /></span>
                 <span className={styles.workflowCardCopy}>
-                  <strong>{workflow.name}</strong>
-                  <small>{workflow.latestRun ? `${workflowStatusLabel(workflow.latestRun.status)} · ${relativeTimestamp(workflow.latestRun.createdAt)}` : `${workflow.graph.nodes.length} nodes · ${relativeTimestamp(workflow.updatedAt)}`}</small>
+                  <strong>{candidate.name}</strong>
+                  <small>{candidate.latestRun ? `${workflowStatusLabel(candidate.latestRun.status)} · ${relativeTimestamp(candidate.latestRun.createdAt)}` : `${candidate.graph.nodes.length} nodes · ${relativeTimestamp(candidate.updatedAt)}`}</small>
                 </span>
-                <i className={styles.workflowCardStatus} data-status={workflow.latestRun?.status ?? "idle"} />
+                <i className={styles.workflowCardStatus} data-status={candidate.latestRun?.status ?? "idle"} />
               </button>
             ))}
             {!loading && visible.length === 0 && (
@@ -387,7 +392,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
                 projectId={projectId}
                 workflowId={selectedId}
                 models={models}
-                onSaved={(saved) => setWorkflows((current) => current.map((workflow) => workflow.id === saved.id ? { ...workflow, ...saved } : workflow))}
+                onSaved={(saved) => setWorkflows((current) => current.map((candidate) => candidate.id === saved.id ? { ...candidate, ...saved } : candidate))}
                 onDeleted={() => void loadList()}
               />
             ) : (
@@ -406,8 +411,13 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
   );
 }
 
-export function WorkflowPreview({ api = window.loom, projectId, workflowId, models = [], reason = "open", onOpenWorkspace, onClose }) {
-  const [title, setTitle] = useState("Workflow");
+export function WorkflowPreview({ api = window.loom, projectId, workflowId, workflowName = "Workflow", models = [], reason = "open", onOpenWorkspace, onClose }) {
+  const [title, setTitle] = useState(workflowName || "Workflow");
+
+  useEffect(() => {
+    setTitle(workflowName || "Workflow");
+  }, [workflowId, workflowName]);
+
   return (
     <section className={styles.previewOverlay} aria-label="Workflow preview" data-workflow-preview="true">
       <header className={styles.previewHeader}>
