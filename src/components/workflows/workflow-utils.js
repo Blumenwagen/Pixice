@@ -3,33 +3,191 @@ export const WORKFLOW_NODE_HEIGHT = 112;
 
 export const WORKFLOW_NODE_META = {
   manualTrigger: {
-    label: "Trigger",
+    label: "Manual Trigger",
     action: "Start workflow",
+    category: "Triggers",
+    icon: "lightning",
     tone: "violet",
     defaultName: "Manual trigger",
     defaultDescription: "Start with input supplied by the user or calling agent.",
-    hasInput: false,
-    hasOutput: true
+    defaultConfig: {},
+    inputPorts: [],
+    outputPorts: [{ id: "output", label: "Output" }]
   },
   loomAgent: {
     label: "Loom Agent",
     action: "Run agent",
+    category: "Loom",
+    icon: "brain",
     tone: "orange",
     defaultName: "Loom Agent",
     defaultDescription: "Run a Loom-native coding agent with upstream workflow context.",
-    hasInput: true,
-    hasOutput: true
+    defaultConfig: {
+      prompt: "Complete the workflow task using the incoming context.",
+      model: null,
+      effort: null,
+      permissionMode: "workspace-write",
+      executionMode: "background"
+    },
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: [{ id: "output", label: "Answer" }]
+  },
+  httpRequest: {
+    label: "HTTP Request",
+    action: "Call API",
+    category: "Actions",
+    icon: "globe",
+    tone: "blue",
+    defaultName: "HTTP Request",
+    defaultDescription: "Call an HTTP or HTTPS API with upstream workflow data.",
+    defaultConfig: {
+      method: "GET",
+      url: "https://example.com/api",
+      headers: "{}",
+      query: "{}",
+      bodyMode: "json",
+      body: "{}",
+      responseType: "auto",
+      failOnHttpError: true,
+      timeoutMs: 30000,
+      maxBytes: 5000000
+    },
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: [{ id: "output", label: "Response" }]
+  },
+  transform: {
+    label: "Transform",
+    action: "Map data",
+    category: "Data",
+    icon: "sparkle",
+    tone: "pink",
+    defaultName: "Transform data",
+    defaultDescription: "Create typed JSON or text from workflow expressions.",
+    defaultConfig: {
+      mode: "json",
+      template: "{\n  \"value\": \"{{input}}\"\n}",
+      mergeInput: false
+    },
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: [{ id: "output", label: "Value" }]
+  },
+  condition: {
+    label: "Condition",
+    action: "If / else",
+    category: "Flow",
+    icon: "branch",
+    tone: "yellow",
+    defaultName: "Condition",
+    defaultDescription: "Route data through the true or false branch.",
+    defaultConfig: { left: "{{input}}", operator: "isTrue", right: "" },
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: [{ id: "true", label: "True" }, { id: "false", label: "False" }]
+  },
+  switch: {
+    label: "Switch",
+    action: "Route cases",
+    category: "Flow",
+    icon: "tree",
+    tone: "yellow",
+    defaultName: "Switch",
+    defaultDescription: "Route data to the first matching named case.",
+    defaultConfig: {
+      value: "{{input}}",
+      rules: [{ id: "case-1", label: "Case 1", operator: "equals", compare: "value" }]
+    },
+    inputPorts: [{ id: "input", label: "Input" }]
+  },
+  merge: {
+    label: "Merge",
+    action: "Join branches",
+    category: "Flow",
+    icon: "stack",
+    tone: "green",
+    defaultName: "Merge branches",
+    defaultDescription: "Join active values from parallel or conditional branches.",
+    defaultConfig: { mode: "array" },
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: [{ id: "output", label: "Merged" }]
+  },
+  delay: {
+    label: "Delay",
+    action: "Wait",
+    category: "Flow",
+    icon: "gauge",
+    tone: "neutral",
+    defaultName: "Delay",
+    defaultDescription: "Wait for a configured duration before continuing.",
+    defaultConfig: { amount: 1, unit: "seconds" },
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: [{ id: "output", label: "Continue" }]
+  },
+  file: {
+    label: "Project File",
+    action: "Read or write",
+    category: "Actions",
+    icon: "file",
+    tone: "blue",
+    defaultName: "Project file",
+    defaultDescription: "Read, inspect, list, or explicitly write a project-scoped file.",
+    defaultConfig: {
+      operation: "readText",
+      path: "README.md",
+      content: "{{input}}",
+      createDirectories: true,
+      recursive: false,
+      allowWrite: false,
+      maxBytes: 5000000
+    },
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: [{ id: "output", label: "Result" }]
+  },
+  git: {
+    label: "Git",
+    action: "Inspect repository",
+    category: "Actions",
+    icon: "git",
+    tone: "green",
+    defaultName: "Git status",
+    defaultDescription: "Inspect Git status, diffs, changed files, history, or a commit.",
+    defaultConfig: { operation: "status", target: "HEAD", pathspec: "", staged: false, maxEntries: 20 },
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: [{ id: "output", label: "Git data" }]
+  },
+  board: {
+    label: "Loom Board",
+    action: "Manage task",
+    category: "Loom",
+    icon: "list",
+    tone: "orange",
+    defaultName: "Loom Board",
+    defaultDescription: "List, create, update, move, or delete a durable Loom task.",
+    defaultConfig: {
+      operation: "list",
+      taskId: "",
+      title: "{{input.title ?? input}}",
+      description: "{{input.description ?? ''}}",
+      column: "backlog",
+      beforeTaskId: "",
+      attachSourceThread: false
+    },
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: [{ id: "output", label: "Task data" }]
   },
   output: {
     label: "Output",
     action: "Return value",
+    category: "Flow",
+    icon: "code",
     tone: "blue",
     defaultName: "Workflow output",
     defaultDescription: "Expose the final value returned by this workflow.",
-    hasInput: true,
-    hasOutput: false
+    defaultConfig: {},
+    inputPorts: [{ id: "input", label: "Input" }],
+    outputPorts: []
   }
 };
+
+export const WORKFLOW_NODE_CATEGORIES = ["Triggers", "Actions", "Data", "Flow", "Loom"];
 
 export function workflowId(prefix = "workflow") {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -37,6 +195,29 @@ export function workflowId(prefix = "workflow") {
 
 export function cloneWorkflow(value) {
   return value ? JSON.parse(JSON.stringify(value)) : value;
+}
+
+export function workflowInputPorts(node) {
+  return WORKFLOW_NODE_META[node.type]?.inputPorts ?? [];
+}
+
+export function workflowOutputPorts(node) {
+  if (node.type === "switch") {
+    const rules = Array.isArray(node.config?.rules) ? node.config.rules : [];
+    return [
+      ...rules.slice(0, 8).map((rule, index) => ({
+        id: String(rule.id || `case-${index + 1}`),
+        label: String(rule.label || `Case ${index + 1}`)
+      })),
+      { id: "default", label: "Default" }
+    ];
+  }
+  return WORKFLOW_NODE_META[node.type]?.outputPorts ?? [];
+}
+
+export function workflowNodeHeight(node) {
+  const ports = Math.max(workflowInputPorts(node).length, workflowOutputPorts(node).length);
+  return Math.max(WORKFLOW_NODE_HEIGHT, 52 + ports * 24);
 }
 
 export function createWorkflowNode(type, position) {
@@ -48,38 +229,36 @@ export function createWorkflowNode(type, position) {
     name: meta.defaultName,
     description: meta.defaultDescription,
     position,
-    config: type === "loomAgent"
-      ? {
-          prompt: "Complete the workflow task using the incoming context.",
-          model: null,
-          effort: null,
-          permissionMode: "workspace-write",
-          executionMode: "background"
-        }
-      : {}
+    config: cloneWorkflow(meta.defaultConfig)
   };
 }
 
-export function createWorkflowEdge(source, target) {
+export function createWorkflowEdge(source, target, sourcePort = "output", targetPort = "input") {
   return {
     id: workflowId("edge"),
     source,
     target,
-    sourcePort: "output",
-    targetPort: "input"
+    sourcePort,
+    targetPort
   };
 }
 
-export function nodePort(node, side) {
+export function nodePort(node, side, portId = side === "output" ? "output" : "input") {
+  const ports = side === "output" ? workflowOutputPorts(node) : workflowInputPorts(node);
+  const index = Math.max(0, ports.findIndex((port) => port.id === portId));
+  const height = workflowNodeHeight(node);
+  const y = ports.length <= 1
+    ? height / 2
+    : 26 + index * ((height - 52) / Math.max(1, ports.length - 1));
   return {
     x: node.position.x + (side === "output" ? WORKFLOW_NODE_WIDTH : 0),
-    y: node.position.y + WORKFLOW_NODE_HEIGHT / 2
+    y: node.position.y + y
   };
 }
 
-export function workflowEdgePath(sourceNode, targetNode) {
-  const source = nodePort(sourceNode, "output");
-  const target = nodePort(targetNode, "input");
+export function workflowEdgePath(sourceNode, targetNode, sourcePort = "output", targetPort = "input") {
+  const source = nodePort(sourceNode, "output", sourcePort);
+  const target = nodePort(targetNode, "input", targetPort);
   const horizontal = Math.abs(target.x - source.x);
   const bend = Math.max(72, Math.min(220, horizontal * 0.52));
   if (target.x >= source.x) {
@@ -95,8 +274,8 @@ export function graphBounds(graph) {
   const ys = graph.nodes.map((node) => node.position.y);
   const left = Math.min(...xs);
   const top = Math.min(...ys);
-  const right = Math.max(...xs) + WORKFLOW_NODE_WIDTH;
-  const bottom = Math.max(...ys) + WORKFLOW_NODE_HEIGHT;
+  const right = Math.max(...graph.nodes.map((node) => node.position.x + WORKFLOW_NODE_WIDTH));
+  const bottom = Math.max(...graph.nodes.map((node) => node.position.y + workflowNodeHeight(node)));
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
@@ -148,6 +327,7 @@ export function workflowStatusLabel(status) {
   if (status === "queued") return "Queued";
   if (status === "cancelling") return "Stopping";
   if (status === "completed") return "Completed";
+  if (status === "skipped") return "Skipped";
   if (status === "failed") return "Failed";
   if (status === "cancelled") return "Cancelled";
   return "Idle";
