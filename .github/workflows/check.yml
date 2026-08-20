@@ -30,14 +30,17 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - id: project-check
         continue-on-error: true
-        run: pnpm check
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          pnpm check 2>&1 | tee artifacts/check.log
       - name: Capture workflow preview
         if: steps.project-check.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
         shell: bash
         run: |
-          mkdir -p artifacts
           pnpm exec vite --host 127.0.0.1 > /tmp/loom-vite.log 2>&1 &
           VITE_PID=$!
           trap 'kill "$VITE_PID" 2>/dev/null || true' EXIT
@@ -47,13 +50,15 @@ jobs:
             LOOM_CAPTURE_WIDTH=1440 \
             LOOM_CAPTURE_HEIGHT=960 \
             pnpm exec electron --no-sandbox --disable-gpu scripts/capture-workflow-preview.mjs
-      - name: Upload workflow preview
+      - name: Upload workflow artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: workflow-preview-${{ github.sha }}
-          path: artifacts/workflow-preview.png
-          if-no-files-found: ignore
+          name: workflow-check-${{ github.sha }}
+          path: |
+            artifacts/check.log
+            artifacts/workflow-preview.png
+          if-no-files-found: warn
           retention-days: 7
       - name: Publish commit status
         if: always() && github.event_name != 'pull_request'
