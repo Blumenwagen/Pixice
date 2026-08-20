@@ -79,7 +79,7 @@ describe("WorkflowCanvas", () => {
     expect(screen.getByRole("button", { name: /Transform/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Condition/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Project File/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Git /i })).toBeInTheDocument();
+    expect(screen.getByText("Git").closest("button")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Loom Board/i })).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText("Search actions, data, flow…"), { target: { value: "http" } });
