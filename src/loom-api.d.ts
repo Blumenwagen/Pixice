@@ -8,7 +8,19 @@ type LoomEvent = {
 
 type ProjectScope = { projectId: string };
 type ThreadScope = ProjectScope & { threadId: string };
-type WorkflowNodeType = "manualTrigger" | "loomAgent" | "output";
+type WorkflowNodeType =
+  | "manualTrigger"
+  | "loomAgent"
+  | "output"
+  | "httpRequest"
+  | "transform"
+  | "condition"
+  | "switch"
+  | "merge"
+  | "delay"
+  | "file"
+  | "git"
+  | "board";
 type WorkflowAgentExecutionMode = "background" | "foreground";
 type WorkflowNode = {
   id: string;
@@ -41,13 +53,29 @@ type WorkflowDocument = {
   updatedAt: string;
   latestRun?: WorkflowRun | null;
 };
+type WorkflowNodeRun = {
+  nodeId: string;
+  status: "running" | "completed" | "skipped" | "failed" | "cancelled" | string;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  skipReason?: string;
+  activePorts?: string[];
+  threadId?: string;
+  turnId?: string;
+  model?: string;
+  effort?: string;
+  executionMode?: WorkflowAgentExecutionMode;
+  startedAt?: string;
+  completedAt?: string;
+};
 type WorkflowRun = {
   id: string;
   workflowId: string;
   projectId: string;
   status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
   input: unknown;
-  nodeRuns: Record<string, { nodeId: string; status: string; input?: unknown; output?: unknown; error?: string; threadId?: string; turnId?: string; model?: string; effort?: string; executionMode?: WorkflowAgentExecutionMode; startedAt?: string; completedAt?: string }>;
+  nodeRuns: Record<string, WorkflowNodeRun>;
   output: unknown;
   error: string | null;
   sourceThreadId: string | null;
