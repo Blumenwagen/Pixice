@@ -30,6 +30,29 @@ jobs:
       - id: project-check
         continue-on-error: true
         run: pnpm check
+      - name: Capture workflow preview
+        if: steps.project-check.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          pnpm exec vite --host 127.0.0.1 > /tmp/loom-vite.log 2>&1 &
+          VITE_PID=$!
+          trap 'kill "$VITE_PID" 2>/dev/null || true' EXIT
+          pnpm exec wait-on 'http://127.0.0.1:5173/?workflow-preview'
+          xvfb-run -a env \
+            LOOM_CAPTURE_PATH="$PWD/artifacts/workflow-preview.png" \
+            LOOM_CAPTURE_WIDTH=1440 \
+            LOOM_CAPTURE_HEIGHT=960 \
+            pnpm exec electron scripts/capture-workflow-preview.mjs
+      - name: Upload workflow preview
+        if: always() && hashFiles('artifacts/workflow-preview.png') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-preview-${{ github.sha }}
+          path: artifacts/workflow-preview.png
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Publish commit status
         if: always() && github.event_name != 'pull_request'
         uses: actions/github-script@v7
