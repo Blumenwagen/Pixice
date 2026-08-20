@@ -10,13 +10,13 @@ import {
   Plus,
   Sparkle,
   SpinnerGap,
-  Trash,
   Warning,
   X
 } from "../icons/index.jsx";
 import { WorkflowNodeIcon } from "./workflow-icons.jsx";
 import { WorkflowNodeInspector } from "./WorkflowNodeInspector.jsx";
-import styles from "./WorkflowWorkspace.module.css";
+import workspaceStyles from "./WorkflowWorkspace.module.css";
+import nodeStyles from "./WorkflowNodes.module.css";
 import {
   WORKFLOW_NODE_CATEGORIES,
   WORKFLOW_NODE_META,
@@ -35,6 +35,7 @@ import {
   workflowStatusLabel
 } from "./workflow-utils.js";
 
+const styles = { ...workspaceStyles, ...nodeStyles };
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancelling"]);
 
 function IconButton({ label, className = "", children, ...props }) {
@@ -83,7 +84,7 @@ function WorkflowNode({ node, selected, connecting, runState, onSelect, onDragSt
   const outputPorts = workflowOutputPorts(node);
   return (
     <article
-      className={`${styles.node} ${selected ? styles.selectedNode : ""}`}
+      className={`${styles.node} ${styles.nodeExtension} ${selected ? styles.selectedNode : ""}`}
       data-tone={meta.tone}
       data-status={runState?.status ?? "idle"}
       data-workflow-node="true"
@@ -420,7 +421,7 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
       <header className={styles.canvasToolbar}>
         <div className={styles.nodePalette}>
           <button type="button" className={styles.addNodeButton} onClick={() => setNodePickerOpen((open) => !open)}><Plus size={14} /><span>Add node</span></button>
-          <small>{graph.nodes.length} nodes · {graph.edges.length} connections</small>
+          <small className={styles.paletteMeta}>{graph.nodes.length} nodes · {graph.edges.length} connections</small>
         </div>
         <div className={styles.canvasToolbarCenter}>
           <span className={styles.saveState} data-state={savingState}>
@@ -485,7 +486,7 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
                   <path
                     key={edge.id}
                     d={workflowEdgePath(source, target, edge.sourcePort, edge.targetPort)}
-                    className={`${styles.edge} ${edge.id === selectedEdgeId ? styles.selectedEdge : ""}`}
+                    className={`${styles.edge} ${styles.edgeTone} ${edge.id === selectedEdgeId ? styles.selectedEdge : ""}`}
                     data-tone={tone}
                     data-workflow-edge="true"
                     onClick={(event) => {
@@ -496,7 +497,7 @@ export function WorkflowCanvas({ workflow, models = [], run = null, savingState 
                   />
                 );
               })}
-              {connectionPath && <path d={connectionPath} className={`${styles.edge} ${styles.pendingEdge}`} data-tone={WORKFLOW_NODE_META[nodesById.get(connectingFrom?.nodeId)?.type]?.tone ?? "neutral"} />}
+              {connectionPath && <path d={connectionPath} className={`${styles.edge} ${styles.edgeTone} ${styles.pendingEdge}`} data-tone={WORKFLOW_NODE_META[nodesById.get(connectingFrom?.nodeId)?.type]?.tone ?? "neutral"} />}
             </svg>
             {graph.nodes.map((node) => (
               <WorkflowNode
