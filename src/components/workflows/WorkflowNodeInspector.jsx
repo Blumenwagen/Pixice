@@ -1,8 +1,10 @@
 import { Brain, Eye, Plus, Trash, X } from "../icons/index.jsx";
 import { WorkflowNodeIcon } from "./workflow-icons.jsx";
 import { WORKFLOW_NODE_META, workflowId } from "./workflow-utils.js";
-import styles from "./WorkflowWorkspace.module.css";
+import workspaceStyles from "./WorkflowWorkspace.module.css";
+import nodeStyles from "./WorkflowNodes.module.css";
 
+const styles = { ...workspaceStyles, ...nodeStyles };
 const PERMISSIONS = [
   ["read-only", "Read only"],
   ["workspace-write", "Workspace access"],
@@ -310,7 +312,7 @@ export function WorkflowNodeInspector({ node, models, onUpdate, onDelete, onClos
   return (
     <aside className={styles.inspector} aria-label="Workflow node inspector">
       <header className={styles.inspectorHeader}>
-        <span className={styles.inspectorGlyph} data-tone={meta.tone}><WorkflowNodeIcon type={node.type} size={17} /></span>
+        <span className={`${styles.inspectorGlyph} ${styles.inspectorTone}`} data-tone={meta.tone}><WorkflowNodeIcon type={node.type} size={17} /></span>
         <span><small>{meta.label}</small><strong>{node.name}</strong></span>
         <IconButton label="Close node inspector" onClick={onClose}><X size={14} /></IconButton>
       </header>
