@@ -115,7 +115,10 @@ async function resolveInstalledSkill({ config, runtime, projectRoot }) {
   } else {
     const installedPath = skillPathCandidate(selected);
     if (!installedPath) throw new Error(`Installed Skill ${selected.name} did not expose readable instructions`);
-    resolved = await markdownFile(installedPath, config.maxBytes, `Installed Skill ${selected.name}`);
+    const absolutePath = path.isAbsolute(installedPath)
+      ? installedPath
+      : path.resolve(selected.cwd || projectRoot || process.cwd(), installedPath);
+    resolved = await markdownFile(absolutePath, config.maxBytes, `Installed Skill ${selected.name}`);
   }
 
   return {
