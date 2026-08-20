@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain,
-  CaretDown,
   Check,
   CheckCircle,
   Circle,
@@ -61,6 +60,7 @@ function runStatusIcon(status) {
 
 function WorkflowNode({ node, selected, connecting, runState, onSelect, onDragStart, onStartConnection, onFinishConnection }) {
   const meta = WORKFLOW_NODE_META[node.type];
+  const executionMode = node.type === "loomAgent" ? node.config?.executionMode ?? "background" : null;
   return (
     <article
       className={`${styles.node} ${selected ? styles.selectedNode : ""}`}
@@ -100,6 +100,11 @@ function WorkflowNode({ node, selected, connecting, runState, onSelect, onDragSt
         <em>{meta.action}</em>
         <strong>{node.name}</strong>
       </span>
+      {executionMode && (
+        <span className={styles.nodeModeBadge} data-mode={executionMode}>
+          {executionMode === "foreground" ? "Foreground thread" : "Background"}
+        </span>
+      )}
       {runState?.status && (
         <span className={styles.nodeRunState} title={runState.error || workflowStatusLabel(runState.status)}>
           {runStatusIcon(runState.status)}
@@ -126,6 +131,7 @@ function NodeInspector({ node, models, onUpdate, onDelete, onClose }) {
   const selectedModel = models.find((model) => model.model === node.config?.model || model.id === node.config?.model);
   const efforts = selectedModel?.supportedReasoningEfforts?.map((option) => option.reasoningEffort ?? option.effort ?? option) ?? ["low", "medium", "high"];
   const updateConfig = (patch) => onUpdate({ config: { ...(node.config ?? {}), ...patch } });
+  const executionMode = node.config?.executionMode ?? "background";
 
   return (
     <aside className={styles.inspector} aria-label="Workflow node inspector">
@@ -145,6 +151,32 @@ function NodeInspector({ node, models, onUpdate, onDelete, onClose }) {
         </label>
         {node.type === "loomAgent" && (
           <>
+            <div className={styles.field}>
+              <span>Run agent as</span>
+              <div className={styles.executionModePicker} role="radiogroup" aria-label="Agent execution mode">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={executionMode === "background"}
+                  data-selected={executionMode === "background"}
+                  onClick={() => updateConfig({ executionMode: "background" })}
+                >
+                  <Brain size={16} />
+                  <span><strong>Background</strong><small>Stay inside the workflow and source task.</small></span>
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={executionMode === "foreground"}
+                  data-selected={executionMode === "foreground"}
+                  onClick={() => updateConfig({ executionMode: "foreground" })}
+                >
+                  <Eye size={16} />
+                  <span><strong>Foreground</strong><small>Create a normal Loom task thread.</small></span>
+                </button>
+              </div>
+              <small>Both modes return their final answer to downstream nodes. Foreground threads also appear in Loom’s task list so you can steer or inspect them directly.</small>
+            </div>
             <label className={styles.field}>
               <span>Agent prompt</span>
               <textarea value={String(node.config?.prompt ?? "")} rows={7} onChange={(event) => updateConfig({ prompt: event.target.value })} />
