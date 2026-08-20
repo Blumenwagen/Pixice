@@ -33,6 +33,15 @@ contextBridge.exposeInMainWorld("loom", Object.freeze({
     delete: invoke("board:delete"),
     attach: invoke("board:attach")
   }),
+  workflows: Object.freeze({
+    list: invoke("workflows:list"),
+    read: invoke("workflows:read"),
+    create: invoke("workflows:create"),
+    save: invoke("workflows:save"),
+    delete: invoke("workflows:delete"),
+    run: invoke("workflows:run"),
+    cancel: invoke("workflows:cancel")
+  }),
   threads: Object.freeze({
     list: invoke("threads:list"),
     read: invoke("threads:read"),
