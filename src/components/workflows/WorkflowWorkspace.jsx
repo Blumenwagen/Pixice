@@ -18,7 +18,7 @@ const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancelling"]);
 
 function workflowRevision(workflow) {
   if (!workflow) return "";
-  return JSON.stringify([workflow.name, workflow.description, workflow.graph]);
+  return JSON.stringify([workflow.name, workflow.description, workflow.enabled, workflow.graph]);
 }
 
 function relativeTimestamp(value) {
@@ -99,6 +99,7 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
       workflowId: submitted.id,
       name: submitted.name.trim() || "Untitled workflow",
       description: submitted.description ?? "",
+      enabled: Boolean(submitted.enabled),
       graph: submitted.graph,
       expectedUpdatedAt: persistedRef.current?.updatedAt
     }));
@@ -213,8 +214,23 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
   };
 }
 
-function WorkflowEditor({ api, projectId, workflowId, models, compact = false, onSaved, onDeleted }) {
+function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, compact = false, onSaved, onDeleted }) {
   const editor = useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted });
+  const [loadedWorkflows, setLoadedWorkflows] = useState(workflows);
+
+  useEffect(() => {
+    setLoadedWorkflows(workflows);
+  }, [workflows]);
+
+  useEffect(() => {
+    if (workflows.length || !api?.workflows || !projectId) return undefined;
+    let alive = true;
+    void callWithBridgeRetry(() => api.workflows.list({ projectId }))
+      .then((result) => { if (alive) setLoadedWorkflows(result.data ?? []); })
+      .catch(() => null);
+    return () => { alive = false; };
+  }, [api, projectId, workflows.length]);
+
   if (editor.loading) return <div className={styles.loadingState}><SpinnerGap className={styles.spin} size={20} />Loading workflow…</div>;
   if (!editor.workflow) {
     return (
@@ -230,6 +246,8 @@ function WorkflowEditor({ api, projectId, workflowId, models, compact = false, o
     <>
       <WorkflowCanvas
         workflow={editor.workflow}
+        workflows={loadedWorkflows}
+        api={api}
         models={models}
         run={editor.run}
         savingState={editor.savingState}
@@ -307,7 +325,8 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
       const created = await callWithBridgeRetry(() => api.workflows.create({
         projectId,
         name: workflows.length ? `New workflow ${workflows.length + 1}` : "New workflow",
-        description: ""
+        description: "",
+        enabled: false
       }));
       await loadList(created.id);
       selectWorkflow(created.id);
@@ -361,9 +380,11 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
                 <span className={styles.workflowCardIcon}><TreeStructure size={15} /></span>
                 <span className={styles.workflowCardCopy}>
                   <strong>{candidate.name}</strong>
-                  <small>{candidate.latestRun ? `${workflowStatusLabel(candidate.latestRun.status)} · ${relativeTimestamp(candidate.latestRun.createdAt)}` : `${candidate.graph.nodes.length} nodes · ${relativeTimestamp(candidate.updatedAt)}`}</small>
+                  <small>{candidate.latestRun
+                    ? `${candidate.enabled ? "Automatic · " : ""}${workflowStatusLabel(candidate.latestRun.status)} · ${relativeTimestamp(candidate.latestRun.createdAt)}`
+                    : `${candidate.enabled ? "Automatic · " : ""}${candidate.graph.nodes.length} nodes · ${relativeTimestamp(candidate.updatedAt)}`}</small>
                 </span>
-                <i className={styles.workflowCardStatus} data-status={candidate.latestRun?.status ?? "idle"} />
+                <i className={styles.workflowCardStatus} data-status={candidate.latestRun?.status ?? (candidate.enabled ? "completed" : "idle")} />
               </button>
             ))}
             {!loading && visible.length === 0 && (
@@ -391,6 +412,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
                 api={api}
                 projectId={projectId}
                 workflowId={selectedId}
+                workflows={workflows}
                 models={models}
                 onSaved={(saved) => setWorkflows((current) => current.map((candidate) => candidate.id === saved.id ? { ...candidate, ...saved } : candidate))}
                 onDeleted={() => void loadList()}
@@ -399,7 +421,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
               <div className={styles.emptyWorkspace}>
                 <span><TreeStructure size={22} /></span>
                 <strong>Build a Loom-native workflow</strong>
-                <small>Connect triggers, Loom Agents, and outputs. Agent nodes can run quietly in the background or become full foreground task threads.</small>
+                <small>Connect schedules or local webhooks to APIs, deterministic data processing, SQLite, subworkflows, notifications, Loom Board actions, and Loom Agents.</small>
                 <button type="button" className={styles.primaryButton} onClick={() => void createWorkflow()}><Plus size={14} />Create workflow</button>
               </div>
             )}
