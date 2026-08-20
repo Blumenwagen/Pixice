@@ -1,9 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import {
+  WORKFLOW_AGENT_EXECUTION_MODES,
+  WORKFLOW_NODE_TYPES,
+  WORKFLOW_PERMISSION_MODES,
+  defaultWorkflowNodeConfig,
+  normalizeWorkflowNodeConfig,
+  workflowNodeInputPorts,
+  workflowNodeIsTrigger,
+  workflowNodeOutputPorts
+} from "./workflow-node-catalog.mjs";
 
-export const WORKFLOW_NODE_TYPES = ["manualTrigger", "loomAgent", "output"];
-export const WORKFLOW_PERMISSION_MODES = ["read-only", "workspace-write", "auto-approve", "full-access"];
-export const WORKFLOW_AGENT_EXECUTION_MODES = ["background", "foreground"];
+export {
+  WORKFLOW_AGENT_EXECUTION_MODES,
+  WORKFLOW_NODE_TYPES,
+  WORKFLOW_PERMISSION_MODES
+} from "./workflow-node-catalog.mjs";
 
 const identifier = z.string().trim().min(1).max(160);
 const pointSchema = z.object({
@@ -53,31 +65,11 @@ export const workflowRunInputSchema = z.object({
   value: z.unknown().optional()
 }).passthrough().default({});
 
-function normalizeAgentConfig(node) {
-  if (node.type !== "loomAgent") return node;
-  const executionMode = node.config?.executionMode ?? "background";
-  if (!WORKFLOW_AGENT_EXECUTION_MODES.includes(executionMode)) {
-    throw new Error(`Loom Agent node ${node.id} has an invalid execution mode`);
-  }
-  const permissionMode = node.config?.permissionMode ?? "workspace-write";
-  if (!WORKFLOW_PERMISSION_MODES.includes(permissionMode)) {
-    throw new Error(`Loom Agent node ${node.id} has an invalid permission mode`);
-  }
-  return {
-    ...node,
-    config: {
-      ...(node.config ?? {}),
-      executionMode,
-      permissionMode
-    }
-  };
-}
-
 export function validateWorkflowGraph(graph) {
   const parsed = workflowGraphSchema.parse(graph);
   const normalized = {
     ...parsed,
-    nodes: parsed.nodes.map(normalizeAgentConfig)
+    nodes: parsed.nodes.map((node) => ({ ...node, config: normalizeWorkflowNodeConfig(node) }))
   };
   const nodesById = new Map();
   for (const node of normalized.nodes) {
@@ -90,9 +82,17 @@ export function validateWorkflowGraph(graph) {
   for (const edge of normalized.edges) {
     if (edgeIds.has(edge.id)) throw new Error(`Workflow contains duplicate edge id: ${edge.id}`);
     edgeIds.add(edge.id);
-    if (!nodesById.has(edge.source)) throw new Error(`Workflow edge ${edge.id} references a missing source node`);
-    if (!nodesById.has(edge.target)) throw new Error(`Workflow edge ${edge.id} references a missing target node`);
+    const source = nodesById.get(edge.source);
+    const target = nodesById.get(edge.target);
+    if (!source) throw new Error(`Workflow edge ${edge.id} references a missing source node`);
+    if (!target) throw new Error(`Workflow edge ${edge.id} references a missing target node`);
     if (edge.source === edge.target) throw new Error(`Workflow edge ${edge.id} cannot connect a node to itself`);
+    if (!workflowNodeOutputPorts(source).includes(edge.sourcePort)) {
+      throw new Error(`Workflow edge ${edge.id} references missing output port ${edge.sourcePort} on ${source.name}`);
+    }
+    if (!workflowNodeInputPorts(target).includes(edge.targetPort)) {
+      throw new Error(`Workflow edge ${edge.id} references missing input port ${edge.targetPort} on ${target.name}`);
+    }
     const pair = `${edge.source}:${edge.sourcePort}->${edge.target}:${edge.targetPort}`;
     if (edgePairs.has(pair)) throw new Error("Workflow contains a duplicate connection");
     edgePairs.add(pair);
@@ -104,9 +104,7 @@ export function validateWorkflowGraph(graph) {
 export function workflowExecutionLayers(workflow) {
   const graph = validateWorkflowGraph(workflow.graph ?? workflow);
   if (!graph.nodes.length) throw new Error("Workflow has no nodes to run");
-  if (!graph.nodes.some((node) => node.type === "manualTrigger")) {
-    throw new Error("Workflow needs at least one Manual Trigger node");
-  }
+  if (!graph.nodes.some(workflowNodeIsTrigger)) throw new Error("Workflow needs at least one trigger node");
 
   const indegree = new Map(graph.nodes.map((node) => [node.id, 0]));
   const outgoing = new Map(graph.nodes.map((node) => [node.id, []]));
@@ -136,17 +134,36 @@ export function workflowExecutionLayers(workflow) {
   return layers;
 }
 
+export function workflowTriggerNodes(workflow) {
+  return (workflow.graph ?? workflow).nodes.filter(workflowNodeIsTrigger);
+}
+
 export function workflowInputsForNode(workflow, nodeId, outputs) {
   const graph = workflow.graph ?? workflow;
   return graph.edges
     .filter((edge) => edge.target === nodeId)
-    .map((edge) => ({
-      edgeId: edge.id,
-      sourceNodeId: edge.source,
-      sourcePort: edge.sourcePort,
-      targetPort: edge.targetPort,
-      value: outputs.get(edge.source)
-    }));
+    .flatMap((edge) => {
+      if (!outputs.has(edge.source)) return [];
+      const sourceResult = outputs.get(edge.source);
+      if (sourceResult?.ports) {
+        if (!Object.prototype.hasOwnProperty.call(sourceResult.ports, edge.sourcePort)) return [];
+        return [{
+          edgeId: edge.id,
+          sourceNodeId: edge.source,
+          sourcePort: edge.sourcePort,
+          targetPort: edge.targetPort,
+          value: sourceResult.ports[edge.sourcePort]
+        }];
+      }
+      if (edge.sourcePort !== "output") return [];
+      return [{
+        edgeId: edge.id,
+        sourceNodeId: edge.source,
+        sourcePort: edge.sourcePort,
+        targetPort: edge.targetPort,
+        value: sourceResult
+      }];
+    });
 }
 
 export function createDefaultWorkflow({ id = randomUUID(), projectId, name = "Untitled workflow", description = "", createdByThreadId = null, now = new Date().toISOString() }) {
@@ -170,7 +187,7 @@ export function createDefaultWorkflow({ id = randomUUID(), projectId, name = "Un
           name: "Manual trigger",
           description: "Start with input supplied by the user or calling agent.",
           position: { x: 80, y: 180 },
-          config: {}
+          config: defaultWorkflowNodeConfig("manualTrigger")
         },
         {
           id: agentId,
@@ -178,13 +195,7 @@ export function createDefaultWorkflow({ id = randomUUID(), projectId, name = "Un
           name: "Loom Agent",
           description: "Run a Loom-native coding agent with the upstream context.",
           position: { x: 410, y: 180 },
-          config: {
-            prompt: "Complete the workflow task using the incoming context.",
-            model: null,
-            effort: null,
-            permissionMode: "workspace-write",
-            executionMode: "background"
-          }
+          config: defaultWorkflowNodeConfig("loomAgent")
         },
         {
           id: outputId,
@@ -192,7 +203,7 @@ export function createDefaultWorkflow({ id = randomUUID(), projectId, name = "Un
           name: "Workflow output",
           description: "Expose the final value returned by this workflow.",
           position: { x: 740, y: 180 },
-          config: {}
+          config: defaultWorkflowNodeConfig("output")
         }
       ],
       edges: [
@@ -221,7 +232,7 @@ export function normalizeWorkflowDocument(input, current = null) {
 export function workflowNodePrompt(node, inputs, runInput) {
   const configured = String(node.config?.prompt ?? "").trim() || "Complete the workflow task using the incoming context.";
   const context = inputs.length
-    ? inputs.map((entry) => ({ sourceNodeId: entry.sourceNodeId, value: entry.value }))
+    ? inputs.map((entry) => ({ sourceNodeId: entry.sourceNodeId, sourcePort: entry.sourcePort, value: entry.value }))
     : [{ sourceNodeId: "workflow-input", value: runInput }];
   return `${configured}\n\nWorkflow context:\n${JSON.stringify(context, null, 2)}`;
 }
