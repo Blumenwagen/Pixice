@@ -78,7 +78,7 @@ const nodeJsonSchema = {
     },
     config: {
       type: "object",
-      description: "Node-specific settings. Loom Agent nodes accept prompt, model, effort, and permissionMode.",
+      description: "Node-specific settings. Loom Agent nodes accept prompt, model, effort, permissionMode, and executionMode (background or foreground).",
       additionalProperties: true
     }
   },
@@ -99,102 +99,104 @@ const edgeJsonSchema = {
   additionalProperties: false
 };
 
+export const loomWorkflowTools = [
+  {
+    type: "function",
+    name: "list_workflows",
+    description: "List the current project's workflows and their latest run summaries.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false }
+  },
+  {
+    type: "function",
+    name: "inspect_workflow",
+    description: "Read a complete workflow graph. This also opens the workflow canvas in Loom.",
+    inputSchema: {
+      type: "object",
+      properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "create_workflow",
+    description: "Create a workflow prefilled with Manual Trigger → Loom Agent → Output and open it in Loom.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", minLength: 1, maxLength: 240 },
+        description: { type: "string", maxLength: 10000 }
+      },
+      required: ["name"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "save_workflow",
+    description: "Replace a workflow graph after inspecting it. Preserve unrelated nodes and use expectedUpdatedAt to avoid overwriting newer edits. Opens the updated canvas in Loom.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string", minLength: 1, maxLength: 160 },
+        name: { type: "string", minLength: 1, maxLength: 240 },
+        description: { type: "string", maxLength: 10000 },
+        nodes: { type: "array", maxItems: 200, items: nodeJsonSchema },
+        edges: { type: "array", maxItems: 600, items: edgeJsonSchema },
+        viewport: {
+          type: "object",
+          properties: { x: { type: "number" }, y: { type: "number" }, zoom: { type: "number", minimum: 0.2, maximum: 3 } },
+          additionalProperties: false
+        },
+        expectedUpdatedAt: { type: "string", description: "The updatedAt value returned by inspect_workflow." }
+      },
+      required: ["workflowId", "nodes", "edges"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "delete_workflow",
+    description: "Permanently delete a workflow and its run history.",
+    inputSchema: {
+      type: "object",
+      properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "run_workflow",
+    description: "Run a workflow now, wait for it to finish, and return every node result. Each Loom Agent node may run quietly in the background or promote itself to a normal foreground Loom thread according to its executionMode setting.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string", minLength: 1, maxLength: 160 },
+        input: { description: "JSON-compatible value supplied to Manual Trigger nodes." }
+      },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "open_workflow",
+    description: "Open a workflow in Loom's preview without changing or running it.",
+    inputSchema: {
+      type: "object",
+      properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  }
+];
+
 export const loomWorkflowDynamicTools = [{
   type: "namespace",
   name: LOOM_WORKFLOW_NAMESPACE,
-  description: "Inspect, create, edit, open, and run Loom-native visual workflows for the current project. Workflows are directed graphs with Manual Trigger, Loom Agent, and Output nodes. Using a workflow tool opens that workflow in Loom's in-app preview so the user can watch the agent work.",
-  tools: [
-    {
-      type: "function",
-      name: "list_workflows",
-      description: "List the current project's workflows and their latest run summaries.",
-      inputSchema: { type: "object", properties: {}, additionalProperties: false }
-    },
-    {
-      type: "function",
-      name: "inspect_workflow",
-      description: "Read a complete workflow graph. This also opens the workflow canvas in Loom.",
-      inputSchema: {
-        type: "object",
-        properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
-        required: ["workflowId"],
-        additionalProperties: false
-      }
-    },
-    {
-      type: "function",
-      name: "create_workflow",
-      description: "Create a workflow prefilled with Manual Trigger → Loom Agent → Output and open it in Loom.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", minLength: 1, maxLength: 240 },
-          description: { type: "string", maxLength: 10000 }
-        },
-        required: ["name"],
-        additionalProperties: false
-      }
-    },
-    {
-      type: "function",
-      name: "save_workflow",
-      description: "Replace a workflow graph after inspecting it. Preserve unrelated nodes and use expectedUpdatedAt to avoid overwriting newer edits. Opens the updated canvas in Loom.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workflowId: { type: "string", minLength: 1, maxLength: 160 },
-          name: { type: "string", minLength: 1, maxLength: 240 },
-          description: { type: "string", maxLength: 10000 },
-          nodes: { type: "array", maxItems: 200, items: nodeJsonSchema },
-          edges: { type: "array", maxItems: 600, items: edgeJsonSchema },
-          viewport: {
-            type: "object",
-            properties: { x: { type: "number" }, y: { type: "number" }, zoom: { type: "number", minimum: 0.2, maximum: 3 } },
-            additionalProperties: false
-          },
-          expectedUpdatedAt: { type: "string", description: "The updatedAt value returned by inspect_workflow." }
-        },
-        required: ["workflowId", "nodes", "edges"],
-        additionalProperties: false
-      }
-    },
-    {
-      type: "function",
-      name: "delete_workflow",
-      description: "Permanently delete a workflow and its run history.",
-      inputSchema: {
-        type: "object",
-        properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
-        required: ["workflowId"],
-        additionalProperties: false
-      }
-    },
-    {
-      type: "function",
-      name: "run_workflow",
-      description: "Run a workflow now, wait for it to finish, and return every node result. Loom Agent nodes become real Loom threads and may use project files according to each node's permission mode.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workflowId: { type: "string", minLength: 1, maxLength: 160 },
-          input: { description: "JSON-compatible value supplied to Manual Trigger nodes." }
-        },
-        required: ["workflowId"],
-        additionalProperties: false
-      }
-    },
-    {
-      type: "function",
-      name: "open_workflow",
-      description: "Open a workflow in Loom's preview without changing or running it.",
-      inputSchema: {
-        type: "object",
-        properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
-        required: ["workflowId"],
-        additionalProperties: false
-      }
-    }
-  ]
+  description: "Inspect, create, edit, open, and run Loom-native visual workflows for the current project. Workflows are directed graphs with Manual Trigger, Loom Agent, and Output nodes. Loom Agent nodes can run in the background or as normal foreground threads. Using a workflow tool opens that workflow in Loom's in-app preview so the user can watch the agent work.",
+  tools: loomWorkflowTools
 }];
 
 function textResult(value, success = true) {
@@ -236,6 +238,7 @@ export class LoomWorkflows {
     onChange,
     onOpen,
     onRun,
+    onForeground,
     onThreadCreated,
     onAgentActivity
   }) {
@@ -248,6 +251,7 @@ export class LoomWorkflows {
     this.onChange = onChange;
     this.onOpen = onOpen;
     this.onRun = onRun;
+    this.onForeground = onForeground;
     this.onThreadCreated = onThreadCreated;
     this.onAgentActivity = onAgentActivity;
     this.pendingAgents = new Map();
@@ -433,7 +437,8 @@ export class LoomWorkflows {
           this.#updateNodeRun(run.id, node.id, {
             status: "running",
             startedAt: new Date().toISOString(),
-            input: inputs.map((entry) => entry.value)
+            input: inputs.map((entry) => entry.value),
+            ...(node.type === "loomAgent" ? { executionMode: node.config?.executionMode ?? "background" } : {})
           });
           try {
             const output = await this.#executeNode({ workflow, node, inputs, run: this.store.getRun(run.id), state });
@@ -510,6 +515,7 @@ export class LoomWorkflows {
     const permissionMode = ["read-only", "workspace-write", "auto-approve", "full-access"].includes(node.config?.permissionMode)
       ? node.config.permissionMode
       : context.defaultPermissionMode ?? "workspace-write";
+    const executionMode = node.config?.executionMode === "foreground" ? "foreground" : "background";
     const permissions = context.permissionSettings(permissionMode);
     const prompt = workflowNodePrompt(node, inputs, run.input);
     const threadRequest = {
@@ -522,26 +528,29 @@ export class LoomWorkflows {
       sandbox: permissions.sandbox,
       developerInstructions: context.developerInstructions,
       dynamicTools: this.dynamicTools(),
-      threadSource: "loomWorkflow"
+      threadSource: "loomBridge"
     };
-    if (run.sourceThreadId) threadRequest.parentThreadId = run.sourceThreadId;
+    if (executionMode === "background" && run.sourceThreadId) threadRequest.parentThreadId = run.sourceThreadId;
     const started = await this.runtime.request("thread/start", threadRequest);
     const thread = {
       ...started.thread,
-      ...(run.sourceThreadId ? { parentThreadId: run.sourceThreadId } : {}),
-      workflow: { workflowId: workflow.id, runId: run.id, nodeId: node.id }
+      ...(executionMode === "background" && run.sourceThreadId ? { parentThreadId: run.sourceThreadId } : {}),
+      workflow: { workflowId: workflow.id, runId: run.id, nodeId: node.id, executionMode }
     };
-    if (run.sourceThreadId) {
+
+    if (executionMode === "background") {
       this.database?.saveThreadLink({
         childThreadId: thread.id,
-        parentThreadId: run.sourceThreadId,
-        kind: "loomWorkflow",
+        parentThreadId: run.sourceThreadId ?? `workflow:${workflow.id}`,
+        kind: "loomWorkflowBackground",
         model: modelId,
         effort
       });
     }
-    this.onThreadCreated?.({ context, thread, prompt, model: selected, workflow, run, node });
+
+    this.onThreadCreated?.({ context, thread, prompt, model: selected, workflow, run, node, executionMode });
     this.#publishAgentState({
+      executionMode,
       parentThreadId: run.sourceThreadId,
       childThreadId: thread.id,
       workflow,
@@ -564,6 +573,7 @@ export class LoomWorkflows {
       node,
       model: modelId,
       effort,
+      executionMode,
       prompt
     }));
     try {
@@ -581,7 +591,26 @@ export class LoomWorkflows {
       });
       const pending = this.pendingAgents.get(thread.id);
       if (pending) pending.turnId = turn.turn.id;
-      this.#updateNodeRun(run.id, node.id, { threadId: thread.id, turnId: turn.turn.id, model: modelId, effort });
+      this.#updateNodeRun(run.id, node.id, {
+        threadId: thread.id,
+        turnId: turn.turn.id,
+        model: modelId,
+        effort,
+        executionMode
+      });
+      if (executionMode === "foreground") {
+        this.onForeground?.({
+          projectId: workflow.projectId,
+          workflowId: workflow.id,
+          workflowName: workflow.name,
+          runId: run.id,
+          nodeId: node.id,
+          nodeName: node.name,
+          threadId: thread.id,
+          turnId: turn.turn.id,
+          sourceThreadId: run.sourceThreadId
+        });
+      }
     } catch (error) {
       this.pendingAgents.delete(thread.id);
       state.threads.delete(thread.id);
@@ -614,6 +643,7 @@ export class LoomWorkflows {
     const answer = finalAnswer(turn);
     const error = turn?.error?.message ?? null;
     this.#publishAgentState({
+      executionMode: pending.executionMode,
       parentThreadId: pending.parentThreadId,
       childThreadId: payload.threadId,
       workflow: pending.workflow,
@@ -663,8 +693,8 @@ export class LoomWorkflows {
     this.onRun?.({ projectId: run.projectId, workflowId: run.workflowId, run });
   }
 
-  #publishAgentState({ parentThreadId, childThreadId, workflow, run, node, model, effort, status, message }) {
-    if (!parentThreadId) return;
+  #publishAgentState({ executionMode, parentThreadId, childThreadId, workflow, run, node, model, effort, status, message }) {
+    if (executionMode !== "background" || !parentThreadId) return;
     this.onAgentActivity?.({
       method: "loom/workflow/agent/updated",
       threadId: parentThreadId,
@@ -677,6 +707,7 @@ export class LoomWorkflows {
         prompt: `${workflow.name} · ${node.name}`,
         model,
         effort,
+        executionMode,
         agentsStates: { [childThreadId]: { status, message } }
       }
     });
