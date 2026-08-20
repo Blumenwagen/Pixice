@@ -132,7 +132,7 @@ describe("WorkflowCanvas", () => {
   });
 
   it("discovers installed Skills and configures project Markdown attachments", async () => {
-    const workflow = {
+    let workflow = {
       ...createDefaultWorkflow({ projectId: "project-1" }),
       graph: {
         viewport: { x: 0, y: 0, zoom: 1 },
@@ -154,7 +154,7 @@ describe("WorkflowCanvas", () => {
       }
     };
     const onChange = vi.fn();
-    render(
+    const renderCanvas = () => (
       <WorkflowCanvas
         workflow={workflow}
         api={api}
@@ -164,17 +164,20 @@ describe("WorkflowCanvas", () => {
         onCancel={vi.fn()}
       />
     );
+    const view = render(renderCanvas());
 
     fireEvent.click(screen.getByRole("group", { name: "Use Skill: Use Skill" }));
     await waitFor(() => expect(api.extensions.list).toHaveBeenCalledWith({ projectId: "project-1" }));
     const installed = await screen.findByLabelText("Installed Skill");
     fireEvent.change(installed, { target: { value: "/skills/release-review" } });
-    let next = onChange.mock.calls.at(-1)[0];
-    expect(next.graph.nodes[0].config).toMatchObject({ skillRef: "/skills/release-review", skillName: "Release Review" });
+    workflow = onChange.mock.calls.at(-1)[0];
+    expect(workflow.graph.nodes[0].config).toMatchObject({ skillRef: "/skills/release-review", skillName: "Release Review" });
+    view.rerender(renderCanvas());
 
     fireEvent.change(screen.getByLabelText("Instruction source"), { target: { value: "markdown" } });
-    next = onChange.mock.calls.at(-1)[0];
-    expect(next.graph.nodes[0].config).toMatchObject({ source: "markdown", skillRef: "", path: "" });
+    workflow = onChange.mock.calls.at(-1)[0];
+    expect(workflow.graph.nodes[0].config).toMatchObject({ source: "markdown", skillRef: "", path: "" });
+    view.rerender(renderCanvas());
     expect(screen.getByLabelText("Skill Markdown path")).toBeInTheDocument();
   });
 
