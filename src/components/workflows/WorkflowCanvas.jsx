@@ -15,6 +15,7 @@ import {
 } from "../icons/index.jsx";
 import { WorkflowNodeIcon } from "./workflow-icons.jsx";
 import { WorkflowNodeInspector } from "./WorkflowNodeInspector.jsx";
+import { WorkflowSkillInspector } from "./WorkflowSkillInspector.jsx";
 import workspaceStyles from "./WorkflowWorkspace.module.css";
 import nodeStyles from "./WorkflowNodes.module.css";
 import {
@@ -28,6 +29,7 @@ import {
   nodePort,
   parseWorkflowInput,
   stringifyWorkflowValue,
+  workflowCanConnect,
   workflowEdgePath,
   workflowInputPorts,
   workflowNodeHeight,
@@ -230,6 +232,7 @@ export function WorkflowCanvas({
   const [selectedEdgeId, setSelectedEdgeId] = useState(null);
   const [connectingFrom, setConnectingFrom] = useState(null);
   const [connectionPointer, setConnectionPointer] = useState(null);
+  const [connectionError, setConnectionError] = useState("");
   const [drag, setDrag] = useState(null);
   const [pan, setPan] = useState(null);
   const [inspectorOpen, setInspectorOpen] = useState(!compact);
@@ -273,6 +276,7 @@ export function WorkflowCanvas({
       if (event.key === "Escape") {
         setConnectingFrom(null);
         setConnectionPointer(null);
+        setConnectionError("");
         setSelectedEdgeId(null);
         setNodePickerOpen(false);
         return;
@@ -382,6 +386,15 @@ export function WorkflowCanvas({
     if (!connectingFrom || connectingFrom.nodeId === targetId) {
       setConnectingFrom(null);
       setConnectionPointer(null);
+      setConnectionError("");
+      return;
+    }
+    const sourceNode = nodesById.get(connectingFrom.nodeId);
+    const targetNode = nodesById.get(targetId);
+    if (!workflowCanConnect(sourceNode, connectingFrom.portId, targetNode, targetPort)) {
+      setConnectionError(sourceNode?.type === "useSkill" || connectingFrom.portId === "skill" || targetPort === "skill"
+        ? "Use Skill nodes connect only from Skill to a Loom Agent’s Skill input."
+        : "These workflow ports cannot be connected.");
       return;
     }
     const duplicate = graph.edges.some((edge) => edge.source === connectingFrom.nodeId
@@ -396,6 +409,7 @@ export function WorkflowCanvas({
     }
     setConnectingFrom(null);
     setConnectionPointer(null);
+    setConnectionError("");
   };
 
   const fitView = () => {
@@ -538,6 +552,7 @@ export function WorkflowCanvas({
                 })}
                 onStartConnection={(portId) => {
                   setConnectingFrom((current) => current?.nodeId === node.id && current?.portId === portId ? null : { nodeId: node.id, portId });
+                  setConnectionError("");
                   setSelectedNodeId(node.id);
                 }}
                 onFinishConnection={(portId) => finishConnection(node.id, portId)}
@@ -548,14 +563,24 @@ export function WorkflowCanvas({
             <div className={styles.emptyCanvas}>
               <span><Plus size={22} /></span>
               <strong>Build your first useful workflow</strong>
-              <small>Trigger on time or local webhooks, call APIs, aggregate data, query SQLite, loop through subworkflows, notify yourself, inspect Git, manage files or board tasks, and hand ambiguous work to Loom Agents.</small>
+              <small>Trigger on time or local webhooks, call APIs, aggregate data, query SQLite, loop through subworkflows, attach Skills to Agents, notify yourself, inspect Git, manage files or board tasks, and hand ambiguous work to Loom Agents.</small>
               <button type="button" className={styles.primaryButton} onClick={() => setNodePickerOpen(true)}><Plus size={14} />Browse nodes</button>
             </div>
           )}
-          {connectingFrom && <div className={styles.connectionHint}><Circle size={11} />Choose an input port · Esc to cancel</div>}
+          {connectingFrom && <div className={styles.connectionHint}><Circle size={11} />{connectionError || "Choose a compatible input port · Esc to cancel"}</div>}
         </div>
 
-        {inspectorOpen && selectedNode && (
+        {inspectorOpen && selectedNode?.type === "useSkill" && (
+          <WorkflowSkillInspector
+            node={selectedNode}
+            api={api}
+            projectId={workflow.projectId}
+            onUpdate={(patch) => updateNode(selectedNode.id, patch)}
+            onDelete={() => deleteNode(selectedNode.id)}
+            onClose={() => setInspectorOpen(false)}
+          />
+        )}
+        {inspectorOpen && selectedNode && selectedNode.type !== "useSkill" && (
           <WorkflowNodeInspector
             node={selectedNode}
             models={models}
