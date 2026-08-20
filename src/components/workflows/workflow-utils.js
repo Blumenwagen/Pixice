@@ -53,7 +53,8 @@ export function createWorkflowNode(type, position) {
           prompt: "Complete the workflow task using the incoming context.",
           model: null,
           effort: null,
-          permissionMode: "workspace-write"
+          permissionMode: "workspace-write",
+          executionMode: "background"
         }
       : {}
   };
