@@ -4,6 +4,7 @@ import {
   Brain,
   Code,
   File,
+  Files,
   Gauge,
   GitBranch,
   Globe,
@@ -19,6 +20,7 @@ export function WorkflowNodeIcon({ type, size = 19 }) {
   if (type === "manualTrigger") return <Lightning size={size} />;
   if (type === "scheduleTrigger") return <Gauge size={size} />;
   if (type === "webhookTrigger") return <PlugsConnected size={size} />;
+  if (type === "useSkill") return <Files size={size} />;
   if (type === "loomAgent") return <Brain size={size} />;
   if (type === "httpRequest") return <Globe size={size} />;
   if (type === "transform") return <Sparkle size={size} />;
