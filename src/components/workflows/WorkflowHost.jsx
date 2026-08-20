@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { TreeStructure } from "../icons/index.jsx";
 import { WorkflowPreview, WorkflowWorkspace } from "./WorkflowWorkspace.jsx";
@@ -182,10 +182,11 @@ export function WorkflowHost({ children }) {
       const payload = event.payload ?? {};
       if (event.type === "RuntimeStatus" && payload.connected) void refreshCatalog();
       if (event.type === "WorkflowOpenRequested") {
-        const workspaceId = payload.threadId ?? currentThreadIdRef.current;
+        const workspaceId = payload.workspaceId ?? payload.threadId ?? currentThreadIdRef.current;
         setPreview({
           projectId: payload.projectId,
           workflowId: payload.workflowId,
+          workflowName: payload.workflowName,
           threadId: workspaceId,
           reason: payload.reason ?? "open"
         });
@@ -198,6 +199,7 @@ export function WorkflowHost({ children }) {
           setPreview({
             projectId: payload.projectId,
             workflowId: payload.workflowId,
+            workflowName: payload.workflowName,
             threadId: payload.threadId,
             reason: "run"
           });
@@ -237,8 +239,9 @@ export function WorkflowHost({ children }) {
       aria-label="Workflows"
       title="Workflows"
       onClick={() => {
-        setActive(true);
         setPreview(null);
+        document.querySelector('[aria-label="Close preview workspace"]')?.click();
+        setActive(true);
       }}
     >
       {active && <span className="thread-indicator"><i /></span>}
@@ -265,14 +268,15 @@ export function WorkflowHost({ children }) {
       api={api}
       projectId={preview.projectId}
       workflowId={preview.workflowId}
+      workflowName={preview.workflowName}
       models={models}
       reason={preview.reason}
       onClose={closePreview}
       onOpenWorkspace={(workflowId) => {
         setRequestedWorkflowId(workflowId);
         setPreview(null);
+        document.querySelector('[aria-label="Close preview workspace"]')?.click();
         setActive(true);
-        window.setTimeout(() => document.querySelector('[aria-label="Close preview workspace"]')?.click(), 0);
       }}
     />,
     previewTarget
