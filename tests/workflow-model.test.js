@@ -5,6 +5,7 @@ import {
   workflowExecutionLayers,
   workflowInputsForNode
 } from "../electron/workflows/workflow-model.mjs";
+import { workflowNodeResult } from "../electron/workflows/workflow-node-executors.mjs";
 
 describe("workflow model", () => {
   it("creates an executable background Loom Agent workflow", () => {
@@ -34,35 +35,66 @@ describe("workflow model", () => {
     })).toThrow(/execution mode/i);
   });
 
-  it("rejects broken references and cyclic graphs", () => {
+  it("rejects broken references, invalid ports, and cyclic graphs", () => {
     expect(() => validateWorkflowGraph({
       nodes: [{ id: "a", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} }],
       edges: [{ id: "edge", source: "a", target: "missing", sourcePort: "output", targetPort: "input" }],
       viewport: { x: 0, y: 0, zoom: 1 }
     })).toThrow(/missing target/i);
 
+    expect(() => validateWorkflowGraph({
+      nodes: [
+        { id: "start", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
+        { id: "condition", type: "condition", name: "Condition", description: "", position: { x: 1, y: 1 }, config: {} },
+        { id: "output", type: "output", name: "Output", description: "", position: { x: 2, y: 2 }, config: {} }
+      ],
+      edges: [
+        { id: "one", source: "start", target: "condition", sourcePort: "output", targetPort: "input" },
+        { id: "two", source: "condition", target: "output", sourcePort: "maybe", targetPort: "input" }
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 }
+    })).toThrow(/missing output port/i);
+
     expect(() => workflowExecutionLayers({
       graph: {
         nodes: [
-          { id: "a", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
-          { id: "b", type: "output", name: "Done", description: "", position: { x: 1, y: 1 }, config: {} }
+          { id: "start", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
+          { id: "a", type: "transform", name: "A", description: "", position: { x: 1, y: 1 }, config: {} },
+          { id: "b", type: "transform", name: "B", description: "", position: { x: 2, y: 2 }, config: {} }
         ],
         edges: [
-          { id: "ab", source: "a", target: "b", sourcePort: "output", targetPort: "input" },
-          { id: "ba", source: "b", target: "a", sourcePort: "output", targetPort: "input" }
+          { id: "start-a", source: "start", target: "a", sourcePort: "output", targetPort: "input" },
+          { id: "a-b", source: "a", target: "b", sourcePort: "output", targetPort: "input" },
+          { id: "b-a", source: "b", target: "a", sourcePort: "output", targetPort: "input" }
         ],
         viewport: { x: 0, y: 0, zoom: 1 }
       }
     })).toThrow(/cycle/i);
   });
 
-  it("collects upstream values in connection order", () => {
-    const workflow = createDefaultWorkflow({ projectId: "project-1" });
-    const agent = workflow.graph.nodes.find((node) => node.type === "loomAgent");
-    const trigger = workflow.graph.nodes.find((node) => node.type === "manualTrigger");
-    const outputs = new Map([[trigger.id, { ticket: 42 }]]);
-    expect(workflowInputsForNode(workflow, agent.id, outputs)).toEqual([
-      expect.objectContaining({ sourceNodeId: trigger.id, value: { ticket: 42 } })
+  it("collects only values emitted through active output ports", () => {
+    const workflow = {
+      graph: {
+        nodes: [
+          { id: "start", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
+          { id: "condition", type: "condition", name: "Condition", description: "", position: { x: 1, y: 1 }, config: {} },
+          { id: "true-target", type: "transform", name: "True", description: "", position: { x: 2, y: 0 }, config: {} },
+          { id: "false-target", type: "transform", name: "False", description: "", position: { x: 2, y: 2 }, config: {} }
+        ],
+        edges: [
+          { id: "start-condition", source: "start", target: "condition", sourcePort: "output", targetPort: "input" },
+          { id: "true", source: "condition", target: "true-target", sourcePort: "true", targetPort: "input" },
+          { id: "false", source: "condition", target: "false-target", sourcePort: "false", targetPort: "input" }
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 }
+      }
+    };
+    const outputs = new Map([
+      ["condition", workflowNodeResult({ matched: true }, { true: { ticket: 42 } })]
     ]);
+    expect(workflowInputsForNode(workflow, "true-target", outputs)).toEqual([
+      expect.objectContaining({ sourceNodeId: "condition", sourcePort: "true", value: { ticket: 42 } })
+    ]);
+    expect(workflowInputsForNode(workflow, "false-target", outputs)).toEqual([]);
   });
 });
