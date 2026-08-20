@@ -55,6 +55,7 @@ export const workflowDocumentSchema = z.object({
   projectId: identifier,
   name: z.string().trim().min(1).max(240),
   description: z.string().max(10_000).default(""),
+  enabled: z.boolean().default(false),
   graph: workflowGraphSchema,
   createdByThreadId: identifier.nullable().default(null),
   createdAt: z.string().datetime(),
@@ -166,7 +167,15 @@ export function workflowInputsForNode(workflow, nodeId, outputs) {
     });
 }
 
-export function createDefaultWorkflow({ id = randomUUID(), projectId, name = "Untitled workflow", description = "", createdByThreadId = null, now = new Date().toISOString() }) {
+export function createDefaultWorkflow({
+  id = randomUUID(),
+  projectId,
+  name = "Untitled workflow",
+  description = "",
+  enabled = false,
+  createdByThreadId = null,
+  now = new Date().toISOString()
+}) {
   const triggerId = randomUUID();
   const agentId = randomUUID();
   const outputId = randomUUID();
@@ -175,6 +184,7 @@ export function createDefaultWorkflow({ id = randomUUID(), projectId, name = "Un
     projectId,
     name,
     description,
+    enabled,
     createdByThreadId,
     createdAt: now,
     updatedAt: now,
@@ -222,6 +232,7 @@ export function normalizeWorkflowDocument(input, current = null) {
     projectId: input.projectId ?? current?.projectId,
     name: input.name ?? current?.name,
     description: input.description ?? current?.description ?? "",
+    enabled: input.enabled ?? current?.enabled ?? false,
     graph,
     createdByThreadId: input.createdByThreadId ?? current?.createdByThreadId ?? null,
     createdAt: current?.createdAt ?? input.createdAt ?? now,
