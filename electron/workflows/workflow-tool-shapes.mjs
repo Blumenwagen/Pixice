@@ -24,12 +24,14 @@ export const loomWorkflowToolShapes = {
   inspect_workflow: { workflowId: identifier },
   create_workflow: {
     name: z.string().trim().min(1).max(240),
-    description: z.string().max(10_000).default("")
+    description: z.string().max(10_000).default(""),
+    enabled: z.boolean().default(false)
   },
   save_workflow: {
     workflowId: identifier,
     name: z.string().trim().min(1).max(240).optional(),
     description: z.string().max(10_000).optional(),
+    enabled: z.boolean().optional(),
     nodes: z.array(node).max(200),
     edges: z.array(edge).max(600),
     viewport: z.object({
@@ -42,7 +44,8 @@ export const loomWorkflowToolShapes = {
   delete_workflow: { workflowId: identifier },
   run_workflow: {
     workflowId: identifier,
-    input: z.unknown().optional()
+    input: z.unknown().optional(),
+    triggerNodeId: identifier.optional()
   },
   open_workflow: { workflowId: identifier }
 };
