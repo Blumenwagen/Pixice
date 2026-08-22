@@ -428,6 +428,35 @@ describe("Loom app shell", () => {
     }));
 
     expect(await screen.findByRole("button", { name: "Review the interface hierarchy" })).toBeInTheDocument();
+    expect(Array.from(document.querySelectorAll(".task-tree .task-select"), (button) => button.textContent)).toEqual([
+      "Refactor authentication",
+      "Review the interface hierarchy"
+    ]);
+  });
+
+  it("only promotes a bridge-created thread after the user messages it", async () => {
+    const user = userEvent.setup();
+    const bridgeThread = {
+      ...thread,
+      id: "bridge-thread",
+      name: "Cross-model UI review",
+      preview: "Cross-model UI review",
+      bridge: { kind: "loomBridge", parentThreadId: thread.id, model: "claude:claude-sonnet-4-6" }
+    };
+    localStorage.setItem("loom.threadMessageRecency", JSON.stringify({ [thread.id]: 20 }));
+    window.loom = createApi([thread, bridgeThread]);
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    const threadOrder = () => Array.from(document.querySelectorAll(".task-tree .task-select"), (button) => button.textContent);
+    expect(threadOrder()).toEqual(["Refactor authentication", "Cross-model UI review"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cross-model UI review" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cross-model UI review" })).toHaveAttribute("aria-current", "page"));
+    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Take another pass at the hierarchy");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(threadOrder()[0]).toBe("Cross-model UI review"));
   });
 
   it("labels prompts and answers relayed through a Loom bridge thread", async () => {
@@ -1230,7 +1259,7 @@ describe("Loom app shell", () => {
     }));
   });
 
-  it("keeps work traces open while running and collapses them after the final answer", async () => {
+  it("keeps one live trace line while running and collapses the history after the final answer", async () => {
     const liveItems = [
       { id: "user-live", type: "userMessage", content: [{ type: "text", text: "Check the task" }] },
       { id: "reasoning-live", type: "reasoning", summary: ["Checking the current flow"] },
@@ -1244,10 +1273,11 @@ describe("Loom app shell", () => {
     window.loom = createApi(liveThread);
 
     render(<App />);
-    const runningToggle = await screen.findByRole("button", { name: "Running command" });
+    const runningStatus = await screen.findByRole("status", { name: "Running command: pnpm test" });
     expect(document.querySelector(".task-row.active [data-reasoning-orb]")).toBeInTheDocument();
-    expect(runningToggle).toHaveAttribute("aria-expanded", "true");
-    expect(runningToggle.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
+    expect(runningStatus.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
+    expect(runningStatus.querySelectorAll(".trace-live-item")).toHaveLength(1);
+    expect(runningStatus.closest(".working-trace").querySelector(".trace-reasoning-list")).toHaveTextContent("Checking the current flow");
 
     act(() => window.loom.emit({
       type: "RuntimeEvent",
@@ -1259,7 +1289,7 @@ describe("Loom app shell", () => {
     }));
 
     await waitFor(() => expect(document.querySelector(".conversation-column .task-progress")).toBeInTheDocument());
-    const workingTrace = runningToggle.closest(".working-trace");
+    const workingTrace = runningStatus.closest(".working-trace");
     const taskProgress = document.querySelector(".conversation-column .task-progress");
     expect(taskProgress).toHaveTextContent("Inspect the project");
     expect(workingTrace.compareDocumentPosition(taskProgress) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -1313,6 +1343,9 @@ describe("Loom app shell", () => {
 
     expect(await screen.findByText("Delegated agent")).toBeInTheDocument();
     expect(screen.getByText("Working · Inspecting Electron")).toBeInTheDocument();
+    await waitFor(() => expect(workingTrace).not.toHaveTextContent("pnpm test"));
+    expect(workingTrace).toHaveTextContent("Delegated work");
+    expect(workingTrace.querySelectorAll(".trace-live-item")).toHaveLength(1);
 
     act(() => window.loom.emit({
       type: "RuntimeEvent",
@@ -1490,9 +1523,23 @@ describe("Loom app shell", () => {
     window.loom = createApi(waitingThread);
 
     render(<App />);
-    const thinkingToggle = await screen.findByRole("button", { name: "Thinking" });
-    expect(thinkingToggle.querySelector("[data-reasoning-orb]")).toBeInTheDocument();
-    expect(thinkingToggle.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
+    const thinkingStatus = await screen.findByRole("status", { name: "Thinking: Getting started" });
+    expect(thinkingStatus.querySelector("[data-reasoning-orb]")).toBeInTheDocument();
+    expect(thinkingStatus.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
+
+    act(() => window.loom.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "item/started",
+        threadId: "thread-1",
+        turnId: "turn-waiting",
+        item: { id: "reasoning-waiting", type: "reasoning", summary: ["Reading the current implementation"] }
+      }
+    }));
+
+    const activeThinkingStatus = await screen.findByRole("status", { name: "Thinking" });
+    expect(activeThinkingStatus.querySelector("[data-reasoning-orb]")).toBeInTheDocument();
+    expect(activeThinkingStatus.closest(".working-trace")).toHaveTextContent("Reading the current implementation");
   });
 
   it("creates a real thread before sending the first new-task message", async () => {
@@ -1908,11 +1955,6 @@ describe("Loom app shell", () => {
     expect(document.querySelector(".loom-app")).toHaveAttribute("data-preview-open", "true");
     expect(sidebar).toHaveAttribute("data-expanded", "false");
 
-    fireEvent.mouseEnter(sidebar);
-    expect(sidebar).toHaveAttribute("data-expanded", "true");
-    fireEvent.mouseLeave(sidebar);
-    expect(sidebar).toHaveAttribute("data-expanded", "false");
-
     const expandButton = screen.getByRole("button", { name: "Expand navigation labels" });
     expect(expandButton).toBeEnabled();
     fireEvent.click(expandButton);
@@ -1924,6 +1966,30 @@ describe("Loom app shell", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Close preview workspace" })[0]);
     await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
     expect(sidebar).toHaveAttribute("data-expanded", "true");
+  });
+
+  it("keeps the sidebar open when preview starts under the pointer until explicitly collapsed", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const sidebar = screen.getByRole("complementary", { name: "Primary navigation" });
+
+    fireEvent.mouseEnter(sidebar);
+    act(() => window.loom.emit({
+      type: "BrowserOpenRequested",
+      payload: { threadId: "thread-1", workspaceId: "thread-1", source: "codex" }
+    }));
+
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(sidebar).toHaveAttribute("data-expanded", "true");
+
+    fireEvent.mouseLeave(sidebar);
+    expect(sidebar).toHaveAttribute("data-expanded", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse navigation labels" }));
+    expect(sidebar).toHaveAttribute("data-expanded", "false");
+
+    fireEvent.mouseEnter(sidebar);
+    expect(sidebar).toHaveAttribute("data-expanded", "false");
   });
 
   it("does not leave the current view when an agent opens its browser preview", async () => {
@@ -1945,7 +2011,7 @@ describe("Loom app shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Refactor authentication" }));
     expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
-    expect(sidebar).toHaveAttribute("data-expanded", "true");
+    expect(sidebar).toHaveAttribute("data-expanded", "false");
   });
 
   it("keeps preview and editor state isolated per thread", async () => {

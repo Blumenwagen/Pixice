@@ -1,5 +1,5 @@
 import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useMemo, useRef, useState, useContext } from "react";
-import { motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   ArrowClockwise, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
   Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
@@ -418,15 +418,21 @@ export function Sidebar({
 }) {
   const [pinnedExpanded, setPinnedExpanded] = useState(() => localStorage.getItem("loom.sidebarPinned") !== "false");
   const [previewPinnedExpanded, setPreviewPinnedExpanded] = useState(false);
-  const [previewHovered, setPreviewHovered] = useState(false);
-  const sidebarRef = useRef(null);
+  const sidebarHoveredRef = useRef(false);
+  const previewModeRef = useRef(collapseForPreview);
   const resizeCleanup = useRef(null);
-  const expanded = collapseForPreview ? previewPinnedExpanded || previewHovered : pinnedExpanded;
+  const enteringPreview = collapseForPreview && !previewModeRef.current;
+  const expanded = collapseForPreview
+    ? enteringPreview ? sidebarHoveredRef.current : previewPinnedExpanded
+    : pinnedExpanded;
 
   useEffect(() => onExpandedChange(expanded), [expanded, onExpandedChange]);
   useEffect(() => {
-    setPreviewPinnedExpanded(false);
-    setPreviewHovered(collapseForPreview && Boolean(sidebarRef.current?.matches(":hover")));
+    if (collapseForPreview && !previewModeRef.current) {
+      setPreviewPinnedExpanded(sidebarHoveredRef.current);
+    }
+    if (!collapseForPreview) setPreviewPinnedExpanded(false);
+    previewModeRef.current = collapseForPreview;
   }, [collapseForPreview]);
   useEffect(() => () => resizeCleanup.current?.(), []);
   useEffect(() => {
@@ -511,17 +517,16 @@ export function Sidebar({
 
   return (
     <aside
-      ref={sidebarRef}
       className="sidebar"
       aria-label="Primary navigation"
       data-expanded={expanded}
       data-preview-mode={collapseForPreview}
       data-sidebar-mode={legacySidebar ? "legacy" : "projects"}
       onMouseEnter={() => {
-        if (collapseForPreview) setPreviewHovered(true);
+        sidebarHoveredRef.current = true;
       }}
       onMouseLeave={() => {
-        if (collapseForPreview) setPreviewHovered(false);
+        sidebarHoveredRef.current = false;
       }}
     >
       {legacySidebar ? (
@@ -1593,21 +1598,44 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
   );
 }
 
-function WorkingTrace({ items, running, settled }) {
+export function WorkingTrace({ items, running, settled }) {
   const disclosureId = useId();
   const [manualExpanded, setManualExpanded] = useState(null);
   const wasSettled = useRef(settled);
+  const systemReducedMotion = useReducedMotion();
   const toolCount = items.filter((item) => item.type !== "agentMessage" && item.type !== "reasoning").length;
-  const activeItem = [...items].reverse().find((item) => item.status === "inProgress" || item.status === "running");
-  const activeLabel = activeItem?.type === "commandExecution"
-    ? "Running command"
-    : activeItem?.type === "mcpToolCall" || activeItem?.type === "dynamicToolCall"
-      ? "Using tools"
-      : toolCount ? "Working" : "Thinking";
+  const reasoningItems = items.filter((item) => item.type === "reasoning" || (item.type === "agentMessage" && item.text));
+  const latestTraceIndex = items.findLastIndex((item) => item.type === "agentMessage" ? Boolean(item.text) : TRACE_ITEM_TYPES.has(item.type));
+  const latestTraceItem = latestTraceIndex === -1 ? null : items[latestTraceIndex];
+  const latestAction = latestTraceItem && latestTraceItem.type !== "agentMessage" && latestTraceItem.type !== "reasoning"
+    ? latestTraceItem
+    : null;
+  const latestActionKey = latestAction
+    ? `${latestAction.renderId ?? latestAction.id ?? `${latestAction.type}-${latestTraceIndex}`}-${latestAction.status ?? "idle"}`
+    : "pending";
+  const latestActivity = (() => {
+    if (!latestAction) return { label: "Thinking", detail: latestTraceItem ? "" : "Getting started" };
+    if (latestAction.type === "commandExecution") {
+      const command = Array.isArray(latestAction.command) ? latestAction.command.join(" ") : latestAction.command;
+      return { label: latestAction.status === "completed" ? "Ran command" : "Running command", detail: command };
+    }
+    if (latestAction.type === "fileChange") {
+      const count = latestAction.changes?.length ?? 0;
+      return { label: latestAction.status === "completed" ? "Updated files" : "Updating files", detail: `${count} file${count === 1 ? "" : "s"}` };
+    }
+    if (latestAction.type === "collabAgentToolCall") {
+      const count = latestAction.receiverThreadIds?.length ?? 0;
+      return { label: latestAction.status === "completed" ? "Delegated work" : "Delegating work", detail: `${count} agent${count === 1 ? "" : "s"}` };
+    }
+    if (latestAction.type === "mcpToolCall" || latestAction.type === "dynamicToolCall") {
+      return { label: latestAction.status === "completed" ? "Used tool" : "Using tool", detail: latestAction.tool };
+    }
+    return { label: "Working", detail: "" };
+  })();
   const doneLabel = toolCount
     ? `Ran ${toolCount} action${toolCount === 1 ? "" : "s"}`
     : "Thought through the task";
-  const label = running ? activeLabel : settled ? doneLabel : "Work details";
+  const label = settled ? doneLabel : "Work details";
   const expanded = manualExpanded ?? !settled;
 
   useEffect(() => {
@@ -1617,35 +1645,67 @@ function WorkingTrace({ items, running, settled }) {
 
   return (
     <section className="working-trace" data-expanded={expanded} data-working={running}>
-      <button
-        type="button"
-        className="trace-toggle"
-        aria-expanded={expanded}
-        aria-controls={disclosureId}
-        onClick={() => setManualExpanded((current) => !(current ?? !settled))}
-      >
-        {running
-          ? <ReasoningOrb className="trace-status-orb" label={label} decorative />
-          : <Sparkle className="trace-status-icon" size={15} weight="regular" />}
-        <span className={`trace-toggle-label ${running ? "shimmer" : ""}`} role="status">{label}</span>
-        <CaretRight className="trace-caret" size={13} />
-      </button>
-      <div
-        id={disclosureId}
-        className="trace-disclosure"
-        aria-hidden={!expanded}
-        inert={!expanded}
-      >
-        <div className="trace-disclosure-inner">
-          <div className="trace-list">
-            {items.map((item, index) => item.type === "agentMessage" ? (
-              item.text ? <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div> : null
-            ) : (
-              <ActivityItem item={item} key={item.renderId ?? item.id ?? `${item.type}-${index}`} />
-            ))}
+      {running ? (
+        <>
+          {reasoningItems.length > 0 && (
+            <div className="trace-reasoning-list">
+              {reasoningItems.map((item, index) => item.type === "agentMessage" ? (
+                <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div>
+              ) : (
+                <ActivityItem item={item} key={item.renderId ?? item.id ?? `reasoning-${index}`} />
+              ))}
+            </div>
+          )}
+          <div className="trace-toggle trace-live-toggle" role="status" aria-live="polite" aria-label={`${latestActivity.label}${latestActivity.detail ? `: ${latestActivity.detail}` : ""}`}>
+            <ReasoningOrb className="trace-status-orb" label={latestActivity.label} decorative />
+            <span className="trace-live-viewport">
+              <AnimatePresence initial={false} mode="popLayout">
+                <motion.span
+                  className="trace-live-item"
+                  key={latestActionKey}
+                  initial={systemReducedMotion ? false : { opacity: 0, y: 5, filter: "blur(3px)" }}
+                  animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                  exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -5, filter: "blur(3px)" }}
+                  transition={{ duration: systemReducedMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <strong>{latestActivity.label}</strong>
+                  {latestActivity.detail && <span>{latestActivity.detail}</span>}
+                </motion.span>
+              </AnimatePresence>
+            </span>
           </div>
-        </div>
-      </div>
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="trace-toggle"
+            aria-expanded={expanded}
+            aria-controls={disclosureId}
+            onClick={() => setManualExpanded((current) => !(current ?? !settled))}
+          >
+            <Sparkle className="trace-status-icon" size={15} weight="regular" />
+            <span className="trace-toggle-label">{label}</span>
+            <CaretRight className="trace-caret" size={13} />
+          </button>
+          <div
+            id={disclosureId}
+            className="trace-disclosure"
+            aria-hidden={!expanded}
+            inert={!expanded}
+          >
+            <div className="trace-disclosure-inner">
+              <div className="trace-list">
+                {items.map((item, index) => item.type === "agentMessage" ? (
+                  item.text ? <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div> : null
+                ) : (
+                  <ActivityItem item={item} key={item.renderId ?? item.id ?? `${item.type}-${index}`} />
+                ))}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -3381,6 +3441,9 @@ export function App() {
       if (Number.isFinite(leftRecency) && Number.isFinite(rightRecency)) return rightRecency - leftRecency;
       if (Number.isFinite(leftRecency)) return -1;
       if (Number.isFinite(rightRecency)) return 1;
+      const leftWasAgentSpawned = left.candidate.bridge?.kind === "loomBridge" || Boolean(left.candidate.bridgeModel);
+      const rightWasAgentSpawned = right.candidate.bridge?.kind === "loomBridge" || Boolean(right.candidate.bridgeModel);
+      if (leftWasAgentSpawned !== rightWasAgentSpawned) return leftWasAgentSpawned ? 1 : -1;
       return left.originalIndex - right.originalIndex;
     })
     .map(({ candidate }) => candidate);

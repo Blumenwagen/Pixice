@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loom live working status preview</title>
+  </head>
+  <body>
+    <div id="preview-root"></div>
+    <script>
+      window.__workingTracePreviewErrors = [];
+      window.addEventListener("error", (event) => window.__workingTracePreviewErrors.push(event.message));
+      window.addEventListener("unhandledrejection", (event) => window.__workingTracePreviewErrors.push(String(event.reason)));
+      const originalConsoleError = console.error;
+      console.error = (...args) => {
+        window.__workingTracePreviewErrors.push(args.map(String).join(" "));
+        originalConsoleError(...args);
+      };
+    </script>
+    <script type="module" src="/work/design-qa/working-trace-preview.jsx"></script>
+  </body>
+</html>
