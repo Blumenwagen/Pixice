@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
 import { useState } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkflowHost } from "../src/components/workflows/WorkflowHost.jsx";
+
+const workflowWorkspaceCss = readFileSync("src/components/workflows/WorkflowWorkspace.module.css", "utf8");
 
 const workflow = {
   id: "workflow-1",
@@ -54,12 +57,13 @@ function createApi(threads = [{ id: "thread-lead", name: "Lead task", parentThre
   };
 }
 
-function Shell({ taskNames = ["Lead task"], onTaskClick = () => {} }) {
+function Shell({ taskNames = ["Lead task"], activeThreadId = "thread-lead", onTaskClick = () => {} }) {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [navigationVersion, setNavigationVersion] = useState(0);
   return (
-    <div className="loom-app" style={{ "--rail-width": "264px" }}>
+    <div className="loom-app view-task" data-active-thread-id={activeThreadId} style={{ "--rail-width": "264px" }}>
       <aside className="sidebar">
-        <div className="rail-group" />
+        <div className="rail-group" key={navigationVersion}><div data-workflow-nav-slot /></div>
         <div className="task-tree">
           {taskNames.map((name, index) => (
             <div className={`task-row ${index === 0 ? "active" : ""}`} key={name}>
@@ -68,6 +72,8 @@ function Shell({ taskNames = ["Lead task"], onTaskClick = () => {} }) {
           ))}
         </div>
       </aside>
+      <button aria-label="Remount navigation" onClick={() => setNavigationVersion((version) => version + 1)}>Remount</button>
+      <div data-workflow-workspace-slot />
       <button aria-label="Open preview workspace" onClick={() => setPreviewOpen(true)}>Preview</button>
       {previewOpen && (
         <section className="browser-panel">
@@ -101,14 +107,34 @@ describe("WorkflowHost", () => {
     expect(api.workflows.list).toHaveBeenCalledWith({ projectId: "project-1" });
   });
 
-  it("opens an agent-requested workflow inside the controlling thread Preview", async () => {
+  it("leaves the primary navigation visible beside the Workflows workspace", () => {
+    const overlayRules = [...workflowWorkspaceCss.matchAll(/\.workspaceOverlay\s*\{([^}]*)\}/g)];
+    expect(overlayRules.at(-1)?.[1]).toContain("left: var(--rail-width);");
+    expect(overlayRules.at(-1)?.[1]).toContain("z-index: 18;");
+  });
+
+  it("keeps the Workflows navigation item when the app navigation remounts", async () => {
+    const { api } = createApi();
+    window.loom = api;
+    render(<WorkflowHost><Shell /></WorkflowHost>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Workflows" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Back to task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remount navigation" }));
+
+    const navigation = await screen.findByRole("button", { name: "Workflows" });
+    fireEvent.click(navigation);
+    await waitFor(() => expect(document.querySelector('[data-workflow-workspace="true"]')).toBeInTheDocument());
+  });
+
+  it("opens an agent-requested workflow when its controlling thread is already visible", async () => {
     const onTaskClick = vi.fn();
     const { api, emit } = createApi([
       { id: "thread-other", name: "Other task", parentThreadId: null },
       { id: "thread-lead", name: "Lead task", parentThreadId: null }
     ]);
     window.loom = api;
-    render(<WorkflowHost><Shell taskNames={["Other task", "Lead task"]} onTaskClick={onTaskClick} /></WorkflowHost>);
+    render(<WorkflowHost><Shell taskNames={["Lead task", "Other task"]} onTaskClick={onTaskClick} /></WorkflowHost>);
     await screen.findByRole("button", { name: "Workflows" });
 
     emit("WorkflowOpenRequested", {
@@ -123,17 +149,17 @@ describe("WorkflowHost", () => {
     expect(await screen.findByLabelText("Workflow preview")).toBeInTheDocument();
     expect(screen.getByText("Agent is editing this workflow")).toBeInTheDocument();
     await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({ workspaceId: "thread-lead", visible: false }));
-    await waitFor(() => expect(onTaskClick).toHaveBeenCalledWith("Lead task"));
+    expect(onTaskClick).not.toHaveBeenCalled();
   });
 
-  it("brings a foreground workflow agent into its normal task thread", async () => {
+  it("does not switch threads for a foreground workflow agent", async () => {
     const onTaskClick = vi.fn();
     const { api, emit } = createApi([
       { id: "thread-lead", name: "Lead task", parentThreadId: null },
       { id: "thread-foreground", name: "Foreground agent", parentThreadId: null }
     ]);
     window.loom = api;
-    render(<WorkflowHost><Shell taskNames={["Lead task", "Foreground agent"]} onTaskClick={onTaskClick} /></WorkflowHost>);
+    const view = render(<WorkflowHost><Shell taskNames={["Lead task", "Foreground agent"]} onTaskClick={onTaskClick} /></WorkflowHost>);
     await screen.findByRole("button", { name: "Workflows" });
 
     emit("WorkflowForegroundRequested", {
@@ -146,7 +172,15 @@ describe("WorkflowHost", () => {
       sourceThreadId: "thread-lead"
     });
 
-    await waitFor(() => expect(onTaskClick).toHaveBeenCalledWith("Foreground agent"));
+    expect(onTaskClick).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Workflow preview")).not.toBeInTheDocument();
+    expect(api.browser.setViewport).not.toHaveBeenCalledWith({ workspaceId: "thread-foreground", visible: false });
+
+    view.rerender(
+      <WorkflowHost>
+        <Shell taskNames={["Lead task", "Foreground agent"]} activeThreadId="thread-foreground" onTaskClick={onTaskClick} />
+      </WorkflowHost>
+    );
     expect(await screen.findByLabelText("Workflow preview")).toBeInTheDocument();
     expect(screen.getByText("Agent is running this workflow")).toBeInTheDocument();
     await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({ workspaceId: "thread-foreground", visible: false }));

@@ -1,11 +1,14 @@
 import { useMemo, useState } from "react";
-import { CheckCircle, Circle, Lightning, MagnifyingGlass, PencilSimple, Plus, SpinnerGap, Trash, X } from "./icons/index.jsx";
+import { Check, CheckCircle, Circle, MagnifyingGlass, PencilSimple, Plus, SpinnerGap, Trash, X } from "./icons/index.jsx";
+import { APP_ICONS } from "./icons/app-iconography.jsx";
 import { threadStatus } from "../state/runtime.js";
 import styles from "./KanbanBoard.module.css";
 
+const StartTaskIcon = APP_ICONS.startTask;
+
 export const KANBAN_COLUMNS = [
   { id: "backlog", label: "Backlog", help: "Captured work", icon: Circle },
-  { id: "ready", label: "Ready", help: "Ordered to start next", icon: CheckCircle },
+  { id: "ready", label: "Ready", help: "Ordered to start next", icon: Check },
   { id: "active", label: "In progress", help: "Work being carried out", icon: SpinnerGap },
   { id: "done", label: "Done", help: "Finished work", icon: CheckCircle }
 ];
@@ -117,7 +120,7 @@ function TaskCard({ task, thread, columnId, waitingForInput, draggingId, startin
           moveFromKeyboard(event.key === "ArrowLeft" ? -1 : 1);
         }
       }}><strong>{task.title}</strong>{task.description && <span>{task.description}</span>}</button>
-      <div className={styles.cardMeta}><span>{thread ? "Linked thread" : "No thread yet"}</span><span className={styles.cardActions}>{!thread && <button onClick={() => onStart(task)} disabled={starting} aria-label={`Start ${task.title}`} title="Start task"><Lightning size={13} />{starting ? "Starting" : "Start"}</button>}<button onClick={() => onEdit(task)} aria-label={`Edit ${task.title}`} title="Edit task"><PencilSimple size={13} /></button></span></div>
+      <div className={styles.cardMeta}><span>{thread ? "Linked thread" : "No thread yet"}</span><span className={styles.cardActions}>{!thread && <button onClick={() => onStart(task)} disabled={starting} aria-label={`Start ${task.title}`} title="Start task"><StartTaskIcon size={13} />{starting ? "Starting" : "Start"}</button>}<button onClick={() => onEdit(task)} aria-label={`Edit ${task.title}`} title="Edit task"><PencilSimple size={13} /></button></span></div>
     </article>
   );
 }

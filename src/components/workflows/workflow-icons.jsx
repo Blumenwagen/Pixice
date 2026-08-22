@@ -2,39 +2,46 @@ import {
   ArrowClockwise,
   Bell,
   Brain,
+  CaretRight,
   Code,
   File,
   Files,
   Gauge,
   GitBranch,
   Globe,
-  Lightning,
   List,
+  PaperPlaneTilt,
+  Pause,
   PlugsConnected,
   Sparkle,
   Stack,
   TreeStructure
 } from "../icons/index.jsx";
 
+export const WORKFLOW_ICONS = Object.freeze({
+  manualTrigger: CaretRight,
+  scheduleTrigger: Gauge,
+  webhookTrigger: PlugsConnected,
+  useSkill: Sparkle,
+  loomAgent: Brain,
+  httpRequest: Globe,
+  transform: Code,
+  aggregate: Files,
+  condition: GitBranch,
+  switch: TreeStructure,
+  merge: PlugsConnected,
+  delay: Pause,
+  loop: ArrowClockwise,
+  file: File,
+  git: GitBranch,
+  database: Stack,
+  executeWorkflow: TreeStructure,
+  notification: Bell,
+  board: List,
+  output: PaperPlaneTilt
+});
+
 export function WorkflowNodeIcon({ type, size = 19 }) {
-  if (type === "manualTrigger") return <Lightning size={size} />;
-  if (type === "scheduleTrigger") return <Gauge size={size} />;
-  if (type === "webhookTrigger") return <PlugsConnected size={size} />;
-  if (type === "useSkill") return <Files size={size} />;
-  if (type === "loomAgent") return <Brain size={size} />;
-  if (type === "httpRequest") return <Globe size={size} />;
-  if (type === "transform") return <Sparkle size={size} />;
-  if (type === "aggregate") return <Stack size={size} />;
-  if (type === "condition") return <GitBranch size={size} />;
-  if (type === "switch") return <TreeStructure size={size} />;
-  if (type === "merge") return <Stack size={size} />;
-  if (type === "delay") return <Gauge size={size} />;
-  if (type === "loop") return <ArrowClockwise size={size} />;
-  if (type === "file") return <File size={size} />;
-  if (type === "git") return <GitBranch size={size} />;
-  if (type === "database") return <Stack size={size} />;
-  if (type === "executeWorkflow") return <TreeStructure size={size} />;
-  if (type === "notification") return <Bell size={size} />;
-  if (type === "board") return <List size={size} />;
-  return <Code size={size} />;
+  const Icon = WORKFLOW_ICONS[type] ?? Code;
+  return <Icon size={size} />;
 }

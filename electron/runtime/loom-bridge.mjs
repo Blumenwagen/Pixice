@@ -213,9 +213,10 @@ export class LoomBridge {
       throw new Error(`${input.effort} is not supported by ${selected.displayName}`);
     }
     const permissions = context.permissionSettings(input.permissionMode);
+    const runtimeWorkspaceRoots = context.runtimeWorkspaceRoots?.length ? context.runtimeWorkspaceRoots : [context.cwd];
     const started = await this.runtime.request("thread/start", {
       cwd: context.cwd,
-      runtimeWorkspaceRoots: [context.cwd],
+      runtimeWorkspaceRoots,
       parentThreadId: params.threadId,
       model: selected.id,
       permissionMode: input.permissionMode,
@@ -256,7 +257,7 @@ export class LoomBridge {
         threadId: child.id,
         input: buildCodexUserInput(input.prompt, []),
         cwd: context.cwd,
-        runtimeWorkspaceRoots: [context.cwd],
+        runtimeWorkspaceRoots,
         model: selected.id,
         effort: input.effort || null,
         permissionMode: input.permissionMode,

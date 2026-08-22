@@ -35,6 +35,20 @@ describe("StreamingText", () => {
     expect(container.querySelector('[aria-hidden="true"]')).not.toBeInTheDocument();
   });
 
+  it("coalesces several incoming chunks into one renderer update", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<StreamingText text="One" />);
+    act(() => vi.advanceTimersByTime(16));
+
+    rerender(<StreamingText text="One two" />);
+    rerender(<StreamingText text="One two three" />);
+    rerender(<StreamingText text="One two three four" />);
+    expect(screen.getByText("One")).toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(16));
+    expect(screen.getByText("One two three four")).toBeInTheDocument();
+  });
+
   it("shows the complete response immediately with reduced motion", () => {
     vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true });
     render(<StreamingText text="Complete response" />);

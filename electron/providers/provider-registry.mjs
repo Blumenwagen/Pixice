@@ -15,6 +15,33 @@ function tagProvider(value, provider) {
   return value && typeof value === "object" ? { ...value, provider } : value;
 }
 
+function authenticationState(result) {
+  const requiresAuth = result?.requiresAuth ?? true;
+  const authenticated = result?.authenticated ?? (Boolean(result?.account) || !requiresAuth);
+  return { requiresAuth, authenticated };
+}
+
+function persistedThread(database, binding) {
+  const snapshot = database.getProviderThreadSnapshot?.(binding.threadId);
+  if (!snapshot) return null;
+  const link = database.getThreadLink?.(binding.threadId);
+  return tagProvider({
+    ...snapshot,
+    id: binding.threadId,
+    providerThreadId: snapshot.providerThreadId ?? binding.providerThreadId,
+    cwd: snapshot.cwd || binding.cwd,
+    name: database.getThreadName?.(binding.threadId) ?? snapshot.name ?? null,
+    preview: snapshot.preview ?? "",
+    source: snapshot.source ?? "appServer",
+    createdAt: snapshot.createdAt ?? binding.createdAt,
+    updatedAt: snapshot.updatedAt ?? binding.updatedAt,
+    parentThreadId: link?.parentThreadId ?? snapshot.parentThreadId ?? null,
+    status: snapshot.status ?? { type: "notLoaded" },
+    ...(link ? { bridge: link } : {}),
+    persisted: true
+  }, binding.provider);
+}
+
 /**
  * ProviderService equivalent for Loom. It deliberately keeps a compatibility
  * request(method, params) surface so the renderer and IPC handlers can migrate
@@ -66,11 +93,12 @@ export class ProviderRegistry extends EventEmitter {
     return Promise.all([...this.providers.values()].map(async (provider) => {
       let account = null;
       let requiresAuth = true;
+      let authenticated = false;
       let accountError = null;
       try {
         const result = provider.account ? await provider.account() : null;
         account = result?.account ?? null;
-        requiresAuth = result?.requiresAuth ?? true;
+        ({ requiresAuth, authenticated } = authenticationState(result));
       } catch (error) {
         accountError = error.message;
       }
@@ -82,6 +110,7 @@ export class ProviderRegistry extends EventEmitter {
         connected: provider.connected,
         status: this.statuses.get(provider.id) ?? { state: provider.connected ? "ready" : "unavailable" },
         account,
+        authenticated,
         requiresAuth,
         accountError,
         sessionCount,
@@ -153,6 +182,10 @@ export class ProviderRegistry extends EventEmitter {
   async #listModels(params) {
     const settled = await Promise.allSettled([...this.providers.values()].map(async (provider) => {
       if (!provider.connected) return [];
+      if (provider.account) {
+        const account = await provider.account();
+        if (!authenticationState(account).authenticated) return [];
+      }
       const response = await provider.request("model/list", params);
       return (response?.data ?? []).map((model) => {
         const rawId = modelId(model);
@@ -171,16 +204,32 @@ export class ProviderRegistry extends EventEmitter {
 
   async #listThreads(params) {
     const settled = await Promise.allSettled([...this.providers.values()].map(async (provider) => {
-      if (!provider.connected) return [];
+      if (params.provider && params.provider !== provider.id) return { providerId: provider.id, queried: false, data: [] };
+      if (!provider.connected) return { providerId: provider.id, queried: false, data: [] };
       const response = await provider.request("thread/list", params);
-      return (response?.data ?? []).map((thread) => {
+      const data = (response?.data ?? []).map((thread) => {
         this.#saveBinding(provider.id, { threadId: thread.id, providerThreadId: thread.providerThreadId, cwd: thread.cwd });
         const link = this.database.getThreadLink?.(thread.id);
-        return tagProvider(link ? { ...thread, parentThreadId: link.parentThreadId, bridge: link } : thread, provider.id);
+        const tagged = tagProvider(link ? { ...thread, parentThreadId: link.parentThreadId, bridge: link } : thread, provider.id);
+        this.#saveThreadSummary(provider.id, tagged);
+        return tagged;
       });
+      return { providerId: provider.id, queried: true, data };
     }));
+    const live = settled.flatMap((result) => result.status === "fulfilled" ? result.value.data : []);
+    const queriedProviders = new Set(settled.flatMap((result) => result.status === "fulfilled" && result.value.queried ? [result.value.providerId] : []));
+    const byId = new Map(live.map((thread) => [thread.id, thread]));
+    const bindings = this.database.listThreadProviderBindings({ provider: params.provider, cwd: params.cwd });
+    for (const binding of bindings) {
+      if (queriedProviders.has(binding.provider)) continue;
+      if (byId.has(binding.threadId)) continue;
+      const cached = persistedThread(this.database, binding);
+      if (!cached) continue;
+      if (params.ancestorThreadId && cached.parentThreadId !== params.ancestorThreadId) continue;
+      byId.set(cached.id, cached);
+    }
     return {
-      data: settled.flatMap((result) => result.status === "fulfilled" ? result.value : [])
+      data: [...byId.values()]
         .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))),
       nextCursor: null
     };
@@ -193,7 +242,9 @@ export class ProviderRegistry extends EventEmitter {
         providerThreadId: response.thread.providerThreadId,
         cwd: response.thread.cwd ?? params.cwd
       });
-      return { ...response, thread: tagProvider(response.thread, providerId) };
+      const thread = tagProvider(response.thread, providerId);
+      this.#saveThreadSummary(providerId, thread);
+      return { ...response, thread };
     }
     if (method === "thread/archive" && params.threadId) this.database.deleteThreadProviderBinding(params.threadId);
     return response;
@@ -207,6 +258,22 @@ export class ProviderRegistry extends EventEmitter {
       providerThreadId: binding.providerThreadId ?? null,
       resumeCursor: binding.resumeCursor ?? null,
       cwd: binding.cwd ?? this.database.getThreadProviderBinding(binding.threadId)?.cwd ?? ""
+    });
+  }
+
+  #saveThreadSummary(provider, thread) {
+    if (provider !== "codex" || !thread?.id || !this.database.saveProviderThreadSnapshot) return;
+    this.database.saveProviderThreadSnapshot(thread.id, {
+      id: thread.id,
+      providerThreadId: thread.providerThreadId ?? null,
+      cwd: thread.cwd ?? "",
+      name: thread.name ?? null,
+      preview: thread.preview ?? "",
+      source: thread.source ?? "appServer",
+      createdAt: thread.createdAt ?? null,
+      updatedAt: thread.updatedAt ?? null,
+      parentThreadId: thread.parentThreadId ?? null,
+      status: thread.status ?? { type: "notLoaded" }
     });
   }
 

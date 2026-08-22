@@ -749,11 +749,12 @@ export class LoomWorkflows {
       : context.defaultPermissionMode ?? "workspace-write";
     const executionMode = node.config?.executionMode === "foreground" ? "foreground" : "background";
     const permissions = context.permissionSettings(permissionMode);
+    const runtimeWorkspaceRoots = context.runtimeWorkspaceRoots?.length ? context.runtimeWorkspaceRoots : [context.cwd];
     const prompt = workflowNodePrompt(node, dataInputs, run.input);
     const agentContext = { ...context, developerInstructions };
     const threadRequest = {
       cwd: context.cwd,
-      runtimeWorkspaceRoots: [context.cwd],
+      runtimeWorkspaceRoots,
       model: modelId,
       permissionMode,
       approvalPolicy: permissions.approvalPolicy,
@@ -814,7 +815,7 @@ export class LoomWorkflows {
         threadId: thread.id,
         input: buildCodexUserInput(prompt, []),
         cwd: context.cwd,
-        runtimeWorkspaceRoots: [context.cwd],
+        runtimeWorkspaceRoots,
         model: modelId,
         effort,
         permissionMode,

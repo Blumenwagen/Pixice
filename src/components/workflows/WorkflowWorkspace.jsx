@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise,
+  CaretLeft,
+  CaretRight,
   Eye,
   MagnifyingGlass,
   Plus,
@@ -138,6 +140,7 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
 
   const change = useCallback((next) => {
     const normalized = cloneWorkflow(next);
+    if (workflowRevision(normalized) === workflowRevision(draftRef.current)) return;
     generationRef.current += 1;
     draftRef.current = normalized;
     setWorkflow(normalized);
@@ -189,6 +192,11 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
       }
       const incoming = payload.workflow;
       if (!incoming || incoming.updatedAt === persistedRef.current?.updatedAt) return;
+      if (workflowRevision(incoming) === workflowRevision(draftRef.current)) {
+        persistedRef.current = cloneWorkflow(incoming);
+        setWorkflow((current) => current ? { ...current, updatedAt: incoming.updatedAt } : current);
+        return;
+      }
       if (savingState === "saved" && workflowRevision(draftRef.current) === workflowRevision(persistedRef.current)) {
         persistedRef.current = cloneWorkflow(incoming);
         draftRef.current = cloneWorkflow(incoming);
@@ -261,10 +269,11 @@ function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, co
   );
 }
 
-export function WorkflowWorkspace({ api = window.loom, projectId, projectName, models = [], requestedWorkflowId = null, onWorkflowSelected }) {
+export function WorkflowWorkspace({ api = window.loom, projectId, projectName, models = [], requestedWorkflowId = null, onWorkflowSelected, onBack }) {
   const [workflows, setWorkflows] = useState([]);
   const [selectedId, setSelectedId] = useState(requestedWorkflowId);
   const selectedIdRef = useRef(requestedWorkflowId);
+  const requestedWorkflowIdRef = useRef(requestedWorkflowId);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(Boolean(projectId));
   const [error, setError] = useState(null);
@@ -273,25 +282,29 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
+  useEffect(() => {
+    requestedWorkflowIdRef.current = requestedWorkflowId;
+  }, [requestedWorkflowId]);
+
   const selectWorkflow = useCallback((workflowId) => {
     selectedIdRef.current = workflowId;
     setSelectedId(workflowId);
     onWorkflowSelected?.(workflowId);
   }, [onWorkflowSelected]);
 
-  const loadList = useCallback(async (preferredId = null) => {
+  const loadList = useCallback(async (preferredId = requestedWorkflowIdRef.current, showLoading = true) => {
     if (!api?.workflows || !projectId) {
       setWorkflows([]);
       selectWorkflow(null);
       setLoading(false);
       return;
     }
-    setLoading(true);
+    if (showLoading) setLoading(true);
     try {
       const result = await callWithBridgeRetry(() => api.workflows.list({ projectId }));
       const next = result.data ?? [];
       setWorkflows(next);
-      const requested = preferredId ?? requestedWorkflowId;
+      const requested = preferredId;
       const current = selectedIdRef.current;
       const selected = next.some((candidate) => candidate.id === requested)
         ? requested
@@ -302,20 +315,36 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
       setError(null);
     } catch (cause) {
       setError(cause.message);
-      setWorkflows([]);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
-  }, [api, projectId, requestedWorkflowId, selectWorkflow]);
+  }, [api, projectId, selectWorkflow]);
 
-  useEffect(() => { void loadList(requestedWorkflowId); }, [loadList, requestedWorkflowId]);
+  useEffect(() => { void loadList(); }, [loadList]);
+
+  useEffect(() => {
+    if (!requestedWorkflowId || requestedWorkflowId === selectedIdRef.current) return;
+    if (workflows.some((candidate) => candidate.id === requestedWorkflowId)) {
+      selectWorkflow(requestedWorkflowId);
+      return;
+    }
+    void loadList(requestedWorkflowId);
+  }, [loadList, requestedWorkflowId, selectWorkflow, workflows]);
 
   useEffect(() => {
     if (!api?.events?.subscribe || !projectId) return undefined;
     return api.events.subscribe((event) => {
       if (event.type !== "WorkflowUpdated") return;
       if (event.payload?.projectId && event.payload.projectId !== projectId) return;
-      void loadList(event.payload?.workflow?.id);
+      const incoming = event.payload?.workflow;
+      if (event.payload?.action === "deleted") {
+        void loadList(selectedIdRef.current, false);
+        return;
+      }
+      if (!incoming) return;
+      setWorkflows((current) => current.some((candidate) => candidate.id === incoming.id)
+        ? current.map((candidate) => candidate.id === incoming.id ? { ...candidate, ...incoming } : candidate)
+        : [...current, incoming]);
     });
   }, [api, loadList, projectId]);
 
@@ -328,7 +357,9 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
         description: "",
         enabled: false
       }));
-      await loadList(created.id);
+      setWorkflows((current) => current.some((candidate) => candidate.id === created.id)
+        ? current.map((candidate) => candidate.id === created.id ? { ...candidate, ...created } : candidate)
+        : [...current, created]);
       selectWorkflow(created.id);
       setError(null);
     } catch (cause) {
@@ -342,7 +373,9 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
     if (!window.confirm(`Delete “${target?.name ?? "this workflow"}”?\n\nIts run history will also be removed.`)) return;
     try {
       await api.workflows.delete({ projectId, workflowId: selectedId });
-      await loadList();
+      const remaining = workflows.filter((candidate) => candidate.id !== selectedId);
+      setWorkflows(remaining);
+      selectWorkflow(remaining[0]?.id ?? null);
     } catch (cause) {
       setError(cause.message);
     }
@@ -358,7 +391,8 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
   return (
     <div className={styles.workspaceOverlay} data-workflow-workspace="true">
       <div className={styles.workspaceLayout}>
-        <aside className={styles.library} aria-label="Workflow library">
+        <aside className={styles.library} aria-label="Workflow navigation">
+          <button type="button" className={styles.libraryBack} onClick={onBack}><CaretLeft size={16} />Back to task</button>
           <header className={styles.libraryHeader}>
             <span><small>{projectName ?? "Project"}</small><strong>Workflows</strong></span>
             <button type="button" aria-label="Create workflow" title="Create workflow" onClick={() => void createWorkflow()}><Plus size={15} /></button>
@@ -367,13 +401,14 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
             <MagnifyingGlass size={14} />
             <input className={styles.searchInput} aria-label="Search workflows" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search workflows" />
           </label>
-          <div className={styles.workflowList}>
-            {loading && <div className={styles.loadingState}><SpinnerGap className={styles.spin} size={17} />Loading…</div>}
-            {!loading && visible.map((candidate) => (
+          <nav className={styles.workflowList}>
+            {loading && workflows.length === 0 && <div className={styles.loadingState}><SpinnerGap className={styles.spin} size={17} />Loading…</div>}
+            {visible.map((candidate) => (
               <button
                 type="button"
                 className={styles.workflowCard}
                 data-active={candidate.id === selectedId}
+                aria-current={candidate.id === selectedId ? "page" : undefined}
                 onClick={() => selectWorkflow(candidate.id)}
                 key={candidate.id}
               >
@@ -382,9 +417,9 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
                   <strong>{candidate.name}</strong>
                   <small>{candidate.latestRun
                     ? `${candidate.enabled ? "Automatic · " : ""}${workflowStatusLabel(candidate.latestRun.status)} · ${relativeTimestamp(candidate.latestRun.createdAt)}`
-                    : `${candidate.enabled ? "Automatic · " : ""}${candidate.graph.nodes.length} nodes · ${relativeTimestamp(candidate.updatedAt)}`}</small>
+                    : `${candidate.enabled ? "Automatic · " : ""}${candidate.graph?.nodes?.length ?? 0} nodes · ${relativeTimestamp(candidate.updatedAt)}`}</small>
                 </span>
-                <i className={styles.workflowCardStatus} data-status={candidate.latestRun?.status ?? (candidate.enabled ? "completed" : "idle")} />
+                <CaretRight className={styles.workflowCardCaret} size={13} />
               </button>
             ))}
             {!loading && visible.length === 0 && (
@@ -394,7 +429,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
                 <small>{workflows.length ? "Try another search." : "Create one or ask a Loom Agent to build it."}</small>
               </div>
             )}
-          </div>
+          </nav>
         </aside>
 
         <main className={styles.workspaceMain}>
@@ -402,8 +437,8 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
             <span className={styles.workflowCardIcon}><TreeStructure size={15} /></span>
             <span className={styles.workspaceTitle}><small>Workflows</small><strong>{selected?.name ?? projectName ?? "Loom"}</strong></span>
             <div className={styles.workspaceActions}>
-              <button type="button" onClick={() => void loadList(selectedId)}><ArrowClockwise size={13} />Refresh</button>
-              {selected && <button type="button" className={styles.deleteWorkflow} onClick={() => void deleteWorkflow()}><Trash size={13} />Delete</button>}
+              <button type="button" aria-label="Refresh workflows" title="Refresh workflows" onClick={() => void loadList(selectedId)}><ArrowClockwise size={14} /></button>
+              {selected && <button type="button" className={styles.deleteWorkflow} aria-label="Delete workflow" title="Delete workflow" onClick={() => void deleteWorkflow()}><Trash size={14} /></button>}
             </div>
           </header>
           <div className={styles.editorFrame}>
@@ -417,6 +452,8 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
                 onSaved={(saved) => setWorkflows((current) => current.map((candidate) => candidate.id === saved.id ? { ...candidate, ...saved } : candidate))}
                 onDeleted={() => void loadList()}
               />
+            ) : loading ? (
+              <div className={styles.loadingState}><SpinnerGap className={styles.spin} size={17} />Loading workflow…</div>
             ) : (
               <div className={styles.emptyWorkspace}>
                 <span><TreeStructure size={22} /></span>

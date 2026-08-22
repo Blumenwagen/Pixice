@@ -7,6 +7,9 @@ const project = {
   id: "project-1",
   displayName: "Aurora",
   canonicalPath: "/work/aurora",
+  icon: "code",
+  color: "purple",
+  folders: ["/work/aurora", "/work/shared"],
   repository: { kind: "git", root: "/work/aurora", baseCommit: "abc", dirtyPaths: ["src/auth.js"] }
 };
 
@@ -47,8 +50,8 @@ function createApi(threadValue = thread) {
     runtime: { status: vi.fn().mockResolvedValue({ state: "ready", connected: true }) },
     providers: {
       list: vi.fn().mockResolvedValue([
-        { id: "codex", connected: true, status: { state: "ready", message: "Codex app server" }, account: { type: "chatgpt", email: "dev@example.com", planType: "plus" }, requiresAuth: true, sessionCount: 3, loginAvailable: true },
-        { id: "claude", connected: true, status: { state: "ready", message: "Claude Agent SDK" }, account: null, requiresAuth: true, sessionCount: 0, loginAvailable: true }
+        { id: "codex", connected: true, status: { state: "ready", message: "Codex app server" }, account: { type: "chatgpt", email: "dev@example.com", planType: "plus" }, authenticated: true, requiresAuth: true, sessionCount: 3, loginAvailable: true },
+        { id: "claude", connected: true, status: { state: "ready", message: "Claude runtime available" }, account: null, authenticated: false, requiresAuth: true, sessionCount: 0, loginAvailable: true }
       ]),
       login: vi.fn().mockResolvedValue({ provider: "claude", opened: true })
     },
@@ -111,7 +114,8 @@ function createApi(threadValue = thread) {
       navigate: vi.fn(async (payload) => scopedBrowserState(payload)),
       history: vi.fn(async (payload) => scopedBrowserState(payload)),
       setViewport: vi.fn(async (payload) => scopedBrowserState(payload)),
-      adopt: vi.fn(async ({ toWorkspaceId }) => scopedBrowserState({ workspaceId: toWorkspaceId }))
+      adopt: vi.fn(async ({ toWorkspaceId }) => scopedBrowserState({ workspaceId: toWorkspaceId })),
+      destroy: vi.fn().mockResolvedValue({ destroyed: true })
     },
     files: {
       read: vi.fn(async ({ path }) => ({
@@ -137,7 +141,12 @@ function createApi(threadValue = thread) {
         mtimeMs: 2
       }))
     },
-    projects: { list: vi.fn().mockResolvedValue([project]), open: vi.fn().mockResolvedValue(project) },
+    projects: {
+      list: vi.fn().mockResolvedValue([project]),
+      touch: vi.fn().mockResolvedValue(null),
+      pickFolders: vi.fn().mockResolvedValue(["/work/aurora", "/work/shared"]),
+      create: vi.fn().mockResolvedValue(project)
+    },
     board: {
       list: vi.fn(async () => ({ data: boardTasks })),
       create: vi.fn(async (payload) => {
@@ -194,6 +203,135 @@ beforeEach(() => {
 });
 
 describe("Loom app shell", () => {
+  it("creates a project with chosen metadata and multiple folders", async () => {
+    const createdProject = {
+      id: "project-new",
+      displayName: "Studio",
+      canonicalPath: "/work/studio",
+      icon: "code",
+      color: "purple",
+      folders: ["/work/studio", "/work/shared"]
+    };
+    window.loom.projects.pickFolders.mockResolvedValue(createdProject.folders);
+    window.loom.projects.create.mockResolvedValue(createdProject);
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    const dialog = await screen.findByRole("dialog", { name: "Create project" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Project name" }), { target: { value: "Studio" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Code icon" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Purple color" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add folders" }));
+
+    expect(await within(dialog).findByText("/work/studio")).toBeInTheDocument();
+    expect(within(dialog).getByText("/work/shared")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create project" }));
+
+    await waitFor(() => expect(window.loom.projects.create).toHaveBeenCalledWith({
+      displayName: "Studio",
+      icon: "code",
+      color: "purple",
+      folders: ["/work/studio", "/work/shared"]
+    }));
+    expect(window.loom.projects.pickFolders).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("button", { name: "Studio" })).toHaveAttribute("aria-current", "true");
+  });
+
+  it("switches top project tiles and shows only the active project's threads", async () => {
+    const secondProject = {
+      id: "project-2",
+      displayName: "Beacon",
+      canonicalPath: "/work/beacon",
+      icon: "terminal",
+      color: "green",
+      folders: ["/work/beacon"]
+    };
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Ship Beacon",
+      preview: "Ship Beacon",
+      cwd: "/work/beacon",
+      turns: [{
+        id: "turn-2",
+        status: "completed",
+        items: [{ id: "agent-2", type: "agentMessage", text: "Beacon is ready.", phase: "final_answer" }]
+      }]
+    };
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project, secondProject],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    api.threads.list.mockImplementation(async ({ projectId }) => ({
+      data: projectId === secondProject.id ? [secondThread] : [thread],
+      nextCursor: null
+    }));
+    api.threads.read.mockImplementation(async ({ projectId }) => ({
+      thread: projectId === secondProject.id ? secondThread : thread
+    }));
+    window.loom = api;
+    render(<App />);
+
+    await screen.findByText("I traced the current flow.");
+    expect(screen.getByRole("button", { name: "Aurora" })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: "Refactor authentication" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ship Beacon" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Beacon" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Beacon" })).toHaveAttribute("aria-current", "true"));
+    expect(await screen.findByRole("button", { name: "Ship Beacon" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refactor authentication" })).not.toBeInTheDocument();
+    expect(api.threads.list).toHaveBeenCalledWith({ projectId: "project-2" });
+    expect(localStorage.getItem("loom.activeProjectId")).toBe("project-2");
+  });
+
+  it("keeps visible project slots stable and replaces the least-recently-used slot from overflow", async () => {
+    const olderProjects = Array.from({ length: 7 }, (_, index) => ({
+      id: `project-${index + 2}`,
+      displayName: `Project ${index + 2}`,
+      canonicalPath: `/work/project-${index + 2}`,
+      icon: "folder",
+      color: "blue",
+      folders: [`/work/project-${index + 2}`],
+      updatedAt: new Date(Date.now() - ((index + 1) * 1_000)).toISOString()
+    }));
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project, ...olderProjects],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    window.loom = api;
+    render(<App />);
+
+    await screen.findByText("I traced the current flow.");
+    const recent = within(screen.getByRole("region", { name: "Projects" })).getByRole("list", { name: "Recent projects" });
+    const visibleProjectNames = () => within(recent).getAllByRole("button").map((button) => button.getAttribute("aria-label"));
+    expect(within(recent).getAllByRole("button")).toHaveLength(6);
+    expect(visibleProjectNames()).toEqual(["Aurora", "Project 2", "Project 3", "Project 4", "Project 5", "Project 6"]);
+    expect(within(recent).queryByRole("button", { name: "Project 8" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(recent).getByRole("button", { name: "Project 6" }));
+    await waitFor(() => expect(within(recent).getByRole("button", { name: "Project 6" })).toHaveAttribute("aria-current", "true"));
+    expect(visibleProjectNames()).toEqual(["Aurora", "Project 2", "Project 3", "Project 4", "Project 5", "Project 6"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all projects" }));
+    const older = within(screen.getByRole("region", { name: "Older projects" })).getByRole("list");
+    fireEvent.click(within(older).getByRole("button", { name: "Project 8" }));
+
+    await waitFor(() => expect(within(recent).getByRole("button", { name: "Project 8" })).toHaveAttribute("aria-current", "true"));
+    expect(visibleProjectNames()).toEqual(["Aurora", "Project 2", "Project 3", "Project 4", "Project 8", "Project 6"]);
+    expect(within(older).getByRole("button", { name: "Project 5" })).toBeInTheDocument();
+    expect(api.projects.touch).toHaveBeenCalledWith({ projectId: "project-6" });
+    expect(api.projects.touch).toHaveBeenCalledWith({ projectId: "project-8" });
+  });
+
   it("creates, orders, and starts durable board tasks without making a thread first", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -457,6 +595,29 @@ describe("Loom app shell", () => {
     expect(window.loom.extensions.list).toHaveBeenCalled();
   });
 
+  it("reloads persisted threads when the runtime becomes ready after startup", async () => {
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [],
+      runtime: { state: "connecting", connected: false },
+      settings: {}
+    });
+    api.threads.list
+      .mockResolvedValueOnce({ data: [], nextCursor: null })
+      .mockResolvedValue({ data: [thread], nextCursor: null });
+    window.loom = api;
+    render(<App />);
+
+    await waitFor(() => expect(api.threads.list).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("I traced the current flow.")).not.toBeInTheDocument();
+
+    act(() => api.emit({ type: "RuntimeStatus", payload: { state: "ready", connected: true } }));
+
+    expect(await screen.findByText("I traced the current flow.")).toBeInTheDocument();
+    expect(api.threads.list.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("wires settings controls to real app preferences", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -475,6 +636,205 @@ describe("Loom app shell", () => {
 
     const saved = JSON.parse(localStorage.getItem("loom.preferences"));
     expect(saved).toMatchObject({ showShortcutHints: false, density: "comfortable" });
+  });
+
+  it("keeps the third project row off by default and persists the nine-tile opt-in", async () => {
+    const additionalProjects = Array.from({ length: 9 }, (_, index) => ({
+      id: `project-${index + 2}`,
+      displayName: `Project ${index + 2}`,
+      canonicalPath: `/work/project-${index + 2}`,
+      icon: "folder",
+      color: "blue",
+      folders: [`/work/project-${index + 2}`],
+      lastUsedAt: new Date(Date.now() - ((index + 1) * 1_000)).toISOString()
+    }));
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project, ...additionalProjects],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    window.loom = api;
+    render(<App />);
+
+    await screen.findByText("I traced the current flow.");
+    expect(within(screen.getByRole("list", { name: "Recent projects" })).getAllByRole("button")).toHaveLength(6);
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
+    const thirdRow = await screen.findByRole("checkbox", { name: "Show third project row" });
+    expect(thirdRow).not.toBeChecked();
+    fireEvent.click(thirdRow);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("loom.preferences"))).toMatchObject({ showThirdProjectRow: true }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    const recent = await screen.findByRole("list", { name: "Recent projects" });
+    expect(within(recent).getAllByRole("button")).toHaveLength(9);
+    expect(within(recent).getByRole("button", { name: "Project 9" })).toBeInTheDocument();
+    expect(within(recent).queryByRole("button", { name: "Project 10" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the legacy sidebar off by default and restores nested project rows when enabled", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    expect(screen.getByRole("region", { name: "Projects" })).toBeInTheDocument();
+    expect(document.querySelector(".project-node")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
+    const legacySidebar = await screen.findByRole("checkbox", { name: "Legacy sidebar" });
+    expect(legacySidebar).not.toBeChecked();
+    fireEvent.click(legacySidebar);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("loom.preferences"))).toMatchObject({ legacySidebar: true }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    await screen.findByRole("complementary", { name: "Primary navigation" });
+    expect(screen.queryByRole("region", { name: "Projects" })).not.toBeInTheDocument();
+    expect(screen.getByText("Projects", { selector: ".rail-group-label" })).toBeInTheDocument();
+
+    const projectNode = document.querySelector(".project-node");
+    expect(projectNode).toHaveClass("selected");
+    expect(within(projectNode).getByRole("button", { name: "Aurora" })).toHaveAttribute("aria-expanded", "true");
+    expect(within(projectNode).getByRole("button", { name: "Refactor authentication" })).toBeInTheDocument();
+  });
+
+  it("keeps the modern collapse control beside Workspace and the project switcher above Settings", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    const sidebar = screen.getByRole("complementary", { name: "Primary navigation" });
+    const navigation = within(sidebar).getByRole("navigation");
+    const projectHeader = within(sidebar).getByRole("region", { name: "Projects" }).closest(".project-rail-header");
+    const settings = within(sidebar).getByRole("button", { name: "Settings" });
+
+    const workspaceHeading = sidebar.querySelector(".workspace-heading");
+    expect(workspaceHeading).toHaveTextContent("Workspace");
+    expect(within(workspaceHeading).getByRole("button", { name: "Collapse navigation labels" })).toBeInTheDocument();
+    expect(sidebar.children[0]).toBe(navigation);
+    expect(sidebar.children[1]).toBe(projectHeader);
+    expect(sidebar.children[2]).toBe(settings);
+  });
+
+  it("clears a finished thread badge after the thread is opened", async () => {
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Finished background task",
+      preview: "Finished background task",
+      updatedAt: Math.floor(Date.now() / 1000) + 1,
+      turns: [{ id: "turn-2", status: "completed", items: [] }]
+    };
+    window.loom = createApi([thread, secondThread]);
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    expect(screen.getByRole("button", { name: "Refactor authentication" }).closest(".task-row").querySelector(".task-finished-badge")).not.toBeInTheDocument();
+
+    const threadButton = screen.getByRole("button", { name: "Finished background task" });
+    const threadRow = threadButton.closest(".task-row");
+    expect(threadRow).toHaveClass("finished");
+    expect(threadButton).toHaveAttribute("title", "Finished background task · Finished");
+    expect(threadRow.querySelector(".task-finished-badge")).toHaveAttribute("title", "Finished");
+
+    fireEvent.click(threadButton);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Finished background task" }).closest(".task-row")).not.toHaveClass("finished"));
+    expect(JSON.parse(localStorage.getItem("loom.threadCompletionsSeen"))).toMatchObject({ "thread-2": "turn:turn-2" });
+  });
+
+  it("moves the last messaged thread to the top and persists that order", async () => {
+    const user = userEvent.setup();
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Polish the sidebar",
+      preview: "Polish the sidebar",
+      turns: [{
+        id: "turn-2",
+        status: "completed",
+        items: [
+          { id: "user-2", type: "userMessage", content: [{ type: "text", text: "Polish the sidebar" }] },
+          { id: "agent-2", type: "agentMessage", text: "The first pass is ready.", phase: "final_answer" }
+        ]
+      }]
+    };
+    window.loom = createApi([thread, secondThread]);
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    const threadOrder = () => Array.from(document.querySelectorAll(".task-tree .task-select"), (button) => button.textContent);
+    expect(threadOrder()).toEqual(["Refactor authentication", "Polish the sidebar"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Polish the sidebar" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Polish the sidebar" })).toHaveAttribute("aria-current", "page"));
+    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    await user.type(composer, "Tighten the spacing too");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(threadOrder()[0]).toBe("Polish the sidebar"));
+    expect(JSON.parse(localStorage.getItem("loom.threadMessageRecency"))).toMatchObject({ "thread-2": expect.any(Number) });
+    expect(screen.getByRole("button", { name: "Polish the sidebar" }).closest(".task-row")).toHaveAttribute("data-layout-animation", "true");
+  });
+
+  it("restores thread message order without animating when reduced motion is enabled", async () => {
+    const secondThread = { ...thread, id: "thread-2", name: "Polish the sidebar", preview: "Polish the sidebar" };
+    localStorage.setItem("loom.threadMessageRecency", JSON.stringify({ "thread-1": 10, "thread-2": 20 }));
+    localStorage.setItem("loom.preferences", JSON.stringify({ reduceMotion: true }));
+    window.loom = createApi([thread, secondThread]);
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    const rows = Array.from(document.querySelectorAll(".task-tree .task-row"));
+    expect(rows.map((row) => row.querySelector(".task-select").textContent)).toEqual(["Polish the sidebar", "Refactor authentication"]);
+    expect(rows.every((row) => row.dataset.layoutAnimation === "false")).toBe(true);
+  });
+
+  it("tracks running and unseen finished work across projects", async () => {
+    const secondProject = {
+      ...project,
+      id: "project-2",
+      displayName: "Borealis",
+      canonicalPath: "/work/borealis",
+      folders: ["/work/borealis"],
+      lastUsedAt: "2026-08-20T10:00:00.000Z"
+    };
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Ship Borealis",
+      cwd: "/work/borealis",
+      status: { type: "active", activeFlags: [] },
+      updatedAt: "2026-08-22T10:00:00.000Z"
+    };
+    let secondProjectThreads = [secondThread];
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [{ ...project, lastUsedAt: "2026-08-22T11:00:00.000Z" }, secondProject],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    api.threads.list.mockImplementation(async ({ projectId }) => ({
+      data: projectId === secondProject.id ? secondProjectThreads : [thread],
+      nextCursor: null
+    }));
+    window.loom = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    const borealis = screen.getByRole("button", { name: "Borealis" });
+    await waitFor(() => expect(borealis).toHaveAttribute("title", "Borealis · 1 running"));
+
+    secondProjectThreads = [{ ...secondThread, status: "completed" }];
+    act(() => api.emit({
+      type: "ThreadUpdated",
+      payload: { method: "turn/completed", projectId: secondProject.id, threadId: secondThread.id }
+    }));
+    await waitFor(() => expect(borealis).toHaveAttribute("title", "Borealis · 1 finished, unseen"));
+
+    fireEvent.click(borealis);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Borealis" })).toHaveAttribute("title", "Borealis"));
   });
 
   it("persists agent behavior packs for every Loom agent", async () => {
@@ -517,7 +877,10 @@ describe("Loom app shell", () => {
     expect(await screen.findByRole("heading", { name: "OpenAI Codex" })).toBeInTheDocument();
     expect(screen.getByText("dev@example.com · plus")).toBeInTheDocument();
     expect(screen.getByText("3 previous sessions")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Anthropic Claude" })).toBeInTheDocument();
+    const claudeProvider = screen.getByRole("article", { name: "Anthropic Claude provider" });
+    expect(within(claudeProvider).getByRole("heading", { name: "Anthropic Claude" })).toBeInTheDocument();
+    expect(within(claudeProvider).getByText("Sign in required")).toBeInTheDocument();
+    expect(within(claudeProvider).queryByText("Connected")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     expect(window.loom.providers.login).toHaveBeenCalledWith({ provider: "claude" });
@@ -666,6 +1029,10 @@ describe("Loom app shell", () => {
   it("filters the model picker by Codex and Claude provider", async () => {
     const user = userEvent.setup();
     const api = createApi();
+    api.providers.list.mockResolvedValue([
+      { id: "codex", connected: true, account: { type: "chatgpt", email: "dev@example.com" }, authenticated: true, requiresAuth: true, sessionCount: 0, loginAvailable: true },
+      { id: "claude", connected: true, account: { type: "claude", email: "dev@example.com" }, authenticated: true, requiresAuth: true, sessionCount: 0, loginAvailable: true }
+    ]);
     api.app.bootstrap.mockResolvedValue({
       projects: [project],
       models: [
@@ -687,6 +1054,53 @@ describe("Loom app shell", () => {
     await user.click(screen.getByRole("tab", { name: "Claude" }));
     expect(screen.getByRole("option", { name: /Claude Opus/ })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /GPT-5.6/ })).not.toBeInTheDocument();
+  });
+
+  it("marks Claude models as unauthenticated in the picker and starts sign in there", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [{ model: "gpt-5.6", displayName: "GPT-5.6", provider: "codex", isDefault: true }],
+      runtime: { state: "ready", connected: true }
+    });
+    window.loom = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await waitFor(() => expect(api.providers.list).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "Model: GPT-5.6" }));
+    await user.click(screen.getByRole("tab", { name: "Claude" }));
+
+    expect(screen.getByText("Claude isn't authenticated")).toBeInTheDocument();
+    expect(screen.getByText("Sign in to use Anthropic models.")).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Claude/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Sign in to Anthropic" }));
+    expect(api.providers.login).toHaveBeenCalledWith({ provider: "claude" });
+    expect(screen.getByRole("button", { name: "Check sign-in" })).toBeInTheDocument();
+  });
+
+  it("keeps provider sign in reachable when no models are authenticated", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [],
+      runtime: { state: "ready", connected: true }
+    });
+    window.loom = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await waitFor(() => expect(api.providers.list).toHaveBeenCalled());
+
+    const picker = screen.getByRole("button", { name: "Model: Choose model" });
+    expect(picker).toBeEnabled();
+    await user.click(picker);
+    await user.click(screen.getByRole("tab", { name: "Claude" }));
+
+    expect(screen.getByRole("button", { name: "Sign in to Anthropic" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   });
 
   it("adds provider marks to model rows without changing generic Markdown tables", async () => {
@@ -1470,6 +1884,7 @@ describe("Loom app shell", () => {
     const sidebar = screen.getByRole("complementary", { name: "Primary navigation" });
 
     expect(sidebar).toHaveAttribute("data-expanded", "false");
+    expect(screen.getByRole("button", { name: "Aurora" })).toHaveAttribute("aria-current", "true");
     fireEvent.mouseEnter(sidebar);
     fireEvent.mouseLeave(sidebar);
     expect(sidebar).toHaveAttribute("data-expanded", "false");
@@ -1493,11 +1908,43 @@ describe("Loom app shell", () => {
     expect(document.querySelector(".loom-app")).toHaveAttribute("data-preview-open", "true");
     expect(sidebar).toHaveAttribute("data-expanded", "false");
 
+    fireEvent.mouseEnter(sidebar);
+    expect(sidebar).toHaveAttribute("data-expanded", "true");
+    fireEvent.mouseLeave(sidebar);
+    expect(sidebar).toHaveAttribute("data-expanded", "false");
+
+    const expandButton = screen.getByRole("button", { name: "Expand navigation labels" });
+    expect(expandButton).toBeEnabled();
+    fireEvent.click(expandButton);
+    expect(sidebar).toHaveAttribute("data-expanded", "true");
+
     fireEvent.click(screen.getByRole("button", { name: "New browser tab" }));
     expect(window.loom.browser.create).toHaveBeenCalledWith({ workspaceId: "thread-1" });
 
     fireEvent.click(screen.getAllByRole("button", { name: "Close preview workspace" })[0]);
     await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
+    expect(sidebar).toHaveAttribute("data-expanded", "true");
+  });
+
+  it("does not leave the current view when an agent opens its browser preview", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const sidebar = screen.getByRole("complementary", { name: "Primary navigation" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    expect(await screen.findByRole("region", { name: "Aurora task board" })).toBeInTheDocument();
+
+    act(() => window.loom.emit({
+      type: "BrowserOpenRequested",
+      payload: { threadId: "thread-1", workspaceId: "thread-1", source: "codex" }
+    }));
+
+    expect(screen.getByRole("region", { name: "Aurora task board" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument();
+    expect(sidebar).toHaveAttribute("data-expanded", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Refactor authentication" }));
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
     expect(sidebar).toHaveAttribute("data-expanded", "true");
   });
 
@@ -1533,6 +1980,25 @@ describe("Loom app shell", () => {
     await user.click(screen.getByRole("button", { name: "Refactor authentication" }));
     await screen.findByText("I traced the current flow.");
     expect(await screen.findByRole("tab", { name: "runtime.js" })).toBeInTheDocument();
+  });
+
+  it("discards the oldest hidden preview workspace after retaining two threads", async () => {
+    const threads = [
+      thread,
+      { ...thread, id: "thread-2", name: "Second task", preview: "Second task", turns: [{ id: "turn-2", status: "completed", items: [{ id: "agent-2", type: "agentMessage", text: "Second response", phase: "final_answer" }] }] },
+      { ...thread, id: "thread-3", name: "Third task", preview: "Third task", turns: [{ id: "turn-3", status: "completed", items: [{ id: "agent-3", type: "agentMessage", text: "Third response", phase: "final_answer" }] }] }
+    ];
+    window.loom = createApi(threads);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Second task" }));
+    await screen.findByText("Second response");
+    await user.click(screen.getByRole("button", { name: "Third task" }));
+    await screen.findByText("Third response");
+
+    await waitFor(() => expect(window.loom.browser.destroy).toHaveBeenCalledWith({ workspaceId: "thread-1" }));
   });
 
   it("opens response file links in a tab and edits the file in place", async () => {

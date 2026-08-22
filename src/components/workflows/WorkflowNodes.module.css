@@ -1,14 +1,14 @@
-.nodeExtension[data-tone="violet"] { --node-tone: #8e78ef; }
-.nodeExtension[data-tone="orange"] { --node-tone: #e76643; }
-.nodeExtension[data-tone="blue"] { --node-tone: #4797cf; }
-.nodeExtension[data-tone="pink"] { --node-tone: #d967b5; }
-.nodeExtension[data-tone="yellow"] { --node-tone: #d8a84e; }
-.nodeExtension[data-tone="green"] { --node-tone: #4ab884; }
-.nodeExtension[data-tone="neutral"] { --node-tone: #858590; }
+.nodeExtension[data-tone="violet"] { --node-tone: #ff5364; }
+.nodeExtension[data-tone="orange"] { --node-tone: #ff5364; }
+.nodeExtension[data-tone="blue"] { --node-tone: #58a99a; }
+.nodeExtension[data-tone="pink"] { --node-tone: #ef6b72; }
+.nodeExtension[data-tone="yellow"] { --node-tone: #d3a949; }
+.nodeExtension[data-tone="green"] { --node-tone: #4fa58e; }
+.nodeExtension[data-tone="neutral"] { --node-tone: #9b9389; }
 .nodeExtension[data-status="skipped"] { opacity: .54; filter: saturate(.58); }
 
 .edgeTone[data-tone="violet"] { stroke: #8d77ee; }
-.edgeTone[data-tone="orange"] { stroke: #e66040; }
+.edgeTone[data-tone="orange"] { stroke: #ff5364; }
 .edgeTone[data-tone="blue"] { stroke: #4598d2; }
 .edgeTone[data-tone="pink"] { stroke: #ce5ba8; }
 .edgeTone[data-tone="yellow"] { stroke: #c99a3e; }
@@ -16,7 +16,7 @@
 .edgeTone[data-tone="neutral"] { stroke: #73737e; }
 
 .inspectorTone[data-tone="violet"] { color: #b19fff; background: rgba(139, 113, 238, .1); }
-.inspectorTone[data-tone="orange"] { color: #ff8b6d; background: rgba(229, 94, 62, .1); }
+.inspectorTone[data-tone="orange"] { color: var(--thread); background: rgba(255, 83, 100, .1); }
 .inspectorTone[data-tone="blue"] { color: #72c5ff; background: rgba(71, 151, 207, .1); }
 .inspectorTone[data-tone="pink"] { color: #ef8bce; background: rgba(217, 103, 181, .1); }
 .inspectorTone[data-tone="yellow"] { color: #ebc36d; background: rgba(216, 168, 78, .1); }
@@ -37,32 +37,42 @@
 
 .portLabel {
   position: absolute;
-  right: 24px;
+  right: 18px;
   min-width: 42px;
   max-width: 94px;
+  padding: 3px 5px;
   overflow: hidden;
-  color: color-mix(in oklab, var(--node-tone) 72%, #d2d2d8);
+  color: #a79c8f;
+  background: rgba(37, 33, 29, .96);
+  border: 1px solid rgba(232, 215, 190, .1);
+  border-radius: 5px;
   font-size: 7.5px;
   font-weight: 720;
   letter-spacing: .02em;
   line-height: 1;
   text-align: right;
   text-overflow: ellipsis;
-  text-transform: uppercase;
+  text-transform: none;
   white-space: nowrap;
-  opacity: .8;
+  opacity: 0;
   pointer-events: none;
+  transition: opacity 120ms ease;
 }
+.inputPortGroup .portLabel { right: auto; left: 18px; text-align: left; }
+.nodeExtension:hover .portLabel,
+.nodeExtension[data-selected="true"] .portLabel { opacity: 1; }
 
 .port {
-  width: 18px;
-  height: 18px;
+  width: 11px;
+  height: 11px;
+  min-width: 11px;
+  min-height: 11px;
   padding: 0;
   flex: none;
-  background: var(--node-tone);
-  border: 3px solid #0d0d0f;
+  background: #28241f;
+  border: 2px solid var(--node-tone);
   border-radius: 50%;
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--node-tone) 70%, #24242a);
+  box-shadow: 0 0 0 2px #1d1a17;
   cursor: crosshair;
   pointer-events: auto;
   transition: transform 140ms ease, box-shadow 140ms ease, filter 140ms ease;
@@ -78,11 +88,12 @@
 .outputPort { order: 1; }
 
 .addNodeButton {
-  color: #ececf0 !important;
-  background: rgba(255, 255, 255, .065) !important;
-  border-color: rgba(255, 255, 255, .085) !important;
+  color: #fff7ee !important;
+  background: var(--thread) !important;
+  border-color: var(--thread-bright) !important;
+  box-shadow: 0 6px 16px rgba(255, 83, 100, .18);
 }
-.addNodeButton:hover { background: rgba(255, 255, 255, .1) !important; }
+.addNodeButton:hover { background: var(--thread-bright) !important; }
 .paletteMeta {
   overflow: hidden;
   color: #6f6f78;
@@ -102,9 +113,9 @@
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
-  color: #ececf1;
-  background: rgba(28, 28, 32, .985);
-  border: 1px solid rgba(255, 255, 255, .11);
+  color: #eee4d7;
+  background: rgba(39, 35, 30, .99);
+  border: 1px solid rgba(232, 215, 190, .14);
   border-radius: 15px;
   box-shadow: 0 28px 75px rgba(0, 0, 0, .48), inset 0 1px 0 rgba(255, 255, 255, .035);
   backdrop-filter: blur(28px) saturate(120%);
@@ -128,9 +139,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #777780;
-  background: #111114;
-  border: 1px solid rgba(255, 255, 255, .075);
+  color: #83786d;
+  background: #191714;
+  border: 1px solid rgba(232, 215, 190, .1);
   border-radius: 10px;
 }
 .nodePickerSearch input {
@@ -176,18 +187,18 @@
   grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
   gap: 9px;
-  color: #a9a9b2;
-  background: rgba(255, 255, 255, .025);
-  border: 1px solid rgba(255, 255, 255, .05);
+  color: #b8ada0;
+  background: rgba(232, 215, 190, .025);
+  border: 1px solid rgba(232, 215, 190, .06);
   border-radius: 10px;
   cursor: pointer;
   text-align: left;
   transition: color 140ms ease, background 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
 .nodePickerGroup button:hover {
-  color: #f4f4f6;
-  background: rgba(255, 255, 255, .065);
-  border-color: rgba(255, 255, 255, .095);
+  color: #fff6eb;
+  background: rgba(232, 215, 190, .07);
+  border-color: rgba(232, 215, 190, .11);
   transform: translateY(-1px);
 }
 .nodePickerGroup button > span:first-child {
@@ -200,7 +211,7 @@
   border-radius: 9px;
 }
 .nodePickerGroup button[data-tone="violet"] > span:first-child { color: #b09cff; background: rgba(142, 120, 239, .1); }
-.nodePickerGroup button[data-tone="orange"] > span:first-child { color: #ff8a69; background: rgba(231, 102, 67, .1); }
+.nodePickerGroup button[data-tone="orange"] > span:first-child { color: var(--thread); background: rgba(255, 83, 100, .1); }
 .nodePickerGroup button[data-tone="blue"] > span:first-child { color: #70c1f8; background: rgba(71, 151, 207, .1); }
 .nodePickerGroup button[data-tone="pink"] > span:first-child { color: #ef88cc; background: rgba(217, 103, 181, .1); }
 .nodePickerGroup button[data-tone="yellow"] > span:first-child { color: #ecc36d; background: rgba(216, 168, 78, .1); }
@@ -233,7 +244,7 @@
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: #f06655;
+  accent-color: var(--thread);
 }
 .toggleField > span { min-width: 0; display: grid; gap: 2px; }
 .toggleField strong { font-size: 9.5px; font-weight: 650; }

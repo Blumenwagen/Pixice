@@ -6,24 +6,15 @@ function prefersReducedMotion() {
 }
 
 const FRAME_MS = 16;
-const TARGET_FRAMES = 36;
-const MIN_CHUNK = 12;
-
-function nextRevealLength(text, currentLength) {
-  const chunk = Math.max(MIN_CHUNK, Math.ceil(text.length / TARGET_FRAMES));
-  const target = Math.min(text.length, currentLength + chunk);
-  if (target >= text.length) return text.length;
-
-  const nearbyBreak = text.slice(target, target + 24).search(/\s/);
-  return nearbyBreak === -1 ? target : Math.min(text.length, target + nearbyBreak + 1);
-}
-
 export function StreamingText({ text, children }) {
   const [shown, setShown] = useState(() => prefersReducedMotion() ? text : "");
   const shownRef = useRef(shown);
+  const pendingRef = useRef(text);
+  const frameRef = useRef(null);
 
   useEffect(() => {
     if (prefersReducedMotion()) {
+      pendingRef.current = text;
       shownRef.current = text;
       setShown(text);
       return undefined;
@@ -33,16 +24,21 @@ export function StreamingText({ text, children }) {
       shownRef.current = "";
       setShown("");
     }
-    if (shownRef.current.length >= text.length) return undefined;
+    pendingRef.current = text;
+    if (shownRef.current === text || frameRef.current !== null) return undefined;
 
-    const id = window.setInterval(() => {
-      const next = text.slice(0, nextRevealLength(text, shownRef.current.length));
+    frameRef.current = window.setTimeout(() => {
+      frameRef.current = null;
+      const next = pendingRef.current;
       shownRef.current = next;
-      setShown(next);
-      if (next.length >= text.length) window.clearInterval(id);
+      setShown((current) => current === next ? current : next);
     }, FRAME_MS);
-    return () => window.clearInterval(id);
+    return undefined;
   }, [text]);
+
+  useEffect(() => () => {
+    if (frameRef.current !== null) window.clearTimeout(frameRef.current);
+  }, []);
 
   const streaming = shown.length < text.length;
   const caret = streaming ? (

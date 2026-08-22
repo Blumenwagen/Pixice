@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AsyncPromptQueue, ClaudeProvider, claudePermissionSettings, claudeQueryOptions, resolveClaudeCodeExecutable, resolvePackagedClaudeCodeExecutable } from "../electron/providers/claude-provider.mjs";
+import { AsyncPromptQueue, ClaudeProvider, claudeAccountIsAuthenticated, claudePermissionSettings, claudeQueryOptions, resolveClaudeCodeExecutable, resolvePackagedClaudeCodeExecutable } from "../electron/providers/claude-provider.mjs";
 import { LoomDatabase } from "../electron/persistence/database.mjs";
 
 const temporaryDirectories = [];
@@ -16,6 +16,13 @@ function tick() {
 }
 
 describe("Claude provider", () => {
+  it("does not treat a bare first-party backend as an authenticated account", () => {
+    expect(claudeAccountIsAuthenticated({ apiProvider: "firstParty", apiKeySource: "none" })).toBe(false);
+    expect(claudeAccountIsAuthenticated({ apiProvider: "firstParty", email: "dev@example.com" })).toBe(true);
+    expect(claudeAccountIsAuthenticated({ apiProvider: "firstParty", apiKeySource: "ANTHROPIC_API_KEY" })).toBe(true);
+    expect(claudeAccountIsAuthenticated({ apiProvider: "bedrock" })).toBe(true);
+  });
+
   it("uses exactly the models reported by the Claude SDK", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-models-"));
     temporaryDirectories.push(directory);
@@ -150,6 +157,7 @@ describe("Claude provider", () => {
 
     await expect(provider.account()).resolves.toEqual({
       account: { type: "claude", email: "dev@example.com", subscriptionType: "pro", apiProvider: "firstParty" },
+      authenticated: true,
       requiresAuth: true
     });
     provider.models = [{ value: "stale", displayName: "Stale Claude" }];

@@ -71,6 +71,7 @@ function createCapability({
     threadContext: () => ({ projectId: "project-1", cwd: projectRoot }),
     projectContext: () => ({
       cwd: projectRoot,
+      runtimeWorkspaceRoots: [projectRoot, `${projectRoot}-shared`],
       defaultModel: "gpt-test",
       defaultEffort: "high",
       defaultPermissionMode: "workspace-write",
@@ -150,6 +151,10 @@ describe("Loom workflow capability", () => {
       parentThreadId: "thread-parent"
     }));
     expect(runtime.requests.find((request) => request.method === "thread/start")?.payload.parentThreadId).toBe("thread-parent");
+    expect(runtime.requests.find((request) => request.method === "thread/start")?.payload.runtimeWorkspaceRoots)
+      .toEqual(["/workspace", "/workspace-shared"]);
+    expect(runtime.requests.find((request) => request.method === "turn/start")?.payload.runtimeWorkspaceRoots)
+      .toEqual(["/workspace", "/workspace-shared"]);
     expect(capability.onForeground).not.toHaveBeenCalled();
     expect(capability.onAgentActivity).toHaveBeenCalled();
     expect(capability.onOpen).toHaveBeenCalledTimes(4);

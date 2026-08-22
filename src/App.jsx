@@ -1,11 +1,13 @@
-import { Children, cloneElement, createContext, useCallback, useEffect, useId, useMemo, useRef, useState, useContext } from "react";
+import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useMemo, useRef, useState, useContext } from "react";
+import { motion, useReducedMotion } from "motion/react";
 import {
-  ArrowClockwise, Bell, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
+  ArrowClockwise, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
   Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
-  GitDiff, Globe, Info, Lightning, List, LockKey, MagnifyingGlass, PaperPlaneTilt, Pause,
+  Globe, Info, LockKey, MagnifyingGlass, PaperPlaneTilt, Pause,
   ImageSquare, PencilSimple, PlugsConnected, Plus, ShieldCheck, Sparkle, SpinnerGap, Stack,
   TerminalWindow, Trash, TreeStructure, Warning, X
 } from "./components/icons/index.jsx";
+import { APP_ICONS } from "./components/icons/app-iconography.jsx";
 import loomIcon from "./assets/loom-icon.png";
 import { ReasoningOrb } from "./components/ReasoningOrb.jsx";
 import { StreamingText } from "./components/StreamingText.jsx";
@@ -17,6 +19,7 @@ import { NumberTicker } from "./components/NumberTicker.jsx";
 import { ImageGeneration } from "./components/ImageGeneration.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
 import { KanbanBoard } from "./components/KanbanBoard.jsx";
+import { ProjectCreationDialog, ProjectSwitcher } from "./components/sidebar/ProjectSwitcher.jsx";
 import {
   applyRuntimePayload,
   descendantsOf,
@@ -40,6 +43,9 @@ const MAX_SIDEBAR_WIDTH = 360;
 const DEFAULT_SIDEBAR_WIDTH = 264;
 const MAX_COMPOSER_IMAGES = 10;
 const MAX_COMPOSER_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_RETAINED_PREVIEW_WORKSPACES = 2;
+const THREAD_COMPLETIONS_SEEN_KEY = "loom.threadCompletionsSeen";
+const THREAD_MESSAGE_RECENCY_KEY = "loom.threadMessageRecency";
 const COMPOSER_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"]);
 const DEFAULT_PREFERENCES = {
   confirmBeforeDelete: true,
@@ -48,11 +54,22 @@ const DEFAULT_PREFERENCES = {
   autoOpenTaskMap: false,
   bringApprovalsForward: false,
   density: "compact",
+  legacySidebar: false,
+  showThirdProjectRow: false,
   showShortcutHints: true,
   reduceMotion: false
 };
 
 const VIEW_ANIMATION_TIMEOUT_MS = 300;
+const NewTaskIcon = APP_ICONS.newTask;
+const BoardIcon = APP_ICONS.board;
+const AttentionIcon = APP_ICONS.attention;
+const ReviewIcon = APP_ICONS.review;
+const PreviewIcon = APP_ICONS.preview;
+const TaskMapIcon = APP_ICONS.taskMap;
+const TaskProgressIcon = APP_ICONS.taskProgress;
+const FastModeIcon = APP_ICONS.fastMode;
+const AutoReviewIcon = APP_ICONS.autoReview;
 
 function waitForAnimation(animation, timeoutMs = VIEW_ANIMATION_TIMEOUT_MS) {
   return new Promise((resolve) => {
@@ -185,6 +202,88 @@ function clampSidebarWidth(width) {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
 }
 
+function projectRecencyValue(project) {
+  const value = project?.lastUsedAt ?? project?.updatedAt ?? project?.createdAt;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function timestampMillis(value) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return 0;
+    return Math.abs(value) < 1_000_000_000_000 ? value * 1000 : value;
+  }
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function threadIsRunning(candidate) {
+  const status = String(threadStatus(candidate)).toLowerCase();
+  return status === "active" || status === "running" || status === "inprogress" || status === "attention";
+}
+
+function summarizeProjectThreads(project, candidates, { seen = false } = {}) {
+  const seenAt = seen ? Number.POSITIVE_INFINITY : timestampMillis(project?.lastUsedAt ?? project?.updatedAt ?? project?.createdAt);
+  const runningThreadIds = [];
+  const unseenThreadIds = [];
+  for (const candidate of candidates ?? []) {
+    if (!candidate?.id) continue;
+    if (threadIsRunning(candidate)) {
+      runningThreadIds.push(candidate.id);
+      continue;
+    }
+    if (timestampMillis(candidate.updatedAt) > seenAt) unseenThreadIds.push(candidate.id);
+  }
+  return { runningThreadIds, unseenThreadIds };
+}
+
+function threadCompletionRevision(candidate) {
+  if (!candidate || threadIsRunning(candidate)) return null;
+  const latestTurn = candidate.turns?.at(-1);
+  if (latestTurn?.status === "completed") return `turn:${latestTurn.id ?? candidate.updatedAt ?? "completed"}`;
+  const status = threadStatus(candidate);
+  if (status !== "completed" && status !== "idle") return null;
+  return String(candidate.completionRevision ?? candidate.updatedAt ?? `status:${status}`);
+}
+
+function loadSeenThreadCompletions() {
+  try {
+    const value = JSON.parse(localStorage.getItem(THREAD_COMPLETIONS_SEEN_KEY) ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function loadThreadMessageRecency() {
+  try {
+    const value = JSON.parse(localStorage.getItem(THREAD_MESSAGE_RECENCY_KEY) ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter(([, timestamp]) => Number.isFinite(timestamp)));
+  } catch {
+    return {};
+  }
+}
+
+function activateProject(projects, projectId, update = {}, visibleProjectLimit = 6) {
+  const selectedIndex = projects.findIndex((project) => project.id === projectId);
+  if (selectedIndex < 0) return projects;
+
+  const next = projects.map((project, index) => index === selectedIndex ? { ...project, ...update } : project);
+  const visibleCount = Math.min(Math.max(1, visibleProjectLimit), next.length);
+  if (selectedIndex < visibleCount) return next;
+
+  let leastRecentVisibleIndex = 0;
+  for (let index = 1; index < visibleCount; index += 1) {
+    if (projectRecencyValue(next[index]) <= projectRecencyValue(next[leastRecentVisibleIndex])) {
+      leastRecentVisibleIndex = index;
+    }
+  }
+  [next[leastRecentVisibleIndex], next[selectedIndex]] = [next[selectedIndex], next[leastRecentVisibleIndex]];
+  return next;
+}
+
 function IconButton({ label, children, className = "", ...props }) {
   return <button className={`icon-button ${className}`} aria-label={label} title={label} {...props}>{children}</button>;
 }
@@ -246,8 +345,56 @@ function SidebarNavItem({ icon: Icon, label, active, badge, badgeTone = "neutral
   );
 }
 
-function Sidebar({
+function SidebarThreadList({ tasks, seenThreadCompletions, selectedThreadId, activeView, onSelectThread, onDeleteThread, ariaLabel, emptyMessage, reduceMotion = false }) {
+  const systemReducedMotion = useReducedMotion();
+  const animateLayout = !reduceMotion && !systemReducedMotion;
+  return (
+    <div className="task-tree" aria-label={ariaLabel}>
+      {emptyMessage && tasks.length === 0 && <p>{emptyMessage}</p>}
+      {tasks.map((task) => {
+        const title = threadTitle(task);
+        const active = task.id === selectedThreadId && activeView === "task";
+        const running = threadIsRunning(task);
+        const completionRevision = threadCompletionRevision(task);
+        const finished = Boolean(completionRevision) && !active && seenThreadCompletions?.[task.id] !== completionRevision;
+        return (
+          <motion.div
+            className={`task-row ${active ? "active" : ""} ${running ? "running" : ""} ${finished ? "finished" : ""}`}
+            key={task.id}
+            layout={animateLayout ? "position" : false}
+            transition={animateLayout ? { layout: { duration: 0.22, ease: [0.22, 1, 0.36, 1] } } : undefined}
+            data-layout-animation={animateLayout ? "true" : "false"}
+          >
+            <button className="task-select" onClick={() => onSelectThread(task.id)} title={finished ? `${title} · Finished` : title} aria-current={active ? "page" : undefined}>
+              <span className="task-title">{title}</span>
+              {running && (
+                <ReasoningOrb
+                  className="task-state task-reasoning-orb"
+                  size={16}
+                  label="Task is reasoning"
+                  decorative
+                />
+              )}
+              {finished && (
+                <span className="task-state task-finished-badge" title="Finished" aria-hidden="true">
+                  <Check size={9} />
+                </span>
+              )}
+            </button>
+            <IconButton className="task-delete" label={`Delete ${title}`} onClick={() => onDeleteThread(task.id)}>
+              <Trash size={13} />
+            </IconButton>
+          </motion.div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function Sidebar({
   projects,
+  projectActivity,
+  seenThreadCompletions,
   selectedProjectId,
   onSelectProject,
   tasks,
@@ -261,16 +408,26 @@ function Sidebar({
   attentionCount,
   changedCount,
   runtime,
-  forcedCollapsed = false,
+  legacySidebar = false,
+  recentProjectLimit = 6,
+  reduceMotion = false,
+  collapseForPreview = false,
   onExpandedChange,
   width,
   onWidthChange
 }) {
   const [pinnedExpanded, setPinnedExpanded] = useState(() => localStorage.getItem("loom.sidebarPinned") !== "false");
+  const [previewPinnedExpanded, setPreviewPinnedExpanded] = useState(false);
+  const [previewHovered, setPreviewHovered] = useState(false);
+  const sidebarRef = useRef(null);
   const resizeCleanup = useRef(null);
-  const expanded = forcedCollapsed ? false : pinnedExpanded;
+  const expanded = collapseForPreview ? previewPinnedExpanded || previewHovered : pinnedExpanded;
 
   useEffect(() => onExpandedChange(expanded), [expanded, onExpandedChange]);
+  useEffect(() => {
+    setPreviewPinnedExpanded(false);
+    setPreviewHovered(collapseForPreview && Boolean(sidebarRef.current?.matches(":hover")));
+  }, [collapseForPreview]);
   useEffect(() => () => resizeCleanup.current?.(), []);
   useEffect(() => {
     const handleShortcut = (event) => {
@@ -292,13 +449,20 @@ function Sidebar({
   const settingsShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘," : "Ctrl ,";
 
   const togglePinned = () => {
-    if (forcedCollapsed) return;
+    if (collapseForPreview) {
+      setPreviewPinnedExpanded((current) => !current);
+      return;
+    }
     const next = !expanded;
     setPinnedExpanded(next);
     localStorage.setItem("loom.sidebarPinned", String(next));
   };
 
   const keepExpanded = () => {
+    if (collapseForPreview) {
+      setPreviewPinnedExpanded(true);
+      return;
+    }
     setPinnedExpanded(true);
     localStorage.setItem("loom.sidebarPinned", "true");
   };
@@ -347,93 +511,137 @@ function Sidebar({
 
   return (
     <aside
+      ref={sidebarRef}
       className="sidebar"
       aria-label="Primary navigation"
       data-expanded={expanded}
-      data-forced-collapsed={forcedCollapsed}
+      data-preview-mode={collapseForPreview}
+      data-sidebar-mode={legacySidebar ? "legacy" : "projects"}
+      onMouseEnter={() => {
+        if (collapseForPreview) setPreviewHovered(true);
+      }}
+      onMouseLeave={() => {
+        if (collapseForPreview) setPreviewHovered(false);
+      }}
     >
-      <div className="rail-header">
-        <div className="brand-mark"><img src={loomIcon} alt="" /></div>
-        <div className="brand-copy">
-          <strong>Loom</strong>
-          <small>{runtime.connected ? "Codex connected" : "Codex offline"}</small>
+      {legacySidebar ? (
+        <div className="rail-header">
+          <div className="brand-mark"><img src={loomIcon} alt="" /></div>
+          <div className="brand-copy">
+            <strong>Loom</strong>
+            <small>{runtime?.connected ? "Codex connected" : "Codex offline"}</small>
+          </div>
+          <IconButton
+            label={expanded ? "Collapse navigation labels" : "Expand navigation labels"}
+            aria-expanded={expanded}
+            onClick={togglePinned}
+            className="rail-toggle"
+          >
+            {expanded ? <CaretLeft size={18} /> : <CaretRight size={18} />}
+          </IconButton>
         </div>
-        <IconButton
-          label={expanded ? "Collapse navigation labels" : "Expand navigation labels"}
-          aria-expanded={expanded}
-          onClick={togglePinned}
-          className="rail-toggle"
-          disabled={forcedCollapsed}
-        >
-          {expanded ? <CaretLeft size={18} /> : <List size={18} />}
-        </IconButton>
-      </div>
+      ) : null}
 
       <nav className="rail-scroll">
         <div className="rail-group">
-          <div className="rail-group-label"><i />Workspace</div>
-          <SidebarNavItem icon={Plus} label="New task" tone="new-task" shortcut={newTaskShortcut} active={Boolean(selectedProjectId) && activeView === "task" && !selectedThreadId} disabled={!selectedProjectId} onClick={onNewTask} />
-          <SidebarNavItem icon={Stack} label="Board" active={activeView === "board"} disabled={!selectedProjectId} onClick={() => onView("board")} />
-          <SidebarNavItem icon={Bell} label="Attention" active={activeView === "attention"} badge={attentionCount} badgeTone="attention" onClick={() => onView("attention")} />
-          <SidebarNavItem icon={GitDiff} label="Review" active={activeView === "review"} badge={changedCount} disabled={!selectedProjectId} onClick={() => onView("review")} />
+          <div className="workspace-heading">
+            <div className="rail-group-label"><i />Workspace</div>
+            {!legacySidebar && (
+              <IconButton
+                label={expanded ? "Collapse navigation labels" : "Expand navigation labels"}
+                aria-expanded={expanded}
+                onClick={togglePinned}
+                className="rail-toggle"
+              >
+                {expanded ? <CaretLeft size={18} /> : <CaretRight size={18} />}
+              </IconButton>
+            )}
+          </div>
+          <SidebarNavItem icon={NewTaskIcon} label="New task" tone="new-task" shortcut={newTaskShortcut} active={Boolean(selectedProjectId) && activeView === "task" && !selectedThreadId} disabled={!selectedProjectId} onClick={onNewTask} />
+          <SidebarNavItem icon={BoardIcon} label="Board" active={activeView === "board"} disabled={!selectedProjectId} onClick={() => onView("board")} />
+          <SidebarNavItem icon={AttentionIcon} label="Attention" active={activeView === "attention"} badge={attentionCount} badgeTone="attention" onClick={() => onView("attention")} />
+          <SidebarNavItem icon={ReviewIcon} label="Review" active={activeView === "review"} badge={changedCount} disabled={!selectedProjectId} onClick={() => onView("review")} />
+          <div className="workflow-nav-slot" data-workflow-nav-slot />
         </div>
 
-        <div className="rail-divider" />
-        <div className="rail-section-heading">
-          <span className="rail-group-label"><i />Projects</span>
-          <IconButton label="Open project" onClick={onOpenProject}><Plus size={15} /></IconButton>
-        </div>
-
-        <div className="project-list">
-          {projects.length === 0 && <p className="rail-empty">Open a local folder to begin.</p>}
-          {projects.map((project) => {
-            const selected = project.id === selectedProjectId;
-            return (
-              <div className={`project-node ${selected ? "selected" : ""}`} key={project.id}>
-                <button
-                  className="project-row"
-                  onClick={() => onSelectProject(project.id)}
-                  aria-current={selected ? "true" : undefined}
-                  aria-expanded={selected}
-                  title={project.displayName}
-                >
-                  <span className="rail-icon project-icon"><Folder size={16} /></span>
-                  <span className="project-copy"><strong>{project.displayName}</strong></span>
-                </button>
-                {selected && (
-                  <div className="task-tree" aria-label={`${project.displayName} tasks`}>
-                    {tasks.length === 0 && <p>No Codex tasks yet</p>}
-                    {tasks.map((task) => {
-                      const title = threadTitle(task);
-                      const active = task.id === selectedThreadId && activeView === "task";
-                      const status = threadStatus(task);
-                      const running = ["running", "inProgress", "active"].includes(status);
-                      return (
-                        <div className={`task-row ${active ? "active" : ""} ${running ? "running" : ""}`} key={task.id}>
-                          <button className="task-select" onClick={() => onSelectThread(task.id)} title={title} aria-current={active ? "page" : undefined}>
-                            <span className="task-title">{title}</span>
-                            {running && (
-                              <ReasoningOrb
-                                className="task-state task-reasoning-orb"
-                                size={16}
-                                label="Task is reasoning"
-                                decorative
-                              />
-                            )}
-                          </button>
-                          <IconButton className="task-delete" label={`Delete ${title}`} onClick={() => onDeleteThread(task.id)}>
-                            <Trash size={13} />
-                          </IconButton>
-                        </div>
-                      );
-                    })}
+        {legacySidebar ? (
+          <>
+            <div className="rail-divider" />
+            <div className="rail-section-heading">
+              <span className="rail-group-label"><i />Projects</span>
+              <IconButton label="New project" onClick={onOpenProject}><Plus size={15} /></IconButton>
+            </div>
+            <div className="project-list">
+              {projects.length === 0 && <p className="rail-empty">Create a project to begin.</p>}
+              {projects.map((project) => {
+                const selected = project.id === selectedProjectId;
+                return (
+                  <div className={`project-node ${selected ? "selected" : ""}`} key={project.id}>
+                    <button
+                      className="project-row"
+                      onClick={() => onSelectProject(project.id)}
+                      aria-current={selected ? "true" : undefined}
+                      aria-expanded={selected}
+                      title={project.displayName}
+                    >
+                      <span className="rail-icon project-icon"><Folder size={16} /></span>
+                      <span className="project-copy"><strong>{project.displayName}</strong></span>
+                    </button>
+                    {selected && (
+                      <SidebarThreadList
+                        tasks={tasks}
+                        seenThreadCompletions={seenThreadCompletions}
+                        selectedThreadId={selectedThreadId}
+                        activeView={activeView}
+                        onSelectThread={onSelectThread}
+                        onDeleteThread={onDeleteThread}
+                        ariaLabel={`${project.displayName} tasks`}
+                        emptyMessage="No Codex threads yet"
+                        reduceMotion={reduceMotion}
+                      />
+                    )}
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="rail-divider" />
+            <div className="rail-section-heading">
+              <span className="rail-group-label"><i />Threads</span>
+            </div>
+            <SidebarThreadList
+              tasks={tasks}
+              seenThreadCompletions={seenThreadCompletions}
+              selectedThreadId={selectedThreadId}
+              activeView={activeView}
+              onSelectThread={onSelectThread}
+              onDeleteThread={onDeleteThread}
+              ariaLabel={selectedProjectId ? "Project threads" : "Threads"}
+              emptyMessage={selectedProjectId ? "No Codex threads yet" : "Choose a project above"}
+              reduceMotion={reduceMotion}
+            />
+          </>
+        )}
       </nav>
+
+      {!legacySidebar && (
+        <div className="project-rail-header">
+          <div className="project-rail-heading">
+            <span>Projects</span>
+          </div>
+          <ProjectSwitcher
+            projects={projects}
+            activityByProject={projectActivity}
+            selectedProjectId={selectedProjectId}
+            onSelectProject={onSelectProject}
+            onCreateProject={onOpenProject}
+            expanded={expanded}
+            recentProjectLimit={recentProjectLimit}
+          />
+        </div>
+      )}
 
       <button className={`rail-footer ${activeView === "settings" ? "active" : ""}`} onClick={() => onView("settings")} aria-label="Settings" aria-current={activeView === "settings" ? "page" : undefined}>
         <span className="runtime-slot"><Gear size={17} weight={activeView === "settings" ? "fill" : "regular"} /></span>
@@ -466,12 +674,12 @@ function AppToolbar({ icon: Icon = Folder, title, subtitle, inspectorOpen, onIns
       <div className="toolbar-actions">
         {showPreview && (
           <IconButton label={previewOpen ? "Close preview workspace" : "Open preview workspace"} className={previewOpen ? "active" : ""} onClick={onPreviewToggle}>
-            <Stack size={18} />
+            <PreviewIcon size={18} />
           </IconButton>
         )}
         {showInspector && (
           <IconButton label="Toggle task inspector" className={inspectorOpen ? "active" : ""} onClick={onInspectorToggle}>
-            <TreeStructure size={18} />
+            <TaskMapIcon size={18} />
           </IconButton>
         )}
       </div>
@@ -654,7 +862,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
             </div>
           )}
         </div>
-      ) : <div className="file-empty"><Stack size={28} /><strong>Open something</strong><small>Use + for a browser tab or select a file link in the conversation.</small></div>}
+      ) : <div className="file-empty"><PreviewIcon size={28} /><strong>Open something</strong><small>Use + for a browser tab or select a file link in the conversation.</small></div>}
     </section>
   );
 }
@@ -698,7 +906,7 @@ function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, run
   return (
     <section className="task-progress" data-expanded={expanded} data-active={running || allComplete} aria-label="Task progress">
       <button className="progress-head" type="button" aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} task progress`} onClick={() => setExpanded((open) => !open)}>
-        <span className="progress-glyph"><Stack size={17} weight="fill" /></span>
+        <span className="progress-glyph"><TaskProgressIcon size={17} weight="fill" /></span>
         <span className="progress-title"><strong>Task progress</strong><small>{thread ? threadTitle(thread) : "Codex plan"}</small></span>
         {total > 0 && <span className="progress-count"><strong>{complete} / {total}</strong><small>complete</small></span>}
         <CaretDown className="progress-caret" size={15} />
@@ -986,30 +1194,57 @@ function markResponsesSeen(thread, seenResponseIds) {
 }
 
 function threadRevision(thread) {
-  return JSON.stringify([
-    thread?.id,
-    thread?.updatedAt,
-    thread?.status,
-    (thread?.turns ?? []).map((turn) => [
-      turn.id,
-      turn.status,
-      (turn.items ?? []).map((item) => [
-        item.id,
-        item.type,
-        item.status,
-        item.phase,
-        item.text,
-        item.aggregatedOutput,
-        item.result,
-        item.revisedPrompt,
-        item.savedPath,
-        item.failure,
-        item.content?.map((part) => part.text ?? part.url ?? part.path).join("\n"),
-        item.summary,
-        item.changes
-      ])
-    ])
-  ]);
+  const sized = (value) => typeof value === "string"
+    ? value.length
+    : Array.isArray(value)
+      ? value.reduce((total, part) => total + sized(part?.text ?? part?.url ?? part?.path ?? part), value.length)
+      : value && typeof value === "object"
+        ? Object.keys(value).length
+        : value == null ? 0 : String(value).length;
+  const turns = (thread?.turns ?? []).map((turn) => {
+    const items = (turn.items ?? []).map((item) => [
+      item.id,
+      item.type,
+      item.status,
+      item.phase,
+      sized(item.text),
+      sized(item.aggregatedOutput),
+      sized(item.result),
+      sized(item.revisedPrompt),
+      item.savedPath,
+      sized(item.failure),
+      sized(item.content),
+      sized(item.summary),
+      sized(item.changes)
+    ].join(":"));
+    return `${turn.id}:${turn.status}:${items.join("|")}`;
+  });
+  return `${thread?.id ?? ""}:${thread?.updatedAt ?? ""}:${threadStatus(thread)}:${turns.join(";")}`;
+}
+
+function samePlan(left, right) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((step, index) => {
+    const candidate = right[index];
+    return step.step === candidate?.step && step.status === candidate?.status;
+  });
+}
+
+function sameThreadSummary(left, right) {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.id === right.id
+    && left.name === right.name
+    && left.preview === right.preview
+    && left.parentThreadId === right.parentThreadId
+    && left.agentStatusMessage === right.agentStatusMessage
+    && left.liveProjection === right.liveProjection
+    && threadStatus(left) === threadStatus(right)
+    && left.bridge?.kind === right.bridge?.kind
+    && left.bridge?.parentThreadId === right.bridge?.parentThreadId
+    && left.bridge?.model === right.bridge?.model
+    && left.bridge?.effort === right.bridge?.effort;
 }
 
 function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false }) {
@@ -1136,7 +1371,7 @@ const PERMISSION_OPTIONS = [
     value: "auto-approve",
     label: "Auto-review",
     description: "Let a Codex subagent review and decide approval requests.",
-    icon: Lightning
+    icon: AutoReviewIcon
   },
   {
     value: "full-access",
@@ -1148,8 +1383,8 @@ const PERMISSION_OPTIONS = [
 ];
 
 const EFFORT_META = {
-  none: { label: "None", description: "Answer directly without deliberate reasoning.", icon: Lightning },
-  minimal: { label: "Minimal", description: "Fast responses for straightforward work.", icon: Lightning },
+  none: { label: "None", description: "Answer directly without deliberate reasoning.", icon: Circle },
+  minimal: { label: "Minimal", description: "Fast responses for straightforward work.", icon: Gauge },
   low: { label: "Low", description: "A quick pass with light reasoning.", icon: Gauge },
   medium: { label: "Medium", description: "Balanced speed and problem solving.", icon: Brain },
   high: { label: "High", description: "Deeper reasoning for complex tasks.", icon: Sparkle },
@@ -1169,9 +1404,11 @@ function PickerGlyph({ option, kind }) {
   return <span className={`picker-glyph${option.danger ? " danger" : ""}`}><Glyph size={15} weight="regular" /></span>;
 }
 
-function ComposerPicker({ label, hint, value, options, onChange, kind, align = "right", disabled = false }) {
+function ComposerPicker({ label, hint, value, options, onChange, kind, align = "right", disabled = false, providers = [], onProviderLogin, onProvidersRefresh }) {
   const [open, setOpen] = useState(false);
   const [activeProvider, setActiveProvider] = useState("codex");
+  const [pendingProvider, setPendingProvider] = useState(null);
+  const [loginBusy, setLoginBusy] = useState(false);
   const rootRef = useRef(null);
   const optionRefs = useRef([]);
   const listboxId = useId();
@@ -1186,7 +1423,23 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
   const visibleOptions = providerOptions.length
     ? options.filter((option) => option.provider === activeProvider)
     : options;
+  const activeProviderState = providers.find((provider) => provider.id === activeProvider);
+  const authenticationRequired = Boolean(activeProviderState?.requiresAuth && !providerIsAuthenticated(activeProviderState));
+  const providerUnavailable = activeProviderState?.status?.state === "unavailable" || activeProviderState?.connected === false;
   const visibleSelectedIndex = Math.max(0, visibleOptions.findIndex((option) => option.value === value));
+
+  useEffect(() => {
+    if (pendingProvider && providerIsAuthenticated(providers.find((provider) => provider.id === pendingProvider))) {
+      setPendingProvider(null);
+    }
+  }, [pendingProvider, providers]);
+
+  useEffect(() => {
+    if (!pendingProvider || !onProvidersRefresh) return undefined;
+    const refreshOnFocus = () => onProvidersRefresh();
+    window.addEventListener("focus", refreshOnFocus);
+    return () => window.removeEventListener("focus", refreshOnFocus);
+  }, [onProvidersRefresh, pendingProvider]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -1214,7 +1467,23 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
     window.setTimeout(() => rootRef.current?.querySelector(".picker-trigger")?.focus(), 0);
   };
 
+  const startProviderLogin = async () => {
+    if (!onProviderLogin || loginBusy) return;
+    if (pendingProvider === activeProvider) {
+      await onProvidersRefresh?.();
+      return;
+    }
+    setLoginBusy(true);
+    try {
+      const opened = await onProviderLogin(activeProvider);
+      if (opened !== false) setPendingProvider(activeProvider);
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
   const moveFocus = (event) => {
+    if (!visibleOptions.length) return;
     const currentIndex = optionRefs.current.indexOf(document.activeElement);
     let nextIndex = currentIndex;
     if (event.key === "ArrowDown") nextIndex = (currentIndex + 1 + visibleOptions.length) % visibleOptions.length;
@@ -1231,11 +1500,11 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
       <button
         type="button"
         className="picker-trigger"
-        aria-label={`${label}: ${selected?.label ?? "Unavailable"}`}
+        aria-label={`${label}: ${selected?.label ?? "Choose model"}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
-        disabled={disabled || !selected}
+        disabled={disabled || (!selected && kind !== "model")}
         onClick={() => setOpen((current) => {
           const next = !current;
           if (next && selected?.provider) setActiveProvider(selected.provider);
@@ -1250,7 +1519,7 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
         }}
       >
         {selected && <PickerGlyph option={selected} kind={kind} />}
-        <span className="picker-trigger-label">{selected?.label ?? "Unavailable"}</span>
+        <span className="picker-trigger-label">{selected?.label ?? "Choose model"}</span>
         <CaretDown className="picker-chevron" size={12} weight="bold" />
       </button>
       {open && (
@@ -1262,7 +1531,8 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
           {providerOptions.length > 0 && (
             <div className="model-provider-tabs" role="tablist" aria-label="Model provider">
               {providerOptions.map((provider) => {
-                const available = options.some((option) => option.provider === provider.value);
+                const available = options.some((option) => option.provider === provider.value)
+                  || providers.some((candidate) => candidate.id === provider.value);
                 return (
                   <button
                     type="button"
@@ -1284,8 +1554,21 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
               })}
             </div>
           )}
-          <div className="picker-options" id={listboxId} role="listbox" aria-label={label} onKeyDown={moveFocus}>
-            {visibleOptions.map((option, index) => (
+          <div className="picker-options" id={listboxId} role={authenticationRequired ? undefined : "listbox"} aria-label={label} onKeyDown={moveFocus}>
+            {authenticationRequired ? (
+              <div className="model-auth-required" role="status">
+                <ModelBrandIcon model={activeProvider === "claude" ? "claude" : "gpt"} provider={activeProvider} />
+                <span>
+                  <strong>{activeProvider === "claude" ? "Claude isn't authenticated" : "Codex isn't authenticated"}</strong>
+                  <small>{providerUnavailable ? "The provider runtime is unavailable." : `Sign in to use ${activeProvider === "claude" ? "Anthropic" : "OpenAI"} models.`}</small>
+                </span>
+                {!providerUnavailable && activeProviderState?.loginAvailable && (
+                  <button type="button" disabled={loginBusy} onClick={startProviderLogin}>
+                    {loginBusy ? "Opening..." : pendingProvider === activeProvider ? "Check sign-in" : `Sign in to ${activeProvider === "claude" ? "Anthropic" : "OpenAI"}`}
+                  </button>
+                )}
+              </div>
+            ) : visibleOptions.map((option, index) => (
               <button
                 type="button"
                 className={`picker-option${option.value === value ? " selected" : ""}${option.danger ? " danger" : ""}`}
@@ -1367,7 +1650,7 @@ function WorkingTrace({ items, running, settled }) {
   );
 }
 
-function TurnConversation({ thread, turn, turnIndex, seenResponseIds }) {
+const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds }) {
   const items = turn.items ?? [];
   const threadId = thread.id;
   const running = turnIsRunning(turn.status);
@@ -1421,7 +1704,12 @@ function TurnConversation({ thread, turn, turnIndex, seenResponseIds }) {
   }
 
   return rendered;
-}
+}, (previous, next) => previous.turn === next.turn
+  && previous.turnIndex === next.turnIndex
+  && previous.thread?.id === next.thread?.id
+  && previous.thread?.bridge === next.thread?.bridge
+  && previous.thread?.bridgeModel === next.thread?.bridgeModel
+  && previous.seenResponseIds === next.seenResponseIds);
 
 function isQuestionRequest(request) {
   return request?.method?.includes("requestUserInput") && Array.isArray(request.params?.questions) && request.params.questions.length > 0;
@@ -1549,7 +1837,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, onSubmit, onInterrupt }) {
+function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState([]);
   const [draggingImages, setDraggingImages] = useState(false);
@@ -1659,7 +1947,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
   };
   const submit = async () => {
     const value = text.trim();
-    if ((!value && images.length === 0) || disabled || busy) return;
+    if ((!value && images.length === 0) || disabled || busy || !selected) return;
     const submittedImages = images;
     setText("");
     setImages([]);
@@ -1815,7 +2103,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
               disabled={disabled || running}
               onClick={() => onFastModeChange(!fastMode)}
             >
-              <Lightning size={14} weight={fastMode ? "fill" : "regular"} />
+              <FastModeIcon size={14} weight={fastMode ? "fill" : "regular"} />
               <span>Fast</span>
             </button>
           )}
@@ -1826,7 +2114,10 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
             options={modelOptions}
             onChange={onModelChange}
             kind="model"
-            disabled={disabled || models.length === 0 || running}
+            disabled={disabled || running}
+            providers={providers}
+            onProviderLogin={onProviderLogin}
+            onProvidersRefresh={onProvidersRefresh}
           />
           <ComposerPicker
             label="Reasoning"
@@ -1838,7 +2129,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
             disabled={disabled || running}
           />
           {running && <IconButton label="Interrupt task" className="turn-button" onClick={onInterrupt}><Pause size={16} weight="fill" /></IconButton>}
-          <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || (!text.trim() && images.length === 0)}>
+          <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || !selected || (!text.trim() && images.length === 0)}>
             <PaperPlaneTilt size={17} weight="fill" />
           </IconButton>
         </div>
@@ -1852,9 +2143,9 @@ function EmptyConversation({ project, runtime, onOpenProject }) {
     return (
       <div className="empty-state">
         <span className="empty-mark"><FolderOpen size={25} /></span>
-        <h1>Open a project</h1>
-        <p>Loom groups real Codex tasks by their local working folder.</p>
-        <button className="primary-button" onClick={onOpenProject}><FolderOpen size={16} />Open project</button>
+        <h1>Create a project</h1>
+        <p>Choose a local folder. Loom will keep its tasks, board, review, and workflows together.</p>
+        <button type="button" className="primary-button" onClick={onOpenProject}><FolderOpen size={16} />New project</button>
       </div>
     );
   }
@@ -2358,6 +2649,11 @@ function providerAccountDetail(provider) {
   return plan ? `${identity} · ${String(plan).replaceAll("_", " ")}` : identity;
 }
 
+function providerIsAuthenticated(provider) {
+  if (!provider) return false;
+  return provider.authenticated ?? (Boolean(provider.account) || !provider.requiresAuth);
+}
+
 function ProvidersSettings({ providers, models, loading, onRefresh, onLogin }) {
   const [busyProvider, setBusyProvider] = useState(null);
   const [pendingProvider, setPendingProvider] = useState(null);
@@ -2399,12 +2695,12 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin }) {
       <div className="provider-list" aria-label="AI providers">
         {providers.map((provider) => {
           const providerModels = models.filter((model) => modelProvider(model) === provider.id).length;
-          const connected = Boolean(provider.account) || !provider.requiresAuth;
+          const connected = providerIsAuthenticated(provider);
           const waiting = pendingProvider === provider.id;
           const busy = busyProvider === provider.id;
           const label = provider.id === "codex" ? "OpenAI Codex" : provider.id === "claude" ? "Anthropic Claude" : provider.id;
           return (
-            <article className="provider-card" key={provider.id}>
+            <article className="provider-card" aria-label={`${label} provider`} key={provider.id}>
               <span className="provider-brand"><ModelBrandIcon model={provider.id === "claude" ? "claude" : "gpt"} provider={provider.id} /></span>
               <div className="provider-copy">
                 <div className="provider-heading">
@@ -2657,7 +2953,7 @@ const SETTINGS_PAGES = [
   { id: "general", label: "General", description: "Task defaults and safety", icon: Gear, keywords: "permissions model reasoning delete drafts" },
   { id: "agent-behavior", label: "Agent Behavior", description: "Guidance loaded for every agent", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification" },
   { id: "orchestration", label: "Orchestration", description: "How delegated work surfaces", icon: TreeStructure, keywords: "agents progress task map approvals" },
-  { id: "appearance", label: "Appearance", description: "Density, hints, and motion", icon: Eye, keywords: "compact comfortable shortcuts animation" },
+  { id: "appearance", label: "Appearance", description: "Density, projects, hints, and motion", icon: Eye, keywords: "compact comfortable projects sidebar recent third row nine legacy old nested shortcuts animation" },
   { id: "updates", label: "Updates", description: "Version and GitHub releases", icon: ArrowClockwise, keywords: "version release download install github update" },
   { id: "providers", label: "Providers", description: "Accounts, models, and sessions", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions" },
   { id: "usage", label: "Usage", description: "Tokens, trends, and API cost", icon: ChartLineUp, keywords: "cost spend pricing tokens input output cache daily weekly monthly charts" },
@@ -2799,6 +3095,12 @@ function SettingsWorkspace({
         <SettingsRow title="Show shortcut hints" description="Display available keyboard shortcuts beside navigation actions.">
           <SettingsToggle label="Show shortcut hints" checked={preferences.showShortcutHints} onChange={(value) => onPreferenceChange("showShortcutHints", value)} />
         </SettingsRow>
+        <SettingsRow title="Show third project row" description="Show up to nine recent projects in the sidebar instead of six.">
+          <SettingsToggle label="Show third project row" checked={preferences.showThirdProjectRow} onChange={(value) => onPreferenceChange("showThirdProjectRow", value)} />
+        </SettingsRow>
+        <SettingsRow title="Legacy sidebar" description="Restore the original project list with threads nested under the active project.">
+          <SettingsToggle label="Legacy sidebar" checked={preferences.legacySidebar} onChange={(value) => onPreferenceChange("legacySidebar", value)} />
+        </SettingsRow>
         <SettingsRow title="Reduce motion" description="Minimize panel, progress, and loading animations.">
           <SettingsToggle label="Reduce motion" checked={preferences.reduceMotion} onChange={(value) => onPreferenceChange("reduceMotion", value)} />
         </SettingsRow>
@@ -2890,7 +3192,7 @@ function AttentionWorkspace({ attention, onResolve }) {
 function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate, onUpdate, onMove, onDelete, onOpenThread, onStartTask }) {
   return (
     <main className="main-canvas workspace">
-      <AppToolbar icon={Stack} title="Board" subtitle={project?.displayName} />
+      <AppToolbar icon={BoardIcon} title="Board" subtitle={project?.displayName} />
       <KanbanBoard
         project={project}
         threads={threads}
@@ -2911,6 +3213,11 @@ function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate,
 export function App() {
   const api = window.loom;
   const [projects, setProjects] = useState([]);
+  const [projectActivity, setProjectActivity] = useState({});
+  const [seenThreadCompletions, setSeenThreadCompletions] = useState(loadSeenThreadCompletions);
+  const [threadMessageRecency, setThreadMessageRecency] = useState(loadThreadMessageRecency);
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [projectCreateBusy, setProjectCreateBusy] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const selectedProjectIdRef = useRef(null);
   const [threads, setThreads] = useState([]);
@@ -2925,6 +3232,9 @@ export function App() {
   const usageLoadRequestRef = useRef(0);
   const submittingRef = useRef(false);
   const seenResponseIdsRef = useRef(new Set());
+  const pendingRuntimeDeltasRef = useRef([]);
+  const runtimeDeltaFrameRef = useRef(null);
+  const runtimeDeltaUsesAnimationFrameRef = useRef(false);
   const [thread, setThread] = useState(null);
   const [plan, setPlan] = useState([]);
   const [attention, setAttention] = useState([]);
@@ -2961,12 +3271,23 @@ export function App() {
   const viewSurfaceRef = useRef(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [previewWorkspaces, setPreviewWorkspaces] = useState({});
+  const previewWorkspaceSequenceRef = useRef(0);
   const [updateStatus, setUpdateStatus] = useState(EMPTY_UPDATE_STATUS);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number.parseInt(localStorage.getItem("loom.sidebarWidth") ?? "", 10);
     return Number.isFinite(saved) && saved !== 296 ? clampSidebarWidth(saved) : DEFAULT_SIDEBAR_WIDTH;
   });
+
+  const markThreadMessaged = useCallback((threadId) => {
+    if (!threadId) return;
+    setThreadMessageRecency((current) => {
+      const latestKnown = Object.values(current).reduce((latest, value) => Math.max(latest, value), 0);
+      const next = { ...current, [threadId]: Math.max(Date.now(), latestKnown + 1) };
+      localStorage.setItem(THREAD_MESSAGE_RECENCY_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
   const [draftMode, setDraftMode] = useState(false);
   const draftModeRef = useRef(false);
   const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, board: false, extensions: false, providers: false, usage: false });
@@ -2991,8 +3312,9 @@ export function App() {
     if (!workspaceId) return;
     setPreviewWorkspaces((current) => {
       const workspace = current[workspaceId] ?? EMPTY_PREVIEW_WORKSPACE;
-      const next = typeof updater === "function" ? updater(workspace) : updater;
-      return { ...current, [workspaceId]: next };
+      const updated = typeof updater === "function" ? updater(workspace) : updater;
+      previewWorkspaceSequenceRef.current += 1;
+      return { ...current, [workspaceId]: { ...updated, lastUsed: previewWorkspaceSequenceRef.current } };
     });
   }, []);
   const setPreviewOpen = useCallback((value) => {
@@ -3020,19 +3342,102 @@ export function App() {
     }));
   }, [previewWorkspaceId, updatePreviewWorkspace]);
 
+  useEffect(() => {
+    const entries = Object.entries(previewWorkspaces);
+    const excess = entries.length - MAX_RETAINED_PREVIEW_WORKSPACES;
+    if (excess <= 0) return;
+    const runningThreadIds = new Set(threads.filter((candidate) => ["running", "inProgress", "active"].includes(threadStatus(candidate))).map((candidate) => candidate.id));
+    const removable = entries
+      .filter(([workspaceId, workspace]) => workspaceId !== previewWorkspaceId
+        && !workspace.open
+        && !runningThreadIds.has(workspaceId)
+        && !(workspace.fileTabs ?? []).some((file) => file.dirty))
+      .sort((left, right) => (left[1].lastUsed ?? 0) - (right[1].lastUsed ?? 0))
+      .slice(0, excess);
+    if (!removable.length) return;
+    const removedIds = removable.map(([workspaceId]) => workspaceId);
+    setPreviewWorkspaces((current) => {
+      const next = { ...current };
+      removedIds.forEach((workspaceId) => delete next[workspaceId]);
+      return next;
+    });
+    removedIds.forEach((workspaceId) => {
+      void api?.browser?.destroy?.({ workspaceId }).catch(() => {});
+    });
+  }, [api, previewWorkspaceId, previewWorkspaces, threads]);
+
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+  const projectActivityKey = projects.map((project) => project.id).sort().join("|");
   const activeTurn = [...(thread?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
   const sidebarThreads = threads
     .filter(isSidebarThread)
     .map((candidate) => candidate.id === thread?.id
       ? { ...candidate, status: { type: activeTurn ? "active" : "idle", activeFlags: [] } }
-      : candidate);
+      : candidate)
+    .map((candidate, originalIndex) => ({ candidate, originalIndex }))
+    .sort((left, right) => {
+      const leftRecency = threadMessageRecency[left.candidate.id];
+      const rightRecency = threadMessageRecency[right.candidate.id];
+      if (Number.isFinite(leftRecency) && Number.isFinite(rightRecency)) return rightRecency - leftRecency;
+      if (Number.isFinite(leftRecency)) return -1;
+      if (Number.isFinite(rightRecency)) return 1;
+      return left.originalIndex - right.originalIndex;
+    })
+    .map(({ candidate }) => candidate);
+  const selectedThreadCompletionRevision = threadCompletionRevision(sidebarThreads.find((candidate) => candidate.id === selectedThreadId));
   const changedCount = review.repository?.dirtyPaths?.length ?? 0;
+
+  useEffect(() => {
+    if (!selectedThreadId || !selectedThreadCompletionRevision) return;
+    setSeenThreadCompletions((current) => {
+      if (current[selectedThreadId] === selectedThreadCompletionRevision) return current;
+      const next = { ...current, [selectedThreadId]: selectedThreadCompletionRevision };
+      localStorage.setItem(THREAD_COMPLETIONS_SEEN_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, [selectedThreadCompletionRevision, selectedThreadId]);
 
   const normalizePlan = useCallback((steps) => (steps ?? []).map((step) => ({
     ...step,
     status: step.status === "in_progress" ? "inProgress" : step.status
   })), []);
+
+  const cancelRuntimeDeltaFrame = useCallback(() => {
+    if (runtimeDeltaFrameRef.current === null) return;
+    if (runtimeDeltaUsesAnimationFrameRef.current) window.cancelAnimationFrame(runtimeDeltaFrameRef.current);
+    else window.clearTimeout(runtimeDeltaFrameRef.current);
+    runtimeDeltaFrameRef.current = null;
+  }, []);
+
+  const flushRuntimeDeltas = useCallback(() => {
+    runtimeDeltaFrameRef.current = null;
+    const pending = pendingRuntimeDeltasRef.current.splice(0);
+    if (!pending.length) return;
+    setThread((current) => pending.reduce((next, entry) => applyRuntimePayload(next ?? entry.fallback, entry.payload), current));
+  }, []);
+
+  const commitRuntimePayload = useCallback((payload, fallback = null) => {
+    if (payload.method === "item/agentMessage/delta") {
+      pendingRuntimeDeltasRef.current.push({ payload, fallback });
+      if (runtimeDeltaFrameRef.current !== null) return;
+      runtimeDeltaUsesAnimationFrameRef.current = typeof window.requestAnimationFrame === "function";
+      runtimeDeltaFrameRef.current = runtimeDeltaUsesAnimationFrameRef.current
+        ? window.requestAnimationFrame(flushRuntimeDeltas)
+        : window.setTimeout(flushRuntimeDeltas, 16);
+      return;
+    }
+    const pending = pendingRuntimeDeltasRef.current.splice(0);
+    cancelRuntimeDeltaFrame();
+    setThread((current) => {
+      const withPending = pending.reduce((next, entry) => applyRuntimePayload(next ?? entry.fallback, entry.payload), current);
+      return applyRuntimePayload(withPending ?? fallback, payload);
+    });
+  }, [cancelRuntimeDeltaFrame, flushRuntimeDeltas]);
+
+  useEffect(() => () => {
+    pendingRuntimeDeltasRef.current = [];
+    cancelRuntimeDeltaFrame();
+  }, [cancelRuntimeDeltaFrame]);
 
   useEffect(() => {
     draftModeRef.current = draftMode;
@@ -3040,6 +3445,7 @@ export function App() {
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
+    window.dispatchEvent(new CustomEvent("loom:active-thread-changed", { detail: selectedThreadId }));
   }, [selectedThreadId]);
 
   useEffect(() => {
@@ -3053,6 +3459,9 @@ export function App() {
 
   const changePreference = useCallback((key, value) => {
     setPreferences((current) => ({ ...current, [key]: value }));
+    if (key === "showThirdProjectRow" && value === false && selectedProjectIdRef.current) {
+      setProjects((current) => activateProject(current, selectedProjectIdRef.current, {}, 6));
+    }
   }, []);
 
   const changeAgentBehavior = useCallback((id, value) => {
@@ -3127,6 +3536,10 @@ export function App() {
       if (requestId !== threadsLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       const next = response.data ?? [];
       setThreads(next);
+      setProjectActivity((current) => ({
+        ...current,
+        [projectId]: summarizeProjectThreads(null, next, { seen: true })
+      }));
       const sidebarCandidates = next.filter(isSidebarThread);
       setSelectedThreadId((current) => {
         const selected = current && sidebarCandidates.some((candidate) => candidate.id === current)
@@ -3175,9 +3588,16 @@ export function App() {
     try {
       const response = await api.threads.read({ projectId, threadId });
       if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === threadId) {
-        if (Array.isArray(response.plan)) setPlan(normalizePlan(response.plan));
+        if (Array.isArray(response.plan)) {
+          const nextPlan = normalizePlan(response.plan);
+          setPlan((current) => samePlan(current, nextPlan) ? current : nextPlan);
+        }
         if (response.thread?.name) {
-          setThreads((current) => current.map((candidate) => candidate.id === threadId ? { ...candidate, name: response.thread.name } : candidate));
+          setThreads((current) => {
+            const candidate = current.find((entry) => entry.id === threadId);
+            if (!candidate || candidate.name === response.thread.name) return current;
+            return current.map((entry) => entry.id === threadId ? { ...entry, name: response.thread.name } : entry);
+          });
         }
         setThread((current) => {
           const merged = mergeThreadSnapshot(current, response.thread);
@@ -3197,16 +3617,20 @@ export function App() {
       const incoming = response.data ?? [];
       setThreads((current) => {
         const byId = new Map(current.map((candidate) => [candidate.id, candidate]));
+        let changed = false;
         incoming.forEach((candidate) => {
           const existing = byId.get(candidate.id);
-          byId.set(candidate.id, {
+          const merged = {
             ...existing,
             ...candidate,
             preview: existing?.liveProjection && existing.preview ? existing.preview : candidate.preview,
             liveProjection: existing?.liveProjection ?? false
-          });
+          };
+          const unchanged = sameThreadSummary(existing, merged);
+          if (!unchanged) changed = true;
+          byId.set(candidate.id, unchanged ? existing : merged);
         });
-        return [...byId.values()];
+        return changed ? [...byId.values()] : current;
       });
     } catch {
       // Live collaboration items still provide an immediate best-effort projection.
@@ -3286,6 +3710,10 @@ export function App() {
     await loadModels();
   }, [loadModels, loadProviders]);
 
+  useEffect(() => {
+    loadProviders();
+  }, [loadProviders]);
+
   const loadUsage = useCallback(async (days = usageRangeDays) => {
     if (!api?.usage) return;
     const requestId = ++usageLoadRequestRef.current;
@@ -3364,6 +3792,38 @@ export function App() {
   }, [api, savePersistentDefaults]);
 
   useEffect(() => {
+    if (!api?.threads?.list || !projectActivityKey) {
+      if (!projectActivityKey) setProjectActivity({});
+      return undefined;
+    }
+    let cancelled = false;
+    const projectIds = new Set(projects.map((project) => project.id));
+    const projectSnapshot = projects
+      .filter((project) => project.id !== selectedProjectId)
+      .map((project) => ({ ...project }));
+    Promise.all(projectSnapshot.map(async (project) => {
+      try {
+        const response = await api.threads.list({ projectId: project.id });
+        return [project.id, summarizeProjectThreads(project, response.data ?? [], {
+          seen: project.id === selectedProjectIdRef.current
+        })];
+      } catch {
+        return [project.id, null];
+      }
+    })).then((entries) => {
+      if (cancelled) return;
+      setProjectActivity((current) => {
+        const next = Object.fromEntries(Object.entries(current).filter(([projectId]) => projectIds.has(projectId)));
+        for (const [projectId, activity] of entries) {
+          next[projectId] = activity ?? current[projectId] ?? { runningThreadIds: [], unseenThreadIds: [] };
+        }
+        return next;
+      });
+    });
+    return () => { cancelled = true; };
+  }, [api, projectActivityKey, runtime.connected]);
+
+  useEffect(() => {
     if (!api?.browser || !previewWorkspaceId) return;
     let cancelled = false;
     api.browser.state({ workspaceId: previewWorkspaceId }).then((state) => {
@@ -3421,6 +3881,30 @@ export function App() {
   }, [defaultEffort, defaultModel, defaultPermissionMode, draftMode, models, selectedThreadId]);
 
   useEffect(() => {
+    if (!selectedProjectId) return undefined;
+    const lastUsedAt = new Date().toISOString();
+    const visibleProjectLimit = preferencesRef.current.showThirdProjectRow ? 9 : 6;
+    setProjectActivity((current) => ({
+      ...current,
+      [selectedProjectId]: {
+        ...(current[selectedProjectId] ?? { runningThreadIds: [] }),
+        unseenThreadIds: []
+      }
+    }));
+    setProjects((current) => activateProject(current, selectedProjectId, { lastUsedAt }, visibleProjectLimit));
+    if (!api?.projects?.touch) return undefined;
+    let cancelled = false;
+    api.projects.touch({ projectId: selectedProjectId }).then((project) => {
+      if (!cancelled && project) {
+        setProjects((current) => activateProject(current, selectedProjectId, project, visibleProjectLimit));
+      }
+    }).catch(() => {
+      // Project selection must stay responsive if persisting recency fails.
+    });
+    return () => { cancelled = true; };
+  }, [api, selectedProjectId]);
+
+  useEffect(() => {
     if (!selectedProjectId) {
       setThreads([]);
       setBoardTasks([]);
@@ -3431,10 +3915,11 @@ export function App() {
       return;
     }
     localStorage.setItem("loom.activeProjectId", selectedProjectId);
+    window.dispatchEvent(new CustomEvent("loom:active-project-changed", { detail: selectedProjectId }));
     loadThreads(selectedProjectId);
     loadReview(selectedProjectId);
     loadBoard(selectedProjectId);
-  }, [selectedProjectId, loadBoard, loadReview, loadThreads]);
+  }, [selectedProjectId, loadBoard, loadReview, loadThreads, runtime.connected]);
 
   useEffect(() => {
     setPlan([]);
@@ -3463,9 +3948,9 @@ export function App() {
       } catch {
         // Live notifications remain the primary path; polling is only a quiet fallback.
       }
-      if (!cancelled) timer = window.setTimeout(refresh, 1500);
+      if (!cancelled) timer = window.setTimeout(refresh, 4000);
     };
-    timer = window.setTimeout(refresh, 1500);
+    timer = window.setTimeout(refresh, 4000);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -3478,7 +3963,7 @@ export function App() {
     let timer;
     const refresh = async () => {
       await loadAgents(selectedProjectId, selectedThreadId);
-      if (!cancelled) timer = window.setTimeout(refresh, 1200);
+      if (!cancelled) timer = window.setTimeout(refresh, 3000);
     };
     refresh();
     return () => {
@@ -3534,9 +4019,8 @@ export function App() {
       if (event.type === "BrowserOpenRequested") {
         const workspaceId = event.payload.workspaceId ?? event.payload.threadId;
         updatePreviewWorkspace(workspaceId, (workspace) => ({ ...workspace, open: true, activeTabId: null }));
-        if (workspaceId === selectedThreadIdRef.current) {
+        if (workspaceId === selectedThreadIdRef.current && document.querySelector(".loom-app.view-task")) {
           setInspectorOpen(false);
-          setActiveView("task");
         }
         return;
       }
@@ -3554,7 +4038,48 @@ export function App() {
       }
 
       const payload = event.payload ?? {};
+      const activityProjectId = payload.projectId;
+      const activityThreadId = payload.threadId ?? payload.thread?.id;
+      if (activityProjectId && activityThreadId && ["thread/started", "thread/status/changed", "turn/started", "turn/completed"].includes(payload.method)) {
+        setProjectActivity((current) => {
+          const existing = current[activityProjectId] ?? { runningThreadIds: [], unseenThreadIds: [] };
+          const runningThreadIds = new Set(existing.runningThreadIds ?? []);
+          const unseenThreadIds = new Set(existing.unseenThreadIds ?? []);
+          const wasRunning = runningThreadIds.has(activityThreadId);
+          const nowRunning = payload.method === "turn/started"
+            || (payload.method === "thread/started" && threadIsRunning(payload.thread))
+            || (payload.method === "thread/status/changed" && threadIsRunning({ status: payload.status }));
+
+          if (nowRunning) {
+            runningThreadIds.add(activityThreadId);
+            unseenThreadIds.delete(activityThreadId);
+          } else if (payload.method === "turn/completed" || payload.method === "thread/status/changed") {
+            runningThreadIds.delete(activityThreadId);
+            if (activityProjectId !== selectedProjectId && (payload.method === "turn/completed" || wasRunning)) {
+              unseenThreadIds.add(activityThreadId);
+            }
+          }
+
+          return {
+            ...current,
+            [activityProjectId]: {
+              runningThreadIds: [...runningThreadIds],
+              unseenThreadIds: [...unseenThreadIds]
+            }
+          };
+        });
+      }
       if (payload.projectId && payload.projectId !== selectedProjectId) return;
+      if (payload.method === "turn/started" && payload.threadId) {
+        setThreads((current) => current.map((candidate) => candidate.id === payload.threadId
+          ? { ...candidate, status: { type: "active", activeFlags: [] } }
+          : candidate));
+      }
+      if (payload.method === "turn/completed" && payload.threadId) {
+        setThreads((current) => current.map((candidate) => candidate.id === payload.threadId
+          ? { ...candidate, status: "completed", completionRevision: payload.turn?.id ?? payload.turnId ?? candidate.completionRevision ?? candidate.updatedAt ?? "completed" }
+          : candidate));
+      }
       if (payload.method === "thread/status/changed") {
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId ? { ...candidate, status: payload.status } : candidate));
       }
@@ -3580,8 +4105,7 @@ export function App() {
         }
       }
       if (payload.threadId === selectedThreadIdRef.current) {
-        const optimisticThread = optimisticThreadsRef.current.get(payload.threadId);
-        setThread((current) => applyRuntimePayload(current ?? optimisticThread, payload));
+        commitRuntimePayload(payload, optimisticThreadsRef.current.get(payload.threadId));
         if (payload.method === "turn/started") setPlan([]);
         if (payload.method === "turn/plan/updated") setPlan(normalizePlan(payload.plan));
         if (payload.method === "turn/completed" && selectedProjectId) {
@@ -3591,20 +4115,44 @@ export function App() {
         }
       }
     });
-  }, [api, loadAgents, loadBoard, loadModels, loadReview, loadThreads, normalizePlan, refreshThread, selectedProjectId, updatePreviewWorkspace]);
+  }, [api, commitRuntimePayload, loadAgents, loadBoard, loadModels, loadReview, loadThreads, normalizePlan, refreshThread, selectedProjectId, updatePreviewWorkspace]);
 
-  const openProject = async () => {
-    if (!api) return;
+  const openProject = () => {
+    if (!api?.projects) return;
+    setProjectDialogOpen(true);
+  };
+
+  const pickProjectFolders = async () => {
+    if (!api?.projects?.pickFolders) return [];
     try {
-      const project = await api.projects.open();
+      return await api.projects.pickFolders();
+    } catch (cause) {
+      setError(cause.message);
+      return [];
+    }
+  };
+
+  const createProject = async (draft) => {
+    if (!api?.projects?.create || projectCreateBusy) return;
+    setProjectCreateBusy(true);
+    try {
+      const project = await api.projects.create(draft);
       if (!project) return;
-      setProjects((current) => [project, ...current.filter((candidate) => candidate.id !== project.id)]);
+      const visibleProjectLimit = preferencesRef.current.showThirdProjectRow ? 9 : 6;
+      setProjects((current) => {
+        const withoutProject = current.filter((candidate) => candidate.id !== project.id);
+        return activateProject([...withoutProject, project], project.id, project, visibleProjectLimit);
+      });
       setDraftMode(false);
       selectedProjectIdRef.current = project.id;
       setSelectedProjectId(project.id);
       setActiveView("task");
+      setProjectDialogOpen(false);
     } catch (cause) {
       setError(cause.message);
+      throw cause;
+    } finally {
+      setProjectCreateBusy(false);
     }
   };
 
@@ -3752,6 +4300,7 @@ export function App() {
         effort: defaultEffort,
         permissionMode: defaultPermissionMode
       });
+      markThreadMessaged(threadId);
       if (selectedProjectIdRef.current !== projectId) return;
       optimisticThreadsRef.current.set(threadId, created.thread);
       setThreads((current) => current.some((candidate) => candidate.id === threadId) ? current : [created.thread, ...current]);
@@ -3938,6 +4487,7 @@ export function App() {
           window.setTimeout(() => refreshThread(projectId, targetThreadId), 900);
         }
       }
+      markThreadMessaged(targetThreadId);
       setError(null);
       return true;
     } catch (cause) {
@@ -4021,6 +4571,9 @@ export function App() {
     onFastModeChange: changeThreadFastMode,
     permissionMode,
     onPermissionModeChange: changeThreadPermissionMode,
+    providers,
+    onProviderLogin: loginProvider,
+    onProvidersRefresh: refreshProviders,
     onSubmit: submit,
     onInterrupt: interrupt
   };
@@ -4127,6 +4680,7 @@ export function App() {
         data-show-shortcuts={preferences.showShortcutHints}
         data-view-transitioning={viewTransitionPending}
         data-preview-open={activeView === "task" && previewOpen}
+        data-active-thread-id={selectedThreadId ?? ""}
         style={{ "--sidebar-width": `${sidebarWidth}px` }}
       >
         <div className="window-drag-region" aria-hidden="true" />
@@ -4135,6 +4689,8 @@ export function App() {
         ) : (
           <Sidebar
             projects={projects}
+            projectActivity={projectActivity}
+            seenThreadCompletions={seenThreadCompletions}
             selectedProjectId={selectedProjectId}
             onSelectProject={selectProject}
             tasks={sidebarThreads}
@@ -4148,13 +4704,17 @@ export function App() {
             attentionCount={attention.length}
             changedCount={changedCount}
             runtime={runtime}
-            forcedCollapsed={previewOpen}
+            legacySidebar={preferences.legacySidebar}
+            recentProjectLimit={preferences.showThirdProjectRow ? 9 : 6}
+            reduceMotion={preferences.reduceMotion}
+            collapseForPreview={activeView === "task" && previewOpen}
             onExpandedChange={setSidebarExpanded}
             width={sidebarWidth}
             onWidthChange={setSidebarWidth}
           />
         )}
         {content}
+        <div className="workflow-workspace-slot" data-workflow-workspace-slot />
         {activeView === "task" && !previewOpen && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
       </div>
       {error && (
@@ -4164,6 +4724,13 @@ export function App() {
           <IconButton label="Dismiss error" onClick={() => setError(null)}><X size={15} /></IconButton>
         </div>
       )}
+      <ProjectCreationDialog
+        open={projectDialogOpen}
+        busy={projectCreateBusy}
+        onClose={() => setProjectDialogOpen(false)}
+        onAddFolders={pickProjectFolders}
+        onCreate={createProject}
+      />
     </div>
   );
 }

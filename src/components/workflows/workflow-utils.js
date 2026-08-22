@@ -1,5 +1,5 @@
-export const WORKFLOW_NODE_WIDTH = 286;
-export const WORKFLOW_NODE_HEIGHT = 112;
+export const WORKFLOW_NODE_WIDTH = 210;
+export const WORKFLOW_NODE_HEIGHT = 118;
 
 const commonInput = [{ id: "input", label: "Input" }];
 const agentInputs = [{ id: "input", label: "Input" }, { id: "skill", label: "Skill" }];
@@ -377,7 +377,7 @@ export function workflowCanConnect(sourceNode, sourcePort, targetNode, targetPor
 
 export function workflowNodeHeight(node) {
   const ports = Math.max(workflowInputPorts(node).length, workflowOutputPorts(node).length);
-  return Math.max(WORKFLOW_NODE_HEIGHT, 52 + ports * 24);
+  return Math.max(WORKFLOW_NODE_HEIGHT, 54 + ports * 26);
 }
 
 export function createWorkflowNode(type, position) {
@@ -409,7 +409,7 @@ export function nodePort(node, side, portId = side === "output" ? "output" : "in
   const height = workflowNodeHeight(node);
   const y = ports.length <= 1
     ? height / 2
-    : 26 + index * ((height - 52) / Math.max(1, ports.length - 1));
+    : 22 + index * ((height - 44) / Math.max(1, ports.length - 1));
   return {
     x: node.position.x + (side === "output" ? WORKFLOW_NODE_WIDTH : 0),
     y: node.position.y + y

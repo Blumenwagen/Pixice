@@ -4,14 +4,6 @@ import { TreeStructure } from "../icons/index.jsx";
 import { WorkflowPreview, WorkflowWorkspace } from "./WorkflowWorkspace.jsx";
 import styles from "./WorkflowWorkspace.module.css";
 
-function sidebarThread(thread) {
-  return !thread?.parentThreadId || thread?.bridge?.kind === "loomBridge" || Boolean(thread?.bridgeModel);
-}
-
-function threadTitle(thread) {
-  return thread?.name?.trim() || thread?.preview?.trim() || "Untitled task";
-}
-
 function waitForElement(selector, timeoutMs = 1800) {
   const existing = document.querySelector(selector);
   if (existing) return Promise.resolve(existing);
@@ -45,18 +37,21 @@ export function WorkflowHost({ children }) {
   const [requestedWorkflowId, setRequestedWorkflowId] = useState(null);
   const [preview, setPreview] = useState(null);
   const currentThreadIdRef = useRef(null);
-  const projectIdRef = useRef(projectId);
-
-  useEffect(() => { projectIdRef.current = projectId; }, [projectId]);
+  const pendingPreviewsRef = useRef(new Map());
 
   useEffect(() => {
-    const locate = () => {
-      setNavTarget(document.querySelector(".sidebar .rail-group"));
-      setAppTarget(document.querySelector(".loom-app"));
-      setPreviewTarget(document.querySelector(".browser-panel"));
+    const syncTargets = () => {
+      const nextNavTarget = document.querySelector("[data-workflow-nav-slot]")
+        ?? document.querySelector(".sidebar .rail-group");
+      const nextAppTarget = document.querySelector("[data-workflow-workspace-slot]")
+        ?? document.querySelector(".loom-app");
+      const nextPreviewTarget = document.querySelector(".browser-panel");
+      setNavTarget((current) => current === nextNavTarget ? current : nextNavTarget);
+      setAppTarget((current) => current === nextAppTarget ? current : nextAppTarget);
+      setPreviewTarget((current) => current === nextPreviewTarget ? current : nextPreviewTarget);
     };
-    locate();
-    const observer = new MutationObserver(locate);
+    syncTargets();
+    const observer = new MutationObserver(syncTargets);
     observer.observe(document.documentElement, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, []);
@@ -77,60 +72,43 @@ export function WorkflowHost({ children }) {
   useEffect(() => { void refreshCatalog(); }, [refreshCatalog]);
 
   useEffect(() => {
-    const sync = () => {
-      const nextProjectId = localStorage.getItem("loom.activeProjectId");
+    const sync = (event) => {
+      const nextProjectId = event?.detail ?? localStorage.getItem("loom.activeProjectId");
       setProjectId((current) => current === nextProjectId ? current : nextProjectId);
     };
     sync();
-    const timer = window.setInterval(sync, 300);
-    return () => window.clearInterval(timer);
+    window.addEventListener("loom:active-project-changed", sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener("loom:active-project-changed", sync);
+      window.removeEventListener("storage", sync);
+    };
   }, []);
 
   useEffect(() => {
     if (projectId) void refreshCatalog();
     setRequestedWorkflowId(null);
     setPreview(null);
+    pendingPreviewsRef.current.clear();
   }, [projectId, refreshCatalog]);
 
   useEffect(() => {
     if (!appTarget) return undefined;
-    if (active) appTarget.dataset.workflowsActive = "true";
-    else delete appTarget.dataset.workflowsActive;
-    return () => delete appTarget.dataset.workflowsActive;
+    const appRoot = appTarget.closest?.(".loom-app") ?? appTarget;
+    if (active) appRoot.dataset.workflowsActive = "true";
+    else delete appRoot.dataset.workflowsActive;
+    return () => delete appRoot.dataset.workflowsActive;
   }, [active, appTarget]);
-
-  const resolveSelectedThread = useCallback(async (clickedButton = null) => {
-    const selectedProjectId = projectIdRef.current;
-    if (!api?.threads || !selectedProjectId) return null;
-    try {
-      const response = await api.threads.list({ projectId: selectedProjectId });
-      const candidates = (response.data ?? []).filter(sidebarThread);
-      const buttons = [...document.querySelectorAll(".task-tree .task-select")];
-      const button = clickedButton ?? document.querySelector(".task-row.active .task-select");
-      const index = button ? buttons.indexOf(button) : -1;
-      const visibleTitle = button?.querySelector(".task-title")?.textContent?.trim();
-      const titleMatches = visibleTitle ? candidates.filter((thread) => threadTitle(thread) === visibleTitle) : [];
-      const selected = titleMatches.length === 1 ? titleMatches[0] : candidates[index] ?? null;
-      currentThreadIdRef.current = selected?.id ?? null;
-      return selected?.id ?? null;
-    } catch {
-      return null;
-    }
-  }, [api]);
 
   useEffect(() => {
     const handleSidebarClick = (event) => {
       const workflowButton = event.target.closest?.(".workflow-nav-item");
       if (workflowButton) return;
       if (event.target.closest?.(".sidebar button")) setActive(false);
-      const taskButton = event.target.closest?.(".task-select");
-      if (taskButton) window.setTimeout(() => void resolveSelectedThread(taskButton), 30);
-      if (event.target.closest?.(".new-task")) currentThreadIdRef.current = null;
     };
     document.addEventListener("click", handleSidebarClick, true);
-    window.setTimeout(() => void resolveSelectedThread(), 120);
     return () => document.removeEventListener("click", handleSidebarClick, true);
-  }, [resolveSelectedThread]);
+  }, []);
 
   const ensurePreviewOpen = useCallback(async (workspaceId) => {
     if (!workspaceId) return null;
@@ -157,28 +135,37 @@ export function WorkflowHost({ children }) {
     window.setTimeout(() => document.querySelector('[aria-label="Close preview workspace"]')?.click(), 0);
   }, [api, preview?.threadId]);
 
-  const selectThreadById = useCallback(async ({ projectId: targetProjectId, threadId }) => {
-    if (!api?.threads || !threadId || !targetProjectId) return false;
-    if (threadId === currentThreadIdRef.current && document.querySelector(".task-row.active .task-select")) return true;
-    for (let attempt = 0; attempt < 12; attempt += 1) {
-      try {
-        const response = await api.threads.list({ projectId: targetProjectId });
-        const candidates = (response.data ?? []).filter(sidebarThread);
-        const targetIndex = candidates.findIndex((thread) => thread.id === threadId);
-        const buttons = [...document.querySelectorAll(".task-tree .task-select")];
-        if (targetIndex >= 0 && buttons[targetIndex]) {
-          buttons[targetIndex].click();
-          currentThreadIdRef.current = threadId;
-          await new Promise((resolve) => window.setTimeout(resolve, 120));
-          return true;
-        }
-      } catch {
-        // The thread list may still be reconciling a newly created foreground thread.
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 140));
-    }
-    return false;
-  }, [api]);
+  const presentPendingPreview = useCallback(async (workspaceId = null) => {
+    const appRoot = document.querySelector(".loom-app.view-task");
+    const activeThreadId = appRoot?.dataset.activeThreadId || currentThreadIdRef.current;
+    currentThreadIdRef.current = activeThreadId;
+    const targetWorkspaceId = workspaceId ?? activeThreadId;
+    if (!targetWorkspaceId || targetWorkspaceId !== activeThreadId) return false;
+    if (!appRoot || appRoot.dataset.workflowsActive === "true") return false;
+    const pending = pendingPreviewsRef.current.get(targetWorkspaceId);
+    if (!pending) return false;
+    pendingPreviewsRef.current.delete(targetWorkspaceId);
+    setPreview(pending);
+    await ensurePreviewOpen(targetWorkspaceId);
+    return true;
+  }, [ensurePreviewOpen]);
+
+  useEffect(() => {
+    const syncThread = (event) => {
+      currentThreadIdRef.current = event?.detail ?? null;
+      window.setTimeout(() => void presentPendingPreview(), 0);
+    };
+    window.addEventListener("loom:active-thread-changed", syncThread);
+    return () => window.removeEventListener("loom:active-thread-changed", syncThread);
+  }, [presentPendingPreview]);
+
+  useEffect(() => {
+    const appRoot = document.querySelector(".loom-app");
+    if (!appRoot) return undefined;
+    const observer = new MutationObserver(() => void presentPendingPreview());
+    observer.observe(appRoot, { attributes: true, attributeFilter: ["class", "data-active-thread-id", "data-workflows-active"] });
+    return () => observer.disconnect();
+  }, [appTarget, presentPendingPreview]);
 
   useEffect(() => {
     if (!api?.events?.subscribe) return undefined;
@@ -186,44 +173,37 @@ export function WorkflowHost({ children }) {
       const payload = event.payload ?? {};
       if (event.type === "RuntimeStatus" && payload.connected) void refreshCatalog();
       if (event.type === "WorkflowOpenRequested") {
-        void (async () => {
-          const workspaceId = payload.workspaceId ?? payload.threadId ?? currentThreadIdRef.current;
-          if (workspaceId && workspaceId !== currentThreadIdRef.current) {
-            await selectThreadById({ projectId: payload.projectId, threadId: workspaceId });
-          }
-          setPreview({
-            projectId: payload.projectId,
-            workflowId: payload.workflowId,
-            workflowName: payload.workflowName,
-            threadId: workspaceId,
-            reason: payload.reason ?? "open"
-          });
-          await ensurePreviewOpen(workspaceId);
-        })();
+        const workspaceId = payload.workspaceId ?? payload.threadId ?? currentThreadIdRef.current;
+        if (!workspaceId) return;
+        pendingPreviewsRef.current.set(workspaceId, {
+          projectId: payload.projectId,
+          workflowId: payload.workflowId,
+          workflowName: payload.workflowName,
+          threadId: workspaceId,
+          reason: payload.reason ?? "open"
+        });
+        void presentPendingPreview(workspaceId);
         return;
       }
       if (event.type === "WorkflowForegroundRequested") {
-        void (async () => {
-          await selectThreadById(payload);
-          setPreview({
-            projectId: payload.projectId,
-            workflowId: payload.workflowId,
-            workflowName: payload.workflowName,
-            threadId: payload.threadId,
-            reason: "run"
-          });
-          await ensurePreviewOpen(payload.threadId);
-        })();
+        if (!payload.threadId) return;
+        pendingPreviewsRef.current.set(payload.threadId, {
+          projectId: payload.projectId,
+          workflowId: payload.workflowId,
+          workflowName: payload.workflowName,
+          threadId: payload.threadId,
+          reason: "run"
+        });
+        void presentPendingPreview(payload.threadId);
       }
     });
-  }, [api, ensurePreviewOpen, refreshCatalog, selectThreadById]);
+  }, [api, presentPendingPreview, refreshCatalog]);
 
   useEffect(() => {
     if (!preview?.threadId || !api?.browser) return undefined;
     const hideNativeBrowser = () => api.browser.setViewport({ workspaceId: preview.threadId, visible: false }).catch(() => {});
     void hideNativeBrowser();
-    const timer = window.setInterval(hideNativeBrowser, 280);
-    return () => window.clearInterval(timer);
+    return undefined;
   }, [api, preview?.threadId]);
 
   useEffect(() => {
@@ -268,6 +248,7 @@ export function WorkflowHost({ children }) {
       models={models}
       requestedWorkflowId={requestedWorkflowId}
       onWorkflowSelected={setRequestedWorkflowId}
+      onBack={() => setActive(false)}
     />,
     appTarget
   ) : null;

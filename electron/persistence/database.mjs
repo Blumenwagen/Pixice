@@ -44,12 +44,19 @@ function usageTotals(rows) {
   });
 }
 
-function mapProject(row) {
+const DEFAULT_PROJECT_ICON = "folder";
+const DEFAULT_PROJECT_COLOR = "blue";
+
+function mapProject(row, folders = []) {
   if (!row) return null;
   return {
     id: row.id,
     canonicalPath: row.canonical_path,
     displayName: row.display_name,
+    icon: row.icon || DEFAULT_PROJECT_ICON,
+    color: row.color || DEFAULT_PROJECT_COLOR,
+    folders: folders.length ? folders : [row.canonical_path],
+    lastUsedAt: row.last_used_at || row.updated_at || row.created_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -78,8 +85,16 @@ export class LoomDatabase {
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY, canonical_path TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        icon TEXT NOT NULL DEFAULT 'folder', color TEXT NOT NULL DEFAULT 'blue',
+        last_used_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS project_folders (
+        project_id TEXT NOT NULL, canonical_path TEXT NOT NULL UNIQUE, position INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(project_id, canonical_path),
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS project_folders_project ON project_folders(project_id, position);
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_thread_id TEXT,
         execution_mode TEXT NOT NULL, working_path TEXT NOT NULL, base_commit TEXT,
@@ -144,10 +159,22 @@ export class LoomDatabase {
       CREATE INDEX IF NOT EXISTS usage_events_recorded_at ON usage_events(recorded_at);
       CREATE INDEX IF NOT EXISTS usage_events_model ON usage_events(provider, model);
     `);
+
+    const projectColumns = new Set(this.db.prepare("PRAGMA table_info(projects)").all().map((column) => column.name));
+    if (!projectColumns.has("icon")) this.db.exec("ALTER TABLE projects ADD COLUMN icon TEXT NOT NULL DEFAULT 'folder'");
+    if (!projectColumns.has("color")) this.db.exec("ALTER TABLE projects ADD COLUMN color TEXT NOT NULL DEFAULT 'blue'");
+    if (!projectColumns.has("last_used_at")) this.db.exec("ALTER TABLE projects ADD COLUMN last_used_at TEXT");
+    this.db.exec(`
+      INSERT OR IGNORE INTO project_folders (project_id, canonical_path, position, created_at)
+      SELECT id, canonical_path, 0, created_at FROM projects
+    `);
   }
 
   listProjects() {
-    return this.db.prepare("SELECT * FROM projects ORDER BY updated_at DESC").all().map(mapProject);
+    return this.db.prepare(`
+      SELECT * FROM projects
+      ORDER BY COALESCE(last_used_at, updated_at, created_at) DESC, updated_at DESC, id ASC
+    `).all().map((row) => this.#mapProject(row));
   }
 
   getAppSettings() {
@@ -182,21 +209,107 @@ export class LoomDatabase {
   }
 
   getProject(id) {
-    return mapProject(this.db.prepare("SELECT * FROM projects WHERE id = ?").get(id));
+    return this.#mapProject(this.db.prepare("SELECT * FROM projects WHERE id = ?").get(id));
+  }
+
+  getProjectByFolder(canonicalPath) {
+    const row = this.db.prepare(`
+      SELECT projects.* FROM projects
+      JOIN project_folders ON project_folders.project_id = projects.id
+      WHERE project_folders.canonical_path = ?
+    `).get(canonicalPath);
+    return this.#mapProject(row);
+  }
+
+  listProjectFolders(projectId) {
+    return this.db.prepare(`
+      SELECT canonical_path FROM project_folders
+      WHERE project_id = ? ORDER BY position ASC, canonical_path ASC
+    `).all(projectId).map((row) => row.canonical_path);
+  }
+
+  touchProject(projectId, lastUsedAt = new Date().toISOString()) {
+    const result = this.db.prepare("UPDATE projects SET last_used_at = ? WHERE id = ?").run(lastUsedAt, projectId);
+    if (!result.changes) return null;
+    return this.getProject(projectId);
+  }
+
+  createProject(project) {
+    const folders = [...new Set(project.folders?.length ? project.folders : [project.canonicalPath])];
+    if (!folders.length) throw new Error("A project needs at least one folder");
+    const canonicalPath = folders[0];
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare(`
+        INSERT INTO projects (id, canonical_path, display_name, icon, color, last_used_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        project.id,
+        canonicalPath,
+        project.displayName,
+        project.icon ?? DEFAULT_PROJECT_ICON,
+        project.color ?? DEFAULT_PROJECT_COLOR,
+        project.lastUsedAt ?? project.updatedAt,
+        project.createdAt,
+        project.updatedAt
+      );
+      const insertFolder = this.db.prepare(`
+        INSERT INTO project_folders (project_id, canonical_path, position, created_at)
+        VALUES (?, ?, ?, ?)
+      `);
+      folders.forEach((folder, position) => insertFolder.run(project.id, folder, position, project.createdAt));
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return this.getProject(project.id);
   }
 
   upsertProject(project) {
-    const existing = this.db.prepare("SELECT * FROM projects WHERE canonical_path = ?").get(project.canonicalPath);
+    const existingProject = this.getProjectByFolder(project.canonicalPath);
+    const existing = existingProject ? this.db.prepare("SELECT * FROM projects WHERE id = ?").get(existingProject.id) : null;
     const id = existing?.id ?? project.id;
     const createdAt = existing?.created_at ?? project.createdAt;
+    if (existing) {
+      this.db.prepare(`
+        UPDATE projects SET display_name = ?, icon = ?, color = ?, last_used_at = ?, updated_at = ? WHERE id = ?
+      `).run(
+        project.displayName,
+        project.icon ?? existing.icon ?? DEFAULT_PROJECT_ICON,
+        project.color ?? existing.color ?? DEFAULT_PROJECT_COLOR,
+        project.lastUsedAt ?? existing.last_used_at ?? project.updatedAt,
+        project.updatedAt,
+        id
+      );
+      return this.getProject(id);
+    }
     this.db.prepare(`
-      INSERT INTO projects (id, canonical_path, display_name, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO projects (id, canonical_path, display_name, icon, color, last_used_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(canonical_path) DO UPDATE SET
         display_name=excluded.display_name,
+        icon=excluded.icon,
+        color=excluded.color,
+        last_used_at=excluded.last_used_at,
         updated_at=excluded.updated_at
-    `).run(id, project.canonicalPath, project.displayName, createdAt, project.updatedAt);
+    `).run(
+      id,
+      project.canonicalPath,
+      project.displayName,
+      project.icon ?? existing?.icon ?? DEFAULT_PROJECT_ICON,
+      project.color ?? existing?.color ?? DEFAULT_PROJECT_COLOR,
+      project.lastUsedAt ?? project.updatedAt,
+      createdAt,
+      project.updatedAt
+    );
+    this.db.prepare(`INSERT INTO project_folders (project_id, canonical_path, position, created_at) VALUES (?, ?, 0, ?)`)
+      .run(id, project.canonicalPath, createdAt);
     return this.getProject(id);
+  }
+
+  #mapProject(row) {
+    return mapProject(row, row ? this.listProjectFolders(row.id) : []);
   }
 
   saveViewState(taskId, state) {

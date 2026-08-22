@@ -44,6 +44,7 @@ function createBridge(models) {
     threadContext: () => ({
       projectId: "project-1",
       cwd: "/workspace",
+      runtimeWorkspaceRoots: ["/workspace", "/shared"],
       developerInstructions: "Loom base guidance\n\n# Verification before handoff",
       permissionSettings: () => ({
         approvalPolicy: "on-request",
@@ -115,12 +116,18 @@ describe("Loom bridge", () => {
         params: expect.objectContaining({
           model: "claude:claude-sonnet-4-6",
           parentThreadId: "parent-1",
+          runtimeWorkspaceRoots: ["/workspace", "/shared"],
           developerInstructions: "Loom base guidance\n\n# Verification before handoff"
         })
       }),
       expect.objectContaining({
         method: "turn/start",
-        params: expect.objectContaining({ threadId: "child-1", model: "claude:claude-sonnet-4-6", effort: "high" })
+        params: expect.objectContaining({
+          threadId: "child-1",
+          model: "claude:claude-sonnet-4-6",
+          effort: "high",
+          runtimeWorkspaceRoots: ["/workspace", "/shared"]
+        })
       })
     ]));
     expect(database.getThreadLink("child-1")).toMatchObject({ parentThreadId: "parent-1" });

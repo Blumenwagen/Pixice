@@ -25,13 +25,23 @@ pnpm dev
 
 Use `pnpm dev:electron` to run the renderer inside Electron. `pnpm check` runs unit tests, the production renderer build, and Sites packaging checks.
 
+### Install a local macOS build
+
+After `pnpm build:desktop`, install and relaunch the arm64 app with:
+
+```bash
+pnpm install:local:macos
+```
+
+The installer stages the new bundle, waits for the current Loom process to quit, preserves the installed app as a timestamped backup, swaps the bundle atomically, and relaunches Loom once. It uses a detached one-shot worker; do not replace it with `launchctl submit`, because macOS can infer `KeepAlive` for submitted script jobs and create a permanent relaunch loop.
+
 ## Codex runtime release gate
 
 Development UI works without a bundled runtime and reports a recoverable runtime-unavailable state. A production release must place both the pinned `codex` binary and its sibling `codex-code-mode-host` under `resources/runtime/<platform>/`, update `resources/runtime/manifest.json` with their exact version and SHA-256 values, generate protocol bindings from that same runtime, and pass `pnpm runtime:verify`.
 
 ## Claude runtime
 
-Packaged Loom builds prefer T3 Code's CLI-first setup: install Claude Code, run `claude auth login` with the subscription account, and launch Loom normally. Loom resolves `claude` from `PATH` and the usual macOS and per-user install locations; `LOOM_CLAUDE_PATH` selects an explicit executable. When no external CLI is present, Loom falls back to the platform executable bundled and unpacked with the Claude Agent SDK.
+Packaged Loom builds can sign in to Anthropic from **Settings → Providers** or directly from the Claude tab in the model picker. Loom also reuses credentials from an installed Claude Code CLI. It resolves `claude` from `PATH` and the usual macOS and per-user install locations; `LOOM_CLAUDE_PATH` selects an explicit executable. When no external CLI is present, Loom falls back to the platform executable bundled and unpacked with the Claude Agent SDK.
 
 ## App updates
 

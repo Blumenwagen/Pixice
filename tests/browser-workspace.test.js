@@ -139,4 +139,18 @@ describe("BrowserWorkspace", () => {
     expect(workspace.snapshot("draft:project-1").tabs).toHaveLength(0);
     expect(workspace.snapshot("thread-new").tabs[0].url).toBe("https://example.com");
   });
+
+  it("closes every renderer owned by a discarded preview workspace", async () => {
+    const { workspace, attached } = createHarness();
+    workspace.createTab("thread-old", "https://example.com");
+    workspace.createTab("thread-old", "https://example.org");
+    await Promise.resolve();
+    workspace.setViewport({ workspaceId: "thread-old", visible: true, bounds: { x: 0, y: 0, width: 800, height: 600 } });
+
+    workspace.destroyWorkspace("thread-old");
+
+    expect(workspace.snapshot("thread-old").tabs).toHaveLength(0);
+    expect(FakeWebContentsView.instances.every((view) => view.webContents.closed)).toBe(true);
+    expect(attached.size).toBe(0);
+  });
 });

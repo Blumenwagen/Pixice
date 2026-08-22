@@ -397,7 +397,7 @@
   border-radius: 10px;
 }
 .inspectorGlyph[data-tone="violet"] { color: #b19fff; background: rgba(139, 113, 238, .1); }
-.inspectorGlyph[data-tone="orange"] { color: #ff8b6d; background: rgba(229, 94, 62, .1); }
+.inspectorGlyph[data-tone="orange"] { color: var(--thread); background: rgba(255, 83, 100, .1); }
 .inspectorGlyph[data-tone="blue"] { color: #72c5ff; background: rgba(71, 151, 207, .1); }
 
 .inspectorBody {
@@ -848,5 +848,677 @@
 @media (max-width: 940px) {
   .library { display: none; }
   .workspaceLayout { grid-template-columns: minmax(0, 1fr); }
+  .inspector { position: absolute; top: 0; right: 0; bottom: 0; z-index: 15; }
+}
+
+/* React Flow editor */
+.editor {
+  grid-template-rows: 50px minmax(0, 1fr) auto;
+  background: #18181a;
+  border-color: rgba(255, 255, 255, .075);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .16);
+}
+
+.canvasToolbar {
+  padding: 0 10px 0 12px;
+  background: rgba(29, 29, 31, .96);
+  border-bottom-color: rgba(255, 255, 255, .07);
+  box-shadow: none;
+}
+
+.nodePalette button,
+.secondaryButton,
+.primaryButton,
+.stopButton,
+.dangerButton {
+  height: 32px;
+  border-radius: 8px;
+  font-size: 10px;
+}
+
+.addNodeButton {
+  color: #f7f7f8 !important;
+  background: #2b2b2e !important;
+  border-color: rgba(255, 255, 255, .09) !important;
+}
+
+.paletteMeta { color: #77777f; font-size: 9px; }
+.saveState, .runBadge { height: 24px; background: transparent; border-color: transparent; }
+
+.primaryButton {
+  background: var(--primary);
+  border-color: color-mix(in oklab, var(--primary) 72%, white);
+  box-shadow: 0 7px 18px rgba(255, 83, 100, .18);
+}
+.primaryButton:hover { background: #ff6877; }
+
+.canvasShell { background: #111113; }
+.canvas {
+  background: #111113;
+  cursor: default;
+}
+
+.canvas :global(.react-flow) { background: #111113; }
+.canvas :global(.react-flow__pane) { cursor: grab; }
+.canvas :global(.react-flow__pane.dragging) { cursor: grabbing; }
+.canvas :global(.react-flow__node) { cursor: grab; }
+.canvas :global(.react-flow__node.dragging) { cursor: grabbing; }
+.canvas :global(.react-flow__edge-path) { transition: stroke 140ms ease, opacity 140ms ease, stroke-width 140ms ease; }
+.canvas :global(.react-flow__edge.selected .react-flow__edge-path),
+.canvas :global(.react-flow__edge:hover .react-flow__edge-path) { opacity: 1 !important; }
+.canvas :global(.react-flow__controls) {
+  overflow: hidden;
+  background: rgba(34, 34, 37, .94);
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .28);
+}
+.canvas :global(.react-flow__controls-button) {
+  width: 30px;
+  height: 30px;
+  color: #a5a5ad;
+  background: transparent;
+  border-bottom-color: rgba(255, 255, 255, .07);
+}
+.canvas :global(.react-flow__controls-button:hover) { color: #fff; background: rgba(255, 255, 255, .07); }
+.canvas :global(.react-flow__controls-button svg) { fill: currentColor; }
+.canvas :global(.react-flow__minimap) {
+  width: 150px;
+  height: 96px;
+  overflow: hidden;
+  background: rgba(27, 27, 30, .94);
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .25);
+}
+.canvas :global(.react-flow__minimap-mask) { fill: rgba(12, 12, 14, .72); }
+.canvas :global(.react-flow__connection-path) { stroke: var(--thread); stroke-width: 2; }
+.canvas :global(.react-flow__selection) { background: rgba(255, 83, 100, .08); border: 1px solid rgba(255, 83, 100, .45); }
+
+.accessibleGraph {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.node {
+  position: relative;
+  inset: auto;
+  gap: 11px;
+  padding: 13px 44px 13px 14px;
+  background: #222225;
+  border: 1px solid rgba(255, 255, 255, .105);
+  border-left: 3px solid var(--node-tone);
+  border-radius: 13px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .24), inset 0 1px 0 rgba(255, 255, 255, .025);
+  transform: none;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.node:hover {
+  background: #27272a;
+  filter: none;
+  transform: translateY(-1px);
+}
+.selectedNode {
+  background: #29292c;
+  border-color: color-mix(in oklab, var(--node-tone) 64%, rgba(255, 255, 255, .18));
+  border-left-color: var(--node-tone);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .3), 0 0 0 3px color-mix(in oklab, var(--node-tone) 14%, transparent);
+}
+.node[data-status="running"] { animation: running-node 1.8s ease-in-out infinite; }
+
+.nodeIcon {
+  width: 36px;
+  height: 36px;
+  color: var(--node-tone);
+  background: color-mix(in oklab, var(--node-tone) 10%, #18181b);
+  border-color: color-mix(in oklab, var(--node-tone) 18%, rgba(255, 255, 255, .05));
+  border-radius: 10px;
+  box-shadow: none;
+}
+.nodeCopy { gap: 1px; }
+.nodeCopy small { color: #8e8e97; font-size: 8px; font-weight: 700; letter-spacing: .035em; text-transform: uppercase; }
+.nodeCopy em { color: var(--node-tone); font-size: 8.5px; font-weight: 650; }
+.nodeCopy strong { margin-top: 3px; color: #f0f0f2; font-size: 12px; font-weight: 660; }
+.nodeModeBadge {
+  right: 10px;
+  bottom: 9px;
+  max-width: 88px;
+  padding: 2px 5px;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 4px;
+  font-size: 7px;
+}
+.nodeRunState { top: 10px; right: 10px; width: 20px; height: 20px; background: #18181a; }
+
+.portGroup { z-index: 8; gap: 0; pointer-events: none; }
+.inputPortGroup { left: -9px; flex-direction: row; }
+.outputPortGroup { right: -9px; flex-direction: row; }
+.portLabel {
+  position: absolute;
+  min-width: max-content;
+  max-width: 92px;
+  padding: 3px 5px;
+  overflow: hidden;
+  color: #85858e;
+  background: rgba(17, 17, 19, .92);
+  border: 1px solid rgba(255, 255, 255, .055);
+  border-radius: 4px;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: .025em;
+  line-height: 1;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.inputPortGroup .portLabel { left: 19px; }
+.outputPortGroup .portLabel { right: 19px; }
+.node:hover .portLabel, .selectedNode .portLabel { opacity: 1; }
+.port {
+  position: relative !important;
+  inset: auto !important;
+  width: 13px;
+  height: 13px;
+  min-width: 13px;
+  min-height: 13px;
+  background: var(--node-tone);
+  border: 3px solid #111113;
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--node-tone) 72%, #2a2a2e);
+  transform: none !important;
+  pointer-events: auto;
+}
+.port:hover, .activePort, .connectingPort {
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--node-tone) 18%, transparent), 0 0 12px color-mix(in oklab, var(--node-tone) 55%, transparent);
+  filter: brightness(1.16);
+  transform: scale(1.18) !important;
+}
+
+.inspector {
+  width: 326px;
+  min-width: 326px;
+  background: #1d1d1f;
+  border-left-color: rgba(255, 255, 255, .075);
+  box-shadow: -16px 0 36px rgba(0, 0, 0, .16);
+}
+.inspectorHeader { min-height: 56px; padding: 9px 10px 9px 13px; }
+.inspectorGlyph { width: 32px; height: 32px; border-radius: 9px; }
+.inspectorBody { padding: 14px 13px 20px; gap: 14px; }
+.field input, .field textarea, .field select, .runPopover textarea, .searchInput {
+  background: #151517;
+  border-color: rgba(255, 255, 255, .09);
+}
+.workflowFacts { grid-template-columns: auto auto; justify-content: start; gap: 18px; padding-top: 4px; }
+.workflowFacts span { padding: 0; background: transparent; border: 0; border-radius: 0; }
+.workflowFacts strong { font-size: 14px; }
+.workflowFacts small { font-size: 8px; }
+
+.runResult {
+  max-height: 156px;
+  padding: 9px 12px 12px;
+  background: #1b1b1d;
+}
+.runResult > span small { margin-left: auto; color: #77777f; font-size: 8px; font-weight: 620; text-transform: uppercase; }
+.runResult pre { max-height: 104px; overflow: auto; color: #b9b9c0; font-size: 9px; line-height: 1.55; }
+
+.workspaceLayout { grid-template-columns: 258px minmax(0, 1fr); }
+.library { background: #1b1b1d; border-right-color: rgba(255, 255, 255, .065); }
+.libraryHeader { min-height: 56px; padding: 9px 11px 8px 14px; }
+.libraryHeader button { width: 30px; height: 30px; background: var(--primary); border-radius: 8px; }
+.librarySearch { margin: 10px 10px 7px; background: #141416; border-radius: 8px; }
+.workflowList { padding: 3px 7px 12px; gap: 2px; }
+.workflowCard { min-height: 52px; padding: 8px; border-radius: 9px; }
+.workflowCard[data-active="true"] { background: #29292c; border-color: rgba(255, 255, 255, .08); }
+.workflowCardIcon { width: 29px; height: 29px; color: var(--primary); background: var(--primary-soft); border-radius: 8px; }
+.workflowCardCopy strong { font-size: 10.5px; }
+.workspaceMain { grid-template-rows: 56px minmax(0, 1fr); background: #171719; }
+.workspaceTopbar { padding: 0 12px 0 14px; background: #1d1d1f; }
+.workspaceActions button { height: 30px; border-radius: 8px; }
+.editorFrame { padding: 9px; }
+
+@media (max-width: 1180px) {
+  .workspaceLayout { grid-template-columns: 220px minmax(0, 1fr); }
+  .inspector { width: 292px; min-width: 292px; }
+  .canvas :global(.react-flow__minimap) { display: none; }
+}
+
+/* Tactile Threads workflow refresh */
+.workspaceOverlay {
+  --workflow-bg: #181613;
+  --workflow-canvas: #1d1a17;
+  --workflow-surface: #26221e;
+  --workflow-surface-raised: #2d2823;
+  --workflow-border: rgba(232, 215, 190, .12);
+  --workflow-muted: #948a7e;
+  --workflow-copy: #e8ded0;
+  --workflow-accent: var(--thread);
+  left: var(--rail-width);
+  z-index: 18;
+  background: var(--workflow-bg);
+}
+
+.workspaceLayout { grid-template-columns: clamp(224px, var(--sidebar-width, 258px), 360px) minmax(0, 1fr); }
+
+.library {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  padding: 14px 11px;
+  background: transparent;
+  border-right-color: rgba(232, 215, 190, .09);
+}
+
+.libraryBack {
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #8f8579;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+.libraryBack:hover { color: #eee4d7; background: rgba(232, 215, 190, .045); }
+
+.libraryHeader {
+  min-height: 48px;
+  padding: 9px 7px 5px;
+  border-bottom: 0;
+}
+.libraryHeader small { color: #7e756b; }
+.libraryHeader strong { color: #f1e9dd; font-size: 14px; letter-spacing: -.025em; }
+.libraryHeader button {
+  width: 30px;
+  height: 30px;
+  color: #fff8ef;
+  background: var(--workflow-accent);
+  border-radius: 8px;
+  box-shadow: 0 7px 18px rgba(255, 83, 100, .16);
+}
+.libraryHeader button:hover { background: var(--thread-bright); }
+
+.librarySearch {
+  margin: 6px 0 12px;
+  height: 34px;
+  color: #83796e;
+  background: rgba(232, 215, 190, .035);
+  border-color: rgba(232, 215, 190, .1);
+  border-radius: 9px;
+}
+.librarySearch:focus-within { border-color: rgba(255, 83, 100, .42); }
+
+.workflowList { padding: 0; gap: 2px; }
+.workflowCard {
+  min-height: 48px;
+  padding: 6px 7px;
+  grid-template-columns: 29px minmax(0, 1fr) 13px;
+  gap: 7px;
+  border-radius: 9px;
+}
+.workflowCard:hover { color: #eee4d7; background: rgba(232, 215, 190, .035); }
+.workflowCard[data-active="true"] {
+  color: #f6eee3;
+  background: rgba(232, 215, 190, .07);
+  border-color: transparent;
+}
+.workflowCardIcon { color: var(--workflow-accent); background: rgba(255, 83, 100, .09); }
+.workflowCardCopy strong { color: inherit; font-size: 12.5px; font-weight: 610; }
+.workflowCardCopy small { color: #81776c; font-size: 9.5px; }
+.workflowCardCaret { color: #8f8579; opacity: 0; transition: opacity 140ms ease; }
+.workflowCard:hover .workflowCardCaret,
+.workflowCard[data-active="true"] .workflowCardCaret { opacity: .75; }
+
+.workspaceMain {
+  grid-template-rows: 62px minmax(0, 1fr);
+  background: var(--workflow-bg);
+}
+
+.workspaceTopbar {
+  padding: 0 14px 0 20px;
+  gap: 10px;
+  background: #201d19;
+  border-bottom-color: var(--workflow-border);
+}
+
+.workspaceTitle {
+  max-width: none;
+  flex: 1;
+  gap: 1px;
+}
+.workspaceTitle strong { color: #f1e9dd; font-size: 14px; letter-spacing: -.025em; }
+.workspaceTitle small { color: #7e756b; font-size: 8.5px; }
+
+.workspaceActions { margin-left: auto; }
+.workspaceActions button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  color: #8f8579;
+  background: transparent;
+  border-color: transparent;
+}
+.workspaceActions button:hover { color: #eee4d7; background: rgba(232, 215, 190, .07); }
+
+.editorFrame { padding: 0; }
+
+.editor {
+  grid-template-rows: 48px minmax(0, 1fr) auto auto;
+  background: var(--workflow-canvas);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.canvasToolbar {
+  padding: 0 12px 0 16px;
+  background: rgba(31, 28, 24, .98);
+  border-bottom-color: rgba(232, 215, 190, .09);
+}
+.nodePalette { gap: 8px; }
+.paletteMeta { color: #796f65; font-size: 8.5px; }
+.addNodeButton {
+  color: #fff7ee !important;
+  background: var(--thread) !important;
+  border-color: var(--thread-bright) !important;
+  box-shadow: 0 6px 16px rgba(255, 83, 100, .18);
+}
+.addNodeButton:hover { background: var(--thread-bright) !important; }
+
+.canvasActions { gap: 4px; }
+.settingsButton { color: #8f8579; }
+.secondaryButton {
+  color: #9f9589;
+  background: transparent;
+  border-color: transparent;
+}
+.secondaryButton:hover { color: #f1e8dc; background: rgba(232, 215, 190, .07); border-color: transparent; }
+.primaryButton {
+  color: #fff8f0;
+  background: var(--workflow-accent);
+  border-color: var(--thread-bright);
+  box-shadow: 0 7px 18px rgba(255, 83, 100, .18);
+}
+.primaryButton:hover { background: var(--thread-bright); }
+
+.saveState, .runBadge { color: #8c8277; }
+.runBadge[data-status="completed"] { color: #65b5a0; }
+.runBadge[data-status="running"], .runBadge[data-status="queued"] { color: var(--thread-bright); }
+
+.canvasShell,
+.canvas,
+.canvas :global(.react-flow) { background: var(--workflow-canvas); }
+
+.canvas :global(.react-flow__controls) {
+  background: rgba(42, 37, 32, .96);
+  border-color: rgba(232, 215, 190, .13);
+  border-radius: 9px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .22);
+}
+.canvas :global(.react-flow__controls-button) {
+  color: #a69b8f;
+  border-bottom-color: rgba(232, 215, 190, .09);
+}
+.canvas :global(.react-flow__controls-button:hover) { color: #fff6eb; background: rgba(232, 215, 190, .08); }
+.canvas :global(.react-flow__minimap) {
+  width: 142px;
+  height: 88px;
+  background: rgba(42, 37, 32, .95);
+  border-color: rgba(232, 215, 190, .12);
+  border-radius: 9px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .22);
+}
+.canvas :global(.react-flow__minimap-mask) { fill: rgba(24, 21, 18, .72); }
+.canvas :global(.react-flow__connection-path) { stroke: var(--workflow-accent); stroke-width: 1.6; }
+.canvas :global(.react-flow__selection) { background: rgba(255, 83, 100, .08); border-color: rgba(255, 83, 100, .5); }
+
+.node {
+  padding: 0;
+  display: grid;
+  grid-template-rows: 43px minmax(0, 1fr) 27px;
+  gap: 0;
+  overflow: visible;
+  background: #28241f;
+  border: 1px solid rgba(232, 215, 190, .14);
+  border-left: 1px solid rgba(232, 215, 190, .14);
+  border-radius: 12px;
+  box-shadow: 0 9px 22px rgba(0, 0, 0, .22), inset 0 1px 0 rgba(255, 249, 238, .025);
+}
+.node:hover {
+  background: #2d2823;
+  border-color: rgba(232, 215, 190, .2);
+}
+.selectedNode {
+  background: #302a24;
+  border-color: var(--node-tone);
+  border-left-color: var(--node-tone);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, .26), 0 0 0 2px color-mix(in oklab, var(--node-tone) 18%, transparent);
+}
+
+.nodeHeader {
+  min-width: 0;
+  padding: 8px 9px;
+  display: grid;
+  grid-template-columns: 27px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid rgba(232, 215, 190, .08);
+}
+.nodeIcon {
+  width: 27px;
+  height: 27px;
+  color: var(--node-tone);
+  background: color-mix(in oklab, var(--node-tone) 11%, #211e1a);
+  border: 1px solid color-mix(in oklab, var(--node-tone) 20%, rgba(232, 215, 190, .06));
+  border-radius: 8px;
+}
+.nodeIcon svg { width: 14px; height: 14px; }
+.nodeCopy { min-width: 0; display: grid; gap: 1px; }
+.nodeCopy strong {
+  margin: 0;
+  overflow: hidden;
+  color: #eee4d6;
+  font-size: 10.5px;
+  font-weight: 690;
+  letter-spacing: -.012em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nodeCopy small {
+  overflow: hidden;
+  color: #82786d;
+  font-size: 7.5px;
+  font-weight: 620;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+.nodeSummary {
+  margin: 0;
+  padding: 8px 10px 6px;
+  overflow: hidden;
+  color: #a3988b;
+  font-size: 8px;
+  line-height: 1.42;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.nodeFooter {
+  min-width: 0;
+  padding: 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-top: 1px solid rgba(232, 215, 190, .07);
+}
+.nodeFooter > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  color: #746b61;
+  font-size: 7px;
+  font-weight: 690;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nodeModeBadge {
+  position: static;
+  max-width: 84px;
+  margin-left: auto;
+  padding: 2px 5px;
+  color: #9f9488;
+  background: rgba(232, 215, 190, .045);
+  border: 0;
+  border-radius: 5px;
+  font-size: 6.5px;
+}
+.nodeModeBadge[data-mode="foreground"] { color: var(--thread-bright); background: rgba(255, 83, 100, .09); }
+.nodeRunState {
+  position: static;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  color: #777066;
+  background: transparent;
+  border: 0;
+}
+.nodeRunState[data-status="completed"] { color: #53ad95; }
+.nodeRunState[data-status="running"], .nodeRunState[data-status="queued"] { color: var(--thread-bright); }
+.nodeRunState[data-status="failed"] { color: #df6e6d; }
+
+.port {
+  width: 11px;
+  height: 11px;
+  min-width: 11px;
+  min-height: 11px;
+  background: #28241f;
+  border: 2px solid var(--node-tone);
+  box-shadow: 0 0 0 2px var(--workflow-canvas);
+}
+.portLabel {
+  color: #a79c8f;
+  background: rgba(37, 33, 29, .96);
+  border-color: rgba(232, 215, 190, .1);
+  border-radius: 5px;
+  text-transform: none;
+}
+
+.inspector {
+  width: 316px;
+  min-width: 316px;
+  color: var(--workflow-copy);
+  background: #231f1b;
+  border-left-color: var(--workflow-border);
+  box-shadow: -15px 0 32px rgba(0, 0, 0, .2);
+}
+.inspectorHeader { border-bottom-color: var(--workflow-border); }
+.inspectorHeader small { color: #83796f; }
+.inspectorHeader strong { color: #eee4d7; }
+.inspectorBody { gap: 13px; }
+.field > span { color: #b3a79a; }
+.field > small { color: #7f756b; }
+.field input,
+.field textarea,
+.field select,
+.runPopover textarea,
+.searchInput {
+  color: #eee4d7;
+  background: #191714;
+  border-color: rgba(232, 215, 190, .11);
+}
+.field input:focus,
+.field textarea:focus,
+.field select:focus,
+.runPopover textarea:focus,
+.searchInput:focus { border-color: rgba(255, 83, 100, .52); box-shadow: 0 0 0 3px rgba(255, 83, 100, .09); }
+.executionModePicker button { background: #191714; border-color: rgba(232, 215, 190, .1); }
+.executionModePicker button[data-selected="true"] { background: rgba(255, 83, 100, .09); border-color: rgba(255, 83, 100, .32); }
+.inspectorFooter { border-top-color: var(--workflow-border); }
+
+.runTimeline {
+  min-width: 0;
+  min-height: 58px;
+  padding: 8px 12px 8px 16px;
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  background: #211e1a;
+  border-top: 1px solid var(--workflow-border);
+}
+.runTimelineSummary { display: grid; gap: 1px; }
+.runTimelineSummary strong { color: #e4d9cb; font-size: 9px; }
+.runTimelineSummary small { color: #57ad96; font-size: 7.5px; }
+.runTimeline[data-status="failed"] .runTimelineSummary small { color: #df7372; }
+.runTimelineNodes {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.runTimelineNodes::-webkit-scrollbar { display: none; }
+.runTimelineStep { display: inline-flex; align-items: center; flex: none; }
+.runTimelineArrow { margin: 0 3px; color: #575047; }
+.runTimelinePill {
+  max-width: 142px;
+  height: 28px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #948a7e;
+  background: #191714;
+  border: 1px solid rgba(232, 215, 190, .09);
+  border-radius: 8px;
+  font-size: 7.5px;
+}
+.runTimelinePill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runTimelineStep[data-status="completed"] .runTimelinePill { color: #6db5a3; border-color: rgba(83, 173, 149, .2); }
+.runTimelineStep[data-status="running"] .runTimelinePill,
+.runTimelineStep[data-status="queued"] .runTimelinePill { color: var(--thread-bright); border-color: rgba(255, 83, 100, .26); }
+.runTimelineStep[data-status="failed"] .runTimelinePill { color: #df7372; border-color: rgba(223, 115, 114, .24); }
+
+.runResult {
+  max-height: 180px;
+  padding: 0;
+  overflow: auto;
+  background: #1d1a17;
+  border-top: 1px solid rgba(232, 215, 190, .08);
+}
+.runResult summary {
+  height: 30px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #93897d;
+  cursor: pointer;
+  font-size: 8px;
+}
+.runResult pre { max-height: 120px; margin: 0; padding: 0 16px 12px; color: #aaa093; }
+
+.nodePicker,
+.runPopover { color: #eee4d7; background: rgba(39, 35, 30, .99); border-color: rgba(232, 215, 190, .14); }
+.nodePickerSearch { background: #191714; border-color: rgba(232, 215, 190, .1); }
+.nodePickerGroup button { background: rgba(232, 215, 190, .025); border-color: rgba(232, 215, 190, .06); }
+.nodePickerGroup button:hover { background: rgba(232, 215, 190, .07); border-color: rgba(232, 215, 190, .11); }
+
+@media (max-width: 960px) {
+  .workspaceLayout { grid-template-columns: 220px minmax(0, 1fr); }
+  .library { display: grid; }
   .inspector { position: absolute; top: 0; right: 0; bottom: 0; z-index: 15; }
 }

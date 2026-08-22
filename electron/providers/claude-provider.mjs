@@ -36,6 +36,14 @@ function serializeClaudeModels(models) {
   }));
 }
 
+export function claudeAccountIsAuthenticated(account) {
+  if (!account || typeof account !== "object") return false;
+  if (account.apiProvider && account.apiProvider !== "firstParty") return true;
+  if (account.email || account.organization || account.subscriptionType) return true;
+  if (account.apiKeySource && account.apiKeySource !== "none") return true;
+  return Boolean(account.tokenSource && account.tokenSource !== "none");
+}
+
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "WebSearch", "WebFetch"]);
 const LOOM_QUESTION_MCP_TOOL = "mcp__loom__request_user_input";
 
@@ -259,7 +267,7 @@ export class ClaudeProvider extends EventEmitter {
       }
       if (!this.queryFactory) this.queryFactory = (await import("@anthropic-ai/claude-agent-sdk")).query;
       this.started = true;
-      this.emit("status", { state: "ready", message: "Claude Agent SDK is available" });
+      this.emit("status", { state: "ready", message: "Claude runtime available" });
       return true;
     } catch (error) {
       this.emit("status", { state: "unavailable", message: error.message });
@@ -299,8 +307,10 @@ export class ClaudeProvider extends EventEmitter {
         query.accountInfo(),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Claude account discovery timed out")), 8_000))
       ]);
+      const authenticated = claudeAccountIsAuthenticated(account);
       return {
-        account: account && Object.values(account).some(Boolean) ? { type: "claude", ...account } : null,
+        account: authenticated ? { type: "claude", ...account } : null,
+        authenticated,
         requiresAuth: true
       };
     } finally {

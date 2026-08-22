@@ -10,6 +10,7 @@
     "dev:electron": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build --mode sites && node scripts/prepare-sites-build.mjs",
     "build:desktop": "node scripts/verify-runtime.mjs && vite build --mode desktop && electron-builder",
+    "install:local:macos": "node scripts/install-local-macos.mjs",
     "runtime:verify": "node scripts/verify-runtime.mjs",
     "release:verify": "node scripts/verify-release-version.mjs",
     "release:checksums": "node scripts/generate-checksums.mjs",
@@ -20,6 +21,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.234",
+    "@xyflow/react": "^12.11.3",
     "electron-updater": "6.8.9",
     "motion": "^13.1.0",
     "ms": "2.1.3",

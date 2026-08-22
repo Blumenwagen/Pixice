@@ -3,18 +3,28 @@ import { describe, expect, it } from "vitest";
 import { ProviderRegistry } from "../electron/providers/provider-registry.mjs";
 
 class MemoryDatabase {
-  constructor() { this.bindings = new Map(); }
+  constructor() {
+    this.bindings = new Map();
+    this.snapshots = new Map();
+  }
   getThreadProviderBinding(threadId) { return this.bindings.get(threadId) ?? null; }
   saveThreadProviderBinding(binding) {
     const previous = this.bindings.get(binding.threadId) ?? {};
-    const saved = { ...previous, ...binding };
+    const saved = { createdAt: previous.createdAt ?? "2026-08-20T10:00:00.000Z", updatedAt: "2026-08-21T10:00:00.000Z", ...previous, ...binding };
     this.bindings.set(binding.threadId, saved);
     return saved;
   }
-  deleteThreadProviderBinding(threadId) { this.bindings.delete(threadId); }
-  listThreadProviderBindings({ provider } = {}) {
-    return [...this.bindings.values()].filter((binding) => !provider || binding.provider === provider);
+  deleteThreadProviderBinding(threadId) {
+    this.bindings.delete(threadId);
+    this.snapshots.delete(threadId);
   }
+  listThreadProviderBindings({ provider, cwd } = {}) {
+    return [...this.bindings.values()].filter((binding) => (!provider || binding.provider === provider) && (!cwd || binding.cwd === cwd));
+  }
+  saveProviderThreadSnapshot(threadId, snapshot) { this.snapshots.set(threadId, structuredClone(snapshot)); }
+  getProviderThreadSnapshot(threadId) { return structuredClone(this.snapshots.get(threadId) ?? null); }
+  getThreadName() { return null; }
+  getThreadLink() { return null; }
 }
 
 class FakeProvider extends EventEmitter {
@@ -30,13 +40,13 @@ class FakeProvider extends EventEmitter {
   async request(method, params) {
     this.calls.push({ method, params });
     if (method === "model/list") return { data: this.models.map((model) => ({ model, displayName: model })) };
-    if (method === "thread/list") return { data: [] };
+    if (method === "thread/list") return { data: this.threads ?? [] };
     if (method === "thread/start") return { thread: { id: `${this.id}-thread`, cwd: params.cwd, turns: [] } };
     if (method === "turn/start") return { turn: { id: `${this.id}-turn` } };
     return {};
   }
   respond(id, result) { this.response = { id, result }; }
-  async account() { return { account: this.id === "codex" ? { type: "chatgpt", email: "dev@example.com" } : null, requiresAuth: true }; }
+  async account() { return { account: { type: this.id === "codex" ? "chatgpt" : "claude", email: "dev@example.com" }, authenticated: true, requiresAuth: true }; }
   async login() { return { type: this.id, authUrl: `https://example.com/${this.id}` }; }
 }
 
@@ -81,7 +91,7 @@ describe("ProviderRegistry", () => {
 
     await expect(registry.listProviders()).resolves.toEqual([
       expect.objectContaining({ id: "codex", account: { type: "chatgpt", email: "dev@example.com" }, sessionCount: 0 }),
-      expect.objectContaining({ id: "claude", account: null, sessionCount: 1, loginAvailable: true })
+      expect.objectContaining({ id: "claude", account: { type: "claude", email: "dev@example.com" }, authenticated: true, sessionCount: 1, loginAvailable: true })
     ]);
     await expect(registry.loginProvider("claude")).resolves.toEqual({ type: "claude", authUrl: "https://example.com/claude" });
   });
@@ -93,6 +103,51 @@ describe("ProviderRegistry", () => {
     claude.connected = false;
 
     const models = await registry.request("model/list");
+    expect(models.data.map((model) => model.provider)).toEqual(["codex"]);
+    expect(claude.calls.some((call) => call.method === "model/list")).toBe(false);
+  });
+
+  it("returns persisted thread summaries while a provider reconnects after an update", async () => {
+    const database = new MemoryDatabase();
+    const registry = new ProviderRegistry({ database });
+    const codex = registry.register(new FakeProvider("codex", ["gpt-5.6-terra"]));
+    codex.threads = [{
+      id: "codex-thread",
+      cwd: "/workspace",
+      name: "Persistent task",
+      preview: "Persistent task",
+      createdAt: "2026-08-20T10:00:00.000Z",
+      updatedAt: "2026-08-21T10:00:00.000Z",
+      status: { type: "idle" }
+    }];
+
+    const live = await registry.request("thread/list", { cwd: "/workspace" });
+    expect(live.data).toEqual([expect.objectContaining({ id: "codex-thread", provider: "codex" })]);
+
+    codex.connected = false;
+    const restored = await registry.request("thread/list", { cwd: "/workspace" });
+
+    expect(restored.data).toEqual([expect.objectContaining({
+      id: "codex-thread",
+      name: "Persistent task",
+      provider: "codex",
+      persisted: true
+    })]);
+
+    codex.connected = true;
+    codex.threads = [];
+    const reconciled = await registry.request("thread/list", { cwd: "/workspace" });
+    expect(reconciled.data).toEqual([]);
+  });
+
+  it("does not advertise models from an unauthenticated provider", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    registry.register(new FakeProvider("codex", ["gpt-5.6-terra"]));
+    const claude = registry.register(new FakeProvider("claude", ["claude-sonnet-4-6"]));
+    claude.account = async () => ({ account: null, authenticated: false, requiresAuth: true });
+
+    const models = await registry.request("model/list");
+
     expect(models.data.map((model) => model.provider)).toEqual(["codex"]);
     expect(claude.calls.some((call) => call.method === "model/list")).toBe(false);
   });

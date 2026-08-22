@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loom workflow design comparison</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 100%; min-height: 100%; margin: 0; background: #0f0f0f; color: #eee; font-family: system-ui, sans-serif; }
+      main { min-width: 0; padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      figure { min-width: 0; margin: 0; display: grid; grid-template-rows: 30px auto; overflow: hidden; background: #181818; border: 1px solid #333; border-radius: 12px; }
+      figcaption { padding: 8px 12px; color: #aaa; font-size: 11px; }
+      img, iframe { width: 100%; aspect-ratio: 1584 / 992; display: block; border: 0; object-fit: cover; object-position: top left; }
+      iframe { background: #181613; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <figure>
+        <figcaption>Selected reference: Tactile Threads</figcaption>
+        <img src="/work/design-qa/workflow-editor-reference-tactile-threads.png" alt="Selected Tactile Threads workflow editor reference" />
+      </figure>
+      <figure>
+        <figcaption>Implementation: Loom workflow editor</figcaption>
+        <iframe src="/workflow-design-preview.html?inspector=1" title="Implemented Loom workflow editor"></iframe>
+      </figure>
+    </main>
+  </body>
+</html>

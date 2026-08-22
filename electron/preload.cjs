@@ -21,10 +21,17 @@ contextBridge.exposeInMainWorld("loom", Object.freeze({
     navigate: invoke("browser:navigate"),
     history: invoke("browser:history"),
     setViewport: invoke("browser:viewport"),
-    adopt: invoke("browser:adopt")
+    adopt: invoke("browser:adopt"),
+    destroy: invoke("browser:destroy")
   }),
   files: Object.freeze({ read: invoke("files:read"), write: invoke("files:write") }),
-  projects: Object.freeze({ list: invoke("projects:list"), open: invoke("projects:open") }),
+  projects: Object.freeze({
+    list: invoke("projects:list"),
+    touch: invoke("projects:touch"),
+    pickFolders: invoke("projects:pick-folders"),
+    create: invoke("projects:create"),
+    open: invoke("projects:open")
+  }),
   board: Object.freeze({
     list: invoke("board:list"),
     create: invoke("board:create"),

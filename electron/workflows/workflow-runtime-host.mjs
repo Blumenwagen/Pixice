@@ -5,6 +5,10 @@ import { installWorkflowIntegration } from "./workflow-integration.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function projectRoots(project) {
+  return [...new Set(project?.folders?.length ? project.folders : [project?.canonicalPath])].filter(Boolean);
+}
+
 function permissionSettings(mode, project) {
   if (mode === "full-access") {
     return {
@@ -28,7 +32,7 @@ function permissionSettings(mode, project) {
     sandbox: "workspace-write",
     sandboxPolicy: {
       type: "workspaceWrite",
-      writableRoots: [project.canonicalPath],
+      writableRoots: projectRoots(project),
       networkAccess: false,
       excludeTmpdirEnvVar: false,
       excludeSlashTmp: false
@@ -107,7 +111,8 @@ export async function installWorkflowRuntimeHost({
     const defaults = settings();
     return {
       projectId,
-      cwd: project.canonicalPath,
+      cwd: projectRoots(project)[0] ?? project.canonicalPath,
+      runtimeWorkspaceRoots: projectRoots(project),
       developerInstructions: developerInstructions(),
       defaultModel: defaults.defaultModel ?? null,
       defaultEffort: defaults.defaultEffort ?? null,

@@ -65,6 +65,19 @@ let agentBehaviorsDirectory;
 
 const idPayload = z.object({ projectId: z.string().min(1) });
 const threadPayload = idPayload.extend({ threadId: z.string().min(1) });
+const projectIconSchema = z.enum([
+  "folder", "code", "terminal", "globe", "sparkles", "stack", "brain", "chart", "desktop",
+  "file", "files", "git-branch", "image", "lock", "shield", "workflow", "gauge", "connect"
+]);
+const projectColorSchema = z.enum([
+  "gray", "blue", "indigo", "purple", "pink", "rose", "red", "orange", "amber", "yellow", "green", "teal"
+]);
+const createProjectPayload = z.object({
+  displayName: z.string().trim().min(1).max(80),
+  icon: projectIconSchema,
+  color: projectColorSchema,
+  folders: z.array(z.string().trim().min(1)).min(1).max(32)
+}).strict();
 const boardColumnSchema = z.enum(["backlog", "ready", "active", "done"]);
 const boardTaskPayload = idPayload.extend({ taskId: z.string().min(1) });
 const boardTaskTitleSchema = z.string().trim().min(1).max(240);
@@ -123,12 +136,20 @@ function permissionSettings(mode, project) {
     sandbox: "workspace-write",
     sandboxPolicy: {
       type: "workspaceWrite",
-      writableRoots: [project.canonicalPath],
+      writableRoots: projectRoots(project),
       networkAccess: false,
       excludeTmpdirEnvVar: false,
       excludeSlashTmp: false
     }
   };
+}
+
+function projectRoots(project) {
+  return [...new Set(project?.folders?.length ? project.folders : [project?.canonicalPath])].filter(Boolean);
+}
+
+function projectPrimaryRoot(project) {
+  return projectRoots(project)[0] ?? project?.canonicalPath;
 }
 
 function getProject(projectId) {
@@ -142,10 +163,24 @@ function isWithin(root, target) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function projectRootForTarget(project, target) {
+  return projectRoots(project)
+    .filter((root) => isWithin(root, target))
+    .sort((left, right) => right.length - left.length)[0] ?? null;
+}
+
+function isWithinProject(project, target) {
+  return Boolean(projectRootForTarget(project, target));
+}
+
 function projectTarget(projectId, target) {
   const project = getProject(projectId);
-  const resolved = realpathSync(path.resolve(target ?? project.canonicalPath));
-  if (!isWithin(project.canonicalPath, resolved)) throw new Error("Target is outside the selected project");
+  const primaryRoot = projectPrimaryRoot(project);
+  const candidate = target
+    ? path.isAbsolute(target) ? path.resolve(target) : path.resolve(primaryRoot, target)
+    : primaryRoot;
+  const resolved = realpathSync(candidate);
+  if (!isWithinProject(project, resolved)) throw new Error("Target is outside the selected project");
   return resolved;
 }
 
@@ -172,9 +207,9 @@ function projectFileTarget(projectId, reference) {
   const project = getProject(projectId);
   const cleaned = cleanFileReference(reference);
   if (!cleaned) throw new Error("File path is required");
-  const candidate = path.isAbsolute(cleaned) ? path.resolve(cleaned) : path.resolve(project.canonicalPath, cleaned);
+  const candidate = path.isAbsolute(cleaned) ? path.resolve(cleaned) : path.resolve(projectPrimaryRoot(project), cleaned);
   const resolved = realpathSync(candidate);
-  if (!isWithin(project.canonicalPath, resolved)) throw new Error("File is outside the selected project");
+  if (!isWithinProject(project, resolved)) throw new Error("File is outside the selected project");
   const metadata = statSync(resolved);
   if (!metadata.isFile()) throw new Error("The selected path is not a file");
   return { project, resolved, metadata };
@@ -182,6 +217,7 @@ function projectFileTarget(projectId, reference) {
 
 function readProjectFile(projectId, reference) {
   const { project, resolved, metadata } = projectFileTarget(projectId, reference);
+  const folderPath = projectRootForTarget(project, resolved) ?? projectPrimaryRoot(project);
   if (metadata.size > MAX_PREVIEW_BYTES) throw new Error("File is too large to open in Loom");
   const extension = path.extname(resolved).toLowerCase();
   const buffer = readFileSync(resolved);
@@ -191,7 +227,8 @@ function readProjectFile(projectId, reference) {
     const mimeType = imageMime || "application/pdf";
     return {
       path: resolved,
-      relativePath: path.relative(project.canonicalPath, resolved),
+      relativePath: path.relative(folderPath, resolved),
+      folderPath,
       name: path.basename(resolved),
       extension,
       kind: imageMime ? "image" : "pdf",
@@ -207,7 +244,8 @@ function readProjectFile(projectId, reference) {
   const editable = !binary && metadata.size <= MAX_EDITABLE_BYTES;
   return {
     path: resolved,
-    relativePath: path.relative(project.canonicalPath, resolved),
+    relativePath: path.relative(folderPath, resolved),
+    folderPath,
     name: path.basename(resolved),
     extension,
     kind: binary ? "unsupported" : MARKDOWN_EXTENSIONS.has(extension) ? "markdown" : HTML_EXTENSIONS.has(extension) ? "html" : "text",
@@ -231,14 +269,15 @@ function projectForPath(target) {
     return null;
   }
   return database.listProjects()
-    .filter((project) => isWithin(project.canonicalPath, canonicalTarget))
-    .sort((a, b) => b.canonicalPath.length - a.canonicalPath.length)[0] ?? null;
+    .map((project) => ({ project, root: projectRootForTarget(project, canonicalTarget) }))
+    .filter((candidate) => candidate.root)
+    .sort((left, right) => right.root.length - left.root.length)[0]?.project ?? null;
 }
 
 function rememberThread(project, thread, { loaded = false } = {}) {
   if (!thread?.id) return;
-  const cwd = realpathSync(thread.cwd ?? project.canonicalPath);
-  if (!isWithin(project.canonicalPath, cwd)) throw new Error("Thread is outside the selected project");
+  const cwd = realpathSync(thread.cwd ?? projectPrimaryRoot(project));
+  if (!isWithinProject(project, cwd)) throw new Error("Thread is outside the selected project");
   threadSessions.remember(thread.id, cwd, { loaded });
   threadProjects.set(thread.id, project.id);
 }
@@ -263,7 +302,7 @@ function scheduleThreadName({ project, threadId, source, kind }) {
   scheduledThreadNames.add(threadId);
   void threadNamer.nameThread({
     threadId,
-    cwd: project.canonicalPath,
+    cwd: database.getThreadProviderBinding(threadId)?.cwd || projectPrimaryRoot(project),
     source,
     kind
   });
@@ -288,11 +327,29 @@ function scheduleDelegatedThreadNames(event) {
 }
 
 async function projectWithRepository(project) {
-  return { ...project, repository: await inspectRepository(project.canonicalPath) };
+  return { ...project, repository: await inspectRepository(projectPrimaryRoot(project)) };
 }
 
 async function listProjects() {
   return Promise.all(database.listProjects().map(projectWithRepository));
+}
+
+async function listProjectThreads(project, parameters = {}) {
+  const responses = await Promise.all(projectRoots(project).map((cwd) => runtime.request("thread/list", {
+    cwd,
+    limit: 200,
+    sourceKinds: threadSourceKinds,
+    archived: false,
+    ...parameters
+  })));
+  const byId = new Map();
+  for (const response of responses) {
+    for (const thread of response.data ?? []) byId.set(thread.id, thread);
+  }
+  return {
+    data: [...byId.values()].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))),
+    nextCursor: null
+  };
 }
 
 function updateTrayMenu() {
@@ -506,6 +563,27 @@ async function startProviderLogin(provider) {
   return { provider, opened: true, loginId: result.loginId ?? null };
 }
 
+function canonicalProjectFolders(folders) {
+  const canonical = [];
+  const seen = new Set();
+  for (const folder of folders) {
+    const resolved = realpathSync(folder);
+    if (!statSync(resolved).isDirectory()) throw new Error(`${folder} is not a directory`);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    canonical.push(resolved);
+  }
+  if (!canonical.length) throw new Error("A project needs at least one folder");
+  return canonical;
+}
+
+async function pickProjectFolders({ multiple = true } = {}) {
+  const properties = multiple ? ["openDirectory", "multiSelections"] : ["openDirectory"];
+  const result = await dialog.showOpenDialog(mainWindow, { properties });
+  if (result.canceled) return [];
+  return canonicalProjectFolders(result.filePaths);
+}
+
 async function ensureThreadLoaded(project, threadId) {
   const cwd = await threadSessions.ensure(threadId, async () => {
     const response = await runtime.request("thread/resume", { threadId, developerInstructions: currentAgentInstructions(), dynamicTools: loomDynamicTools });
@@ -513,8 +591,9 @@ async function ensureThreadLoaded(project, threadId) {
     if (!resumedCwd) throw new Error("Runtime returned a thread without a working directory");
     return realpathSync(resumedCwd);
   });
-  if (!isWithin(project.canonicalPath, cwd)) throw new Error("Thread is outside the selected project");
+  if (!isWithinProject(project, cwd)) throw new Error("Thread is outside the selected project");
   threadProjects.set(threadId, project.id);
+  return cwd;
 }
 
 function registerIpc() {
@@ -580,17 +659,50 @@ function registerIpc() {
     const value = z.object({ fromWorkspaceId: z.string().trim().min(1), toWorkspaceId: z.string().trim().min(1) }).parse(payload);
     return browserWorkspace.adoptWorkspace(value.fromWorkspaceId, value.toWorkspaceId);
   });
+  ipcMain.handle("browser:destroy", (_event, payload) => {
+    const value = browserScope.parse(payload);
+    browserWorkspace.destroyWorkspace(value.workspaceId);
+    return { destroyed: true, workspaceId: value.workspaceId };
+  });
 
   ipcMain.handle("projects:list", () => listProjects());
+  ipcMain.handle("projects:touch", (_event, payload) => {
+    const { projectId } = idPayload.parse(payload);
+    const project = database.touchProject(projectId);
+    if (!project) throw new Error("Project not found");
+    return project;
+  });
+  ipcMain.handle("projects:pick-folders", () => pickProjectFolders());
+  ipcMain.handle("projects:create", async (_event, payload) => {
+    const value = createProjectPayload.parse(payload);
+    const folders = canonicalProjectFolders(value.folders);
+    const existing = folders.map((folder) => database.getProjectByFolder(folder)).find(Boolean);
+    if (existing) throw new Error(`A selected folder already belongs to ${existing.displayName}`);
+    const now = new Date().toISOString();
+    const project = database.createProject({
+      id: randomUUID(),
+      canonicalPath: folders[0],
+      displayName: value.displayName,
+      icon: value.icon,
+      color: value.color,
+      folders,
+      lastUsedAt: now,
+      createdAt: now,
+      updatedAt: now
+    });
+    return projectWithRepository(project);
+  });
   ipcMain.handle("projects:open", async () => {
-    const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
-    if (result.canceled) return null;
-    const canonicalPath = realpathSync(result.filePaths[0]);
+    const [canonicalPath] = await pickProjectFolders({ multiple: false });
+    if (!canonicalPath) return null;
+    const existing = database.getProjectByFolder(canonicalPath);
+    if (existing) return projectWithRepository(database.touchProject(existing.id));
     const now = new Date().toISOString();
     const project = database.upsertProject({
       id: randomUUID(),
       canonicalPath,
       displayName: path.basename(canonicalPath),
+      lastUsedAt: now,
       createdAt: now,
       updatedAt: now
     });
@@ -658,7 +770,7 @@ function registerIpc() {
     if (!task || task.projectId !== value.projectId) throw new Error("Kanban task not found in this project");
     const knownProjectId = threadProjects.get(value.threadId);
     const binding = database.getThreadProviderBinding(value.threadId);
-    if ((knownProjectId && knownProjectId !== value.projectId) || (binding?.cwd && !isWithin(project.canonicalPath, binding.cwd))) {
+    if ((knownProjectId && knownProjectId !== value.projectId) || (binding?.cwd && !isWithinProject(project, binding.cwd))) {
       throw new Error("Thread is outside the selected project");
     }
     const updated = database.updateBoardTask(value.taskId, { threadId: value.threadId });
@@ -669,13 +781,7 @@ function registerIpc() {
   ipcMain.handle("threads:list", async (_event, payload) => {
     const { projectId } = idPayload.parse(payload);
     const project = getProject(projectId);
-    if (!runtime.connected) return { data: [], nextCursor: null };
-    const response = await runtime.request("thread/list", {
-      cwd: project.canonicalPath,
-      limit: 200,
-      sourceKinds: threadSourceKinds,
-      archived: false
-    });
+    const response = await listProjectThreads(project);
     const data = (response.data ?? []).map((thread) => {
       rememberThread(project, thread);
       return withPersistedThreadName(thread);
@@ -686,7 +792,7 @@ function registerIpc() {
     const { projectId, threadId } = threadPayload.parse(payload);
     const project = getProject(projectId);
     const response = await runtime.request("thread/read", { threadId, includeTurns: true });
-    if (!isWithin(project.canonicalPath, response.thread.cwd)) throw new Error("Thread is outside the selected project");
+    if (!isWithinProject(project, response.thread.cwd)) throw new Error("Thread is outside the selected project");
     rememberThread(project, response.thread);
     const thread = withPersistedThreadName(response.thread);
     return { ...response, thread, plan: threadPlans.get(threadId) ?? database.getThreadPlan(threadId) };
@@ -695,13 +801,7 @@ function registerIpc() {
     const { projectId, threadId } = threadPayload.parse(payload);
     const project = getProject(projectId);
     if (!runtime.connected) return { data: [], nextCursor: null };
-    const response = await runtime.request("thread/list", {
-      cwd: project.canonicalPath,
-      ancestorThreadId: threadId,
-      limit: 200,
-      sourceKinds: threadSourceKinds,
-      archived: false
-    });
+    const response = await listProjectThreads(project, { ancestorThreadId: threadId });
     for (const thread of response.data ?? []) rememberThread(project, thread);
     const data = await Promise.all((response.data ?? []).map(async (rawCandidate) => {
       const candidate = withPersistedThreadName(rawCandidate);
@@ -727,9 +827,11 @@ function registerIpc() {
     }).parse(payload);
     const project = getProject(value.projectId);
     const permissions = permissionSettings(value.permissionMode, project);
+    const roots = projectRoots(project);
+    const cwd = projectPrimaryRoot(project);
     const response = await runtime.request("thread/start", {
-      cwd: project.canonicalPath,
-      runtimeWorkspaceRoots: [project.canonicalPath],
+      cwd,
+      runtimeWorkspaceRoots: roots,
       model: value.model || null,
       ...(value.serviceTier !== undefined ? { serviceTier: value.serviceTier } : {}),
       permissionMode: value.permissionMode,
@@ -769,12 +871,12 @@ function registerIpc() {
     }).superRefine(requirePromptInput).parse(payload);
     const project = getProject(value.projectId);
     const permissions = permissionSettings(value.permissionMode, project);
-    await ensureThreadLoaded(project, value.threadId);
+    const cwd = await ensureThreadLoaded(project, value.threadId);
     const response = await runtime.request("turn/start", {
       threadId: value.threadId,
       input: buildCodexUserInput(value.text, value.images),
-      cwd: project.canonicalPath,
-      runtimeWorkspaceRoots: [project.canonicalPath],
+      cwd,
+      runtimeWorkspaceRoots: projectRoots(project),
       model: value.model || null,
       ...(value.serviceTier !== undefined ? { serviceTier: value.serviceTier } : {}),
       effort: value.effort || null,
@@ -888,9 +990,10 @@ function registerIpc() {
   ipcMain.handle("review:read", async (_event, payload) => {
     const { projectId } = idPayload.parse(payload);
     const project = getProject(projectId);
-    const repository = await inspectRepository(project.canonicalPath);
+    const primaryRoot = projectPrimaryRoot(project);
+    const repository = await inspectRepository(primaryRoot);
     const diff = repository.kind === "git"
-      ? await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: project.canonicalPath })
+      ? await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: primaryRoot })
       : "";
     return { repository, diff };
   });
@@ -938,7 +1041,7 @@ function registerIpc() {
       await ensureThreadLoaded(project, value.threadId);
     }
     const [skills, apps, mcp] = await Promise.allSettled([
-      runtime.request("skills/list", { cwds: project ? [project.canonicalPath] : [] }),
+      runtime.request("skills/list", { cwds: project ? projectRoots(project) : [] }),
       runtime.request("app/list", { limit: 100, threadId: value.threadId || null }),
       runtime.request("mcpServerStatus/list", {})
     ]);
@@ -970,7 +1073,7 @@ app.whenReady().then(async () => {
   const boardThreadContext = (threadId) => {
     const binding = database.getThreadProviderBinding(threadId);
     const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
-    return project ? { projectId: project.id, cwd: project.canonicalPath } : null;
+    return project ? { projectId: project.id, cwd: binding?.cwd || projectPrimaryRoot(project) } : null;
   };
   loomBoard = new LoomBoard({
     database,
@@ -987,7 +1090,8 @@ app.whenReady().then(async () => {
       if (!project) return null;
       return {
         projectId: project.id,
-        cwd: project.canonicalPath,
+        cwd: binding?.cwd || projectPrimaryRoot(project),
+        runtimeWorkspaceRoots: projectRoots(project),
         developerInstructions: currentAgentInstructions(),
         permissionSettings: (mode) => permissionSettings(mode, project)
       };

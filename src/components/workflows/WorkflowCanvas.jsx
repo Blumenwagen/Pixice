@@ -1,15 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Background,
+  BackgroundVariant,
+  ConnectionLineType,
+  Controls,
+  Handle,
+  MiniMap,
+  Position,
+  ReactFlow
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import {
   Check,
   CheckCircle,
+  CaretRight,
   Circle,
-  Eye,
   MagnifyingGlass,
   PaperPlaneTilt,
   Pause,
   Plus,
   Sparkle,
   SpinnerGap,
+  TreeStructure,
   Warning,
   X
 } from "../icons/index.jsx";
@@ -24,13 +36,11 @@ import {
   WORKFLOW_NODE_WIDTH,
   createWorkflowEdge,
   createWorkflowNode,
-  fitWorkflowViewport,
   nextNodePosition,
   nodePort,
   parseWorkflowInput,
   stringifyWorkflowValue,
   workflowCanConnect,
-  workflowEdgePath,
   workflowInputPorts,
   workflowNodeHeight,
   workflowOutputPorts,
@@ -53,6 +63,16 @@ function runStatusIcon(status) {
   return null;
 }
 
+const NODE_TONES = {
+  violet: "#ff5364",
+  orange: "#ff5364",
+  blue: "#58a99a",
+  pink: "#ef6b72",
+  yellow: "#d3a949",
+  green: "#4fa58e",
+  neutral: "#9b9389"
+};
+
 function Port({ node, port, side, connecting, onActivate }) {
   const position = nodePort(node, side, port.id);
   const top = position.y - node.position.y;
@@ -63,14 +83,23 @@ function Port({ node, port, side, connecting, onActivate }) {
       style={{ top }}
       data-port-id={port.id}
     >
-      {side === "output" && <small className={styles.portLabel}>{port.label}</small>}
-      <button
-        type="button"
+      <small className={styles.portLabel}>{port.label}</small>
+      <Handle
+        id={port.id}
+        type={side === "input" ? "target" : "source"}
+        position={side === "input" ? Position.Left : Position.Right}
         className={`${styles.port} ${side === "input" ? styles.inputPort : styles.outputPort} ${active ? styles.activePort : ""} ${side === "input" && connecting ? styles.connectingPort : ""}`}
         aria-label={`${side === "input" ? "Connect into" : "Connect from"} ${node.name} · ${port.label}`}
         title={port.label}
-        onPointerDown={(event) => event.stopPropagation()}
+        role="button"
+        tabIndex={0}
         onClick={(event) => {
+          event.stopPropagation();
+          onActivate(port.id);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
           event.stopPropagation();
           onActivate(port.id);
         }}
@@ -79,7 +108,8 @@ function Port({ node, port, side, connecting, onActivate }) {
   );
 }
 
-function WorkflowNode({ node, selected, connecting, runState, onSelect, onDragStart, onStartConnection, onFinishConnection }) {
+function WorkflowNode({ data, selected }) {
+  const { node, connecting, runState, onStartConnection, onFinishConnection } = data;
   const meta = WORKFLOW_NODE_META[node.type];
   const executionMode = node.type === "loomAgent" ? node.config?.executionMode ?? "background" : null;
   const inputPorts = workflowInputPorts(node);
@@ -89,44 +119,117 @@ function WorkflowNode({ node, selected, connecting, runState, onSelect, onDragSt
       className={`${styles.node} ${styles.nodeExtension} ${selected ? styles.selectedNode : ""}`}
       data-tone={meta.tone}
       data-status={runState?.status ?? "idle"}
+      data-selected={selected}
       data-workflow-node="true"
       style={{
         width: WORKFLOW_NODE_WIDTH,
-        height: workflowNodeHeight(node),
-        transform: `translate(${node.position.x}px, ${node.position.y}px)`
+        height: workflowNodeHeight(node)
       }}
-      onPointerDown={(event) => {
-        if (event.button !== 0 || event.target.closest("button, input, textarea, select")) return;
-        onSelect();
-        onDragStart(event);
-      }}
-      onClick={onSelect}
-      role="group"
-      aria-label={`${meta.label}: ${node.name}`}
+      aria-hidden="true"
     >
       {inputPorts.map((port) => (
         <Port key={port.id} node={node} port={port} side="input" connecting={connecting} onActivate={(portId) => onFinishConnection(portId)} />
       ))}
-      <span className={styles.nodeIcon}><WorkflowNodeIcon type={node.type} /></span>
-      <span className={styles.nodeCopy}>
-        <small>{meta.label}</small>
-        <em>{meta.action}</em>
-        <strong>{node.name}</strong>
-      </span>
-      {executionMode && (
-        <span className={styles.nodeModeBadge} data-mode={executionMode}>
-          {executionMode === "foreground" ? "Foreground thread" : "Background"}
+      <header className={styles.nodeHeader}>
+        <span className={styles.nodeIcon}><WorkflowNodeIcon type={node.type} /></span>
+        <span className={styles.nodeCopy}>
+          <strong>{node.name}</strong>
+          <small>{meta.action}</small>
         </span>
-      )}
-      {runState?.status && (
-        <span className={styles.nodeRunState} title={runState.error || runState.skipReason || workflowStatusLabel(runState.status)}>
-          {runStatusIcon(runState.status)}
+        <span className={styles.nodeRunState} data-status={runState?.status ?? "idle"} title={runState?.error || runState?.skipReason || workflowStatusLabel(runState?.status ?? "idle")}>
+          {runState?.status ? runStatusIcon(runState.status) : <Circle size={9} />}
         </span>
-      )}
+      </header>
+      <p className={styles.nodeSummary}>{node.description || meta.defaultDescription}</p>
+      <footer className={styles.nodeFooter}>
+        <span>{meta.label}</span>
+        {executionMode && (
+          <span className={styles.nodeModeBadge} data-mode={executionMode}>
+            {executionMode === "foreground" ? "Foreground thread" : "Background"}
+          </span>
+        )}
+      </footer>
       {outputPorts.map((port) => (
         <Port key={port.id} node={node} port={port} side="output" connecting={connecting} onActivate={(portId) => onStartConnection(portId)} />
       ))}
     </article>
+  );
+}
+
+const NODE_TYPES = { workflowNode: WorkflowNode };
+const DEFAULT_EDGE_OPTIONS = { type: "bezier" };
+const CONNECTION_LINE_STYLE = { stroke: "#ff5364", strokeWidth: 2 };
+const REACT_FLOW_OPTIONS = { hideAttribution: true };
+
+function layoutWorkflowNodes(graph) {
+  const nodes = graph.nodes ?? [];
+  if (!nodes.length) return nodes;
+  const indegree = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, []]));
+  for (const edge of graph.edges ?? []) {
+    if (!indegree.has(edge.source) || !indegree.has(edge.target)) continue;
+    indegree.set(edge.target, indegree.get(edge.target) + 1);
+    outgoing.get(edge.source).push(edge.target);
+  }
+
+  const levels = new Map();
+  const queue = nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
+  if (!queue.length) queue.push(nodes[0].id);
+  queue.forEach((id) => levels.set(id, 0));
+  for (let index = 0; index < queue.length; index += 1) {
+    const sourceId = queue[index];
+    const sourceLevel = levels.get(sourceId) ?? 0;
+    for (const targetId of outgoing.get(sourceId) ?? []) {
+      levels.set(targetId, Math.max(levels.get(targetId) ?? 0, sourceLevel + 1));
+      indegree.set(targetId, indegree.get(targetId) - 1);
+      if (indegree.get(targetId) === 0) queue.push(targetId);
+    }
+  }
+
+  let fallbackLevel = Math.max(0, ...levels.values());
+  for (const node of nodes) {
+    if (!levels.has(node.id)) levels.set(node.id, fallbackLevel += 1);
+  }
+  const columns = new Map();
+  for (const node of nodes) {
+    const level = levels.get(node.id);
+    if (!columns.has(level)) columns.set(level, []);
+    columns.get(level).push(node);
+  }
+  const maxRows = Math.max(...[...columns.values()].map((column) => column.length));
+  const rowGap = 168;
+  return nodes.map((node) => {
+    const level = levels.get(node.id);
+    const column = columns.get(level);
+    const row = column.findIndex((candidate) => candidate.id === node.id);
+    const offset = (maxRows - column.length) * rowGap / 2;
+    return { ...node, position: { x: 72 + level * 282, y: 64 + offset + row * rowGap } };
+  });
+}
+
+function RunTimeline({ graph, run }) {
+  if (!run) return null;
+  return (
+    <footer className={styles.runTimeline} data-status={run.status}>
+      <span className={styles.runTimelineSummary}>
+        <strong>Latest run</strong>
+        <small>{run.status === "running" || run.status === "queued" ? "In progress" : workflowStatusLabel(run.status)}</small>
+      </span>
+      <div className={styles.runTimelineNodes} aria-label="Latest workflow run">
+        {graph.nodes.map((node, index) => {
+          const state = run.nodeRuns?.[node.id];
+          return (
+            <span className={styles.runTimelineStep} data-status={state?.status ?? "idle"} key={node.id}>
+              {index > 0 && <CaretRight className={styles.runTimelineArrow} size={11} />}
+              <span className={styles.runTimelinePill}>
+                {state?.status ? runStatusIcon(state.status) : <Circle size={8} />}
+                <span>{node.name}</span>
+              </span>
+            </span>
+          );
+        })}
+      </div>
+    </footer>
   );
 }
 
@@ -227,15 +330,13 @@ export function WorkflowCanvas({
   onCancel
 }) {
   const canvasRef = useRef(null);
+  const flowRef = useRef(null);
   const [canvasSize, setCanvasSize] = useState({ width: 1000, height: 700 });
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState(null);
   const [connectingFrom, setConnectingFrom] = useState(null);
-  const [connectionPointer, setConnectionPointer] = useState(null);
   const [connectionError, setConnectionError] = useState("");
-  const [drag, setDrag] = useState(null);
-  const [pan, setPan] = useState(null);
-  const [inspectorOpen, setInspectorOpen] = useState(!compact);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [nodePickerOpen, setNodePickerOpen] = useState(false);
   const [nodeQuery, setNodeQuery] = useState("");
   const [runOpen, setRunOpen] = useState(false);
@@ -243,6 +344,7 @@ export function WorkflowCanvas({
   const [runError, setRunError] = useState("");
   const graph = workflow.graph;
   const viewport = graph.viewport ?? { x: 0, y: 0, zoom: 1 };
+  const liveViewportRef = useRef(viewport);
   const selectedNode = graph.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const nodesById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph.nodes]);
   const activeRun = ACTIVE_RUN_STATUSES.has(run?.status);
@@ -267,15 +369,31 @@ export function WorkflowCanvas({
   }, []);
 
   useEffect(() => {
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setConnectingFrom(null);
+    setConnectionError("");
+    liveViewportRef.current = viewport;
+    flowRef.current?.setViewport(viewport, { duration: 0 });
+  }, [workflow.id]);
+
+  useEffect(() => {
     if (selectedNodeId && !nodesById.has(selectedNodeId)) setSelectedNodeId(null);
   }, [nodesById, selectedNodeId]);
+
+  useEffect(() => {
+    if (!inspectorOpen || compact) return undefined;
+    const timer = window.setTimeout(() => {
+      void flowRef.current?.fitView({ padding: 0.16, duration: 220, maxZoom: 1 });
+    }, 40);
+    return () => window.clearTimeout(timer);
+  }, [compact, inspectorOpen]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
       if (event.target.closest?.("input, textarea, select")) return;
       if (event.key === "Escape") {
         setConnectingFrom(null);
-        setConnectionPointer(null);
         setConnectionError("");
         setSelectedEdgeId(null);
         setNodePickerOpen(false);
@@ -300,57 +418,7 @@ export function WorkflowCanvas({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [changeGraph, selectedEdgeId, selectedNodeId]);
 
-  useEffect(() => {
-    if (!drag && !pan) return undefined;
-    const move = (event) => {
-      if (drag) {
-        const dx = (event.clientX - drag.startClient.x) / viewport.zoom;
-        const dy = (event.clientY - drag.startClient.y) / viewport.zoom;
-        changeGraph((current) => ({
-          ...current,
-          nodes: current.nodes.map((node) => node.id === drag.nodeId
-            ? { ...node, position: { x: Math.round(drag.startPosition.x + dx), y: Math.round(drag.startPosition.y + dy) } }
-            : node)
-        }));
-      }
-      if (pan) {
-        changeGraph((current) => ({
-          ...current,
-          viewport: {
-            ...current.viewport,
-            x: pan.startViewport.x + event.clientX - pan.startClient.x,
-            y: pan.startViewport.y + event.clientY - pan.startClient.y
-          }
-        }));
-      }
-    };
-    const stop = () => {
-      setDrag(null);
-      setPan(null);
-      document.body.classList.remove(styles.draggingBody);
-    };
-    document.body.classList.add(styles.draggingBody);
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
-    window.addEventListener("pointercancel", stop, { once: true });
-    return () => {
-      document.body.classList.remove(styles.draggingBody);
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
-    };
-  }, [changeGraph, drag, pan, viewport.zoom]);
-
-  const clientToWorld = useCallback((clientX, clientY) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
-    return {
-      x: (clientX - rect.left - viewport.x) / viewport.zoom,
-      y: (clientY - rect.top - viewport.y) / viewport.zoom
-    };
-  }, [viewport]);
-
-  const addNode = (type, position = nextNodePosition(graph, viewport, canvasSize)) => {
+  const addNode = (type, position = nextNodePosition(graph, liveViewportRef.current, canvasSize)) => {
     const node = createWorkflowNode(type, position);
     changeGraph((current) => ({ ...current, nodes: [...current.nodes, node] }));
     setSelectedNodeId(node.id);
@@ -382,52 +450,42 @@ export function WorkflowCanvas({
     setSelectedNodeId(null);
   };
 
-  const finishConnection = (targetId, targetPort) => {
-    if (!connectingFrom || connectingFrom.nodeId === targetId) {
-      setConnectingFrom(null);
-      setConnectionPointer(null);
-      setConnectionError("");
-      return;
-    }
-    const sourceNode = nodesById.get(connectingFrom.nodeId);
+  const connectNodes = useCallback((sourceId, sourcePort, targetId, targetPort) => {
+    if (!sourceId || !targetId || sourceId === targetId) return false;
+    const sourceNode = nodesById.get(sourceId);
     const targetNode = nodesById.get(targetId);
-    if (!workflowCanConnect(sourceNode, connectingFrom.portId, targetNode, targetPort)) {
-      setConnectionError(sourceNode?.type === "useSkill" || connectingFrom.portId === "skill" || targetPort === "skill"
+    if (!workflowCanConnect(sourceNode, sourcePort, targetNode, targetPort)) {
+      setConnectionError(sourceNode?.type === "useSkill" || sourcePort === "skill" || targetPort === "skill"
         ? "Use Skill nodes connect only from Skill to a Loom Agent’s Skill input."
         : "These workflow ports cannot be connected.");
-      return;
+      return false;
     }
-    const duplicate = graph.edges.some((edge) => edge.source === connectingFrom.nodeId
+    const duplicate = graph.edges.some((edge) => edge.source === sourceId
       && edge.target === targetId
-      && edge.sourcePort === connectingFrom.portId
+      && edge.sourcePort === sourcePort
       && edge.targetPort === targetPort);
     if (!duplicate) {
       changeGraph((current) => ({
         ...current,
-        edges: [...current.edges, createWorkflowEdge(connectingFrom.nodeId, targetId, connectingFrom.portId, targetPort)]
+        edges: [...current.edges, createWorkflowEdge(sourceId, targetId, sourcePort, targetPort)]
       }));
     }
-    setConnectingFrom(null);
-    setConnectionPointer(null);
     setConnectionError("");
+    return true;
+  }, [changeGraph, graph.edges, nodesById]);
+
+  const finishConnection = (targetId, targetPort) => {
+    if (!connectingFrom) return;
+    if (connectNodes(connectingFrom.nodeId, connectingFrom.portId, targetId, targetPort)) setConnectingFrom(null);
   };
 
   const fitView = () => {
-    changeGraph((current) => ({ ...current, viewport: fitWorkflowViewport(current, canvasSize.width, canvasSize.height, compact ? 44 : 84) }));
+    void flowRef.current?.fitView({ padding: compact ? 0.12 : 0.2, duration: 280, maxZoom: 1.15 });
   };
 
-  const zoomBy = (factor, anchor = { x: canvasSize.width / 2, y: canvasSize.height / 2 }) => {
-    const nextZoom = Math.max(0.2, Math.min(3, viewport.zoom * factor));
-    const worldX = (anchor.x - viewport.x) / viewport.zoom;
-    const worldY = (anchor.y - viewport.y) / viewport.zoom;
-    changeGraph((current) => ({
-      ...current,
-      viewport: {
-        x: anchor.x - worldX * nextZoom,
-        y: anchor.y - worldY * nextZoom,
-        zoom: nextZoom
-      }
-    }));
+  const autoLayout = () => {
+    changeGraph((current) => ({ ...current, nodes: layoutWorkflowNodes(current) }));
+    window.setTimeout(fitView, 40);
   };
 
   const startRun = () => {
@@ -441,13 +499,61 @@ export function WorkflowCanvas({
     }
   };
 
-  const connectionPath = connectingFrom && nodesById.get(connectingFrom.nodeId) && connectionPointer
-    ? (() => {
-        const source = nodePort(nodesById.get(connectingFrom.nodeId), "output", connectingFrom.portId);
-        const bend = Math.max(72, Math.abs(connectionPointer.x - source.x) * 0.48);
-        return `M ${source.x} ${source.y} C ${source.x + bend} ${source.y}, ${connectionPointer.x - bend} ${connectionPointer.y}, ${connectionPointer.x} ${connectionPointer.y}`;
-      })()
-    : null;
+  const flowNodes = useMemo(() => graph.nodes.map((node) => ({
+    id: node.id,
+    type: "workflowNode",
+    position: node.position,
+    selected: node.id === selectedNodeId,
+    draggable: true,
+    data: {
+      node,
+      tone: WORKFLOW_NODE_META[node.type]?.tone ?? "neutral",
+      connecting: connectingFrom,
+      runState: run?.nodeRuns?.[node.id],
+      onStartConnection: (portId) => {
+        setConnectingFrom((current) => current?.nodeId === node.id && current?.portId === portId ? null : { nodeId: node.id, portId });
+        setConnectionError("");
+        setSelectedNodeId(node.id);
+      },
+      onFinishConnection: (portId) => finishConnection(node.id, portId)
+    }
+  })), [connectingFrom, graph.nodes, run?.nodeRuns, selectedNodeId]);
+
+  const flowEdges = useMemo(() => graph.edges.map((edge) => {
+    const sourceNode = nodesById.get(edge.source);
+    const tone = WORKFLOW_NODE_META[sourceNode?.type]?.tone ?? "neutral";
+    const sourcePorts = sourceNode ? workflowOutputPorts(sourceNode) : [];
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourcePort,
+      targetHandle: edge.targetPort,
+      selected: edge.id === selectedEdgeId,
+      animated: run?.nodeRuns?.[edge.source]?.status === "running",
+      type: "bezier",
+      label: edge.id === selectedEdgeId && sourcePorts.length > 1 ? sourcePorts.find((port) => port.id === edge.sourcePort)?.label : undefined,
+      labelStyle: { fill: "#b8ada0", fontSize: 10, fontWeight: 650 },
+      labelBgStyle: { fill: "#24201c", fillOpacity: 0.96 },
+      labelBgPadding: [7, 4],
+      labelBgBorderRadius: 7,
+      style: {
+        stroke: NODE_TONES[tone],
+        strokeWidth: edge.id === selectedEdgeId ? 2.4 : 1.45,
+        opacity: edge.id === selectedEdgeId ? 1 : 0.66
+      },
+      interactionWidth: 20
+    };
+  }), [graph.edges, nodesById, run?.nodeRuns, selectedEdgeId]);
+
+  const validConnection = useCallback((connection) => workflowCanConnect(
+    nodesById.get(connection.source),
+    connection.sourceHandle,
+    nodesById.get(connection.target),
+    connection.targetHandle
+  ), [nodesById]);
+
+  const runOutput = typeof run?.output === "string" ? run.output : stringifyWorkflowValue(run?.output);
 
   return (
     <section className={`${styles.editor} ${compact ? styles.compactEditor : ""}`}>
@@ -465,13 +571,11 @@ export function WorkflowCanvas({
           {run && <span className={styles.runBadge} data-status={run.status}>{runStatusIcon(run.status)}{workflowStatusLabel(run.status)}</span>}
         </div>
         <div className={styles.canvasActions}>
-          <IconButton label="Zoom out" onClick={() => zoomBy(0.86)}>−</IconButton>
-          <button type="button" className={styles.zoomReadout} onClick={fitView}>{Math.round(viewport.zoom * 100)}%</button>
-          <IconButton label="Zoom in" onClick={() => zoomBy(1.16)}>+</IconButton>
-          <button type="button" className={styles.secondaryButton} onClick={() => {
+          <IconButton label="Workflow settings" className={styles.settingsButton} onClick={() => {
             setSelectedNodeId(null);
             setInspectorOpen((open) => !open);
-          }}><Eye size={14} />Inspect</button>
+          }}><Sparkle size={14} /></IconButton>
+          <button type="button" className={styles.secondaryButton} onClick={autoLayout}><TreeStructure size={14} />Tidy</button>
           {activeRun ? (
             <button type="button" className={styles.stopButton} disabled={run.status === "cancelling"} onClick={() => onCancel(run.id)}><Pause size={14} />{run.status === "cancelling" ? "Stopping" : "Stop"}</button>
           ) : (
@@ -483,80 +587,112 @@ export function WorkflowCanvas({
       </header>
 
       <div className={styles.canvasShell}>
-        <div
-          className={styles.canvas}
-          ref={canvasRef}
-          data-connecting={Boolean(connectingFrom)}
-          onPointerDown={(event) => {
-            if (event.button !== 0 || event.target.closest("[data-workflow-node], [data-workflow-edge], button, input, textarea, select")) return;
-            setSelectedNodeId(null);
-            setSelectedEdgeId(null);
-            setNodePickerOpen(false);
-            setPan({ startClient: { x: event.clientX, y: event.clientY }, startViewport: viewport });
-          }}
-          onPointerMove={(event) => {
-            if (connectingFrom) setConnectionPointer(clientToWorld(event.clientX, event.clientY));
-          }}
-          onWheel={(event) => {
-            if (event.ctrlKey || event.metaKey) return;
-            event.preventDefault();
-            const rect = canvasRef.current.getBoundingClientRect();
-            zoomBy(event.deltaY > 0 ? 0.92 : 1.08, { x: event.clientX - rect.left, y: event.clientY - rect.top });
-          }}
-          onDoubleClick={(event) => {
-            if (event.target.closest("[data-workflow-node], [data-workflow-edge]")) return;
-            const position = clientToWorld(event.clientX, event.clientY);
-            addNode("loomAgent", { x: position.x - WORKFLOW_NODE_WIDTH / 2, y: position.y - 56 });
-          }}
-        >
-          <div className={styles.world} style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` }}>
-            <svg className={styles.edgeLayer} width="4000" height="2600" viewBox="-1000 -650 5000 3300" aria-hidden="true">
-              {graph.edges.map((edge) => {
-                const source = nodesById.get(edge.source);
-                const target = nodesById.get(edge.target);
-                if (!source || !target) return null;
-                const tone = WORKFLOW_NODE_META[source.type]?.tone ?? "neutral";
-                return (
-                  <path
-                    key={edge.id}
-                    d={workflowEdgePath(source, target, edge.sourcePort, edge.targetPort)}
-                    className={`${styles.edge} ${styles.edgeTone} ${edge.id === selectedEdgeId ? styles.selectedEdge : ""}`}
-                    data-tone={tone}
-                    data-workflow-edge="true"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelectedEdgeId(edge.id);
-                      setSelectedNodeId(null);
-                    }}
-                  />
-                );
-              })}
-              {connectionPath && <path d={connectionPath} className={`${styles.edge} ${styles.edgeTone} ${styles.pendingEdge}`} data-tone={WORKFLOW_NODE_META[nodesById.get(connectingFrom?.nodeId)?.type]?.tone ?? "neutral"} />}
-            </svg>
+        <div className={styles.canvas} ref={canvasRef} data-connecting={Boolean(connectingFrom)}>
+          <ReactFlow
+            nodes={flowNodes}
+            edges={flowEdges}
+            nodeTypes={NODE_TYPES}
+            defaultViewport={viewport}
+            minZoom={0.16}
+            maxZoom={2}
+            defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
+            connectionLineType={ConnectionLineType.Bezier}
+            connectionLineStyle={CONNECTION_LINE_STYLE}
+            isValidConnection={validConnection}
+            onInit={(instance) => {
+              flowRef.current = instance;
+              if (viewport.zoom < 0.42 || viewport.zoom > 1.5) {
+                window.setTimeout(() => void instance.fitView({ padding: compact ? 0.12 : 0.18, duration: 0, maxZoom: 1 }), 0);
+              }
+            }}
+            onMove={(_event, nextViewport) => { liveViewportRef.current = nextViewport; }}
+            onMoveEnd={(_event, nextViewport) => {
+              liveViewportRef.current = nextViewport;
+              changeGraph((current) => ({ ...current, viewport: nextViewport }));
+            }}
+            onNodeClick={(_event, flowNode) => {
+              setSelectedNodeId(flowNode.id);
+              setSelectedEdgeId(null);
+              setInspectorOpen(true);
+            }}
+            onNodeDragStop={(_event, flowNode) => {
+              changeGraph((current) => ({
+                ...current,
+                nodes: current.nodes.map((node) => node.id === flowNode.id
+                  ? { ...node, position: { x: Math.round(flowNode.position.x), y: Math.round(flowNode.position.y) } }
+                  : node)
+              }));
+            }}
+            onEdgeClick={(_event, edge) => {
+              setSelectedEdgeId(edge.id);
+              setSelectedNodeId(null);
+            }}
+            onPaneClick={() => {
+              setSelectedNodeId(null);
+              setSelectedEdgeId(null);
+              setNodePickerOpen(false);
+              setInspectorOpen(false);
+            }}
+            onConnect={(connection) => {
+              connectNodes(connection.source, connection.sourceHandle, connection.target, connection.targetHandle);
+              setConnectingFrom(null);
+            }}
+            onConnectStart={(_event, params) => {
+              if (params.handleType === "source") setConnectingFrom({ nodeId: params.nodeId, portId: params.handleId });
+              setConnectionError("");
+            }}
+            onConnectEnd={() => setConnectingFrom(null)}
+            deleteKeyCode={null}
+            nodesFocusable
+            edgesFocusable
+            elevateEdgesOnSelect
+            panOnDrag
+            panOnScroll
+            zoomOnPinch
+            zoomOnScroll
+            selectionOnDrag={false}
+            proOptions={REACT_FLOW_OPTIONS}
+          >
+            <Background variant={BackgroundVariant.Dots} gap={24} size={1.1} color="rgba(230,216,196,.095)" />
+            <Controls position="bottom-left" />
+            {!compact && (
+              <MiniMap
+                position="bottom-right"
+                nodeColor={(flowNode) => NODE_TONES[flowNode.data.tone] ?? NODE_TONES.neutral}
+                nodeStrokeWidth={2}
+                maskColor="rgba(24, 21, 18, .74)"
+                pannable
+                zoomable
+              />
+            )}
+          </ReactFlow>
+          <div className={styles.accessibleGraph} aria-label="Workflow nodes">
             {graph.nodes.map((node) => (
-              <WorkflowNode
-                key={node.id}
-                node={node}
-                selected={node.id === selectedNodeId}
-                connecting={connectingFrom}
-                runState={run?.nodeRuns?.[node.id]}
-                onSelect={() => {
+              <div
+                role="group"
+                aria-label={`${WORKFLOW_NODE_META[node.type].label}: ${node.name}`}
+                onClick={() => {
                   setSelectedNodeId(node.id);
                   setSelectedEdgeId(null);
                   setInspectorOpen(true);
                 }}
-                onDragStart={(event) => setDrag({
-                  nodeId: node.id,
-                  startClient: { x: event.clientX, y: event.clientY },
-                  startPosition: node.position
-                })}
-                onStartConnection={(portId) => {
-                  setConnectingFrom((current) => current?.nodeId === node.id && current?.portId === portId ? null : { nodeId: node.id, portId });
-                  setConnectionError("");
-                  setSelectedNodeId(node.id);
-                }}
-                onFinishConnection={(portId) => finishConnection(node.id, portId)}
-              />
+                key={node.id}
+              >
+                {workflowInputPorts(node).map((port) => (
+                  <button type="button" aria-label={`Connect into ${node.name} · ${port.label}`} onClick={(event) => {
+                    event.stopPropagation();
+                    finishConnection(node.id, port.id);
+                  }} key={`input-${port.id}`} />
+                ))}
+                {workflowOutputPorts(node).map((port) => (
+                  <button type="button" aria-label={`Connect from ${node.name} · ${port.label}`} onClick={(event) => {
+                    event.stopPropagation();
+                    setConnectingFrom((current) => current?.nodeId === node.id && current?.portId === port.id ? null : { nodeId: node.id, portId: port.id });
+                    setConnectionError("");
+                    setSelectedNodeId(node.id);
+                  }} key={`output-${port.id}`} />
+                ))}
+              </div>
             ))}
           </div>
           {graph.nodes.length === 0 && (
@@ -567,7 +703,7 @@ export function WorkflowCanvas({
               <button type="button" className={styles.primaryButton} onClick={() => setNodePickerOpen(true)}><Plus size={14} />Browse nodes</button>
             </div>
           )}
-          {connectingFrom && <div className={styles.connectionHint}><Circle size={11} />{connectionError || "Choose a compatible input port · Esc to cancel"}</div>}
+          {(connectingFrom || connectionError) && <div className={styles.connectionHint}><Circle size={11} />{connectionError || "Drag to a compatible input · Esc to cancel"}</div>}
         </div>
 
         {inspectorOpen && selectedNode?.type === "useSkill" && (
@@ -596,11 +732,12 @@ export function WorkflowCanvas({
         {inspectorOpen && !selectedNode && <WorkflowInspector workflow={workflow} onChange={onChange} onClose={() => setInspectorOpen(false)} />}
       </div>
 
+      <RunTimeline graph={graph} run={run} />
       {run && !activeRun && (run.output !== null || run.error) && (
-        <footer className={styles.runResult} data-status={run.status}>
-          <span>{run.status === "completed" ? <CheckCircle size={15} /> : <Warning size={15} />}<strong>{workflowStatusLabel(run.status)}</strong></span>
-          <pre>{run.error || stringifyWorkflowValue(run.output) || "Workflow completed without an output value."}</pre>
-        </footer>
+        <details className={styles.runResult} data-status={run.status}>
+          <summary>{run.status === "completed" ? <CheckCircle size={14} /> : <Warning size={14} />}View run output</summary>
+          <pre>{run.error || runOutput || "Workflow completed without an output value."}</pre>
+        </details>
       )}
     </section>
   );

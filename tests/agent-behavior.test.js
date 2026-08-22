@@ -41,6 +41,32 @@ describe("agent behavior packs", () => {
     expect(instructions).not.toContain("# Verification before handoff");
   });
 
+  it("prioritizes Loom-native visualizations over generic visualization skills", () => {
+    const instructions = composeAgentInstructions({
+      baseInstructionsPath,
+      behaviorsDirectory,
+      settings: { structuredPlanning: false, parallelDelegation: false, verification: false }
+    });
+
+    expect(instructions).toContain("requests such as `visualize`");
+    expect(instructions).toContain("Do not invoke an installed visualization Skill");
+    expect(instructions).toContain("Treat `Loom visualization`, `in-chat visualization`, `inline visualization`, and `native visualization` as explicit format requirements");
+    expect(instructions).toContain("takes precedence over Skills or other instructions that would create an HTML file");
+  });
+
+  it("asks agents to choose useful native visualizations without an explicit user request", () => {
+    const instructions = composeAgentInstructions({
+      baseInstructionsPath,
+      behaviorsDirectory,
+      settings: { structuredPlanning: false, parallelDelegation: false, verification: false }
+    });
+
+    expect(instructions).toContain("even when the user does not ask for one");
+    expect(instructions).toContain("Add one proactively when it materially reduces the work needed to understand");
+    expect(instructions).toContain("three or more values that need comparison");
+    expect(instructions).toContain("Never add a chart as decoration");
+  });
+
   it("loads the Unslop writing guidance only when enabled", () => {
     const instructions = composeAgentInstructions({
       baseInstructionsPath,

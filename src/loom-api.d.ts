@@ -26,6 +26,20 @@ type LoomEvent = {
 
 type ProjectScope = { projectId: string };
 type ThreadScope = ProjectScope & { threadId: string };
+type ProjectIcon = "folder" | "code" | "terminal" | "globe" | "sparkles" | "stack" | "brain" | "chart" | "desktop" | "file" | "files" | "git-branch" | "image" | "lock" | "shield" | "workflow" | "gauge" | "connect";
+type ProjectColor = "gray" | "blue" | "indigo" | "purple" | "pink" | "rose" | "red" | "orange" | "amber" | "yellow" | "green" | "teal";
+type LoomProject = {
+  id: string;
+  canonicalPath: string;
+  displayName: string;
+  icon: ProjectIcon;
+  color: ProjectColor;
+  folders: string[];
+  lastUsedAt: string;
+  repository?: any;
+  createdAt: string;
+  updatedAt: string;
+};
 type WorkflowNodeType =
   | "manualTrigger"
   | "scheduleTrigger"
@@ -153,7 +167,7 @@ declare global {
   interface Window {
     loom?: {
       app: {
-        bootstrap(): Promise<{ projects: any[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; defaultEnabled: boolean }> }>;
+        bootstrap(): Promise<{ projects: LoomProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; defaultEnabled: boolean }> }>;
         saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };
@@ -177,14 +191,18 @@ declare global {
         history(payload: { workspaceId: string; action: "back" | "forward" | "reload" | "stop" }): Promise<any>;
         setViewport(payload: { workspaceId: string; visible: boolean; bounds?: { x: number; y: number; width: number; height: number } }): Promise<any>;
         adopt(payload: { fromWorkspaceId: string; toWorkspaceId: string }): Promise<any>;
+        destroy(payload: { workspaceId: string }): Promise<{ destroyed: boolean; workspaceId: string }>;
       };
       files: {
         read(payload: ProjectScope & { path: string }): Promise<any>;
         write(payload: ProjectScope & { path: string; content: string; expectedMtimeMs?: number }): Promise<any>;
       };
       projects: {
-        list(): Promise<any[]>;
-        open(): Promise<any | null>;
+        list(): Promise<LoomProject[]>;
+        touch(payload: ProjectScope): Promise<LoomProject>;
+        pickFolders(): Promise<string[]>;
+        create(payload: { displayName: string; icon: ProjectIcon; color: ProjectColor; folders: string[] }): Promise<LoomProject>;
+        open(): Promise<LoomProject | null>;
       };
       board: {
         list(payload: ProjectScope): Promise<{ data: Array<{ id: string; projectId: string; title: string; description: string; column: "backlog" | "ready" | "active" | "done"; position: number; threadId: string | null; createdByThreadId: string | null; createdAt: string; updatedAt: string }> }>;

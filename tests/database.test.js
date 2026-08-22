@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { LoomDatabase } from "../electron/persistence/database.mjs";
 
@@ -11,6 +12,114 @@ afterEach(() => {
 });
 
 describe("thread runtime persistence", () => {
+  it("round-trips project appearance and multiple folders", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    temporaryDirectories.push(directory);
+    const database = new LoomDatabase(directory);
+    const now = new Date().toISOString();
+
+    const created = database.createProject({
+      id: "project-studio",
+      canonicalPath: "/workspace/studio",
+      displayName: "Studio",
+      icon: "code",
+      color: "purple",
+      folders: ["/workspace/studio", "/workspace/shared"],
+      createdAt: now,
+      updatedAt: now
+    });
+
+    expect(created).toMatchObject({
+      id: "project-studio",
+      canonicalPath: "/workspace/studio",
+      displayName: "Studio",
+      icon: "code",
+      color: "purple",
+      folders: ["/workspace/studio", "/workspace/shared"]
+    });
+    database.db.close();
+
+    const reopened = new LoomDatabase(directory);
+    expect(reopened.listProjects()).toEqual([expect.objectContaining({
+      id: "project-studio",
+      canonicalPath: "/workspace/studio",
+      displayName: "Studio",
+      icon: "code",
+      color: "purple",
+      folders: ["/workspace/studio", "/workspace/shared"]
+    })]);
+    reopened.db.close();
+  });
+
+  it("orders projects by persisted recency after selection", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    temporaryDirectories.push(directory);
+    const database = new LoomDatabase(directory);
+    const olderAt = "2026-08-20T10:00:00.000Z";
+    const recentAt = "2026-08-21T10:00:00.000Z";
+    const selectedAt = "2026-08-22T10:00:00.000Z";
+
+    database.createProject({
+      id: "project-older",
+      canonicalPath: "/workspace/older",
+      displayName: "Older",
+      icon: "folder",
+      color: "blue",
+      folders: ["/workspace/older"],
+      lastUsedAt: olderAt,
+      createdAt: olderAt,
+      updatedAt: olderAt
+    });
+    database.createProject({
+      id: "project-recent",
+      canonicalPath: "/workspace/recent",
+      displayName: "Recent",
+      icon: "code",
+      color: "green",
+      folders: ["/workspace/recent"],
+      lastUsedAt: recentAt,
+      createdAt: recentAt,
+      updatedAt: recentAt
+    });
+
+    expect(database.listProjects().map((project) => project.id)).toEqual(["project-recent", "project-older"]);
+    expect(database.touchProject("project-older", selectedAt)).toMatchObject({
+      id: "project-older",
+      lastUsedAt: selectedAt
+    });
+    expect(database.listProjects().map((project) => project.id)).toEqual(["project-older", "project-recent"]);
+    database.db.close();
+  });
+
+  it("migrates legacy projects to the structured project DTO", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    temporaryDirectories.push(directory);
+    const sqlite = new DatabaseSync(path.join(directory, "loom.sqlite"));
+    sqlite.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY, canonical_path TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+    `);
+    sqlite.prepare(`
+      INSERT INTO projects (id, canonical_path, display_name, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run("legacy-project", "/workspace/legacy", "Legacy", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+    sqlite.close();
+
+    const database = new LoomDatabase(directory);
+    expect(database.getProject("legacy-project")).toMatchObject({
+      id: "legacy-project",
+      canonicalPath: "/workspace/legacy",
+      displayName: "Legacy",
+      icon: "folder",
+      color: "blue",
+      folders: ["/workspace/legacy"],
+      lastUsedAt: "2026-01-01T00:00:00.000Z"
+    });
+    database.db.close();
+  });
+
   it("restores and removes structured plan progress", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);

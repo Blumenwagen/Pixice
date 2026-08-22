@@ -27,6 +27,24 @@ function loadPreload() {
 }
 
 describe("workflow preload bridge", () => {
+  it("exposes project folder selection and structured project creation", async () => {
+    const { api, invoke } = loadPreload();
+    const project = {
+      displayName: "Studio",
+      icon: "code",
+      color: "purple",
+      folders: ["/work/studio", "/work/shared"]
+    };
+
+    await api.projects.touch({ projectId: "project-studio" });
+    await api.projects.pickFolders();
+    await api.projects.create(project);
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "projects:touch", { projectId: "project-studio" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "projects:pick-folders", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(3, "projects:create", project);
+  });
+
   it("wraps positional credential helpers into validated IPC payload objects", async () => {
     const { api, invoke } = loadPreload();
 

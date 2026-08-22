@@ -308,11 +308,11 @@ function useOrbCanvas(canvasRef, layers, active, reducedMotion) {
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.round(STAGE * ratio);
     canvas.height = Math.round(STAGE * ratio);
+    const color = window.getComputedStyle(canvas).color || "#ff7a86";
     let intersecting = true;
     let unsubscribe = null;
 
     const draw = (timestamp = performance.now()) => {
-      const color = window.getComputedStyle(canvas).color || "#ff7a86";
       const elapsed = timestamp - animationOrigin.current;
       const morph = clamp((timestamp - transitionOrigin.current) / MORPH_MS);
       const staticFrame = reducedMotion || !active;
