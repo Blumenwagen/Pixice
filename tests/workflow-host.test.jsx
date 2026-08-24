@@ -128,8 +128,10 @@ describe("WorkflowHost", () => {
     render(<WorkflowHost><Shell /></WorkflowHost>);
 
     fireEvent.click(await screen.findByRole("button", { name: "Workflows" }));
+    expect(document.querySelector('[aria-label="Remount navigation"]')).toHaveAttribute("aria-hidden", "true");
     fireEvent.click(await screen.findByRole("button", { name: "Back to task" }));
-    fireEvent.click(screen.getByRole("button", { name: "Remount navigation" }));
+    const remount = await screen.findByRole("button", { name: "Remount navigation" });
+    fireEvent.click(remount);
 
     const navigation = await screen.findByRole("button", { name: "Workflows" });
     fireEvent.click(navigation);

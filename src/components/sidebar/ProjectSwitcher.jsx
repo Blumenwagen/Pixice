@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Brain,
   CaretDown,
@@ -248,6 +249,7 @@ export function ProjectCreationDialog({
   busy = false,
   initialValue = null
 }) {
+  const systemReducedMotion = useReducedMotion();
   const titleId = useId();
   const descriptionId = useId();
   const nameRef = useRef(null);
@@ -308,8 +310,6 @@ export function ProjectCreationDialog({
     };
   }, [initialValue, open]);
 
-  if (!open) return null;
-
   const addFolders = async () => {
     if (!onAddFolders || addingFolders || busy) return;
     setAddingFolders(true);
@@ -347,14 +347,19 @@ export function ProjectCreationDialog({
   };
 
   return (
-    <div
+    <AnimatePresence initial={false}>
+    {open && <motion.div
       className={styles.dialogBackdrop}
       role="presentation"
+      initial={systemReducedMotion ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: systemReducedMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && !busy) onClose?.();
       }}
     >
-      <form
+      <motion.form
         ref={dialogRef}
         className={styles.dialog}
         role="dialog"
@@ -363,6 +368,10 @@ export function ProjectCreationDialog({
         aria-describedby={descriptionId}
         aria-busy={busy || addingFolders}
         onSubmit={submit}
+        initial={systemReducedMotion ? false : { opacity: 0, y: 10, scale: 0.96, filter: "blur(3px)" }}
+        animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+        exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: 7, scale: 0.98, filter: "blur(2px)" }}
+        transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: [0.22, 1, 0.36, 1] }}
       >
         <header className={styles.dialogHeader}>
           <span className={styles.dialogMark} aria-hidden="true"><FolderOpen size={20} /></span>
@@ -470,7 +479,8 @@ export function ProjectCreationDialog({
             {busy ? "Creating..." : "Create project"}
           </button>
         </footer>
-      </form>
-    </div>
+      </motion.form>
+    </motion.div>}
+    </AnimatePresence>
   );
 }

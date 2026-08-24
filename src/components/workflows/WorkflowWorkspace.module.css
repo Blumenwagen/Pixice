@@ -127,6 +127,7 @@
   font-weight: 650;
   white-space: nowrap;
 }
+.stateContent { display: inline-flex; align-items: center; gap: 6px; }
 
 .saveState[data-state="error"],
 .runBadge[data-status="failed"] { color: #ff858e; }
@@ -746,6 +747,13 @@
   text-align: center;
 }
 .loadingState { height: 100%; }
+.workflowSkeleton { min-height: 150px; padding: 20px 14px; display: grid; align-content: center; gap: 10px; }
+.workflowSkeleton > span { width: var(--workflow-skeleton-width); display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 9px; }
+.workflowSkeleton i,
+.workflowSkeleton b { display: block; background: linear-gradient(100deg, rgba(255,255,255,.035) 20%, rgba(255,255,255,.09) 42%, rgba(255,255,255,.035) 64%) 100% 0 / 220% 100%; animation: workflow-skeleton 1.3s ease-in-out infinite; }
+.workflowSkeleton i { width: 28px; height: 28px; border-radius: 8px; }
+.workflowSkeleton b { height: 10px; border-radius: 5px; }
+@keyframes workflow-skeleton { to { background-position: -120% 0; } }
 .emptyWorkspace > span,
 .emptyLibrary > span {
   width: 46px;
@@ -1524,6 +1532,17 @@
 }
 
 /* Match the native Pixice shell used by Settings. */
+.workflowTakeover {
+  position: absolute;
+  inset: 0;
+  z-index: 24;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--chrome-glass);
+  will-change: clip-path;
+}
+
 .workspaceOverlay {
   --workflow-bg: var(--canvas);
   --workflow-canvas: #171719;
@@ -1545,7 +1564,7 @@
 .library {
   padding: 14px 11px;
   background: transparent;
-  border-right: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+  border-right: 0;
 }
 
 .libraryBack { color: var(--quiet); }

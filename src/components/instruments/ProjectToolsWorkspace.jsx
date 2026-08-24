@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowClockwise, Check, Eye, Files, MagnifyingGlass, SpinnerGap, Stack, Trash, X } from "../icons/index.jsx";
+import { ArrowClockwise, CaretLeft, CaretRight, Check, Eye, Files, MagnifyingGlass, SpinnerGap, Stack, Trash, X } from "../icons/index.jsx";
 import styles from "./ProjectToolsWorkspace.module.css";
 
 function toolName(tool) {
@@ -29,24 +29,47 @@ function ParameterField({ name, parameter, value, onChange }) {
   return <label className={styles.field}><span>{parameter.label}{parameter.required && <b>Required</b>}</span><input type={parameter.type === "number" ? "number" : "text"} value={value ?? ""} placeholder={parameter.placeholder} onChange={(event) => onChange(parameter.type === "number" ? (event.target.value === "" ? undefined : Number(event.target.value)) : event.target.value)} />{parameter.description && <small>{parameter.description}</small>}</label>;
 }
 
-export function ProjectToolsWorkspace({ project, threadId, tools, loading, onReload, onLaunch, onRename, onGrants, onDuplicate, onDelete, onRevisions, onReceipts, onRestore }) {
+export function ProjectToolsSidebar({ tools, loading, selectedId, onSelect, onBack }) {
   const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState(null);
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return tools.filter((tool) => !needle || `${toolName(tool)} ${tool.document.description} ${tool.requestedCapabilities.join(" ")}`.toLowerCase().includes(needle));
+  }, [query, tools]);
+
+  return (
+    <aside className={styles.sidebar} aria-label="Tools navigation">
+      <button type="button" className={styles.back} onClick={onBack}><CaretLeft size={16} />Back to task</button>
+      <label className={styles.search}>
+        <MagnifyingGlass size={16} />
+        <input aria-label="Search project tools" placeholder="Search tools" value={query} onChange={(event) => setQuery(event.target.value)} />
+        {query && <button type="button" aria-label="Clear search" onClick={() => setQuery("")}><X size={12} /></button>}
+      </label>
+      <nav className={styles.list} aria-label="Project tools">
+        {filtered.map((tool) => (
+          <button type="button" className={tool.id === selectedId ? styles.selected : ""} onClick={() => onSelect(tool.id)} aria-current={tool.id === selectedId ? "page" : undefined} key={tool.id}>
+            <Stack size={17} />
+            <span><strong>{toolName(tool)}</strong><small>{tool.document.description || "No description"}</small></span>
+            <em>{tool.usageCount}</em>
+            <CaretRight size={13} />
+          </button>
+        ))}
+      </nav>
+      {!loading && !filtered.length && <p className={styles.navEmpty}>{tools.length ? "No tools match this search." : "Pin an Instrument to add your first project tool."}</p>}
+    </aside>
+  );
+}
+
+export function ProjectToolsWorkspace({ project, threadId, tools, selectedId, loading, onReload, onLaunch, onRename, onGrants, onDuplicate, onDelete, onRevisions, onReceipts, onRestore }) {
   const [name, setName] = useState("");
   const [launchValues, setLaunchValues] = useState({});
   const [revisions, setRevisions] = useState([]);
   const [receipts, setReceipts] = useState([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return tools.filter((tool) => !needle || `${toolName(tool)} ${tool.document.description} ${tool.requestedCapabilities.join(" ")}`.toLowerCase().includes(needle));
-  }, [query, tools]);
-  const selected = tools.find((tool) => tool.id === selectedId) ?? filtered[0] ?? null;
+  const selected = tools.find((tool) => tool.id === selectedId) ?? tools[0] ?? null;
 
   useEffect(() => {
     if (!selected) return;
-    setSelectedId(selected.id);
     setName(toolName(selected));
     setLaunchValues(initialParameters(selected));
     let cancelled = false;
@@ -75,19 +98,12 @@ export function ProjectToolsWorkspace({ project, threadId, tools, loading, onRel
   const canLaunch = Boolean(threadId) && parameters.every(([nameKey, parameter]) => !parameter.required || launchValues[nameKey] !== undefined && launchValues[nameKey] !== "");
 
   return (
-    <main className={styles.workspace}>
+    <main className={`main-canvas workspace ${styles.workspace}`}>
       <header className="workspace-header">
         <div><span>Project library</span><h1>Tools</h1><p>Reusable interfaces created for {project?.displayName ?? "this project"}.</p></div>
         <div><button type="button" onClick={onReload} disabled={loading}>{loading && <SpinnerGap className={styles.spin} size={14} />}Refresh</button></div>
       </header>
-      <div className={styles.layout}>
-        <aside className={styles.library}>
-          <label className={styles.search}><MagnifyingGlass size={14} /><input aria-label="Search project tools" placeholder="Search tools" value={query} onChange={(event) => setQuery(event.target.value)} />{query && <button type="button" aria-label="Clear search" onClick={() => setQuery("")}><X size={12} /></button>}</label>
-          <div className={styles.list}>
-            {filtered.map((tool) => <button type="button" className={tool.id === selected?.id ? styles.selected : ""} onClick={() => setSelectedId(tool.id)} key={tool.id}><Stack size={16} /><span><strong>{toolName(tool)}</strong><small>{tool.document.description || "No description"}</small></span><em>{tool.usageCount}</em></button>)}
-            {!loading && !filtered.length && <p>{tools.length ? "No tools match this search." : "Pin an Instrument to add your first project tool."}</p>}
-          </div>
-        </aside>
+      <div className={styles.content}>
         {selected ? (
           <section className={styles.detail}>
             <div className={styles.detailHeader}>

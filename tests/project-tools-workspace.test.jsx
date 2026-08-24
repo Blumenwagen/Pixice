@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ProjectToolsWorkspace } from "../src/components/instruments/ProjectToolsWorkspace.jsx";
+import { ProjectToolsSidebar, ProjectToolsWorkspace } from "../src/components/instruments/ProjectToolsWorkspace.jsx";
 
 const tool = {
   id: "tool-1",
@@ -37,6 +37,7 @@ describe("Project tools workspace", () => {
       project={{ displayName: "Pixice" }}
       threadId="thread-1"
       tools={[tool]}
+      selectedId="tool-1"
       loading={false}
       onReload={vi.fn()}
       onLaunch={onLaunch}
@@ -71,6 +72,7 @@ describe("Project tools workspace", () => {
       project={{ displayName: "Pixice" }}
       threadId={null}
       tools={[tool]}
+      selectedId="tool-1"
       loading={false}
       onReload={vi.fn()}
       onLaunch={vi.fn()}
@@ -84,5 +86,16 @@ describe("Project tools workspace", () => {
     />);
     expect(screen.getByText(/Select or create a task/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open in Preview" })).toBeDisabled();
+  });
+
+  it("uses a Settings-style takeover sidebar for the project tool library", () => {
+    const onSelect = vi.fn();
+    const onBack = vi.fn();
+    render(<ProjectToolsSidebar tools={[tool]} loading={false} selectedId="tool-1" onSelect={onSelect} onBack={onBack} />);
+
+    expect(screen.getByRole("complementary", { name: "Tools navigation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to task" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Project tools" })).toContainElement(screen.getByRole("button", { name: /Release tool/ }));
+    expect(screen.getByRole("button", { name: /Release tool/ })).toHaveAttribute("aria-current", "page");
   });
 });

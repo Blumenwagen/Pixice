@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { TreeStructure } from "../icons/index.jsx";
 import { WorkflowPreview, WorkflowWorkspace } from "./WorkflowWorkspace.jsx";
 import styles from "./WorkflowWorkspace.module.css";
@@ -27,10 +28,12 @@ function waitForElement(selector, timeoutMs = 1800) {
 
 export function WorkflowHost({ children }) {
   const api = window.loom;
+  const systemReducedMotion = useReducedMotion();
   const [navTarget, setNavTarget] = useState(null);
   const [appTarget, setAppTarget] = useState(null);
   const [previewTarget, setPreviewTarget] = useState(null);
   const [active, setActive] = useState(false);
+  const [workflowPresent, setWorkflowPresent] = useState(false);
   const [projects, setProjects] = useState([]);
   const [models, setModels] = useState([]);
   const [projectId, setProjectId] = useState(() => localStorage.getItem("loom.activeProjectId"));
@@ -93,12 +96,36 @@ export function WorkflowHost({ children }) {
   }, [projectId, refreshCatalog]);
 
   useEffect(() => {
+    if (active) setWorkflowPresent(true);
+  }, [active]);
+
+  useEffect(() => {
     if (!appTarget) return undefined;
     const appRoot = appTarget.closest?.(".loom-app") ?? appTarget;
-    if (active) appRoot.dataset.workflowsActive = "true";
+    if (active || workflowPresent) appRoot.dataset.workflowsActive = "true";
     else delete appRoot.dataset.workflowsActive;
     return () => delete appRoot.dataset.workflowsActive;
-  }, [active, appTarget]);
+  }, [active, appTarget, workflowPresent]);
+
+  useEffect(() => {
+    if (!appTarget || (!active && !workflowPresent)) return undefined;
+    const appRoot = appTarget.closest?.(".loom-app") ?? appTarget;
+    const covered = [...appRoot.children].filter((node) => node !== appTarget && !node.classList?.contains("window-drag-region"));
+    const previous = covered.map((node) => ({
+      node,
+      inert: node.inert,
+      ariaHidden: node.getAttribute("aria-hidden")
+    }));
+    covered.forEach((node) => {
+      node.inert = true;
+      node.setAttribute("aria-hidden", "true");
+    });
+    return () => previous.forEach(({ node, inert, ariaHidden }) => {
+      node.inert = inert;
+      if (ariaHidden === null) node.removeAttribute("aria-hidden");
+      else node.setAttribute("aria-hidden", ariaHidden);
+    });
+  }, [active, appTarget, workflowPresent]);
 
   useEffect(() => {
     const handleSidebarClick = (event) => {
@@ -240,16 +267,28 @@ export function WorkflowHost({ children }) {
     navTarget
   ) : null;
 
-  const workspace = active && appTarget ? createPortal(
-    <WorkflowWorkspace
-      api={api}
-      projectId={projectId}
-      projectName={project?.displayName}
-      models={models}
-      requestedWorkflowId={requestedWorkflowId}
-      onWorkflowSelected={setRequestedWorkflowId}
-      onBack={() => setActive(false)}
-    />,
+  const workspace = appTarget ? createPortal(
+    <AnimatePresence initial={false} onExitComplete={() => setWorkflowPresent(false)}>
+      {active && (
+        <motion.div
+          className={styles.workflowTakeover}
+          initial={systemReducedMotion ? false : { clipPath: "polygon(0 0, 8% 0, 0 100%, 0 100%)" }}
+          animate={{ clipPath: "polygon(0 0, 100% 0, 100% 100%, 0 100%)" }}
+          exit={systemReducedMotion ? { opacity: 0 } : { clipPath: "polygon(0 0, 8% 0, 0 100%, 0 100%)" }}
+          transition={{ duration: systemReducedMotion ? 0 : 0.26, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <WorkflowWorkspace
+            api={api}
+            projectId={projectId}
+            projectName={project?.displayName}
+            models={models}
+            requestedWorkflowId={requestedWorkflowId}
+            onWorkflowSelected={setRequestedWorkflowId}
+            onBack={() => setActive(false)}
+          />
+        </motion.div>
+      )}
+    </AnimatePresence>,
     appTarget
   ) : null;
 

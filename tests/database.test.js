@@ -134,6 +134,23 @@ describe("thread runtime persistence", () => {
     database.db.close();
   });
 
+  it("persists turn timing across runtime snapshots", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+
+    database.saveThreadTurnTiming({ threadId: "thread-1", turnId: "turn-1", startedAt: "2026-08-24T09:00:00.000Z" });
+    database.saveThreadTurnTiming({ threadId: "thread-1", turnId: "turn-1", startedAt: "2026-08-24T09:00:01.000Z", completedAt: "2026-08-24T10:48:00.000Z" });
+    expect(database.getThreadTurnTiming("thread-1", "turn-1")).toMatchObject({
+      startedAt: "2026-08-24T09:00:00.000Z",
+      completedAt: "2026-08-24T10:48:00.000Z"
+    });
+
+    database.deleteThreadTurnTimings("thread-1");
+    expect(database.listThreadTurnTimings("thread-1")).toEqual([]);
+    database.db.close();
+  });
+
   it("persists generated thread names independently from Codex list metadata", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);

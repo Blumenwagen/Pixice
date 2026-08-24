@@ -62,12 +62,34 @@ function mergeTurnItems(currentItems = [], incomingItems = []) {
     }
     return next;
   });
+  const retained = [];
   currentItems.forEach((item) => {
     if (incomingIds.has(item.id) || consumedCurrentIds.has(item.id)) return;
     if (hasPersistedUserMessage && String(item.id).startsWith("local-user:")) return;
-    merged.push(item);
+    retained.push(item);
   });
+  const finalIndex = merged.findIndex((item) => item.type === "agentMessage" && item.phase === "final_answer");
+  if (finalIndex === -1) merged.push(...retained);
+  else merged.splice(finalIndex, 0, ...retained);
   return merged;
+}
+
+function eventTimestamp(payload) {
+  return payload?.receivedAt ?? new Date().toISOString();
+}
+
+function turnStartedAt(turn, fallback) {
+  return turn?.startedAt ?? turn?.createdAt ?? fallback;
+}
+
+function stampTurnItems(items = [], { startedAt, completedAt } = {}) {
+  return items.map((item) => {
+    if (item.type === "userMessage" && !item.createdAt) return { ...item, createdAt: startedAt };
+    if (item.type === "agentMessage" && item.phase === "final_answer" && !item.createdAt) {
+      return { ...item, createdAt: completedAt ?? startedAt };
+    }
+    return item;
+  });
 }
 
 function turnIsSettled(status) {
@@ -139,28 +161,47 @@ export function applyRuntimePayload(thread, payload) {
   const method = payload.method;
 
   if (method === "turn/started" && payload.turn) {
+    const receivedAt = eventTimestamp(payload);
     return updateTurn(thread, payload.turn.id, (turn) => ({
       ...turn,
       ...payload.turn,
-      items: payload.turn.items?.length ? payload.turn.items : turn.items ?? []
+      startedAt: turnStartedAt(payload.turn, turnStartedAt(turn, receivedAt)),
+      items: payload.turn.items?.length
+        ? stampTurnItems(payload.turn.items, { startedAt: turnStartedAt(payload.turn, turnStartedAt(turn, receivedAt)) })
+        : turn.items ?? []
     }), payload.turn);
   }
   if (method === "turn/completed" && payload.turn) {
+    const receivedAt = eventTimestamp(payload);
     return updateTurn(thread, payload.turn.id, (turn) => ({
       ...turn,
       ...payload.turn,
-      items: payload.turn.items?.length ? payload.turn.items : turn.items ?? []
+      startedAt: turnStartedAt(payload.turn, turnStartedAt(turn, receivedAt)),
+      completedAt: payload.turn.completedAt ?? turn.completedAt ?? receivedAt,
+      items: payload.turn.items?.length
+        ? stampTurnItems(mergeTurnItems(turn.items, payload.turn.items), {
+            startedAt: turnStartedAt(payload.turn, turnStartedAt(turn, receivedAt)),
+            completedAt: payload.turn.completedAt ?? turn.completedAt ?? receivedAt
+          })
+        : turn.items ?? []
     }), payload.turn);
   }
   if ((method === "item/started" || method === "item/completed") && payload.item) {
-    return updateTurn(thread, payload.turnId, (turn) => upsertItem(turn, payload.item));
+    const receivedAt = eventTimestamp(payload);
+    const item = {
+      ...payload.item,
+      ...(method === "item/started" && !payload.item.startedAt ? { startedAt: receivedAt } : {}),
+      ...(method === "item/completed" && !payload.item.completedAt ? { completedAt: receivedAt } : {}),
+      ...(payload.item.type === "agentMessage" && !payload.item.createdAt ? { createdAt: receivedAt } : {})
+    };
+    return updateTurn(thread, payload.turnId, (turn) => upsertItem(turn, item));
   }
   if (method === "item/agentMessage/delta" && payload.itemId) {
     return updateTurn(thread, payload.turnId, (turn) => {
       const existing = (turn.items ?? []).find((item) => item.id === payload.itemId);
       const item = existing?.type === "agentMessage"
         ? { ...existing, text: `${existing.text ?? ""}${payload.delta ?? ""}` }
-        : { id: payload.itemId, type: "agentMessage", text: payload.delta ?? "", phase: "commentary" };
+        : { id: payload.itemId, type: "agentMessage", text: payload.delta ?? "", phase: "commentary", createdAt: eventTimestamp(payload) };
       return upsertItem(turn, item);
     });
   }
@@ -209,6 +250,7 @@ export function projectCollabAgents(threads, item) {
       preview,
       name: existing?.name ?? null,
       status: collabThreadStatus(agentState?.status, item.tool),
+      startedAt: existing?.startedAt ?? item.startedAt ?? item.createdAt ?? new Date().toISOString(),
       agentStatusMessage: agentState?.message ?? existing?.agentStatusMessage ?? null,
       bridge: existing?.bridge ?? (item.bridge ? {
         kind: "loomBridge",

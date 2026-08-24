@@ -110,6 +110,12 @@ export class PixiceDatabase {
       CREATE TABLE IF NOT EXISTS thread_runtime_state (
         thread_id TEXT PRIMARY KEY, plan TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS thread_turn_timings (
+        thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, started_at TEXT NOT NULL,
+        completed_at TEXT, updated_at TEXT NOT NULL,
+        PRIMARY KEY(thread_id, turn_id)
+      );
+      CREATE INDEX IF NOT EXISTS thread_turn_timings_thread ON thread_turn_timings(thread_id, started_at);
       CREATE TABLE IF NOT EXISTS thread_names (
         thread_id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at TEXT NOT NULL
       );
@@ -476,6 +482,40 @@ export class PixiceDatabase {
 
   deleteThreadRuntimeState(threadId) {
     this.db.prepare("DELETE FROM thread_runtime_state WHERE thread_id = ?").run(threadId);
+  }
+
+  deleteThreadTurnTimings(threadId) {
+    this.db.prepare("DELETE FROM thread_turn_timings WHERE thread_id = ?").run(threadId);
+  }
+
+  saveThreadTurnTiming({ threadId, turnId, startedAt, completedAt = null }) {
+    const updatedAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO thread_turn_timings (thread_id, turn_id, started_at, completed_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(thread_id, turn_id) DO UPDATE SET
+        started_at=COALESCE(thread_turn_timings.started_at, excluded.started_at),
+        completed_at=COALESCE(excluded.completed_at, thread_turn_timings.completed_at),
+        updated_at=excluded.updated_at
+    `).run(threadId, turnId, startedAt, completedAt, updatedAt);
+    return { threadId, turnId, startedAt, completedAt, updatedAt };
+  }
+
+  listThreadTurnTimings(threadId) {
+    return this.db.prepare(`
+      SELECT thread_id, turn_id, started_at, completed_at, updated_at
+      FROM thread_turn_timings WHERE thread_id = ? ORDER BY started_at ASC
+    `).all(threadId).map((row) => ({
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      updatedAt: row.updated_at
+    }));
+  }
+
+  getThreadTurnTiming(threadId, turnId) {
+    return this.listThreadTurnTimings(threadId).find((timing) => timing.turnId === turnId) ?? null;
   }
 
   saveThreadProviderBinding(binding) {

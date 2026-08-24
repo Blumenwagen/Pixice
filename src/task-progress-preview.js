@@ -19,6 +19,8 @@ const plan = [
   { step: "Verify and review", detail: "Lead", status: "pending" }
 ];
 
+const previewStartedAt = new Date(Date.now() - 108_000).toISOString();
+
 const rootThread = {
   id: "preview-task",
   name: "Refactor authentication flow",
@@ -30,8 +32,9 @@ const rootThread = {
   turns: [{
     id: "preview-turn",
     status: "inProgress",
+    startedAt: previewStartedAt,
     items: [
-      { id: "preview-user", type: "userMessage", content: [{ type: "text", text: "Refactor the authentication flow and keep the session migration safe." }] },
+      { id: "preview-user", type: "userMessage", createdAt: previewStartedAt, content: [{ type: "text", text: "Refactor the authentication flow and keep the session migration safe." }] },
       { id: "preview-reasoning", type: "reasoning", summary: ["Coordinating the backend migration and client-session work in parallel."] }
     ]
   }]
@@ -49,8 +52,8 @@ const secondaryThread = {
 };
 
 const agents = [
-  { id: "api-agent", parentThreadId: rootThread.id, name: "API migration", preview: "Update client sessions", status: "running", agentRole: "API migration", agentStatusMessage: "Updating client sessions" },
-  { id: "test-agent", parentThreadId: rootThread.id, name: "Session tests", preview: "Add fingerprinting", status: "running", agentRole: "Session tests", agentStatusMessage: "Adding fingerprint coverage" },
+  { id: "api-agent", parentThreadId: rootThread.id, name: "API migration", preview: "Update client sessions", status: "running", startedAt: new Date(Date.now() - 82_000).toISOString(), agentRole: "API migration", agentStatusMessage: "Updating client sessions" },
+  { id: "test-agent", parentThreadId: rootThread.id, name: "Session tests", preview: "Add fingerprinting", status: "running", startedAt: new Date(Date.now() - 49_000).toISOString(), agentRole: "Session tests", agentStatusMessage: "Adding fingerprint coverage" },
   { id: "model-agent", parentThreadId: rootThread.id, name: "Cookie model", preview: "Design cookie model", status: "completed", agentRole: "Cookie model", agentStatusMessage: "Completed" }
 ];
 

@@ -345,7 +345,28 @@ function withPersistedThreadName(thread) {
     database.saveThreadName(thread.id, runtimeName);
     name = runtimeName;
   }
-  return name && name !== thread.name ? { ...thread, name } : thread;
+  const namedThread = name && name !== thread.name ? { ...thread, name } : thread;
+  const timings = new Map(database.listThreadTurnTimings(thread.id).map((timing) => [timing.turnId, timing]));
+  if (!namedThread.turns?.length || !timings.size) return namedThread;
+  return {
+    ...namedThread,
+    turns: namedThread.turns.map((turn) => {
+      const timing = timings.get(turn.id);
+      if (!timing) return turn;
+      const startedAt = turn.startedAt ?? turn.createdAt ?? timing.startedAt;
+      const completedAt = turn.completedAt ?? timing.completedAt;
+      return {
+        ...turn,
+        startedAt,
+        completedAt,
+        items: (turn.items ?? []).map((item) => {
+          if (item.type === "userMessage" && !item.createdAt) return { ...item, createdAt: startedAt };
+          if (item.type === "agentMessage" && item.phase === "final_answer" && !item.createdAt && completedAt) return { ...item, createdAt: completedAt };
+          return item;
+        })
+      };
+    })
+  };
 }
 
 function scheduleThreadName({ project, threadId, source, kind }) {
@@ -1599,6 +1620,8 @@ app.whenReady().then(async () => {
     send("RuntimeStatus", { ...status, connected: runtime.connected });
   });
   runtime.on("event", (event) => {
+    const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
+    event.payload = { ...event.payload, receivedAt };
     const { method, threadId, turn } = event.payload ?? {};
     if (threadNamer.rememberInternalThread(event.payload?.thread) || threadNamer.isInternalThread(threadId)) return;
     const collabItem = event.payload?.item;
@@ -1625,6 +1648,15 @@ app.whenReady().then(async () => {
       threadPlans.set(threadId, []);
       database.saveThreadPlan(threadId, []);
     }
+    if ((method === "turn/started" || method === "turn/completed") && threadId && turn?.id) {
+      const existingTiming = database.getThreadTurnTiming(threadId, turn.id);
+      const startedAt = turn.startedAt ?? turn.createdAt ?? existingTiming?.startedAt ?? receivedAt;
+      const completedAt = method === "turn/completed"
+        ? turn.completedAt ?? existingTiming?.completedAt ?? receivedAt
+        : existingTiming?.completedAt ?? null;
+      database.saveThreadTurnTiming({ threadId, turnId: turn.id, startedAt, completedAt });
+      event.payload.turn = { ...turn, startedAt, ...(completedAt ? { completedAt } : {}) };
+    }
     if (method === "turn/plan/updated" && threadId) {
       const plan = event.payload.plan ?? [];
       threadPlans.set(threadId, plan);
@@ -1638,6 +1670,7 @@ app.whenReady().then(async () => {
       threadProjects.delete(threadId);
       turnUsageMetadata.delete(threadId);
       database.deleteThreadRuntimeState(threadId);
+      if (method === "thread/deleted") database.deleteThreadTurnTimings(threadId);
       database.deleteThreadProviderBinding(threadId);
       database.deleteThreadLink(threadId);
       database.detachBoardTasksForThread(threadId);

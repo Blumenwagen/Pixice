@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Background,
   BackgroundVariant,
@@ -331,6 +332,7 @@ export function WorkflowCanvas({
   onCancel,
   onDelete
 }) {
+  const systemReducedMotion = useReducedMotion();
   const canvasRef = useRef(null);
   const flowRef = useRef(null);
   const [canvasSize, setCanvasSize] = useState({ width: 1000, height: 700 });
@@ -566,11 +568,17 @@ export function WorkflowCanvas({
         </div>
         <div className={styles.canvasToolbarCenter}>
           <span className={styles.saveState} data-state={savingState}>
-            {savingState === "saving" ? <SpinnerGap className={styles.spin} size={13} /> : savingState === "error" ? <Warning size={13} /> : <Check size={13} />}
-            {savingState === "saving" ? "Saving" : savingState === "error" ? "Save failed" : "Saved"}
+            <AnimatePresence initial={false} mode="wait">
+              <motion.span className={styles.stateContent} key={savingState} initial={systemReducedMotion ? false : { opacity: 0, y: 2, scale: 0.88, filter: "blur(2px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -2, scale: 0.9, filter: "blur(2px)" }} transition={{ duration: systemReducedMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}>
+                {savingState === "saving" ? <SpinnerGap className={styles.spin} size={13} /> : savingState === "error" ? <Warning size={13} /> : <Check size={13} />}
+                {savingState === "saving" ? "Saving" : savingState === "error" ? "Save failed" : "Saved"}
+              </motion.span>
+            </AnimatePresence>
           </span>
           {workflow.enabled && <span className={styles.runBadge} data-status="completed"><Circle size={11} />Automatic</span>}
-          {run && <span className={styles.runBadge} data-status={run.status}>{runStatusIcon(run.status)}{workflowStatusLabel(run.status)}</span>}
+          <AnimatePresence initial={false} mode="wait">
+            {run && <motion.span className={styles.runBadge} data-status={run.status} key={run.status} initial={systemReducedMotion ? false : { opacity: 0, scale: 0.88, filter: "blur(2px)" }} animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }} exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.9, filter: "blur(2px)" }} transition={{ duration: systemReducedMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}>{runStatusIcon(run.status)}{workflowStatusLabel(run.status)}</motion.span>}
+          </AnimatePresence>
         </div>
         <div className={styles.canvasActions}>
           <IconButton label="Workflow settings" className={styles.settingsButton} onClick={() => {

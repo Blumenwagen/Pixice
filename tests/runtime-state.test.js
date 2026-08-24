@@ -8,6 +8,32 @@ import {
 } from "../src/state/runtime.js";
 
 describe("runtime state projection", () => {
+  it("records turn boundaries and stamps the prompt and final answer", () => {
+    const thread = { id: "lead", turns: [] };
+    const started = applyRuntimePayload(thread, {
+      method: "turn/started",
+      threadId: "lead",
+      receivedAt: "2026-08-24T09:00:00.000Z",
+      turn: { id: "turn", status: "inProgress", items: [{ id: "prompt", type: "userMessage", content: [{ type: "text", text: "Time this" }] }] }
+    });
+    const completed = applyRuntimePayload(started, {
+      method: "turn/completed",
+      threadId: "lead",
+      receivedAt: "2026-08-24T10:48:00.000Z",
+      turn: { id: "turn", status: "completed", items: [
+        { id: "prompt", type: "userMessage", content: [{ type: "text", text: "Time this" }] },
+        { id: "answer", type: "agentMessage", text: "Done", phase: "final_answer" }
+      ] }
+    });
+
+    expect(completed.turns[0]).toMatchObject({
+      startedAt: "2026-08-24T09:00:00.000Z",
+      completedAt: "2026-08-24T10:48:00.000Z"
+    });
+    expect(completed.turns[0].items[0].createdAt).toBe("2026-08-24T09:00:00.000Z");
+    expect(completed.turns[0].items[1].createdAt).toBe("2026-08-24T10:48:00.000Z");
+  });
+
   it("streams assistant deltas into the active turn", () => {
     const thread = { id: "lead", turns: [{ id: "turn", status: "inProgress", items: [] }] };
     const first = applyRuntimePayload(thread, { method: "item/agentMessage/delta", threadId: "lead", turnId: "turn", itemId: "message", delta: "Hello" });

@@ -17,10 +17,11 @@ describe("agent behavior packs", () => {
       "unslop",
       "workflowAutomation",
       "boardStewardship",
-      "threadOrchestration"
+      "threadOrchestration",
+      "tools"
     ]);
     expect(catalog.every((behavior) => !("filename" in behavior))).toBe(true);
-    expect(catalog.filter((behavior) => behavior.category === "loom-native")).toHaveLength(3);
+    expect(catalog.filter((behavior) => behavior.category === "loom-native")).toHaveLength(4);
   });
 
   it("uses safe defaults and honors persisted overrides", () => {
@@ -31,7 +32,8 @@ describe("agent behavior packs", () => {
       unslop: false,
       workflowAutomation: false,
       boardStewardship: false,
-      threadOrchestration: false
+      threadOrchestration: false,
+      tools: false
     });
   });
 
@@ -95,12 +97,39 @@ describe("agent behavior packs", () => {
         verification: false,
         workflowAutomation: true,
         boardStewardship: false,
-        threadOrchestration: true
+        threadOrchestration: true,
+        tools: true
       }
     });
 
     expect(instructions).toContain("# Workflow-first automation");
     expect(instructions).toContain("# Thread orchestration");
+    expect(instructions).toContain("# Tools");
+    expect(instructions).toContain("Do not wait for the user to mention workflows.");
+    expect(instructions).toContain("Do not merely describe the option.");
+    expect(instructions).toContain("Pixice Tools let an agent add project-specific controls and views to Pixice without forking Pixice");
+    expect(instructions).toContain("Consider creating one when the user asks for project-specific controls");
+    expect(instructions).toContain("Do not substitute a Tool when the user asked to change the product's actual UI or project code.");
+    expect(instructions).toContain("Use `sendAgentEvent` only when the next step needs agent judgment.");
     expect(instructions).not.toContain("# Board stewardship");
+  });
+
+  it("loads proactive board guidance when board stewardship is enabled", () => {
+    const instructions = composeAgentInstructions({
+      baseInstructionsPath,
+      behaviorsDirectory,
+      settings: {
+        structuredPlanning: false,
+        parallelDelegation: false,
+        verification: false,
+        boardStewardship: true
+      }
+    });
+
+    expect(instructions).toContain("# Board stewardship");
+    expect(instructions).toContain("Do not wait for the user to mention the board.");
+    expect(instructions).toContain("inspect it at the start of a substantial task");
+    expect(instructions).toContain("capture a newly discovered follow-up when it is clearly outside the current scope");
+    expect(instructions).toContain("Do not mirror an agent's plan or temporary implementation checklist onto the board.");
   });
 });

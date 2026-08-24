@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "../src/App.jsx";
+import { App, formatElapsedDuration } from "../src/App.jsx";
 
 const appCss = readFileSync("src/styles.css", "utf8");
 
@@ -211,6 +211,12 @@ beforeEach(() => {
 });
 
 describe("Pixice app shell", () => {
+  it("formats elapsed work time without noisy units", () => {
+    expect(formatElapsedDuration(8_000)).toBe("8s");
+    expect(formatElapsedDuration(68_000)).toBe("1m 8s");
+    expect(formatElapsedDuration(6_480_000)).toBe("1h 48m");
+  });
+
   it("does not apply a viewport-sized backdrop filter over native window vibrancy", () => {
     const stageRule = appCss.match(/\.loom-stage\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(stageRule).not.toContain("backdrop-filter");
@@ -499,13 +505,13 @@ describe("Pixice app shell", () => {
     expect(sent.closest(".assistant-message")).toHaveTextContent("Increase the spacing between sections.");
   });
 
-  it("uses a subtle fade-through when entering and leaving settings", async () => {
+  it("uses a reversible angled wipe when entering and leaving settings", async () => {
     const originalAnimate = HTMLElement.prototype.animate;
     const originalGetAnimations = HTMLElement.prototype.getAnimations;
     const originalRequestAnimationFrame = window.requestAnimationFrame;
     const animations = [];
     HTMLElement.prototype.animate = vi.fn(function animate(keyframes, options) {
-      if (this.classList.contains("loom-app")) animations.push({ keyframes, options });
+      if (this.classList.contains("shell-transition-curtain")) animations.push({ keyframes, options });
       return { finished: Promise.resolve(), cancel: vi.fn() };
     });
     HTMLElement.prototype.getAnimations = vi.fn(() => []);
@@ -520,9 +526,11 @@ describe("Pixice app shell", () => {
       fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
       expect(await screen.findByRole("complementary", { name: "Primary navigation" })).toBeInTheDocument();
 
-      expect(document.querySelector(".view-curtain")).not.toBeInTheDocument();
-      await waitFor(() => expect(animations.map(({ options }) => options.duration)).toEqual([90, 180, 90, 180]));
-      expect(animations.flatMap(({ keyframes }) => keyframes).every((frame) => frame.transform.startsWith("scale("))).toBe(true);
+      expect(document.querySelector(".shell-transition-curtain")).toBeInTheDocument();
+      await waitFor(() => expect(animations.map(({ options }) => options.duration)).toEqual([260, 320, 260, 320]));
+      expect(animations.flatMap(({ keyframes }) => keyframes).every((frame) => frame.transform.includes("skewX(-7deg)"))).toBe(true);
+      expect(animations[0].keyframes[0].transform).toContain("-115%");
+      expect(animations[2].keyframes[0].transform).toContain("115%");
     } finally {
       if (originalAnimate) HTMLElement.prototype.animate = originalAnimate;
       else delete HTMLElement.prototype.animate;
@@ -633,8 +641,22 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("complementary", { name: "Settings navigation" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back to task" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Capabilities/ }));
+    expect(screen.queryByRole("heading", { name: "General" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Capabilities" })).toBeInTheDocument();
     expect(window.loom.extensions.list).toHaveBeenCalled();
+  });
+
+  it("lets Tools replace the primary sidebar instead of adding a second rail", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Tools" }));
+
+    expect(await screen.findByRole("complementary", { name: "Tools navigation" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Primary navigation" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to task" })).toBeInTheDocument();
+    expect(document.querySelector(".loom-app")).toHaveClass("view-tools");
+    expect(screen.getByRole("main")).toHaveClass("main-canvas");
   });
 
   it("reloads persisted threads when the runtime becomes ready after startup", async () => {
@@ -911,9 +933,10 @@ describe("Pixice app shell", () => {
         { id: "structuredPlanning", label: "Structured planning", description: "Plan multi-step work.", category: "core", defaultEnabled: true },
         { id: "parallelDelegation", label: "Parallel delegation", description: "Use focused helper agents.", category: "core", defaultEnabled: false },
         { id: "verification", label: "Verification before handoff", description: "Run proportionate checks.", category: "core", defaultEnabled: true },
-        { id: "workflowAutomation", label: "Workflow-first automation", description: "Use Pixice workflows.", category: "loom-native", defaultEnabled: false },
-        { id: "boardStewardship", label: "Board stewardship", description: "Keep board tasks current.", category: "loom-native", defaultEnabled: false },
-        { id: "threadOrchestration", label: "Thread orchestration", description: "Spawn focused Pixice threads.", category: "loom-native", defaultEnabled: false }
+        { id: "workflowAutomation", label: "Workflow-first automation", description: "Proactively use Pixice workflows for reusable processes.", category: "loom-native", defaultEnabled: false },
+        { id: "boardStewardship", label: "Board stewardship", description: "Proactively inspect the board and capture durable follow-ups.", category: "loom-native", defaultEnabled: false },
+        { id: "threadOrchestration", label: "Thread orchestration", description: "Spawn focused Pixice threads.", category: "loom-native", defaultEnabled: false },
+        { id: "tools", label: "Tools", description: "Extend Pixice with project-specific controls and views without building a separate app.", category: "loom-native", defaultEnabled: false }
       ]
     });
     window.loom = api;
@@ -925,9 +948,9 @@ describe("Pixice app shell", () => {
     expect(await screen.findByRole("heading", { name: "Agent Behavior" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Pixice-native features" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Parallel delegation" })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Thread orchestration" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Tools" })).not.toBeChecked();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Thread orchestration" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Tools" }));
     expect(api.app.saveSettings).toHaveBeenCalledWith({
       agentBehaviors: {
         structuredPlanning: true,
@@ -935,7 +958,8 @@ describe("Pixice app shell", () => {
         verification: true,
         workflowAutomation: false,
         boardStewardship: false,
-        threadOrchestration: true
+        threadOrchestration: false,
+        tools: true
       }
     });
   });
@@ -1306,15 +1330,17 @@ describe("Pixice app shell", () => {
   });
 
   it("keeps one live trace line while running and collapses the history after the final answer", async () => {
+    const startedAt = new Date(Date.now() - 65_000).toISOString();
+    const completedAt = new Date(Date.parse(startedAt) + 65_000).toISOString();
     const liveItems = [
-      { id: "user-live", type: "userMessage", content: [{ type: "text", text: "Check the task" }] },
+      { id: "user-live", type: "userMessage", createdAt: startedAt, content: [{ type: "text", text: "Check the task" }] },
       { id: "reasoning-live", type: "reasoning", summary: ["Checking the current flow"] },
       { id: "command-live", type: "commandExecution", command: "pnpm test", status: "inProgress" }
     ];
     const liveThread = {
       ...thread,
       status: { type: "active" },
-      turns: [{ id: "turn-live", status: "inProgress", items: liveItems }]
+      turns: [{ id: "turn-live", status: "inProgress", startedAt, items: liveItems }]
     };
     window.loom = createApi(liveThread);
 
@@ -1324,6 +1350,7 @@ describe("Pixice app shell", () => {
     expect(runningStatus.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
     expect(runningStatus.querySelectorAll(".trace-live-item")).toHaveLength(1);
     expect(runningStatus.closest(".working-trace").querySelector(".trace-reasoning-list")).toHaveTextContent("Checking the current flow");
+    expect(runningStatus).toHaveTextContent(/Working for 1m [5-6]s/);
 
     act(() => window.loom.emit({
       type: "RuntimeEvent",
@@ -1365,7 +1392,7 @@ describe("Pixice app shell", () => {
         ]
       }
     }));
-    await waitFor(() => expect(taskProgress).toHaveTextContent("3 / 6"));
+    await waitFor(() => expect(within(taskProgress).getByLabelText("3 of 6 complete")).toBeInTheDocument());
     expect(taskProgress.querySelector(".progress-track > span")).toHaveStyle({ width: "50%" });
 
     act(() => window.loom.emit({
@@ -1388,7 +1415,7 @@ describe("Pixice app shell", () => {
     }));
 
     expect(await screen.findByText("Delegated agent")).toBeInTheDocument();
-    expect(screen.getByText("Working · Inspecting Electron")).toBeInTheDocument();
+    expect(document.querySelector(".agent-row.child")).toHaveTextContent(/Working for \d+s · Inspecting Electron/);
     await waitFor(() => expect(workingTrace).not.toHaveTextContent("pnpm test"));
     expect(workingTrace).toHaveTextContent("Delegated work");
     expect(workingTrace.querySelectorAll(".trace-live-item")).toHaveLength(1);
@@ -1401,7 +1428,7 @@ describe("Pixice app shell", () => {
         plan: [{ step: "Inspect the project", status: "completed" }]
       }
     }));
-    await waitFor(() => expect(taskProgress).toHaveTextContent("1 / 1"));
+    await waitFor(() => expect(within(taskProgress).getByLabelText("1 of 1 complete")).toBeInTheDocument());
     expect(taskProgress.querySelector(".progress-track > span")).toHaveStyle({ width: "100%" });
 
     act(() => window.loom.emit({
@@ -1412,21 +1439,24 @@ describe("Pixice app shell", () => {
         turn: {
           id: "turn-live",
           status: "completed",
+          startedAt,
+          completedAt,
           items: [
             liveItems[0],
             liveItems[1],
             { ...liveItems[2], status: "completed", aggregatedOutput: "13 tests passed" },
-            { id: "final-live", type: "agentMessage", text: "Everything passes.", phase: "final_answer" }
+            { id: "final-live", type: "agentMessage", text: "Everything passes.", phase: "final_answer", createdAt: completedAt }
           ]
         }
       }
     }));
 
-    const settledToggle = await screen.findByRole("button", { name: "Ran 1 action" });
+    const settledToggle = await screen.findByRole("button", { name: "Worked for 1m 5s" });
     await waitFor(() => expect(settledToggle).toHaveAttribute("aria-expanded", "false"));
     const disclosure = document.getElementById(settledToggle.getAttribute("aria-controls"));
     expect(disclosure).toHaveAttribute("aria-hidden", "true");
     expect(await screen.findByText("Everything passes.")).toBeInTheDocument();
+    expect(document.querySelectorAll("time.message-timestamp")).toHaveLength(2);
 
     fireEvent.click(settledToggle);
     expect(settledToggle).toHaveAttribute("aria-expanded", "true");

@@ -1,5 +1,5 @@
 import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useContext } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import {
   ArrowClockwise, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
   Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
@@ -14,7 +14,7 @@ import { StreamingText } from "./components/StreamingText.jsx";
 import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
 import { InlineVisualization, parseVisualizationSpec } from "./components/InlineVisualization.jsx";
 import { InstrumentHost } from "./components/instruments/InstrumentHost.jsx";
-import { ProjectToolsWorkspace } from "./components/instruments/ProjectToolsWorkspace.jsx";
+import { ProjectToolsSidebar, ProjectToolsWorkspace } from "./components/instruments/ProjectToolsWorkspace.jsx";
 import { DitherAreaChart, DitherBarChart } from "./components/dither-kit/DitherChart.jsx";
 import { UsageHeatMap } from "./components/dither-kit/UsageHeatMap.jsx";
 import { NumberTicker } from "./components/NumberTicker.jsx";
@@ -65,7 +65,9 @@ const DEFAULT_PREFERENCES = {
   reduceMotion: false
 };
 
-const VIEW_ANIMATION_TIMEOUT_MS = 300;
+const VIEW_ANIMATION_TIMEOUT_MS = 900;
+const SHELL_TAKEOVER_VIEWS = new Set(["settings", "tools"]);
+const MOTION_EASE = [0.22, 1, 0.36, 1];
 const NewTaskIcon = APP_ICONS.newTask;
 const BoardIcon = APP_ICONS.board;
 const AttentionIcon = APP_ICONS.attention;
@@ -223,6 +225,55 @@ function timestampMillis(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+export function formatElapsedDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor((Number(milliseconds) || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function formatMessageTime(value) {
+  const timestamp = timestampMillis(value);
+  if (!timestamp) return "";
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(timestamp);
+}
+
+function formatMessageDateTime(value) {
+  const timestamp = timestampMillis(value);
+  if (!timestamp) return "";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(timestamp);
+}
+
+function useLiveNow(running) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return undefined;
+    const tick = () => setNow(Date.now());
+    tick();
+    const interval = window.setInterval(tick, 1000);
+    return () => window.clearInterval(interval);
+  }, [running]);
+  return now;
+}
+
+function ElapsedTime({ startedAt, completedAt, running, prefix = "" }) {
+  const now = useLiveNow(running);
+  const start = timestampMillis(startedAt);
+  if (!start) return null;
+  const end = timestampMillis(completedAt) || now;
+  const duration = formatElapsedDuration(Math.max(0, end - start));
+  return <span className="elapsed-time">{prefix}{duration}</span>;
+}
+
+function MessageTimestamp({ value, align = "start" }) {
+  const label = formatMessageTime(value);
+  if (!label) return null;
+  return <time className="message-timestamp" data-align={align} dateTime={new Date(timestampMillis(value)).toISOString()} title={formatMessageDateTime(value)}>{label}</time>;
+}
+
 function threadIsRunning(candidate) {
   const status = String(threadStatus(candidate)).toLowerCase();
   return status === "active" || status === "running" || status === "inprogress" || status === "attention";
@@ -352,6 +403,7 @@ function relativeTime(timestamp) {
 }
 
 function SidebarNavItem({ icon: Icon, label, active, badge, badgeTone = "neutral", shortcut, tone = "", disabled, onClick }) {
+  const systemReducedMotion = useReducedMotion();
   return (
     <button
       className={`rail-nav-item ${active ? "active" : ""} ${tone}`}
@@ -365,7 +417,19 @@ function SidebarNavItem({ icon: Icon, label, active, badge, badgeTone = "neutral
       <span className="rail-icon"><Icon size={17} weight={active ? "fill" : "regular"} /></span>
       <span className="rail-label">{label}</span>
       {shortcut && <kbd className="rail-shortcut">{shortcut}</kbd>}
-      {badge > 0 && <span className={`rail-badge ${badgeTone}`}>{badge > 99 ? "99+" : badge}</span>}
+      <AnimatePresence initial={false}>
+        {badge > 0 && (
+          <motion.span
+            className={`rail-badge ${badgeTone}`}
+            initial={systemReducedMotion ? false : { opacity: 0, scale: 0.72, filter: "blur(2px)" }}
+            animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+            exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.82, filter: "blur(2px)" }}
+            transition={{ duration: systemReducedMotion ? 0 : 0.18, ease: MOTION_EASE }}
+          >
+            {badge > 99 ? "99+" : badge}
+          </motion.span>
+        )}
+      </AnimatePresence>
     </button>
   );
 }
@@ -771,6 +835,8 @@ function FileSurface({ file, onUpdate, onSave }) {
 
 function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fileTabs, instrumentTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource }) {
   const viewportRef = useRef(null);
+  const systemReducedMotion = useReducedMotion();
+  const isPresent = useIsPresent();
   const activeFile = fileTabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeInstrument = instrumentTabs.find((tab) => `instrument:${tab.id}` === activeTabId) ?? null;
   const activeTab = activeFile || activeInstrument ? null : state.tabs.find((tab) => tab.id === activeTabId) ?? state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
@@ -837,11 +903,21 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
   }, [api, onFileUpdate, projectId]);
 
   return (
-    <section className="browser-panel" aria-label="Preview workspace">
+    <motion.section
+      className="browser-panel"
+      aria-label="Preview workspace"
+      aria-hidden={!isPresent}
+      inert={!isPresent ? true : undefined}
+      initial={systemReducedMotion ? false : { opacity: 0, x: 12, filter: "blur(2px)" }}
+      animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
+      exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, x: 10, filter: "blur(2px)" }}
+      transition={{ duration: systemReducedMotion ? 0 : 0.24, ease: MOTION_EASE }}
+    >
       <div className="browser-tabbar">
         <div className="browser-tabs" role="tablist" aria-label="Workspace tabs">
           {state.tabs.map((tab) => (
             <div className={`browser-tab${tab.id === activeTabId ? " active" : ""}`} role="presentation" key={tab.id}>
+              {tab.id === activeTabId && <motion.span className="browser-tab-active-indicator" layoutId={`preview-tab-${workspaceId}`} transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }} />}
               <button role="tab" aria-selected={tab.id === activeTabId} onClick={() => void run(() => api.browser.activate({ workspaceId, tabId: tab.id }), true)}>
                 {tab.loading ? <SpinnerGap className="spin-icon" size={12} /> : <Globe size={12} />}
                 <span>{tab.title || "New tab"}</span>
@@ -851,6 +927,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
           ))}
           {fileTabs.map((file) => (
             <div className={`browser-tab file-tab${file.id === activeTabId ? " active" : ""}${file.dirty ? " dirty" : ""}`} role="presentation" key={file.id}>
+              {file.id === activeTabId && <motion.span className="browser-tab-active-indicator" layoutId={`preview-tab-${workspaceId}`} transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }} />}
               <button role="tab" aria-selected={file.id === activeTabId} onClick={() => onActiveTabChange(file.id)}>
                 {file.previewKind === "html" ? <Code size={12} /> : <File size={12} />}
                 <span>{file.name}</span>
@@ -860,6 +937,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
           ))}
           {instrumentTabs.map((instrument) => (
             <div className={`browser-tab instrument-tab${`instrument:${instrument.id}` === activeTabId ? " active" : ""}`} role="presentation" key={instrument.id}>
+              {`instrument:${instrument.id}` === activeTabId && <motion.span className="browser-tab-active-indicator" layoutId={`preview-tab-${workspaceId}`} transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }} />}
               <button role="tab" aria-selected={`instrument:${instrument.id}` === activeTabId} onClick={() => onActiveTabChange(`instrument:${instrument.id}`)}>
                 <Gauge size={12} />
                 <span>{instrument.document.title}</span>
@@ -919,7 +997,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
           )}
         </div>
       ) : <div className="file-empty"><PreviewIcon size={28} /><strong>Open something</strong><small>Use + for a browser tab or select a file link in the conversation.</small></div>}
-    </section>
+    </motion.section>
   );
 }
 
@@ -943,6 +1021,7 @@ function planStepDetail(step, index, workingAgents, running) {
 
 function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, running, inspectorOpen, onInspectorToggle }) {
   const [expanded, setExpanded] = useState(true);
+  const systemReducedMotion = useReducedMotion();
   if (!plan?.length && !fallbackText) return null;
   const complete = plan?.filter((step) => step.status === "completed").length ?? 0;
   const total = plan?.length ?? 0;
@@ -964,7 +1043,7 @@ function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, run
       <button className="progress-head" type="button" aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} task progress`} onClick={() => setExpanded((open) => !open)}>
         <span className="progress-glyph"><TaskProgressIcon size={17} weight="fill" /></span>
         <span className="progress-title"><strong>Task progress</strong><small>{thread ? threadTitle(thread) : "Codex plan"}</small></span>
-        {total > 0 && <span className="progress-count"><strong>{complete} / {total}</strong><small>complete</small></span>}
+        {total > 0 && <span className="progress-count" aria-label={`${complete} of ${total} complete`}><strong><NumberTicker value={complete} blur /> / {total}</strong><small>complete</small></span>}
         <CaretDown className="progress-caret" size={15} />
       </button>
       {total > 0 && (
@@ -976,16 +1055,36 @@ function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, run
         <div className="task-progress-disclosure-inner">
           {plan?.length ? (
             <div className="progress-content">
-              <div className="progress-phase">
-                <span><Circle size={10} weight="fill" /><strong>{phase}</strong></span>
-                <small>{workingCopy}</small>
-              </div>
+              <AnimatePresence initial={false} mode="wait">
+                <motion.div
+                  className="progress-phase"
+                  key={phase}
+                  initial={systemReducedMotion ? false : { opacity: 0, y: 3, filter: "blur(2px)" }}
+                  animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                  exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -2, filter: "blur(2px)" }}
+                  transition={{ duration: systemReducedMotion ? 0 : 0.16, ease: MOTION_EASE }}
+                >
+                  <span><Circle size={10} weight="fill" /><strong>{phase}</strong></span>
+                  <small>{workingCopy}</small>
+                </motion.div>
+              </AnimatePresence>
               <div className="progress-steps">
                 {plan.map((step, index) => (
-                  <div className={`progress-step ${step.status}${step.status === "inProgress" && !running ? " inactive" : ""}`} key={step.step}>
-                    {step.status === "completed" ? <CheckCircle size={15} weight="fill" /> : step.status === "inProgress" && running ? <SpinnerGap className="spin-icon" size={15} /> : step.status === "inProgress" ? <Pause size={15} weight="fill" /> : <Circle size={15} />}
+                  <motion.div layout="position" className={`progress-step ${step.status}${step.status === "inProgress" && !running ? " inactive" : ""}`} transition={{ duration: systemReducedMotion ? 0 : 0.2, ease: MOTION_EASE }} key={step.step}>
+                    <AnimatePresence initial={false} mode="wait">
+                      <motion.span
+                        className="progress-status-icon"
+                        key={`${step.status}-${step.status === "inProgress" && running}`}
+                        initial={systemReducedMotion ? false : { opacity: 0, scale: 0.72, rotate: -12, filter: "blur(2px)" }}
+                        animate={{ opacity: 1, scale: 1, rotate: 0, filter: "blur(0px)" }}
+                        exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.82, filter: "blur(2px)" }}
+                        transition={{ duration: systemReducedMotion ? 0 : 0.18, ease: MOTION_EASE }}
+                      >
+                        {step.status === "completed" ? <CheckCircle size={15} weight="fill" /> : step.status === "inProgress" && running ? <SpinnerGap className="spin-icon" size={15} /> : step.status === "inProgress" ? <Pause size={15} weight="fill" /> : <Circle size={15} />}
+                      </motion.span>
+                    </AnimatePresence>
                     <span className="progress-step-copy"><strong>{step.step}</strong><small>{planStepDetail(step, index, workingAgents, running)}</small></span>
-                  </div>
+                  </motion.div>
                 ))}
               </div>
             </div>
@@ -1263,6 +1362,8 @@ function threadRevision(thread) {
       item.type,
       item.status,
       item.phase,
+      item.createdAt,
+      item.completedAt,
       sized(item.text),
       sized(item.aggregatedOutput),
       sized(item.result),
@@ -1273,7 +1374,7 @@ function threadRevision(thread) {
       sized(item.summary),
       sized(item.changes)
     ].join(":"));
-    return `${turn.id}:${turn.status}:${items.join("|")}`;
+    return `${turn.id}:${turn.status}:${turn.startedAt ?? turn.createdAt ?? ""}:${turn.completedAt ?? ""}:${items.join("|")}`;
   });
   return `${thread?.id ?? ""}:${thread?.updatedAt ?? ""}:${threadStatus(thread)}:${turns.join(";")}`;
 }
@@ -1303,25 +1404,28 @@ function sameThreadSummary(left, right) {
     && left.bridge?.effort === right.bridge?.effort;
 }
 
-function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false }) {
+function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false, timestamp = null }) {
   const [animate] = useState(() => !seenResponseIds.has(responseKey));
   useEffect(() => {
     seenResponseIds.add(responseKey);
   }, [responseKey, seenResponseIds]);
 
   return (
-    <article className={`message assistant-message ${forceFinal ? "final_answer" : item.phase ?? ""}`}>
-      {animate ? (
-        <StreamingText text={item.text}>
-          {(shown, caret) => <MarkdownMessage text={shown} trailing={caret} />}
-        </StreamingText>
-      ) : <MarkdownMessage text={item.text} />}
-      {sentToMain && <div className="bridge-answer-status"><CheckCircle size={11} weight="fill" />Sent answer to main agent</div>}
-    </article>
+    <div className="assistant-message-block">
+      <article className={`message assistant-message ${forceFinal ? "final_answer" : item.phase ?? ""}`}>
+        {animate ? (
+          <StreamingText text={item.text}>
+            {(shown, caret) => <MarkdownMessage text={shown} trailing={caret} />}
+          </StreamingText>
+        ) : <MarkdownMessage text={item.text} />}
+        {sentToMain && <div className="bridge-answer-status"><CheckCircle size={11} weight="fill" />Sent answer to main agent</div>}
+      </article>
+      {forceFinal && <MessageTimestamp value={timestamp} />}
+    </div>
   );
 }
 
-function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds, imagePrompt = null, imageResolution = null, promptAnchorId = null, openedByAgent = false, sentToMain = false }) {
+function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds, imagePrompt = null, imageResolution = null, promptAnchorId = null, openedByAgent = false, sentToMain = false, timestamp = null }) {
   if (item.type === "userMessage") {
     const text = item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n");
     const images = item.content?.filter((part) => part.type === "image" && part.url) ?? [];
@@ -1337,12 +1441,13 @@ function ConversationItem({ item, forceFinal = false, responseKey, seenResponseI
           )}
           {text && <span>{text}</span>}
         </div>
+        <MessageTimestamp value={timestamp} align="end" />
       </div>
     );
   }
   if (item.type === "agentMessage") {
     if (!item.text) return null;
-    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} sentToMain={sentToMain} />;
+    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} sentToMain={sentToMain} timestamp={timestamp} />;
   }
   if (item.type === "imageGeneration") {
     return (
@@ -1462,6 +1567,7 @@ function PickerGlyph({ option, kind }) {
 
 function ComposerPicker({ label, hint, value, options, onChange, kind, align = "right", disabled = false, providers = [], onProviderLogin, onProvidersRefresh }) {
   const [open, setOpen] = useState(false);
+  const systemReducedMotion = useReducedMotion();
   const [activeProvider, setActiveProvider] = useState("codex");
   const [pendingProvider, setPendingProvider] = useState(null);
   const [loginBusy, setLoginBusy] = useState(false);
@@ -1604,6 +1710,13 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
                     }}
                     key={provider.value}
                   >
+                    {activeProvider === provider.value && (
+                      <motion.span
+                        className="model-provider-tab-pill"
+                        layoutId={`model-provider-${listboxId}`}
+                        transition={{ duration: systemReducedMotion ? 0 : 0.2, ease: MOTION_EASE }}
+                      />
+                    )}
                     <ModelBrandIcon model={provider.value === "codex" ? "gpt" : "claude"} provider={provider.value} />
                     <span>{provider.label}</span>
                   </button>
@@ -1650,11 +1763,12 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
   );
 }
 
-export function WorkingTrace({ items, running, settled }) {
+export function WorkingTrace({ items, running, settled, startedAt = null, completedAt = null }) {
   const disclosureId = useId();
   const [manualExpanded, setManualExpanded] = useState(null);
   const wasSettled = useRef(settled);
   const systemReducedMotion = useReducedMotion();
+  const now = useLiveNow(running);
   const toolCount = items.filter((item) => item.type !== "agentMessage" && item.type !== "reasoning").length;
   const reasoningItems = items.filter((item) => item.type === "reasoning" || (item.type === "agentMessage" && item.text));
   const latestTraceIndex = items.findLastIndex((item) => item.type === "agentMessage" ? Boolean(item.text) : TRACE_ITEM_TYPES.has(item.type));
@@ -1684,9 +1798,14 @@ export function WorkingTrace({ items, running, settled }) {
     }
     return { label: "Working", detail: "" };
   })();
-  const doneLabel = toolCount
-    ? `Ran ${toolCount} action${toolCount === 1 ? "" : "s"}`
-    : "Thought through the task";
+  const start = timestampMillis(startedAt);
+  const end = timestampMillis(completedAt) || now;
+  const elapsed = start ? formatElapsedDuration(Math.max(0, end - start)) : "";
+  const doneLabel = elapsed
+    ? `${toolCount ? "Worked" : "Thought"} for ${elapsed}`
+    : toolCount
+      ? `Ran ${toolCount} action${toolCount === 1 ? "" : "s"}`
+      : "Thought through the task";
   const label = settled ? doneLabel : "Work details";
   const expanded = manualExpanded ?? !settled;
 
@@ -1725,6 +1844,7 @@ export function WorkingTrace({ items, running, settled }) {
                 </motion.span>
               </AnimatePresence>
             </span>
+            {elapsed && <span className="elapsed-time">Working for {elapsed}</span>}
           </div>
         </>
       ) : (
@@ -1774,6 +1894,8 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     : -1;
   const finalIndex = explicitFinalIndex === -1 ? fallbackFinalIndex : explicitFinalIndex;
   const settled = !running && finalIndex !== -1;
+  const startedAt = turn.startedAt ?? turn.createdAt;
+  const completedAt = turn.completedAt;
   const rendered = [];
   let traceItems = [];
   let renderedWorkingTrace = false;
@@ -1781,7 +1903,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
   const flushTrace = () => {
     if (!traceItems.length) return;
     const key = traceItems[0].renderId ?? traceItems[0].id ?? `trace-${rendered.length}`;
-    rendered.push(<WorkingTrace items={traceItems} running={running} settled={settled} key={key} />);
+    rendered.push(<WorkingTrace items={traceItems} running={running} settled={settled} startedAt={startedAt} completedAt={completedAt} key={key} />);
     renderedWorkingTrace = true;
     traceItems = [];
   };
@@ -1795,6 +1917,11 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
       return;
     }
     flushTrace();
+    const timestamp = item.type === "userMessage"
+      ? item.createdAt ?? startedAt
+      : isFinal
+        ? item.createdAt ?? item.completedAt ?? completedAt
+        : item.createdAt;
     rendered.push(
       <ConversationItem
         item={item}
@@ -1806,13 +1933,14 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
         promptAnchorId={item.type === "userMessage" ? promptAnchorId(turn, item, index) : null}
         openedByAgent={bridgeTurn && index === firstUserIndex}
         sentToMain={bridgeTurn && isFinal && turn.status === "completed"}
+        timestamp={timestamp}
         key={item.renderId ?? item.id ?? `${item.type}-${index}`}
       />
     );
   });
   flushTrace();
   if (running && !renderedWorkingTrace && finalIndex === -1) {
-    rendered.push(<WorkingTrace items={[]} running settled={false} key={`pending-${turn.renderId ?? turn.id}`} />);
+    rendered.push(<WorkingTrace items={[]} running settled={false} startedAt={startedAt} key={`pending-${turn.renderId ?? turn.id}`} />);
   }
 
   return rendered;
@@ -2316,6 +2444,7 @@ function ConversationWorkspace({
   onOpenWorkspaceReference,
   composerProps
 }) {
+  const [previewPresent, setPreviewPresent] = useState(previewOpen);
   const items = flattenItems(thread);
   const promptItems = useMemo(() => promptPreviewItems(thread), [thread]);
   const latestPlanText = [...items].reverse().find((item) => item.type === "plan")?.text;
@@ -2330,6 +2459,10 @@ function ConversationWorkspace({
   const followLatestRef = useRef(true);
   const followedThreadRef = useRef(thread?.id);
   const [activePromptId, setActivePromptId] = useState("");
+  useEffect(() => {
+    if (previewOpen) setPreviewPresent(true);
+  }, [previewOpen]);
+  const previewLayoutOpen = previewOpen || previewPresent;
   const updateActivePrompt = useCallback(() => {
     const node = scrollRef.current;
     if (!node || promptItems.length === 0) return;
@@ -2388,19 +2521,19 @@ function ConversationWorkspace({
 
   return (
     <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
-    <div className={`task-workspace${previewOpen ? " preview-mode" : ""}`}>
+    <div className={`task-workspace${previewLayoutOpen ? " preview-mode" : ""}`}>
       <main className="main-canvas">
         <AppToolbar
           title={thread ? threadTitle(thread) : project?.displayName ?? "Pixice"}
           subtitle={thread ? project?.displayName : project?.canonicalPath}
           inspectorOpen={inspectorOpen}
           onInspectorToggle={onInspectorToggle}
-          showInspector={Boolean(thread) && !previewOpen}
+          showInspector={Boolean(thread) && !previewLayoutOpen}
           previewOpen={previewOpen}
           onPreviewToggle={onPreviewToggle}
           showPreview={Boolean(project)}
         />
-        {!previewOpen && thread && (
+        {!previewLayoutOpen && thread && (
           <PromptPreviewRail
             items={promptItems}
             activeId={activePromptId}
@@ -2435,28 +2568,30 @@ function ConversationWorkspace({
         </div>
         {project && <Composer {...composerProps} />}
       </main>
-      {previewOpen && (
-        <BrowserPanel
-          api={window.loom}
-          workspaceId={previewWorkspaceId}
-          state={browserState}
-          onState={onBrowserState}
-          onClose={onPreviewToggle}
-          projectId={project?.id}
-          fileTabs={previewFileTabs}
-          instrumentTabs={previewInstrumentTabs}
-          activeTabId={previewActiveTabId}
-          onActiveTabChange={onPreviewActiveTabChange}
-          onFileUpdate={onPreviewFileUpdate}
-          onFileClose={onPreviewFileClose}
-          onInstrumentClose={onPreviewInstrumentClose}
-          onInstrumentRefresh={onPreviewInstrumentRefresh}
-          onInstrumentEvent={onPreviewInstrumentEvent}
-          onInstrumentInvoke={onPreviewInstrumentInvoke}
-          onInstrumentPin={onPreviewInstrumentPin}
-          onOpenResource={onOpenWorkspaceReference}
-        />
-      )}
+      <AnimatePresence initial={false} onExitComplete={() => setPreviewPresent(false)}>
+        {previewOpen && (
+          <BrowserPanel
+            api={window.loom}
+            workspaceId={previewWorkspaceId}
+            state={browserState}
+            onState={onBrowserState}
+            onClose={onPreviewToggle}
+            projectId={project?.id}
+            fileTabs={previewFileTabs}
+            instrumentTabs={previewInstrumentTabs}
+            activeTabId={previewActiveTabId}
+            onActiveTabChange={onPreviewActiveTabChange}
+            onFileUpdate={onPreviewFileUpdate}
+            onFileClose={onPreviewFileClose}
+            onInstrumentClose={onPreviewInstrumentClose}
+            onInstrumentRefresh={onPreviewInstrumentRefresh}
+            onInstrumentEvent={onPreviewInstrumentEvent}
+            onInstrumentInvoke={onPreviewInstrumentInvoke}
+            onInstrumentPin={onPreviewInstrumentPin}
+            onOpenResource={onOpenWorkspaceReference}
+          />
+        )}
+      </AnimatePresence>
     </div>
     </WorkspaceOpenContext.Provider>
   );
@@ -2610,48 +2745,80 @@ function ApprovalCard({ request, onResolve }) {
   );
 }
 
+function agentStatusCopy(agent) {
+  const status = threadStatus(agent);
+  if (status === "running" || status === "inProgress") return "Working";
+  if (status === "completed" || status === "idle") return "Completed";
+  if (status === "failed" || status === "systemError") return "Failed";
+  if (status === "interrupted") return "Interrupted";
+  return "Waiting";
+}
+
+function activeAgentStartedAt(agent) {
+  const activeTurn = [...(agent?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
+  return activeTurn?.startedAt ?? activeTurn?.createdAt ?? agent?.startedAt ?? agent?.createdAt;
+}
+
+function InspectorAgentRow({ agent, lead = false, parentTitle = "" }) {
+  const status = threadStatus(agent);
+  const running = status === "running" || status === "inProgress";
+  const startedAt = activeAgentStartedAt(agent);
+  const title = threadTitle(agent);
+  const detail = lead
+    ? title
+    : agent.agentStatusMessage || (title !== parentTitle ? title : "");
+  const name = lead ? "Lead" : agent.agentNickname || agent.agentRole || "Delegated agent";
+  return (
+    <div className={`agent-row ${lead ? "lead" : "child"}`}>
+      {!lead && <span className="branch-line" />}
+      <StatusDot status={status} />
+      <span>
+        <strong>{name}</strong>
+        <small>
+          {running && timestampMillis(startedAt)
+            ? <ElapsedTime startedAt={startedAt} running prefix="Working for " />
+            : agentStatusCopy(agent)}
+          {detail ? ` · ${detail}` : ""}
+        </small>
+      </span>
+    </div>
+  );
+}
+
 function Inspector({ open, thread, threads, plan, attention, onResolve }) {
+  const systemReducedMotion = useReducedMotion();
   if (!thread) return null;
   const agents = descendantsOf(threads, thread.id);
-  const agentStatusCopy = (agent) => {
-    const status = threadStatus(agent);
-    if (status === "running" || status === "inProgress") return "Working";
-    if (status === "completed" || status === "idle") return "Completed";
-    if (status === "failed" || status === "systemError") return "Failed";
-    if (status === "interrupted") return "Interrupted";
-    return "Waiting";
-  };
-  const agentDetail = (agent) => {
-    if (agent.agentStatusMessage) return agent.agentStatusMessage;
-    const title = threadTitle(agent);
-    return title !== threadTitle(thread) ? title : "";
-  };
   return (
-    <aside className={`inspector ${open ? "open" : ""}`} aria-label="Task inspector">
+    <AnimatePresence initial={false}>
+    {open && <motion.aside
+      className="inspector open"
+      aria-label="Task inspector"
+      initial={systemReducedMotion ? false : { opacity: 0, x: 12, y: 2, scale: 0.985, filter: "blur(2px)" }}
+      animate={{ opacity: 1, x: 0, y: 0, scale: 1, filter: "blur(0px)" }}
+      exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, x: 10, scale: 0.99, filter: "blur(2px)" }}
+      transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }}
+    >
       <div className="inspector-head"><span>Task</span><StatusDot status={threadStatus(thread)} /></div>
       <section className="inspector-section">
         <span className="section-label">Plan</span>
         {plan?.length ? (
           <div className="inspector-plan">
-            {plan.map((step) => <div key={step.step} className={step.status}>{step.status === "completed" ? <CheckCircle size={14} weight="fill" /> : step.status === "inProgress" ? <SpinnerGap className="spin-icon" size={14} /> : <Circle size={14} />}<span>{step.step}</span></div>)}
+            {plan.map((step) => <motion.div layout="position" transition={{ duration: systemReducedMotion ? 0 : 0.2, ease: MOTION_EASE }} key={step.step} className={step.status}>{step.status === "completed" ? <CheckCircle size={14} weight="fill" /> : step.status === "inProgress" ? <SpinnerGap className="spin-icon" size={14} /> : <Circle size={14} />}<span>{step.step}</span></motion.div>)}
           </div>
         ) : <p className="inspector-empty">No structured plan reported yet.</p>}
       </section>
       <section className="inspector-section">
         <div className="section-heading"><span className="section-label">Agents</span><small>{agents.length + 1}</small></div>
         <div className="agent-list">
-          <div className="agent-row lead"><StatusDot status={threadStatus(thread)} /><span><strong>Lead</strong><small>{threadTitle(thread)}</small></span></div>
-          {agents.map((agent) => (
-            <div className="agent-row child" key={agent.id}>
-              <span className="branch-line" /><StatusDot status={threadStatus(agent)} />
-              <span><strong>{agent.agentNickname || agent.agentRole || "Delegated agent"}</strong><small>{agentStatusCopy(agent)}{agentDetail(agent) ? ` · ${agentDetail(agent)}` : ""}</small></span>
-            </div>
-          ))}
+          <InspectorAgentRow agent={thread} lead />
+          {agents.map((agent) => <InspectorAgentRow agent={agent} parentTitle={threadTitle(thread)} key={agent.id} />)}
           {agents.length === 0 && <p className="inspector-empty">No delegated agents yet.</p>}
         </div>
       </section>
       {attention.filter((request) => request.params?.threadId === thread.id && !isQuestionRequest(request)).map((request) => <ApprovalCard request={request} onResolve={onResolve} key={request.id} />)}
-    </aside>
+    </motion.aside>}
+    </AnimatePresence>
   );
 }
 
@@ -2754,6 +2921,32 @@ function SettingsGroup({ title, description, children }) {
   );
 }
 
+function SlidingSegmented({ value, options, onChange, label, className = "" }) {
+  const layoutId = useId();
+  const systemReducedMotion = useReducedMotion();
+  return (
+    <div className={`segmented sliding-segmented ${className}`.trim()} aria-label={label}>
+      {options.map((option) => (
+        <button type="button" className={value === option.value ? "selected" : ""} onClick={() => onChange(option.value)} key={option.value}>
+          {value === option.value && <motion.span className="segmented-pill" layoutId={`segmented-${layoutId}`} transition={{ duration: systemReducedMotion ? 0 : 0.2, ease: MOTION_EASE }} />}
+          <span>{option.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function LoadingSkeleton({ label, rows = 3, inline = true }) {
+  return (
+    <div className={`loading-skeleton${inline ? " inline" : ""}`} role="status" aria-label={label}>
+      {Array.from({ length: rows }, (_, index) => (
+        <span className="loading-skeleton-row" style={{ "--skeleton-width": `${92 - index * 11}%` }} key={index}><i /><b /></span>
+      ))}
+      <span className="visually-hidden">{label}</span>
+    </div>
+  );
+}
+
 function CapabilitiesSettings({ extensions, loading, onRefresh }) {
   const [tab, setTab] = useState("skills");
   const [query, setQuery] = useState("");
@@ -2770,11 +2963,16 @@ function CapabilitiesSettings({ extensions, loading, onRefresh }) {
   return (
     <div className="capabilities-pane">
       <div className="settings-controls">
-        <div className="segmented">{Object.keys(groups).map((name) => <button key={name} className={tab === name ? "selected" : ""} onClick={() => setTab(name)}>{name === "mcp" ? "MCP servers" : name[0].toUpperCase() + name.slice(1)}</button>)}</div>
+        <SlidingSegmented
+          value={tab}
+          options={Object.keys(groups).map((name) => ({ value: name, label: name === "mcp" ? "MCP servers" : name[0].toUpperCase() + name.slice(1) }))}
+          onChange={setTab}
+          label="Capability type"
+        />
         <IconButton label="Refresh capabilities" onClick={onRefresh}><ArrowClockwise size={17} /></IconButton>
       </div>
       <label className="search-field"><MagnifyingGlass size={17} /><input aria-label="Search capabilities" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${tab === "mcp" ? "MCP servers" : tab}`} /></label>
-      {loading ? <div className="loading-state inline"><SpinnerGap className="spin-icon" size={18} />Loading capabilities…</div> : (
+      {loading ? <LoadingSkeleton label="Loading capabilities" rows={4} /> : (
         <div className="capabilities-list">
           {visible.map((item, index) => {
             const name = item.name || item.displayName || item.id || `Capability ${index + 1}`;
@@ -2841,6 +3039,7 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin }) {
         <IconButton label="Refresh providers" onClick={onRefresh} disabled={loading}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
       </div>
       <div className="provider-list" aria-label="AI providers">
+        {loading && providers.length === 0 && <LoadingSkeleton label="Loading providers" rows={2} />}
         {providers.map((provider) => {
           const providerModels = models.filter((model) => modelProvider(model) === provider.id).length;
           const connected = providerIsAuthenticated(provider);
@@ -3002,7 +3201,7 @@ function chartDateLabel(value) {
 
 function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRefresh }) {
   const [rateProvider, setRateProvider] = useState("codex");
-  if (loading && !summary) return <div className="loading-state inline"><SpinnerGap className="spin-icon" size={18} />Calculating usage…</div>;
+  if (loading && !summary) return <LoadingSkeleton label="Calculating usage" rows={5} />;
   if (error && !summary) return <div className="usage-error"><Warning size={18} /><span><strong>Usage could not be loaded</strong><small>{error}</small></span><button className="settings-action" onClick={onRefresh}>Try again</button></div>;
 
   const data = summary ?? {
@@ -3070,9 +3269,7 @@ function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRe
       <section className="usage-chart-card">
         <header>
           <span><h2>Spend over time</h2><p><UsageCostTicker value={selected.costUsd} /> across <UsageTokenTicker value={selected.totalTokens} /> tokens</p></span>
-          <div className="segmented usage-range" aria-label="Usage range">
-            {[7, 30, 90].map((days) => <button className={rangeDays === days ? "selected" : ""} onClick={() => onRangeChange(days)} key={days}>{days}d</button>)}
-          </div>
+          <SlidingSegmented value={rangeDays} options={[7, 30, 90].map((days) => ({ value: days, label: `${days}d` }))} onChange={onRangeChange} label="Usage range" className="usage-range" />
         </header>
         <DitherAreaChart
           data={data.daily ?? []}
@@ -3112,10 +3309,7 @@ function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRe
       <section className="settings-group usage-rates">
         <header className="usage-rates-header">
           <span><h2>Current API rate card</h2><p>USD per 1M text tokens · verified {data.pricingVerifiedAt ?? "with provider docs"}</p></span>
-          <div className="segmented" aria-label="Rate provider">
-            <button className={rateProvider === "codex" ? "selected" : ""} onClick={() => setRateProvider("codex")}>OpenAI</button>
-            <button className={rateProvider === "claude" ? "selected" : ""} onClick={() => setRateProvider("claude")}>Anthropic</button>
-          </div>
+          <SlidingSegmented value={rateProvider} options={[{ value: "codex", label: "OpenAI" }, { value: "claude", label: "Anthropic" }]} onChange={setRateProvider} label="Rate provider" />
         </header>
         <div className="settings-card usage-rate-card">
           <div className="usage-rate-row usage-rate-heading"><span>Model</span><span>Input</span><span>Cached</span><span>Cache write</span><span>Output</span></div>
@@ -3143,7 +3337,7 @@ function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRe
 
 const SETTINGS_PAGES = [
   { id: "general", label: "General", description: "Task defaults and safety", icon: Gear, keywords: "permissions model reasoning delete drafts" },
-  { id: "agent-behavior", label: "Agent Behavior", description: "Guidance loaded for every agent", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration" },
+  { id: "agent-behavior", label: "Agent Behavior", description: "Guidance loaded for every agent", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration tools instruments interactive" },
   { id: "orchestration", label: "Orchestration", description: "How delegated work surfaces", icon: TreeStructure, keywords: "agents progress task map approvals" },
   { id: "appearance", label: "Appearance", description: "Density, projects, hints, and motion", icon: Eye, keywords: "compact comfortable projects sidebar recent third row nine legacy old nested shortcuts animation" },
   { id: "updates", label: "Updates", description: "Version and GitHub releases", icon: ArrowClockwise, keywords: "version release download install github update" },
@@ -3219,10 +3413,20 @@ function SettingsWorkspace({
   onInstallUpdate
 }) {
   const selectedPage = SETTINGS_PAGES.find((candidate) => candidate.id === page) ?? SETTINGS_PAGES[0];
+  const systemReducedMotion = useReducedMotion();
+  const settingsScrollRef = useRef(null);
+  const selectedPageIndex = SETTINGS_PAGES.findIndex((candidate) => candidate.id === selectedPage.id);
+  const previousPageIndexRef = useRef(selectedPageIndex);
+  const pageDirection = selectedPageIndex >= previousPageIndexRef.current ? 1 : -1;
   const selectedModelInfo = models.find((model) => model.model === selectedModel);
   const effortOptions = selectedModelInfo?.supportedReasoningEfforts?.map((option) => option.reasoningEffort ?? option.effort ?? option) ?? ["medium", "high"];
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   const capabilityCount = extensions.apps.length + extensions.mcp.length + extensions.skills.reduce((count, entry) => count + (entry.skills?.length ?? 0), 0);
+
+  useEffect(() => {
+    previousPageIndexRef.current = selectedPageIndex;
+    settingsScrollRef.current?.scrollTo?.({ top: 0, behavior: "auto" });
+  }, [selectedPageIndex]);
 
   let pageContent;
   if (page === "general") {
@@ -3376,11 +3580,17 @@ function SettingsWorkspace({
 
   return (
     <main className="main-canvas workspace settings-workspace">
-      <div className="settings-content-scroll">
-        <div className={`settings-content${page === "usage" ? " usage-settings-content" : ""}`}>
+      <div className="settings-content-scroll" ref={settingsScrollRef}>
+        <motion.div
+          className={`settings-content${page === "usage" ? " usage-settings-content" : ""}`}
+          key={page}
+          initial={systemReducedMotion ? false : { opacity: 0, x: pageDirection * 8, filter: "blur(3px)" }}
+          animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
+          transition={{ duration: systemReducedMotion ? 0 : 0.17, ease: MOTION_EASE }}
+        >
           <header className="settings-page-title"><span>Settings</span><h1>{selectedPage.label}</h1><p>{selectedPage.description}</p></header>
           {pageContent}
-        </div>
+        </motion.div>
       </div>
     </main>
   );
@@ -3420,6 +3630,7 @@ function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate,
 }
 
 export function App() {
+  const systemReducedMotion = useReducedMotion();
   const api = window.loom;
   const [projects, setProjects] = useState([]);
   const [projectActivity, setProjectActivity] = useState({});
@@ -3451,6 +3662,7 @@ export function App() {
   const [review, setReview] = useState({ repository: null, diff: "" });
   const [boardTasks, setBoardTasks] = useState([]);
   const [projectTools, setProjectTools] = useState([]);
+  const [selectedProjectToolId, setSelectedProjectToolId] = useState(null);
   const [extensions, setExtensions] = useState(EMPTY_EXTENSIONS);
   const [providers, setProviders] = useState([]);
   const [githubStatus, setGithubStatus] = useState(EMPTY_GITHUB_STATUS);
@@ -3482,6 +3694,7 @@ export function App() {
   const viewTransitionPendingRef = useRef(false);
   const viewTransitionTargetRef = useRef("task");
   const viewSurfaceRef = useRef(null);
+  const viewTransitionCurtainRef = useRef(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [previewWorkspaces, setPreviewWorkspaces] = useState({});
   const previewWorkspaceSequenceRef = useRef(0);
@@ -3700,7 +3913,8 @@ export function App() {
     if (viewTransitionPendingRef.current || nextView === activeView) return;
 
     const surface = viewSurfaceRef.current;
-    const reduceMotion = preferencesRef.current.reduceMotion || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const curtain = viewTransitionCurtainRef.current;
+    const reduceMotion = preferencesRef.current.reduceMotion || systemReducedMotion || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     viewTransitionPendingRef.current = true;
     setViewTransitionPending(true);
     let currentView = activeView;
@@ -3708,41 +3922,51 @@ export function App() {
       while (viewTransitionTargetRef.current !== currentView) {
         const targetView = viewTransitionTargetRef.current;
         if (targetView !== "task") setPreviewOpen(false);
-        const crossesSettingsBoundary = currentView === "settings" || targetView === "settings";
+        const crossesTakeoverBoundary = SHELL_TAKEOVER_VIEWS.has(currentView) !== SHELL_TAKEOVER_VIEWS.has(targetView);
 
-        if (!crossesSettingsBoundary || !surface?.animate || reduceMotion) {
+        if (!crossesTakeoverBoundary || !curtain?.animate || reduceMotion) {
           setActiveView(targetView);
           currentView = targetView;
           continue;
         }
 
-        const exitAnimation = surface.animate(
-          [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.995)" }],
-          { duration: 90, easing: "ease-out", fill: "forwards" }
+        const enteringTakeover = SHELL_TAKEOVER_VIEWS.has(targetView);
+        const coveredOffset = enteringTakeover ? "-115%" : "115%";
+        const revealedOffset = enteringTakeover ? "115%" : "-115%";
+        const coverAnimation = curtain.animate(
+          [
+            { opacity: 1, transform: `translate3d(${coveredOffset}, 0, 0) skewX(-7deg)` },
+            { opacity: 1, transform: "translate3d(0, 0, 0) skewX(-7deg)" }
+          ],
+          { duration: 260, easing: "cubic-bezier(.55, .08, .28, .96)", fill: "forwards" }
         );
-        await waitForAnimation(exitAnimation);
+        await waitForAnimation(coverAnimation);
         setActiveView(targetView);
         currentView = targetView;
         await waitForViewPaint();
-        const enterAnimation = surface.animate(
-          [{ opacity: 0, transform: "scale(.995)" }, { opacity: 1, transform: "scale(1)" }],
-          { duration: 180, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "forwards" }
+        const revealAnimation = curtain.animate(
+          [
+            { opacity: 1, transform: "translate3d(0, 0, 0) skewX(-7deg)" },
+            { opacity: 1, transform: `translate3d(${revealedOffset}, 0, 0) skewX(-7deg)` }
+          ],
+          { duration: 320, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "forwards" }
         );
-        await waitForAnimation(enterAnimation);
-        exitAnimation.cancel();
-        enterAnimation.cancel();
+        await waitForAnimation(revealAnimation);
+        coverAnimation.cancel();
+        revealAnimation.cancel();
       }
     } catch {
       const targetView = viewTransitionTargetRef.current;
       setActiveView(targetView);
     } finally {
       surface?.getAnimations?.().forEach((animation) => animation.cancel());
-      surface?.style.removeProperty("opacity");
-      surface?.style.removeProperty("transform");
+      curtain?.getAnimations?.().forEach((animation) => animation.cancel());
+      curtain?.style.removeProperty("opacity");
+      curtain?.style.removeProperty("transform");
       viewTransitionPendingRef.current = false;
       setViewTransitionPending(false);
     }
-  }, [activeView, setPreviewOpen]);
+  }, [activeView, setPreviewOpen, systemReducedMotion]);
 
   const loadModels = useCallback(async () => {
     if (!api) return;
@@ -4217,6 +4441,10 @@ export function App() {
   }, [selectedProjectId, loadBoard, loadProjectTools, loadReview, loadThreads, runtime.connected]);
 
   useEffect(() => {
+    setSelectedProjectToolId(null);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
     setPlan([]);
     if (!selectedProjectId || !selectedThreadId) {
       threadLoadRequestRef.current += 1;
@@ -4321,6 +4549,8 @@ export function App() {
       if (event.type === "AttentionRequired") {
         setAttention((current) => current.some((request) => request.id === event.payload.id) ? current : [...current, event.payload]);
         const questionForCurrentThread = isQuestionRequest(event.payload) && event.payload.params?.threadId === selectedThreadIdRef.current;
+        const attentionForCurrentThread = event.payload.params?.threadId === selectedThreadIdRef.current;
+        if (attentionForCurrentThread && !questionForCurrentThread) setInspectorOpen(true);
         if (preferencesRef.current.bringApprovalsForward && !questionForCurrentThread) setActiveView("attention");
         return;
       }
@@ -5070,6 +5300,9 @@ export function App() {
     onSubmit: submit,
     onInterrupt: interrupt
   };
+  const activeProjectToolId = projectTools.some((tool) => tool.id === selectedProjectToolId)
+    ? selectedProjectToolId
+    : projectTools[0]?.id ?? null;
 
   let content;
   if (activeView === "board") {
@@ -5094,6 +5327,7 @@ export function App() {
         project={selectedProject}
         threadId={selectedThreadId}
         tools={projectTools}
+        selectedId={activeProjectToolId}
         loading={loading.tools}
         onReload={() => loadProjectTools(selectedProjectId)}
         onLaunch={launchProjectTool}
@@ -5209,6 +5443,14 @@ export function App() {
         <div className="window-drag-region" aria-hidden="true" />
         {activeView === "settings" ? (
           <SettingsSidebar page={settingsPage} onPageChange={setSettingsPage} onBack={() => changeView("task")} />
+        ) : activeView === "tools" ? (
+          <ProjectToolsSidebar
+            tools={projectTools}
+            loading={loading.tools}
+            selectedId={activeProjectToolId}
+            onSelect={setSelectedProjectToolId}
+            onBack={() => changeView("task")}
+          />
         ) : (
           <Sidebar
             projects={projects}
@@ -5241,13 +5483,23 @@ export function App() {
         <div className="workflow-workspace-slot" data-workflow-workspace-slot />
         {activeView === "task" && !previewOpen && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
       </div>
+      <div ref={viewTransitionCurtainRef} className="shell-transition-curtain" aria-hidden="true" />
+      <AnimatePresence initial={false}>
       {error && (
-        <div className="runtime-toast" role="alert">
+        <motion.div
+          className="runtime-toast"
+          role="alert"
+          initial={systemReducedMotion ? false : { opacity: 0, y: 12, scale: 0.98, filter: "blur(2px)" }}
+          animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+          exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.99, filter: "blur(2px)" }}
+          transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }}
+        >
           <Warning size={17} />
           <span><strong>Pixice needs attention</strong><small>{error}</small></span>
           <IconButton label="Dismiss error" onClick={() => setError(null)}><X size={15} /></IconButton>
-        </div>
+        </motion.div>
       )}
+      </AnimatePresence>
       <ProjectCreationDialog
         open={projectDialogOpen}
         busy={projectCreateBusy}

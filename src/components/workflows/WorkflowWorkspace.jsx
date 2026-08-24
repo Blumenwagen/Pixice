@@ -17,6 +17,14 @@ import styles from "./WorkflowWorkspace.module.css";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancelling"]);
 
+function WorkflowSkeleton({ label = "Loading workflow", rows = 3 }) {
+  return (
+    <div className={styles.workflowSkeleton} role="status" aria-label={label}>
+      {Array.from({ length: rows }, (_, index) => <span style={{ "--workflow-skeleton-width": `${92 - index * 12}%` }} key={index}><i /><b /></span>)}
+    </div>
+  );
+}
+
 function workflowRevision(workflow) {
   if (!workflow) return "";
   return JSON.stringify([workflow.name, workflow.description, workflow.enabled, workflow.graph]);
@@ -238,7 +246,7 @@ function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, co
     return () => { alive = false; };
   }, [api, projectId, workflows.length]);
 
-  if (editor.loading) return <div className={styles.loadingState}><SpinnerGap className={styles.spin} size={20} />Loading workflow…</div>;
+  if (editor.loading) return <WorkflowSkeleton />;
   if (!editor.workflow) {
     return (
       <div className={styles.emptyWorkspace}>
@@ -400,7 +408,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
             <input className={styles.searchInput} aria-label="Search workflows" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search workflows" />
           </label>
           <nav className={styles.workflowList}>
-            {loading && workflows.length === 0 && <div className={styles.loadingState}><SpinnerGap className={styles.spin} size={17} />Loading…</div>}
+            {loading && workflows.length === 0 && <WorkflowSkeleton label="Loading workflows" rows={4} />}
             {visible.map((candidate) => (
               <button
                 type="button"
@@ -444,7 +452,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
                 onDelete={() => void deleteWorkflow()}
               />
             ) : loading ? (
-              <div className={styles.loadingState}><SpinnerGap className={styles.spin} size={17} />Loading workflow…</div>
+              <WorkflowSkeleton />
             ) : (
               <div className={styles.emptyWorkspace}>
                 <span><TreeStructure size={22} /></span>
