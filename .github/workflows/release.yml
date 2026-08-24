@@ -5,6 +5,12 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      include_portable:
+        description: Also build unsigned Windows and Linux packages
+        required: false
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -89,7 +95,7 @@ jobs:
             release/latest*.yml
 
   package-portable:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.include_portable
     needs: verify
     strategy:
       fail-fast: false
