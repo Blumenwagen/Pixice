@@ -8,11 +8,13 @@ export class PixiceAppUpdater extends EventEmitter {
   #timer = null;
   #started = false;
   #status;
+  #prepareInstall;
 
-  constructor({ updater, app }) {
+  constructor({ updater, app, prepareInstall = null }) {
     super();
     this.#updater = updater;
     this.#app = app;
+    this.#prepareInstall = prepareInstall;
     this.#status = {
       supported: app.isPackaged,
       state: app.isPackaged ? "idle" : "development",
@@ -35,7 +37,8 @@ export class PixiceAppUpdater extends EventEmitter {
     if (this.#started || !this.#status.supported) return;
     this.#started = true;
     this.#updater.autoDownload = false;
-    this.#updater.autoInstallOnAppQuit = true;
+    // Every install must pass through install(), which snapshots durable data first.
+    this.#updater.autoInstallOnAppQuit = false;
     this.#updater.allowPrerelease = this.#app.getVersion().includes("-");
 
     this.#updater.on("checking-for-update", () => this.#update({ state: "checking", message: "Checking GitHub for a newer Pixice release." }));
@@ -101,10 +104,21 @@ export class PixiceAppUpdater extends EventEmitter {
     return this.snapshot();
   }
 
-  install() {
-    if (this.#status.state !== "downloaded") throw new Error("The Pixice update has not finished downloading");
-    this.#updater.quitAndInstall(false, true);
-    return { ok: true };
+  async install() {
+    if (!["downloaded", "install-error"].includes(this.#status.state)) throw new Error("The Pixice update has not finished downloading");
+    this.#update({ state: "protecting-data", message: "Preserving projects and threads before installing the update." });
+    try {
+      if (typeof this.#prepareInstall !== "function") throw new Error("Update data protection is unavailable");
+      const backup = await this.#prepareInstall?.({
+        currentVersion: this.#status.currentVersion,
+        availableVersion: this.#status.availableVersion
+      });
+      this.#updater.quitAndInstall(false, true);
+      return { ok: true, backupPath: backup?.path ?? null };
+    } catch (error) {
+      this.#update({ state: "install-error", message: `Update not installed: ${error?.message || String(error)} Your current data is unchanged.` });
+      throw error;
+    }
   }
 
   #fail(error) {

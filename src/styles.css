@@ -1736,12 +1736,14 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   bottom: calc(100% + 10px);
   z-index: 40;
   width: 326px;
+  max-width: var(--picker-max-width, none);
   padding: 7px;
   color: var(--foreground);
   background: rgba(40, 40, 40, .98);
   border: 1px solid rgba(255, 255, 255, .105);
   border-radius: 16px;
   box-shadow: 0 18px 48px rgba(0, 0, 0, .5), 0 1px 0 rgba(255, 255, 255, .04) inset;
+  transform: translateX(var(--picker-shift-x, 0px));
   animation: picker-enter 180ms var(--ease) both;
 }
 .composer-picker.model .picker-popover { width: 340px; }

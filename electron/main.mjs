@@ -39,6 +39,13 @@ import {
 import { PixiceAppUpdater } from "./updater/app-updater.mjs";
 import { CodexUpdater, installAndActivateCodexUpdate } from "./updater/codex-updater.mjs";
 import { PixiceDatabase } from "./persistence/database.mjs";
+import {
+  createUpdateDataBackup,
+  ensureVersionUpdateDataBackup,
+  markUpdateDataVersion,
+  readUpdateDataVersion,
+  recoverUpdateDataFromBackup
+} from "./persistence/update-data-backup.mjs";
 import { inspectRepository, readDiff } from "./git/worktrees.mjs";
 import { GitHubCli, prependGitHubCliToPath } from "./github/github-cli.mjs";
 import { calculateUsageCost, listPricingCatalog, PRICING_VERIFIED_AT } from "./usage/pricing.mjs";
@@ -1520,6 +1527,9 @@ function registerIpc() {
 app.whenReady().then(async () => {
   const userDataPath = app.getPath("userData");
   const bundledResourcesPath = isDev ? path.join(__dirname, "../resources") : process.resourcesPath;
+  const recordedDataVersion = readUpdateDataVersion(userDataPath);
+  if (recordedDataVersion && recordedDataVersion !== app.getVersion()) recoverUpdateDataFromBackup({ userDataPath });
+  await ensureVersionUpdateDataBackup({ userDataPath, currentVersion: app.getVersion() });
   database = new PixiceDatabase(userDataPath);
   codexUpdater = new CodexUpdater({
     bundledResourcesPath,
@@ -1765,7 +1775,16 @@ app.whenReady().then(async () => {
 
   createWindow();
   browserWorkspace = new BrowserWorkspace({ window: mainWindow, WebContentsView, emit: send });
-  appUpdater = new PixiceAppUpdater({ updater: autoUpdater, app });
+  appUpdater = new PixiceAppUpdater({
+    updater: autoUpdater,
+    app,
+    prepareInstall: ({ currentVersion, availableVersion }) => createUpdateDataBackup({
+      userDataPath,
+      currentVersion,
+      targetVersion: availableVersion,
+      reason: "app-update"
+    })
+  });
   appUpdater.on("status", (status) => {
     send("UpdateState", status);
     if (status.state === "downloaded" && Notification.isSupported()) {
@@ -1777,6 +1796,8 @@ app.whenReady().then(async () => {
   appUpdater.start();
   codexUpdater.start();
   await runtime.start();
+  await loomBridge.workflowReady;
+  if (!loomBridge.workflowError) markUpdateDataVersion(userDataPath, app.getVersion());
   app.on("activate", () => mainWindow.show());
 });
 

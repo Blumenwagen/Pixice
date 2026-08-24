@@ -56,9 +56,10 @@ function mapRun(row) {
 export class WorkflowStore {
   constructor(userDataPath) {
     this.db = new DatabaseSync(path.join(userDataPath, "loom-workflows.sqlite"));
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA foreign_keys = ON;
+    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`
       CREATE TABLE IF NOT EXISTS workflows (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -97,11 +98,17 @@ export class WorkflowStore {
       CREATE INDEX IF NOT EXISTS workflow_runs_parent
         ON workflow_runs(parent_run_id, created_at ASC);
     `);
-    ensureColumn(this.db, "workflows", "enabled", "INTEGER NOT NULL DEFAULT 0");
-    ensureColumn(this.db, "workflow_runs", "trigger_node_id", "TEXT");
-    ensureColumn(this.db, "workflow_runs", "parent_run_id", "TEXT");
-    ensureColumn(this.db, "workflow_runs", "parent_node_id", "TEXT");
-    ensureColumn(this.db, "workflow_runs", "call_stack", "TEXT NOT NULL DEFAULT '[]'");
+      ensureColumn(this.db, "workflows", "enabled", "INTEGER NOT NULL DEFAULT 0");
+      ensureColumn(this.db, "workflow_runs", "trigger_node_id", "TEXT");
+      ensureColumn(this.db, "workflow_runs", "parent_run_id", "TEXT");
+      ensureColumn(this.db, "workflow_runs", "parent_node_id", "TEXT");
+      ensureColumn(this.db, "workflow_runs", "call_stack", "TEXT NOT NULL DEFAULT '[]'");
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try { this.db.exec("ROLLBACK"); } catch {}
+      this.db.close();
+      throw error;
+    }
     this.recoverIncompleteRuns();
   }
 

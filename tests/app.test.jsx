@@ -2,9 +2,22 @@ import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { App, formatElapsedDuration } from "../src/App.jsx";
+import { App, formatElapsedDuration, horizontalPopoverShift } from "../src/App.jsx";
 
 const appCss = readFileSync("src/styles.css", "utf8");
+
+it("keeps picker popovers aligned inside the prompt box", () => {
+  expect(horizontalPopoverShift(
+    { left: 42, right: 382, width: 340 },
+    { left: 80, right: 464 },
+    0
+  )).toBe(38);
+  expect(horizontalPopoverShift(
+    { left: 150, right: 490, width: 340 },
+    { left: 80, right: 464 },
+    0
+  )).toBe(-26);
+});
 
 const project = {
   id: "project-1",

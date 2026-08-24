@@ -88,8 +88,10 @@ function mapReceipt(row) {
 export class InstrumentStore {
   constructor(userDataPath) {
     this.db = new DatabaseSync(path.join(userDataPath, "pixice-instruments.sqlite"));
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
+    this.db.exec("PRAGMA journal_mode = WAL;");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`
       CREATE TABLE IF NOT EXISTS instruments (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -152,14 +154,20 @@ export class InstrumentStore {
       CREATE INDEX IF NOT EXISTS instrument_receipts_instrument_created
         ON instrument_action_receipts(instrument_id, created_at DESC);
     `);
-    ensureColumn(this.db, "instruments", "metadata_json", "TEXT NOT NULL DEFAULT '{}'");
-    ensureColumn(this.db, "instruments", "grants_json", "TEXT NOT NULL DEFAULT '[]'");
-    ensureColumn(this.db, "instruments", "usage_count", "INTEGER NOT NULL DEFAULT 0");
-    ensureColumn(this.db, "instruments", "last_error", "TEXT");
-    this.db.prepare(`
-      INSERT OR IGNORE INTO instrument_revisions (id, instrument_id, document_version, document_json, created_at)
-      SELECT id || ':' || document_version, id, document_version, document_json, updated_at FROM instruments
-    `).run();
+      ensureColumn(this.db, "instruments", "metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+      ensureColumn(this.db, "instruments", "grants_json", "TEXT NOT NULL DEFAULT '[]'");
+      ensureColumn(this.db, "instruments", "usage_count", "INTEGER NOT NULL DEFAULT 0");
+      ensureColumn(this.db, "instruments", "last_error", "TEXT");
+      this.db.prepare(`
+        INSERT OR IGNORE INTO instrument_revisions (id, instrument_id, document_version, document_json, created_at)
+        SELECT id || ':' || document_version, id, document_version, document_json, updated_at FROM instruments
+      `).run();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try { this.db.exec("ROLLBACK"); } catch {}
+      this.db.close();
+      throw error;
+    }
   }
 
   close() {

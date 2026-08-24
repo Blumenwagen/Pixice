@@ -7,6 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { verifyMacAppSignature } from "./macos-signing.mjs";
 
 const execFile = promisify(execFileCallback);
 const scriptPath = fileURLToPath(import.meta.url);
@@ -55,6 +56,7 @@ async function assertAppBundle(appPath) {
   if (!bundleStats.isDirectory() || !executableStats.isFile()) {
     throw new Error(`Not a Pixice app bundle: ${appPath}`);
   }
+  await verifyMacAppSignature(appPath);
 }
 
 async function runningPixicePids(target) {

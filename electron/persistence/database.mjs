@@ -81,8 +81,10 @@ function mapBoardTask(row) {
 export class PixiceDatabase {
   constructor(userDataPath) {
     this.db = new DatabaseSync(path.join(userDataPath, "loom.sqlite"));
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
+    this.db.exec("PRAGMA journal_mode = WAL;");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY, canonical_path TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
         icon TEXT NOT NULL DEFAULT 'folder', color TEXT NOT NULL DEFAULT 'blue',
@@ -166,14 +168,20 @@ export class PixiceDatabase {
       CREATE INDEX IF NOT EXISTS usage_events_model ON usage_events(provider, model);
     `);
 
-    const projectColumns = new Set(this.db.prepare("PRAGMA table_info(projects)").all().map((column) => column.name));
-    if (!projectColumns.has("icon")) this.db.exec("ALTER TABLE projects ADD COLUMN icon TEXT NOT NULL DEFAULT 'folder'");
-    if (!projectColumns.has("color")) this.db.exec("ALTER TABLE projects ADD COLUMN color TEXT NOT NULL DEFAULT 'blue'");
-    if (!projectColumns.has("last_used_at")) this.db.exec("ALTER TABLE projects ADD COLUMN last_used_at TEXT");
-    this.db.exec(`
-      INSERT OR IGNORE INTO project_folders (project_id, canonical_path, position, created_at)
-      SELECT id, canonical_path, 0, created_at FROM projects
-    `);
+      const projectColumns = new Set(this.db.prepare("PRAGMA table_info(projects)").all().map((column) => column.name));
+      if (!projectColumns.has("icon")) this.db.exec("ALTER TABLE projects ADD COLUMN icon TEXT NOT NULL DEFAULT 'folder'");
+      if (!projectColumns.has("color")) this.db.exec("ALTER TABLE projects ADD COLUMN color TEXT NOT NULL DEFAULT 'blue'");
+      if (!projectColumns.has("last_used_at")) this.db.exec("ALTER TABLE projects ADD COLUMN last_used_at TEXT");
+      this.db.exec(`
+        INSERT OR IGNORE INTO project_folders (project_id, canonical_path, position, created_at)
+        SELECT id, canonical_path, 0, created_at FROM projects
+      `);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try { this.db.exec("ROLLBACK"); } catch {}
+      this.db.close();
+      throw error;
+    }
   }
 
   listProjects() {

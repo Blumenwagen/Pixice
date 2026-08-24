@@ -37,6 +37,7 @@ class FakeWebContentsView {
   }
 
   setBackgroundColor() {}
+  setBorderRadius(radius) { this.borderRadius = radius; }
   setBounds(bounds) { this.bounds = bounds; }
 }
 
@@ -63,6 +64,7 @@ describe("BrowserWorkspace", () => {
 
     expect(snapshot.tabs[0].url).toBe("");
     expect(FakeWebContentsView.instances[0].webContents.url).toMatch(/^data:text\/html;charset=utf-8,/);
+    expect(FakeWebContentsView.instances[0].borderRadius).toBe(14);
     expect(normalizeBrowserUrl("data:text/html,untrusted")).toBe("https://data:text/html,untrusted");
   });
 

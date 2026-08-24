@@ -9,7 +9,19 @@ on:
     tags: ["v*"]
 
 jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+
   package:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -39,13 +51,13 @@ jobs:
       PIXICE_RUNTIME_TARGET: ${{ matrix.runtime }}
       PIXICE_REQUIRE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
       GH_TOKEN: ${{ github.token }}
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      CSC_LINK: ${{ matrix.target == 'mac' && secrets.CSC_LINK || '' }}
+      CSC_KEY_PASSWORD: ${{ matrix.target == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
+      WIN_CSC_LINK: ${{ matrix.target == 'win' && secrets.WIN_CSC_LINK || '' }}
+      WIN_CSC_KEY_PASSWORD: ${{ matrix.target == 'win' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
+      APPLE_ID: ${{ matrix.target == 'mac' && secrets.APPLE_ID || '' }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.target == 'mac' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+      APPLE_TEAM_ID: ${{ matrix.target == 'mac' && secrets.APPLE_TEAM_ID || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,13 +70,18 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
       - run: pnpm release:verify
       - run: pnpm release:preflight
       - run: node scripts/sync-github-cli.mjs --target=${{ matrix.runtime }}
       - run: node scripts/verify-runtime.mjs --target=${{ matrix.runtime }} --require-github-cli
       - run: pnpm exec vite build --mode desktop
       - run: pnpm exec electron-builder --config electron-builder.config.cjs --${{ matrix.target }} --${{ matrix.arch }} --publish never
+      - name: Verify signed macOS application
+        if: runner.os == 'macOS' && env.CSC_LINK != ''
+        run: pnpm release:verify:macos
+      - name: Verify notarized macOS application
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        run: pnpm release:verify:macos -- --require-gatekeeper
       - name: Preserve architecture-specific macOS update metadata
         if: runner.os == 'macOS'
         run: mv release/latest-mac.yml release/latest-mac-${{ matrix.arch }}.yml

@@ -78,6 +78,14 @@ const DEFAULT_PREFERENCES = {
 const MOTION_EASE = [0.22, 1, 0.36, 1];
 const NewTaskIcon = APP_ICONS.newTask;
 const BoardIcon = APP_ICONS.board;
+
+export function horizontalPopoverShift(popoverRect, boundaryRect, gutter = 8) {
+  const popoverWidth = popoverRect.width ?? popoverRect.right - popoverRect.left;
+  const minimumLeft = boundaryRect.left + gutter;
+  const maximumLeft = Math.max(minimumLeft, boundaryRect.right - gutter - popoverWidth);
+  const clampedLeft = Math.min(Math.max(popoverRect.left, minimumLeft), maximumLeft);
+  return clampedLeft - popoverRect.left;
+}
 const AttentionIcon = APP_ICONS.attention;
 const ReviewIcon = APP_ICONS.review;
 const PreviewIcon = APP_ICONS.preview;
@@ -1615,6 +1623,7 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
   const [pendingProvider, setPendingProvider] = useState(null);
   const [loginBusy, setLoginBusy] = useState(false);
   const rootRef = useRef(null);
+  const popoverRef = useRef(null);
   const optionRefs = useRef([]);
   const listboxId = useId();
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
@@ -1665,6 +1674,28 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [activeProvider, open, visibleSelectedIndex]);
+
+  useLayoutEffect(() => {
+    if (!open || !popoverRef.current) return undefined;
+    const boundary = rootRef.current?.closest(".composer") ?? document.documentElement;
+    const reposition = () => {
+      const popover = popoverRef.current;
+      if (!popover) return;
+      popover.style.removeProperty("--picker-shift-x");
+      const boundaryRect = boundary.getBoundingClientRect();
+      popover.style.setProperty("--picker-max-width", `${Math.floor(boundaryRect.width)}px`);
+      const shift = horizontalPopoverShift(popover.getBoundingClientRect(), boundaryRect, 0);
+      popover.style.setProperty("--picker-shift-x", `${Math.round(shift)}px`);
+    };
+    reposition();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(reposition) : null;
+    observer?.observe(boundary);
+    window.addEventListener("resize", reposition);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open]);
 
   const choose = (next) => {
     onChange(next.value);
@@ -1729,7 +1760,7 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
         <CaretDown className="picker-chevron" size={12} weight="bold" />
       </button>
       {open && (
-        <div className="picker-popover" data-align={align}>
+        <div className="picker-popover" data-align={align} ref={popoverRef}>
           <div className="picker-head">
             <span>{label}</span>
             <small>{hint}</small>
@@ -3682,11 +3713,11 @@ function SettingsWorkspace({
       </SettingsGroup>
     );
   } else if (page === "updates") {
-    const updateBusy = updateStatus.state === "checking" || updateStatus.state === "downloading";
+    const updateBusy = ["checking", "downloading", "protecting-data"].includes(updateStatus.state);
     const action = updateStatus.state === "available"
       ? { label: `Download ${updateStatus.availableVersion}`, run: onDownloadUpdate }
-      : updateStatus.state === "downloaded"
-        ? { label: "Restart and install", run: onInstallUpdate, primary: true }
+      : updateStatus.state === "downloaded" || updateStatus.state === "install-error"
+        ? { label: updateStatus.state === "install-error" ? "Retry install" : "Restart and install", run: onInstallUpdate, primary: true }
         : { label: updateStatus.state === "error" ? "Try again" : updateStatus.state === "not-available" ? "Check again" : "Check for updates", run: onCheckForUpdates };
     pageContent = (
       <>
@@ -3694,9 +3725,9 @@ function SettingsWorkspace({
           <SettingsRow title="Current version" description={`Pixice ${updateStatus.currentVersion}`}>
             <span className="settings-value">{updateStatus.supported ? "Release build" : "Development build"}</span>
           </SettingsRow>
-          <SettingsRow title={updateStatus.state === "downloaded" ? "Ready to install" : "Update status"} description={updateStatus.message}>
+          <SettingsRow title={["downloaded", "install-error"].includes(updateStatus.state) ? "Ready to install" : "Update status"} description={updateStatus.message}>
             <button className={`settings-action${action.primary ? " primary" : ""}`} disabled={!updateStatus.supported || updateBusy} onClick={action.run}>
-              {updateBusy && <SpinnerGap className="spin-icon" size={14} />}{updateStatus.state === "downloading" ? `${Math.round(updateStatus.percent)}%` : action.label}
+              {updateBusy && <SpinnerGap className="spin-icon" size={14} />}{updateStatus.state === "downloading" ? `${Math.round(updateStatus.percent)}%` : updateStatus.state === "protecting-data" ? "Preserving data…" : action.label}
             </button>
           </SettingsRow>
           {updateStatus.state === "downloading" && (

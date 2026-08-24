@@ -2,6 +2,8 @@
 
 Pixice 0.1.0-beta.1 uses the permanent application identifier `com.blumenwagen.pixice`. Changing it after users install the app would split application data, permissions, keychain entries, and updater identity.
 
+Pixice disables install-on-quit. An in-app update first writes verified, consistent copies of the project, thread metadata, workflow, and Instrument databases under `update-data-backups` in the application's user-data directory. A failed integrity check or backup aborts installation. The first launch of a new version restores missing or corrupt durable files from the latest verified snapshot, takes another pre-migration snapshot, and only records the new data version after all persistent stores open successfully.
+
 ## One-time setup
 
 1. Rename or create the GitHub repository as `Blumenwagen/Pixice`, then update local clones to `https://github.com/Blumenwagen/Pixice.git`.
@@ -30,7 +32,7 @@ Do not put credential values in `.env.example`, workflow YAML, release notes, or
 7. Install and smoke-test each package on a clean machine or virtual machine. Test provider sign-in, GitHub sign-in, a new thread, a tool approval, file editing, workflows, updates, and uninstall behavior.
 8. Commit the release changes, then create and push the matching annotated tag, such as `v0.1.0-beta.1`.
 
-Tag builds require signing credentials. They create separate macOS arm64 and x64 packages, a Windows x64 installer, Linux AppImage and Debian packages, updater metadata, and `SHA256SUMS.txt`. A version containing a prerelease suffix is published as a GitHub prerelease.
+Tag builds require signing credentials. The macOS jobs verify the packaged application's signature, application identifier, team identifier, entitlements, and Gatekeeper assessment before uploading artifacts. They create separate macOS arm64 and x64 packages, a Windows x64 installer, Linux AppImage and Debian packages, updater metadata, and `SHA256SUMS.txt`. A version containing a prerelease suffix is published as a GitHub prerelease.
 
 ## Release decision
 

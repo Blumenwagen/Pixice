@@ -2,7 +2,10 @@
   "name": "pixice",
   "version": "0.1.0-beta.1",
   "description": "A cross-platform desktop client for working with coding agents.",
-  "author": "Pixice contributors",
+  "author": {
+    "name": "Pixice contributors",
+    "email": "74672342+Blumenwagen@users.noreply.github.com"
+  },
   "private": true,
   "packageManager": "pnpm@10.15.1",
   "engines": {
@@ -20,6 +23,7 @@
     "runtime:verify": "node scripts/verify-runtime.mjs",
     "release:verify": "node scripts/verify-release-version.mjs",
     "release:preflight": "node scripts/verify-release-readiness.mjs",
+    "release:verify:macos": "node scripts/verify-packaged-macos.mjs",
     "release:checksums": "node scripts/generate-checksums.mjs",
     "preview": "vite preview",
     "test": "vitest run",

@@ -19,19 +19,40 @@ class FakeUpdater extends EventEmitter {
 describe("PixiceAppUpdater", () => {
   it("checks, downloads, and installs a GitHub release", async () => {
     const nativeUpdater = new FakeUpdater();
-    const updater = new PixiceAppUpdater({ updater: nativeUpdater, app: { isPackaged: true, getVersion: () => "0.1.0" } });
+    const prepareInstall = vi.fn(async () => ({ path: "/backups/update" }));
+    const updater = new PixiceAppUpdater({ updater: nativeUpdater, app: { isPackaged: true, getVersion: () => "0.1.0" }, prepareInstall });
     updater.start();
 
     await updater.check();
     expect(updater.snapshot()).toMatchObject({ state: "available", currentVersion: "0.1.0", availableVersion: "0.2.0" });
     expect(nativeUpdater.autoDownload).toBe(false);
+    expect(nativeUpdater.autoInstallOnAppQuit).toBe(false);
     expect(nativeUpdater.allowPrerelease).toBe(false);
 
     await updater.download();
     expect(updater.snapshot()).toMatchObject({ state: "downloaded", percent: 100, availableVersion: "0.2.0" });
 
-    updater.install();
+    await updater.install();
+    expect(prepareInstall).toHaveBeenCalledWith({ currentVersion: "0.1.0", availableVersion: "0.2.0" });
     expect(nativeUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    updater.stop();
+  });
+
+  it("refuses to install when durable data cannot be preserved", async () => {
+    const nativeUpdater = new FakeUpdater();
+    const updater = new PixiceAppUpdater({
+      updater: nativeUpdater,
+      app: { isPackaged: true, getVersion: () => "0.1.0" },
+      prepareInstall: vi.fn(async () => { throw new Error("backup failed"); })
+    });
+    updater.start();
+    await updater.check();
+    await updater.download();
+
+    await expect(updater.install()).rejects.toThrow("backup failed");
+    expect(nativeUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(updater.snapshot()).toMatchObject({ state: "install-error", message: expect.stringContaining("backup failed") });
+    await expect(updater.install()).rejects.toThrow("backup failed");
     updater.stop();
   });
 

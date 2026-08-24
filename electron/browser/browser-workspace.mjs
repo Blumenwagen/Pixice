@@ -4,6 +4,7 @@ const HOME_HTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="
 html,body{height:100%;margin:0}body{display:grid;place-items:center;color:#85858b;background:#171717;font:14px system-ui,sans-serif}.home{text-align:center}.mark{width:42px;height:42px;margin:0 auto 14px;display:grid;place-items:center;color:#c9c9ce;background:#252527;border:1px solid #343438;border-radius:13px;font-size:20px}strong{display:block;color:#e8e8eb;font-size:15px}p{margin:7px 0 0;font-size:12px}</style></head><body><div class="home"><div class="mark">◎</div><strong>Browse with Pixice</strong><p>Enter an address above or ask Codex to investigate a page.</p></div></body></html>`;
 const HOME_URL = `data:text/html;charset=utf-8,${encodeURIComponent(HOME_HTML)}`;
 const INTERACTIVE_SELECTOR = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]';
+const NATIVE_PREVIEW_RADIUS = 14;
 
 function functionTool(name, description, properties = {}, required = []) {
   return {
@@ -104,6 +105,7 @@ export class BrowserWorkspace {
       }
     });
     view.setBackgroundColor("#171717");
+    view.setBorderRadius(NATIVE_PREVIEW_RADIUS);
     const initialUrl = normalizeBrowserUrl(url);
     const tab = { id, view, title: "New tab", url: HOME_URL, pendingUrl: initialUrl, loading: false, error: null, canGoBack: false, canGoForward: false };
     workspace.tabs.set(id, tab);

@@ -19,6 +19,7 @@ module.exports = {
   icon: "build/icon.png",
   asar: true,
   npmRebuild: false,
+  afterPack: "scripts/after-pack-macos.cjs",
   directories: {
     output: "release"
   },
@@ -55,6 +56,8 @@ module.exports = {
   mac: {
     target: ["dmg", "zip"],
     category: "public.app-category.developer-tools",
+    entitlements: "build/entitlements.mac.plist",
+    entitlementsInherit: "build/entitlements.mac.plist",
     hardenedRuntime: true,
     gatekeeperAssess: false,
     notarize: true
