@@ -41,6 +41,7 @@ import { PixiceDatabase } from "./persistence/database.mjs";
 import { inspectRepository, readDiff } from "./git/worktrees.mjs";
 import { GitHubCli, prependGitHubCliToPath } from "./github/github-cli.mjs";
 import { calculateUsageCost, listPricingCatalog, PRICING_VERIFIED_AT } from "./usage/pricing.mjs";
+import { reconcileThreadActivity } from "./runtime/thread-activity.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -1229,7 +1230,7 @@ function registerIpc() {
     const response = await listProjectThreads(project);
     const data = (response.data ?? []).map((thread) => {
       rememberThread(project, thread);
-      return withPersistedThreadName(thread);
+      return reconcileThreadActivity(withPersistedThreadName(thread), activeTurns.get(thread.id));
     });
     return { ...response, data };
   });
@@ -1250,14 +1251,16 @@ function registerIpc() {
     for (const thread of response.data ?? []) rememberThread(project, thread);
     const data = await Promise.all((response.data ?? []).map(async (rawCandidate) => {
       const candidate = withPersistedThreadName(rawCandidate);
-      if (candidate.status?.type !== "notLoaded") return candidate;
+      if (candidate.status?.type !== "notLoaded") return reconcileThreadActivity(candidate, activeTurns.get(candidate.id));
       const cached = threadMonitorCache.get(candidate.id);
-      if (cached?.updatedAt === candidate.updatedAt) return { ...candidate, status: cached.status };
+      if (cached?.updatedAt === candidate.updatedAt) {
+        return reconcileThreadActivity({ ...candidate, status: cached.status }, activeTurns.get(candidate.id));
+      }
       try {
         const detail = await runtime.request("thread/read", { threadId: candidate.id, includeTurns: true });
         const status = monitorStatus(detail.thread);
         threadMonitorCache.set(candidate.id, { updatedAt: candidate.updatedAt, status });
-        return { ...candidate, status };
+        return reconcileThreadActivity({ ...candidate, status }, activeTurns.get(candidate.id));
       } catch {
         return candidate;
       }

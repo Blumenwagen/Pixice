@@ -15,6 +15,7 @@ import {
   PlugsConnected,
   Sparkle,
   Stack,
+  TerminalWindow,
   TreeStructure
 } from "../icons/index.jsx";
 
@@ -33,6 +34,7 @@ export const WORKFLOW_ICONS = Object.freeze({
   delay: Pause,
   loop: ArrowClockwise,
   file: File,
+  command: TerminalWindow,
   git: GitBranch,
   database: Stack,
   executeWorkflow: TreeStructure,

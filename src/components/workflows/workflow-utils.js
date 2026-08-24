@@ -137,6 +137,27 @@ export const WORKFLOW_NODE_META = {
     inputPorts: commonInput,
     outputPorts: [{ id: "output", label: "Result" }]
   },
+  command: {
+    label: "Command",
+    action: "Run executable",
+    category: "Actions",
+    icon: "terminal",
+    tone: "blue",
+    defaultName: "Command",
+    defaultDescription: "Run an explicitly enabled executable in the current project without a shell.",
+    defaultConfig: {
+      executable: "",
+      arguments: "[]",
+      workingDirectory: ".",
+      environment: "{}",
+      allowExecution: false,
+      continueOnError: false,
+      timeoutMs: 300000,
+      maxBytes: 5000000
+    },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Result" }]
+  },
   git: {
     label: "Git",
     action: "Inspect repository",

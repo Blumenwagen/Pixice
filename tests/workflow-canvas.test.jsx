@@ -15,8 +15,9 @@ describe("WorkflowCanvas", () => {
   });
 
   it("keeps the add-node list scrollable within the popup height", () => {
-    expect(workflowNodesCss).toMatch(/\.nodePicker\s*\{[^}]*max-height:[^;]+;[^}]*display: flex;[^}]*flex-direction: column;/s);
-    expect(workflowNodesCss).toMatch(/\.nodePickerBody\s*\{[^}]*flex: 1 1 auto;[^}]*min-height: 0;[^}]*overflow-y: auto;/s);
+    expect(workflowNodesCss).toMatch(/\.nodePicker\s*\{[^}]*max-height:[^;]+;[^}]*display: flex;[^}]*flex-direction: column;[^}]*pointer-events: auto;/s);
+    expect(workflowNodesCss).toMatch(/\.nodePickerBody\s*\{[^}]*flex: 1 1 auto;[^}]*min-height: 0;[^}]*overflow-y: auto;[^}]*overscroll-behavior: contain;/s);
+    expect(workflowWorkspaceCss).toMatch(/\.runPopover\s*\{\s*pointer-events: auto;/s);
   });
 
   it("lets users promote a Pixice Agent node from background to foreground", () => {
@@ -94,6 +95,7 @@ describe("WorkflowCanvas", () => {
     expect(screen.getByRole("button", { name: /Transform/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Condition/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Project File/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Command/i })).toBeInTheDocument();
     expect(screen.getByText("Git").closest("button")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Use Skill/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pixice Board/i })).toBeInTheDocument();
@@ -109,6 +111,51 @@ describe("WorkflowCanvas", () => {
       name: "Use Skill",
       config: expect.objectContaining({ source: "installed", maxBytes: 500000 })
     });
+  });
+
+  it("configures a command with an explicit execution gate", () => {
+    const workflow = {
+      ...createDefaultWorkflow({ projectId: "project-1" }),
+      graph: {
+        viewport: { x: 0, y: 0, zoom: 1 },
+        nodes: [{
+          id: "command",
+          type: "command",
+          name: "Build desktop",
+          description: "",
+          position: { x: 40, y: 120 },
+          config: {
+            executable: "pnpm",
+            arguments: '["build:desktop"]',
+            workingDirectory: ".",
+            environment: "{}",
+            allowExecution: false,
+            continueOnError: false,
+            timeoutMs: 300000,
+            maxBytes: 5000000
+          }
+        }],
+        edges: []
+      }
+    };
+    const onChange = vi.fn();
+    render(
+      <WorkflowCanvas
+        workflow={workflow}
+        models={[]}
+        onChange={onChange}
+        onRun={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("group", { name: "Command: Build desktop" }));
+    expect(screen.getByDisplayValue("pnpm")).toBeInTheDocument();
+    expect(screen.getByText(/run without a shell/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Allow command execution/i }));
+
+    const next = onChange.mock.calls.at(-1)[0];
+    expect(next.graph.nodes[0].config.allowExecution).toBe(true);
   });
 
   it("connects Use Skill only to an Agent Skill port", () => {

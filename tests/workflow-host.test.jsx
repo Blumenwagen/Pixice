@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkflowHost } from "../src/components/workflows/WorkflowHost.jsx";
@@ -61,6 +61,9 @@ function createApi(threads = [{ id: "thread-lead", name: "Lead task", parentThre
 function Shell({ taskNames = ["Lead task"], activeThreadId = "thread-lead", onTaskClick = () => {} }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [navigationVersion, setNavigationVersion] = useState(0);
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("loom:active-thread-changed", { detail: activeThreadId }));
+  }, [activeThreadId]);
   return (
     <div className="loom-app view-task" data-active-thread-id={activeThreadId} style={{ "--rail-width": "264px" }}>
       <aside className="sidebar">
@@ -77,7 +80,7 @@ function Shell({ taskNames = ["Lead task"], activeThreadId = "thread-lead", onTa
       <div data-workflow-workspace-slot />
       <button aria-label="Open preview workspace" onClick={() => setPreviewOpen(true)}>Preview</button>
       {previewOpen && (
-        <section className="browser-panel">
+        <section className="browser-panel" data-preview-workspace-id={activeThreadId}>
           <button aria-label="Close preview workspace" onClick={() => setPreviewOpen(false)}>Close</button>
         </section>
       )}
@@ -159,8 +162,42 @@ describe("WorkflowHost", () => {
 
     expect(await screen.findByLabelText("Workflow preview")).toBeInTheDocument();
     expect(screen.getByText("Agent is editing this workflow")).toBeInTheDocument();
+    expect(document.querySelector(".browser-panel")).toHaveAttribute("data-workflow-preview-host", "true");
+    expect(workflowWorkspaceCss).toMatch(/\.browser-panel\[data-workflow-preview-host="true"\][^}]*>\s*:not\(\.previewOverlay\)/);
     await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({ workspaceId: "thread-lead", visible: false }));
     expect(onTaskClick).not.toHaveBeenCalled();
+  });
+
+  it("detaches a workflow preview when the user switches to another thread", async () => {
+    const { api, emit } = createApi([
+      { id: "thread-lead", name: "Lead task", parentThreadId: null },
+      { id: "thread-other", name: "Other task", parentThreadId: null }
+    ]);
+    window.loom = api;
+    const view = render(
+      <WorkflowHost>
+        <Shell taskNames={["Lead task", "Other task"]} activeThreadId="thread-lead" />
+      </WorkflowHost>
+    );
+    await screen.findByRole("button", { name: "Workflows" });
+
+    emit("WorkflowOpenRequested", {
+      projectId: "project-1",
+      workflowId: "workflow-1",
+      workflowName: "Release workflow",
+      workspaceId: "thread-lead",
+      reason: "edit"
+    });
+    expect(await screen.findByLabelText("Workflow preview")).toBeInTheDocument();
+
+    view.rerender(
+      <WorkflowHost>
+        <Shell taskNames={["Lead task", "Other task"]} activeThreadId="thread-other" />
+      </WorkflowHost>
+    );
+
+    await waitFor(() => expect(screen.queryByLabelText("Workflow preview")).not.toBeInTheDocument());
+    expect(document.querySelector('.browser-panel[data-preview-workspace-id="thread-other"]')).not.toHaveAttribute("data-workflow-preview-host");
   });
 
   it("does not switch threads for a foreground workflow agent", async () => {

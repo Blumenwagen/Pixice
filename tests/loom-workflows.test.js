@@ -107,7 +107,7 @@ describe("Pixice workflow capability", () => {
       arguments: {}
     }));
     expect(catalog.nodes.map((node) => node.type)).toEqual(expect.arrayContaining([
-      "useSkill", "httpRequest", "transform", "condition", "switch", "merge", "delay", "file", "git", "board"
+      "useSkill", "httpRequest", "transform", "condition", "switch", "merge", "delay", "file", "command", "git", "board"
     ]));
 
     const created = resultValue(await capability.workflows.handleToolCall({

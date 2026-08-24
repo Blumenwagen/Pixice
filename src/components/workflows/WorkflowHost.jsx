@@ -5,8 +5,13 @@ import { TreeStructure } from "../icons/index.jsx";
 import { WorkflowPreview, WorkflowWorkspace } from "./WorkflowWorkspace.jsx";
 import styles from "./WorkflowWorkspace.module.css";
 
-function waitForElement(selector, timeoutMs = 1800) {
-  const existing = document.querySelector(selector);
+function previewPanelForWorkspace(workspaceId) {
+  return [...document.querySelectorAll(".browser-panel")]
+    .find((candidate) => candidate.dataset.previewWorkspaceId === workspaceId) ?? null;
+}
+
+function waitForPreviewPanel(workspaceId, timeoutMs = 1800) {
+  const existing = previewPanelForWorkspace(workspaceId);
   if (existing) return Promise.resolve(existing);
   return new Promise((resolve) => {
     let settled = false;
@@ -18,7 +23,7 @@ function waitForElement(selector, timeoutMs = 1800) {
       resolve(value);
     };
     const observer = new MutationObserver(() => {
-      const node = document.querySelector(selector);
+      const node = previewPanelForWorkspace(workspaceId);
       if (node) finish(node);
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
@@ -40,6 +45,7 @@ export function WorkflowHost({ children }) {
   const [requestedWorkflowId, setRequestedWorkflowId] = useState(null);
   const [preview, setPreview] = useState(null);
   const currentThreadIdRef = useRef(null);
+  const previewTargetRef = useRef(null);
   const pendingPreviewsRef = useRef(new Map());
 
   useEffect(() => {
@@ -48,16 +54,30 @@ export function WorkflowHost({ children }) {
         ?? document.querySelector(".sidebar .rail-group");
       const nextAppTarget = document.querySelector("[data-workflow-workspace-slot]")
         ?? document.querySelector(".loom-app");
-      const nextPreviewTarget = document.querySelector(".browser-panel");
       setNavTarget((current) => current === nextNavTarget ? current : nextNavTarget);
       setAppTarget((current) => current === nextAppTarget ? current : nextAppTarget);
-      setPreviewTarget((current) => current === nextPreviewTarget ? current : nextPreviewTarget);
     };
     syncTargets();
     const observer = new MutationObserver(syncTargets);
     observer.observe(document.documentElement, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!preview?.threadId) {
+      if (previewTargetRef.current) {
+        previewTargetRef.current = null;
+        setPreviewTarget(null);
+      }
+      return undefined;
+    }
+    const nextPreviewTarget = previewPanelForWorkspace(preview.threadId);
+    if (previewTargetRef.current !== nextPreviewTarget) {
+      previewTargetRef.current = nextPreviewTarget;
+      setPreviewTarget(nextPreviewTarget);
+    }
+    return undefined;
+  }, [preview?.threadId]);
 
   const refreshCatalog = useCallback(async () => {
     if (!api) return;
@@ -140,13 +160,16 @@ export function WorkflowHost({ children }) {
   const ensurePreviewOpen = useCallback(async (workspaceId) => {
     if (!workspaceId) return null;
     setActive(false);
-    let panel = document.querySelector(".browser-panel");
+    let panel = previewPanelForWorkspace(workspaceId);
     if (!panel) {
       const openButton = document.querySelector('[aria-label="Open preview workspace"]');
       openButton?.click();
-      panel = await waitForElement(".browser-panel");
+      panel = await waitForPreviewPanel(workspaceId);
     }
-    if (panel) setPreviewTarget(panel);
+    if (panel?.dataset.previewWorkspaceId === workspaceId) {
+      previewTargetRef.current = panel;
+      setPreviewTarget(panel);
+    }
     try {
       await api?.browser?.setViewport?.({ workspaceId, visible: false });
     } catch {
@@ -179,7 +202,9 @@ export function WorkflowHost({ children }) {
 
   useEffect(() => {
     const syncThread = (event) => {
-      currentThreadIdRef.current = event?.detail ?? null;
+      const nextThreadId = event?.detail ?? null;
+      currentThreadIdRef.current = nextThreadId;
+      setPreview((current) => current?.threadId === nextThreadId ? current : null);
       window.setTimeout(() => void presentPendingPreview(), 0);
     };
     window.addEventListener("loom:active-thread-changed", syncThread);
@@ -234,16 +259,20 @@ export function WorkflowHost({ children }) {
   }, [api, preview?.threadId]);
 
   useEffect(() => {
-    if (!previewTarget) return undefined;
+    if (!previewTarget || !preview) return undefined;
     const previousPosition = previewTarget.style.position;
     const previousOverflow = previewTarget.style.overflow;
+    const previousPreviewHost = previewTarget.getAttribute("data-workflow-preview-host");
     previewTarget.style.position = "relative";
     previewTarget.style.overflow = "hidden";
+    previewTarget.dataset.workflowPreviewHost = "true";
     return () => {
       previewTarget.style.position = previousPosition;
       previewTarget.style.overflow = previousOverflow;
+      if (previousPreviewHost === null) previewTarget.removeAttribute("data-workflow-preview-host");
+      else previewTarget.setAttribute("data-workflow-preview-host", previousPreviewHost);
     };
-  }, [previewTarget]);
+  }, [preview, previewTarget]);
 
   const project = projects.find((candidate) => candidate.id === projectId) ?? null;
   const nav = navTarget ? createPortal(

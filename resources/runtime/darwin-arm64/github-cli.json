@@ -1,0 +1,7 @@
+{
+  "version": "2.98.0",
+  "path": "bin/gh",
+  "sha256": "eedbfd5b8071027fe6326826eded48d274f1ec9d93f9239d9ba778ea1f479ac9",
+  "sourceUrl": "https://github.com/cli/cli/releases/download/v2.98.0/gh_2.98.0_macOS_arm64.zip",
+  "sourceSha256": "8cfb027cc5310675f2b830eac8f9865c1155a45ffcf9757f699fdd5a22046ca4"
+}

@@ -107,6 +107,17 @@ export const WORKFLOW_NODE_GUIDE = [
     config: { operation: "readText | writeText | list | stat | exists", path: "Project-relative template", content: "Write template", allowWrite: "Boolean", createDirectories: "Boolean", recursive: "Boolean", maxBytes: "Limit" }
   },
   {
+    type: "command",
+    purpose: "Run an explicitly enabled executable in the current project without invoking a shell.",
+    inputPorts: ["input"], outputPorts: ["output"],
+    config: {
+      executable: "Executable name from Pixice PATH, or project-relative executable path",
+      arguments: "JSON array template containing scalar arguments", workingDirectory: "Project-relative directory template",
+      environment: "JSON object template containing environment overrides", allowExecution: "Required Boolean safety gate",
+      continueOnError: "Boolean", timeoutMs: "100-3600000", maxBytes: "1024-25000000 combined output limit"
+    }
+  },
+  {
     type: "git",
     purpose: "Inspect repository status, diffs, changed files, history, or a commit without invoking a shell.",
     inputPorts: ["input"], outputPorts: ["output"],

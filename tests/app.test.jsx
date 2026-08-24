@@ -828,6 +828,95 @@ describe("Pixice app shell", () => {
     expect(JSON.parse(localStorage.getItem("loom.threadCompletionsSeen"))).toMatchObject({ "thread-2": "turn:turn-2" });
   });
 
+  it("treats historical completions as seen when migrating an existing installation", async () => {
+    const secondProject = {
+      id: "project-2",
+      displayName: "Beacon",
+      canonicalPath: "/work/beacon",
+      icon: "terminal",
+      color: "green",
+      folders: ["/work/beacon"]
+    };
+    const historicalThreads = [
+      thread,
+      {
+        ...thread,
+        id: "thread-2",
+        name: "Older completed task",
+        preview: "Older completed task",
+        updatedAt: Math.floor(Date.now() / 1000) - 60,
+        turns: [{ id: "turn-2", status: "completed", items: [] }]
+      },
+      {
+        ...thread,
+        id: "thread-3",
+        name: "Another completed task",
+        preview: "Another completed task",
+        updatedAt: Math.floor(Date.now() / 1000) - 30,
+        turns: [{ id: "turn-3", status: "completed", items: [] }]
+      }
+    ];
+    const otherHistoricalThreads = [
+      {
+        ...thread,
+        id: "thread-4",
+        name: "Older Beacon task",
+        preview: "Older Beacon task",
+        cwd: "/work/beacon",
+        updatedAt: Math.floor(Date.now() / 1000) - 90,
+        turns: [{ id: "turn-4", status: "completed", items: [] }]
+      },
+      {
+        ...thread,
+        id: "thread-5",
+        name: "Another Beacon task",
+        preview: "Another Beacon task",
+        cwd: "/work/beacon",
+        updatedAt: Math.floor(Date.now() / 1000) - 45,
+        turns: [{ id: "turn-5", status: "completed", items: [] }]
+      }
+    ];
+    localStorage.setItem("loom.threadCompletionsSeen", JSON.stringify({ "thread-1": "turn:turn-1" }));
+    const api = createApi(historicalThreads);
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project, secondProject],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    api.threads.list.mockImplementation(async ({ projectId }) => ({
+      data: projectId === secondProject.id ? otherHistoricalThreads : historicalThreads,
+      nextCursor: null
+    }));
+    api.threads.read.mockImplementation(async ({ projectId, threadId }) => {
+      const candidates = projectId === secondProject.id ? otherHistoricalThreads : historicalThreads;
+      return { thread: candidates.find((candidate) => candidate.id === threadId) ?? candidates[0] };
+    });
+    window.loom = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    expect(document.querySelectorAll(".task-row.finished")).toHaveLength(0);
+    expect(JSON.parse(localStorage.getItem("loom.threadCompletionsSeen"))).toMatchObject({
+      "thread-1": "turn:turn-1",
+      __baselineAt: expect.any(Number)
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Beacon" }));
+    expect(await screen.findByRole("button", { name: "Older Beacon task" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".task-row.finished")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Aurora" }));
+    expect(await screen.findByRole("button", { name: "Older completed task" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".task-row.finished")).toHaveLength(0);
+
+    act(() => api.emit({
+      type: "ThreadUpdated",
+      payload: { method: "turn/completed", projectId: project.id, threadId: "thread-2", turnId: "turn-new" }
+    }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Older completed task" }).closest(".task-row")).toHaveClass("finished"));
+  });
+
   it("moves the last messaged thread to the top and persists that order", async () => {
     const user = userEvent.setup();
     const secondThread = {
@@ -2056,6 +2145,8 @@ describe("Pixice app shell", () => {
     const sidebar = screen.getByRole("complementary", { name: "Primary navigation" });
 
     expect(sidebar).toHaveAttribute("data-expanded", "false");
+    expect(appCss).toMatch(/\.task-select\s*\{[^}]*padding:\s*0 8px;/s);
+    expect(sidebar.querySelector(".rail-badge")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Aurora" })).toHaveAttribute("aria-current", "true");
     fireEvent.mouseEnter(sidebar);
     fireEvent.mouseLeave(sidebar);
@@ -2063,6 +2154,7 @@ describe("Pixice app shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Expand navigation labels" }));
     await waitFor(() => expect(sidebar).toHaveAttribute("data-expanded", "true"));
+    expect(sidebar.querySelector(".rail-badge")).toHaveTextContent("1");
     fireEvent.mouseLeave(sidebar);
     expect(sidebar).toHaveAttribute("data-expanded", "true");
   });
@@ -2081,6 +2173,8 @@ describe("Pixice app shell", () => {
     expect(app).toHaveAttribute("data-preview-open", "true");
     expect(sidebar).toHaveAttribute("data-expanded", "false");
     expect(app).toHaveAttribute("data-sidebar-expanded", "false");
+    expect(screen.getByRole("separator", { name: "Resize chat and preview" })).toBeInTheDocument();
+    expect(appCss).toMatch(/\.task-workspace\.preview-mode\s*\{[^}]*var\(--app-frame-gap\)[^}]*minmax\(360px, 1fr\);/s);
 
     const expandButton = screen.getByRole("button", { name: "Expand navigation labels" });
     expect(expandButton).toBeEnabled();
@@ -2095,6 +2189,56 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Close preview workspace" })[0]);
     await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
     expect(sidebar).toHaveAttribute("data-expanded", "true");
+  });
+
+  it("keeps the native browser viewport hidden while a workflow owns the preview panel", async () => {
+    const api = window.loom;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
+
+    const panel = await screen.findByRole("region", { name: "Preview workspace" });
+    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: "thread-1",
+      visible: true
+    })));
+
+    api.browser.setViewport.mockClear();
+    panel.setAttribute("data-workflow-preview-host", "true");
+
+    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({
+      workspaceId: "thread-1",
+      visible: false
+    }));
+    expect(api.browser.setViewport).not.toHaveBeenCalledWith(expect.objectContaining({ visible: true }));
+  });
+
+  it("resizes and resets the chat-preview split", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await screen.findByRole("region", { name: "Preview workspace" });
+
+    const workspace = document.querySelector(".task-workspace");
+    const canvas = workspace.querySelector(".main-canvas");
+    const separator = screen.getByRole("separator", { name: "Resize chat and preview" });
+    vi.spyOn(workspace, "getBoundingClientRect").mockReturnValue({ width: 1000, height: 700, x: 0, y: 0, top: 0, right: 1000, bottom: 700, left: 0, toJSON() {} });
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ width: 400, height: 700, x: 0, y: 0, top: 0, right: 400, bottom: 700, left: 0, toJSON() {} });
+
+    fireEvent.pointerDown(separator, { clientX: 400 });
+    fireEvent.pointerMove(window, { clientX: 468 });
+    fireEvent.pointerUp(window);
+
+    expect(workspace).toHaveStyle({ "--preview-chat-width": "468px" });
+    expect(localStorage.getItem("loom.previewChatWidth")).toBe("468");
+
+    fireEvent.keyDown(separator, { key: "ArrowLeft" });
+    expect(workspace).toHaveStyle({ "--preview-chat-width": "452px" });
+    expect(localStorage.getItem("loom.previewChatWidth")).toBe("452");
+
+    fireEvent.doubleClick(separator);
+    expect(workspace.style.getPropertyValue("--preview-chat-width")).toBe("");
+    expect(localStorage.getItem("loom.previewChatWidth")).toBeNull();
   });
 
   it("keeps the sidebar open when preview starts under the pointer until explicitly collapsed", async () => {

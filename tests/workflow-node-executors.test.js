@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -122,6 +122,55 @@ describe("workflow node executors", () => {
     }, { projectRoot: directory });
     expect(readFileSync(path.join(directory, "generated/result.txt"), "utf8")).toBe("Ship it");
     await expect(execute("file", { operation: "readText", path: "../secret.txt" }, { projectRoot: directory })).rejects.toThrow(/current Pixice project/i);
+  });
+
+  it("runs explicitly enabled commands without a shell and returns structured output", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-command-"));
+    temporaryDirectories.push(directory);
+    execFileSync("git", ["init", "-q"], { cwd: directory });
+
+    await expect(execute("command", {
+      executable: "git",
+      arguments: '["rev-parse", "--show-toplevel"]',
+      workingDirectory: ".",
+      environment: "{}",
+      allowExecution: false
+    }, { projectRoot: directory })).rejects.toThrow(/Allow command execution/i);
+
+    const result = normalizeWorkflowNodeResult(await execute("command", {
+      executable: "git",
+      arguments: '["rev-parse", "{{input.target}}"]',
+      workingDirectory: ".",
+      environment: '{"PIXICE_WORKFLOW_TEST":"enabled"}',
+      allowExecution: true,
+      timeoutMs: 5_000,
+      maxBytes: 10_000
+    }, { projectRoot: directory, input: { target: "--show-toplevel" } }));
+    expect(result.output).toMatchObject({
+      ok: true,
+      exitCode: 0,
+      executable: "git",
+      arguments: ["rev-parse", "--show-toplevel"],
+      workingDirectory: "."
+    });
+    expect(result.output.stdout.trim()).toBe(realpathSync(directory));
+    expect(result.output.durationMs).toBeGreaterThanOrEqual(0);
+
+    const failed = normalizeWorkflowNodeResult(await execute("command", {
+      executable: "git",
+      arguments: '["rev-parse", "--verify", "missing-ref"]',
+      workingDirectory: ".",
+      environment: "{}",
+      allowExecution: true,
+      continueOnError: true
+    }, { projectRoot: directory }));
+    expect(failed.output).toMatchObject({ ok: false, exitCode: 128 });
+
+    await expect(execute("command", {
+      executable: "../outside-tool",
+      arguments: "[]",
+      allowExecution: true
+    }, { projectRoot: directory })).rejects.toThrow(/current Pixice project/i);
   });
 
   it("inspects a real Git repository without exposing arbitrary shell arguments", async () => {

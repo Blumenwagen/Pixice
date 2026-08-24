@@ -5,7 +5,7 @@
   color-scheme: dark;
   font-family: "Manrope Variable", system-ui, sans-serif;
   font-synthesis: none;
-  --chrome-glass: rgba(24, 24, 24, .58);
+  --chrome-glass: rgba(36, 36, 36, .54);
   --app-frame-gap: 8px;
   --app-frame-radius: 14px;
   --stage: #1b1b1b;
@@ -88,8 +88,11 @@ button:disabled { cursor: not-allowed; opacity: .38; }
 .loom-app:is(.view-settings, .view-tools) { --rail-width: clamp(224px, var(--sidebar-width), 360px); }
 .loom-app[data-preview-open="true"][data-sidebar-expanded="false"] { --rail-width: 64px; }
 body.sidebar-resizing,
-body.sidebar-resizing * { cursor: col-resize !important; }
+body.sidebar-resizing *,
+body.preview-resizing,
+body.preview-resizing * { cursor: col-resize !important; }
 body.sidebar-resizing .loom-app { transition: none; }
+body.preview-resizing .task-workspace { transition: none; }
 .window-drag-region {
   position: absolute;
   top: 0;
@@ -425,7 +428,7 @@ body.sidebar-resizing .loom-app { transition: none; }
   width: 100%;
   min-width: 0;
   min-height: 30px;
-  padding: 0 8px 0 24px;
+  padding: 0 8px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -566,12 +569,14 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 
 /* Side chat + native browser preview */
 .task-workspace.preview-mode {
-  grid-template-columns: clamp(340px, 30vw, 430px) minmax(440px, 1fr);
+  grid-template-columns:
+    minmax(300px, min(var(--preview-chat-width, clamp(340px, 30vw, 430px)), calc(100% - 368px)))
+    var(--app-frame-gap)
+    minmax(360px, 1fr);
 }
 .preview-mode .main-canvas {
   margin-right: 0;
-  border-radius: var(--app-frame-radius) 0 0 var(--app-frame-radius);
-  border-right: 1px solid var(--border);
+  border-radius: var(--app-frame-radius);
 }
 .preview-mode .app-toolbar { height: 52px; padding-right: 9px; padding-left: 15px; }
 .preview-mode .toolbar-title { gap: 8px; }
@@ -604,6 +609,30 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 .preview-mode .composer-picker.permission .picker-trigger-label,
 .preview-mode .composer-picker.permission .picker-chevron { display: none; }
 
+.preview-resizer {
+  position: relative;
+  z-index: 4;
+  min-width: var(--app-frame-gap);
+  margin-bottom: var(--app-frame-gap);
+  cursor: col-resize;
+  -webkit-app-region: no-drag;
+}
+.preview-resizer::after {
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  left: 50%;
+  width: 1px;
+  content: "";
+  background: transparent;
+  transform: translateX(-50%);
+  transition: background-color 140ms ease;
+}
+.preview-resizer:hover::after,
+.preview-resizer:focus-visible::after,
+body.preview-resizing .preview-resizer::after { background: var(--primary); }
+.preview-resizer:focus-visible { outline-offset: -2px; }
+
 .browser-panel {
   min-width: 0;
   min-height: 0;
@@ -613,7 +642,7 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
   overflow: hidden;
   color: var(--foreground);
   background: var(--canvas);
-  border-radius: 0 var(--app-frame-radius) var(--app-frame-radius) 0;
+  border-radius: var(--app-frame-radius);
 }
 .browser-tabbar {
   height: 42px;

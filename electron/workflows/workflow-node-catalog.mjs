@@ -16,6 +16,7 @@ export const WORKFLOW_NODE_TYPES = [
   "delay",
   "loop",
   "file",
+  "command",
   "git",
   "database",
   "executeWorkflow",
@@ -122,6 +123,16 @@ const DEFAULT_CONFIGS = {
     createDirectories: true,
     recursive: false,
     allowWrite: false,
+    maxBytes: 5_000_000
+  },
+  command: {
+    executable: "",
+    arguments: "[]",
+    workingDirectory: ".",
+    environment: "{}",
+    allowExecution: false,
+    continueOnError: false,
+    timeoutMs: 300_000,
     maxBytes: 5_000_000
   },
   git: {
@@ -355,6 +366,19 @@ export function normalizeWorkflowNodeConfig(node) {
       createDirectories: source.createDirectories !== false,
       recursive: Boolean(source.recursive),
       allowWrite: Boolean(source.allowWrite),
+      maxBytes: integerValue(source.maxBytes, 5_000_000, 1_024, 25_000_000)
+    };
+  }
+  if (node.type === "command") {
+    return {
+      ...source,
+      executable: stringValue(source.executable, ""),
+      arguments: stringValue(source.arguments, "[]"),
+      workingDirectory: stringValue(source.workingDirectory, ".").trim() || ".",
+      environment: stringValue(source.environment, "{}"),
+      allowExecution: Boolean(source.allowExecution),
+      continueOnError: Boolean(source.continueOnError),
+      timeoutMs: integerValue(source.timeoutMs, 300_000, 100, 3_600_000),
       maxBytes: integerValue(source.maxBytes, 5_000_000, 1_024, 25_000_000)
     };
   }

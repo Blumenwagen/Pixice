@@ -298,6 +298,133 @@ async function executeFileNode({ config, context, projectRoot }) {
   };
 }
 
+function commandArguments(value) {
+  if (!Array.isArray(value)) throw new Error("Command arguments must evaluate to a JSON array");
+  return value.map((argument, index) => {
+    if (argument === null || argument === undefined || new Set(["string", "number", "boolean"]).has(typeof argument)) {
+      const rendered = argument === null || argument === undefined ? "" : String(argument);
+      if (rendered.includes("\0")) throw new Error(`Command argument ${index + 1} contains an invalid null byte`);
+      return rendered;
+    }
+    throw new Error(`Command argument ${index + 1} must be a string, number, Boolean, or null`);
+  });
+}
+
+function commandEnvironment(value) {
+  const overrides = objectValue(value, "Command environment");
+  const environment = { ...process.env };
+  for (const [key, rawValue] of Object.entries(overrides)) {
+    if (!key || key.includes("=") || key.includes("\0")) throw new Error(`Command environment key is invalid: ${key}`);
+    if (rawValue === null || rawValue === undefined) {
+      delete environment[key];
+      continue;
+    }
+    if (!new Set(["string", "number", "boolean"]).has(typeof rawValue)) {
+      throw new Error(`Command environment value for ${key} must be a string, number, Boolean, or null`);
+    }
+    const rendered = String(rawValue);
+    if (rendered.includes("\0")) throw new Error(`Command environment value for ${key} contains an invalid null byte`);
+    environment[key] = rendered;
+  }
+  return environment;
+}
+
+async function commandExecutable(projectRoot, configuredExecutable) {
+  const executable = configuredExecutable.trim();
+  if (!executable) throw new Error("Command executable is required");
+  if (executable.includes("\0")) throw new Error("Command executable contains an invalid null byte");
+  if (executable.startsWith("-")) throw new Error("Command executable cannot start with a dash");
+  if (!path.isAbsolute(executable) && !/[\\/]/.test(executable)) return executable;
+  const resolved = projectPath(projectRoot, executable);
+  const realExecutable = await assertRealPathInside(resolved.root, resolved.candidate);
+  const info = await stat(realExecutable);
+  if (!info.isFile()) throw new Error("Command executable path is not a file");
+  return realExecutable;
+}
+
+async function executeCommandNode({ config, context, projectRoot, assertActive }) {
+  if (!config.allowExecution) throw new Error('Enable "Allow command execution" on this Command node before it can run');
+  assertActive();
+  const configuredDirectory = renderString(config.workingDirectory, context).trim() || ".";
+  const resolvedDirectory = projectPath(projectRoot, configuredDirectory);
+  const cwd = await assertRealPathInside(resolvedDirectory.root, resolvedDirectory.candidate);
+  if (!(await stat(cwd)).isDirectory()) throw new Error("Command working directory is not a directory");
+  const executable = await commandExecutable(projectRoot, renderString(config.executable, context));
+  const args = commandArguments(workflowParseJsonTemplate(config.arguments, context, "Command arguments"));
+  const environment = commandEnvironment(workflowParseJsonTemplate(config.environment, context, "Command environment"));
+  const startedAt = Date.now();
+
+  const result = await new Promise((resolve, reject) => {
+    let cancellationError = null;
+    let cancellationPoll;
+    const child = execFileCallback(executable, args, {
+      cwd,
+      env: environment,
+      encoding: "utf8",
+      timeout: config.timeoutMs,
+      maxBuffer: config.maxBytes,
+      windowsHide: true
+    }, (error, stdout = "", stderr = "") => {
+      clearInterval(cancellationPoll);
+      if (cancellationError) {
+        reject(cancellationError);
+        return;
+      }
+      const outputBytes = Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(stderr, "utf8");
+      if (outputBytes > config.maxBytes) {
+        reject(new Error(`Command output exceeded ${config.maxBytes} bytes`));
+        return;
+      }
+      if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+        reject(new Error(`Command output exceeded ${config.maxBytes} bytes`));
+        return;
+      }
+      const exitCode = typeof error?.code === "number" ? error.code : error ? null : 0;
+      const commandResult = {
+        ok: !error,
+        exitCode,
+        signal: error?.signal ?? null,
+        executable: renderString(config.executable, context).trim(),
+        arguments: args,
+        workingDirectory: resolvedDirectory.relative,
+        stdout,
+        stderr,
+        durationMs: Date.now() - startedAt
+      };
+      if (!error) {
+        resolve(commandResult);
+        return;
+      }
+      if (error.killed) {
+        reject(new Error(`Command timed out after ${config.timeoutMs}ms`));
+        return;
+      }
+      if (exitCode === null) {
+        const detail = String(stderr || stdout || error.message).trim();
+        reject(new Error(`Command failed to start${detail ? `: ${detail}` : ""}`));
+        return;
+      }
+      if (config.continueOnError) {
+        resolve(commandResult);
+        return;
+      }
+      const detail = String(stderr || stdout || error.message).trim();
+      reject(new Error(`Command failed with exit code ${exitCode}${detail ? `: ${detail}` : ""}`));
+    });
+    cancellationPoll = setInterval(() => {
+      try {
+        assertActive();
+      } catch (error) {
+        cancellationError = error;
+        child.kill();
+      }
+    }, 100);
+    cancellationPoll.unref?.();
+  });
+  assertActive();
+  return result;
+}
+
 function safeGitTarget(value) {
   const target = String(value ?? "HEAD").trim() || "HEAD";
   if (target.startsWith("-")) throw new Error("Git target cannot start with a dash");
@@ -639,6 +766,7 @@ export async function executeBuiltInWorkflowNode({
   }
   if (node.type === "loop") return workflowNodeResult(await executeLoopNode({ config, context, executeWorkflow, assertActive }));
   if (node.type === "file") return workflowNodeResult(await executeFileNode({ config, context, projectRoot }));
+  if (node.type === "command") return workflowNodeResult(await executeCommandNode({ config, context, projectRoot, assertActive }));
   if (node.type === "git") return workflowNodeResult(await executeGitNode({ config, context, projectRoot }));
   if (node.type === "database") return workflowNodeResult(await executeDatabaseNode({ config, context, projectRoot }));
   if (node.type === "executeWorkflow") return workflowNodeResult(await executeNestedNode({ config, context, executeWorkflow }));

@@ -44,12 +44,18 @@ const WorkspaceOpenContext = createContext(null);
 const MIN_SIDEBAR_WIDTH = 224;
 const MAX_SIDEBAR_WIDTH = 360;
 const DEFAULT_SIDEBAR_WIDTH = 264;
+const MIN_PREVIEW_CHAT_WIDTH = 300;
+const MAX_PREVIEW_CHAT_WIDTH = 640;
+const MIN_PREVIEW_PANEL_WIDTH = 360;
+const PREVIEW_SPLIT_GAP = 8;
+const PREVIEW_CHAT_WIDTH_KEY = "loom.previewChatWidth";
 const MAX_COMPOSER_ATTACHMENTS = 10;
 const MAX_COMPOSER_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MIN_COMPOSER_TEXTAREA_HEIGHT = 54;
 const MAX_COMPOSER_TEXTAREA_HEIGHT = 240;
 const MAX_RETAINED_PREVIEW_WORKSPACES = 2;
 const THREAD_COMPLETIONS_SEEN_KEY = "loom.threadCompletionsSeen";
+const THREAD_COMPLETIONS_SEEN_BASELINE_KEY = "__baselineAt";
 const THREAD_MESSAGE_RECENCY_KEY = "loom.threadMessageRecency";
 const COMPOSER_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"]);
 const DEFAULT_PREFERENCES = {
@@ -209,6 +215,18 @@ function clampSidebarWidth(width) {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
 }
 
+function defaultPreviewChatWidth() {
+  return Math.min(430, Math.max(340, window.innerWidth * 0.3));
+}
+
+function clampPreviewChatWidth(width, workspaceWidth = window.innerWidth - 64) {
+  const availableMaximum = Math.max(
+    MIN_PREVIEW_CHAT_WIDTH,
+    workspaceWidth - MIN_PREVIEW_PANEL_WIDTH - PREVIEW_SPLIT_GAP
+  );
+  return Math.min(MAX_PREVIEW_CHAT_WIDTH, availableMaximum, Math.max(MIN_PREVIEW_CHAT_WIDTH, width));
+}
+
 function projectRecencyValue(project) {
   const value = project?.lastUsedAt ?? project?.updatedAt ?? project?.createdAt;
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -296,20 +314,40 @@ function summarizeProjectThreads(project, candidates, { seen = false } = {}) {
 
 function threadCompletionRevision(candidate) {
   if (!candidate || threadIsRunning(candidate)) return null;
+  if (candidate.completionRevision !== undefined && candidate.completionRevision !== null) {
+    return String(candidate.completionRevision);
+  }
   const latestTurn = candidate.turns?.at(-1);
   if (latestTurn?.status === "completed") return `turn:${latestTurn.id ?? candidate.updatedAt ?? "completed"}`;
   const status = threadStatus(candidate);
   if (status !== "completed" && status !== "idle") return null;
-  return String(candidate.completionRevision ?? candidate.updatedAt ?? `status:${status}`);
+  return String(candidate.updatedAt ?? `status:${status}`);
 }
 
 function loadSeenThreadCompletions() {
+  let value = {};
   try {
-    const value = JSON.parse(localStorage.getItem(THREAD_COMPLETIONS_SEEN_KEY) ?? "{}");
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const stored = JSON.parse(localStorage.getItem(THREAD_COMPLETIONS_SEEN_KEY) ?? "{}");
+    if (stored && typeof stored === "object" && !Array.isArray(stored)) value = stored;
   } catch {
-    return {};
+    // Replace malformed legacy state with a clean migration baseline below.
   }
+
+  if (Number.isFinite(value[THREAD_COMPLETIONS_SEEN_BASELINE_KEY])) return value;
+  const migrated = { ...value, [THREAD_COMPLETIONS_SEEN_BASELINE_KEY]: Date.now() };
+  try {
+    localStorage.setItem(THREAD_COMPLETIONS_SEEN_KEY, JSON.stringify(migrated));
+  } catch {
+    // The in-memory baseline still prevents historical threads from appearing unseen.
+  }
+  return migrated;
+}
+
+function threadCompletionWasSeen(candidate, completionRevision, seenThreadCompletions) {
+  if (seenThreadCompletions?.[candidate?.id] === completionRevision) return true;
+  if (candidate?.completionRevision !== undefined && candidate?.completionRevision !== null) return false;
+  const baselineAt = seenThreadCompletions?.[THREAD_COMPLETIONS_SEEN_BASELINE_KEY];
+  return Number.isFinite(baselineAt) && timestampMillis(candidate?.updatedAt) <= baselineAt;
 }
 
 function loadThreadMessageRecency() {
@@ -402,7 +440,7 @@ function relativeTime(timestamp) {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
-function SidebarNavItem({ icon: Icon, label, active, badge, badgeTone = "neutral", shortcut, tone = "", disabled, onClick }) {
+function SidebarNavItem({ icon: Icon, label, active, badge, badgeVisible = true, badgeTone = "neutral", shortcut, tone = "", disabled, onClick }) {
   const systemReducedMotion = useReducedMotion();
   return (
     <button
@@ -417,19 +455,21 @@ function SidebarNavItem({ icon: Icon, label, active, badge, badgeTone = "neutral
       <span className="rail-icon"><Icon size={17} weight={active ? "fill" : "regular"} /></span>
       <span className="rail-label">{label}</span>
       {shortcut && <kbd className="rail-shortcut">{shortcut}</kbd>}
-      <AnimatePresence initial={false}>
-        {badge > 0 && (
-          <motion.span
-            className={`rail-badge ${badgeTone}`}
-            initial={systemReducedMotion ? false : { opacity: 0, scale: 0.72, filter: "blur(2px)" }}
-            animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
-            exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.82, filter: "blur(2px)" }}
-            transition={{ duration: systemReducedMotion ? 0 : 0.18, ease: MOTION_EASE }}
-          >
-            {badge > 99 ? "99+" : badge}
-          </motion.span>
-        )}
-      </AnimatePresence>
+      {badgeVisible && (
+        <AnimatePresence initial={false}>
+          {badge > 0 && (
+            <motion.span
+              className={`rail-badge ${badgeTone}`}
+              initial={systemReducedMotion ? false : { opacity: 0, scale: 0.72, filter: "blur(2px)" }}
+              animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+              exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.82, filter: "blur(2px)" }}
+              transition={{ duration: systemReducedMotion ? 0 : 0.18, ease: MOTION_EASE }}
+            >
+              {badge > 99 ? "99+" : badge}
+            </motion.span>
+          )}
+        </AnimatePresence>
+      )}
     </button>
   );
 }
@@ -445,7 +485,9 @@ function SidebarThreadList({ tasks, seenThreadCompletions, selectedThreadId, act
         const active = task.id === selectedThreadId && activeView === "task";
         const running = threadIsRunning(task);
         const completionRevision = threadCompletionRevision(task);
-        const finished = Boolean(completionRevision) && !active && seenThreadCompletions?.[task.id] !== completionRevision;
+        const finished = Boolean(completionRevision)
+          && !active
+          && !threadCompletionWasSeen(task, completionRevision, seenThreadCompletions);
         return (
           <motion.div
             className={`task-row ${active ? "active" : ""} ${running ? "running" : ""} ${finished ? "finished" : ""}`}
@@ -654,9 +696,9 @@ export function Sidebar({
           </div>
           <SidebarNavItem icon={NewTaskIcon} label="New task" tone="new-task" shortcut={newTaskShortcut} active={Boolean(selectedProjectId) && activeView === "task" && !selectedThreadId} disabled={!selectedProjectId} onClick={onNewTask} />
           <SidebarNavItem icon={BoardIcon} label="Board" active={activeView === "board"} disabled={!selectedProjectId} onClick={() => onView("board")} />
-          <SidebarNavItem icon={AttentionIcon} label="Attention" active={activeView === "attention"} badge={attentionCount} badgeTone="attention" onClick={() => onView("attention")} />
-          <SidebarNavItem icon={ReviewIcon} label="Review" active={activeView === "review"} badge={changedCount} disabled={!selectedProjectId} onClick={() => onView("review")} />
-          <SidebarNavItem icon={Stack} label="Tools" active={activeView === "tools"} badge={toolCount} disabled={!selectedProjectId} onClick={() => onView("tools")} />
+          <SidebarNavItem icon={AttentionIcon} label="Attention" active={activeView === "attention"} badge={attentionCount} badgeVisible={expanded} badgeTone="attention" onClick={() => onView("attention")} />
+          <SidebarNavItem icon={ReviewIcon} label="Review" active={activeView === "review"} badge={changedCount} badgeVisible={expanded} disabled={!selectedProjectId} onClick={() => onView("review")} />
+          <SidebarNavItem icon={Stack} label="Tools" active={activeView === "tools"} badge={toolCount} badgeVisible={expanded} disabled={!selectedProjectId} onClick={() => onView("tools")} />
           <div className="workflow-nav-slot" data-workflow-nav-slot />
         </div>
 
@@ -849,6 +891,11 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
       return undefined;
     }
     const updateBounds = () => {
+      const previewHost = viewportRef.current?.closest(".browser-panel");
+      if (previewHost?.dataset.workflowPreviewHost === "true") {
+        void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
+        return;
+      }
       const rect = viewportRef.current?.getBoundingClientRect();
       if (!rect) return;
       void api.browser.setViewport({
@@ -860,9 +907,15 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
     updateBounds();
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(updateBounds) : null;
     observer?.observe(viewportRef.current);
+    const previewHost = viewportRef.current.closest(".browser-panel");
+    const previewObserver = typeof MutationObserver === "function" && previewHost
+      ? new MutationObserver(updateBounds)
+      : null;
+    previewObserver?.observe(previewHost, { attributes: true, attributeFilter: ["data-workflow-preview-host"] });
     window.addEventListener("resize", updateBounds);
     return () => {
       observer?.disconnect();
+      previewObserver?.disconnect();
       window.removeEventListener("resize", updateBounds);
       void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
     };
@@ -905,6 +958,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
   return (
     <motion.section
       className="browser-panel"
+      data-preview-workspace-id={workspaceId}
       aria-label="Preview workspace"
       aria-hidden={!isPresent}
       inert={!isPresent ? true : undefined}
@@ -2445,6 +2499,10 @@ function ConversationWorkspace({
   composerProps
 }) {
   const [previewPresent, setPreviewPresent] = useState(previewOpen);
+  const [previewChatWidth, setPreviewChatWidth] = useState(() => {
+    const saved = Number.parseInt(localStorage.getItem(PREVIEW_CHAT_WIDTH_KEY) ?? "", 10);
+    return Number.isFinite(saved) ? clampPreviewChatWidth(saved) : null;
+  });
   const items = flattenItems(thread);
   const promptItems = useMemo(() => promptPreviewItems(thread), [thread]);
   const latestPlanText = [...items].reverse().find((item) => item.type === "plan")?.text;
@@ -2455,6 +2513,9 @@ function ConversationWorkspace({
     return paths.length ? paths : [item.path || item.filePath].filter(Boolean);
   })).size || changedCount;
   const scrollRef = useRef(null);
+  const workspaceRef = useRef(null);
+  const mainCanvasRef = useRef(null);
+  const previewResizeCleanupRef = useRef(null);
   const scrollFrameRef = useRef(null);
   const followLatestRef = useRef(true);
   const followedThreadRef = useRef(thread?.id);
@@ -2494,7 +2555,60 @@ function ConversationWorkspace({
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    previewResizeCleanupRef.current?.();
   }, []);
+
+  const previewWorkspaceWidth = () => workspaceRef.current?.getBoundingClientRect().width || window.innerWidth - 64;
+  const currentPreviewChatWidth = () => previewChatWidth
+    ?? mainCanvasRef.current?.getBoundingClientRect().width
+    ?? defaultPreviewChatWidth();
+
+  const resizePreviewFromPointer = (event) => {
+    if (!previewOpen) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = currentPreviewChatWidth();
+    let nextWidth = startWidth;
+    const move = (moveEvent) => {
+      nextWidth = clampPreviewChatWidth(startWidth + moveEvent.clientX - startX, previewWorkspaceWidth());
+      setPreviewChatWidth(nextWidth);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      document.body.classList.remove("preview-resizing");
+      localStorage.setItem(PREVIEW_CHAT_WIDTH_KEY, String(Math.round(nextWidth)));
+      previewResizeCleanupRef.current = null;
+    };
+
+    document.body.classList.add("preview-resizing");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    previewResizeCleanupRef.current = stop;
+  };
+
+  const resizePreviewFromKeyboard = (event) => {
+    const currentWidth = currentPreviewChatWidth();
+    const maximum = clampPreviewChatWidth(MAX_PREVIEW_CHAT_WIDTH, previewWorkspaceWidth());
+    const adjustments = {
+      ArrowLeft: currentWidth - 16,
+      ArrowRight: currentWidth + 16,
+      Home: MIN_PREVIEW_CHAT_WIDTH,
+      End: maximum
+    };
+    if (!(event.key in adjustments)) return;
+    event.preventDefault();
+    const nextWidth = clampPreviewChatWidth(adjustments[event.key], previewWorkspaceWidth());
+    setPreviewChatWidth(nextWidth);
+    localStorage.setItem(PREVIEW_CHAT_WIDTH_KEY, String(Math.round(nextWidth)));
+  };
+
+  const resetPreviewSplit = () => {
+    setPreviewChatWidth(null);
+    localStorage.removeItem(PREVIEW_CHAT_WIDTH_KEY);
+  };
 
   const handleConversationScroll = () => {
     const node = scrollRef.current;
@@ -2521,8 +2635,12 @@ function ConversationWorkspace({
 
   return (
     <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
-    <div className={`task-workspace${previewLayoutOpen ? " preview-mode" : ""}`}>
-      <main className="main-canvas">
+    <div
+      className={`task-workspace${previewLayoutOpen ? " preview-mode" : ""}`}
+      ref={workspaceRef}
+      style={previewChatWidth === null ? undefined : { "--preview-chat-width": `${previewChatWidth}px` }}
+    >
+      <main className="main-canvas" ref={mainCanvasRef}>
         <AppToolbar
           title={thread ? threadTitle(thread) : project?.displayName ?? "Pixice"}
           subtitle={thread ? project?.displayName : project?.canonicalPath}
@@ -2568,6 +2686,22 @@ function ConversationWorkspace({
         </div>
         {project && <Composer {...composerProps} />}
       </main>
+      {previewLayoutOpen && (
+        <div
+          className="preview-resizer"
+          role="separator"
+          aria-label="Resize chat and preview"
+          aria-orientation="vertical"
+          aria-valuemin={MIN_PREVIEW_CHAT_WIDTH}
+          aria-valuemax={MAX_PREVIEW_CHAT_WIDTH}
+          aria-valuenow={Math.round(previewChatWidth ?? defaultPreviewChatWidth())}
+          tabIndex={previewOpen ? 0 : -1}
+          title="Drag to resize · Double-click to reset"
+          onDoubleClick={resetPreviewSplit}
+          onPointerDown={resizePreviewFromPointer}
+          onKeyDown={resizePreviewFromKeyboard}
+        />
+      )}
       <AnimatePresence initial={false} onExitComplete={() => setPreviewPresent(false)}>
         {previewOpen && (
           <BrowserPanel
@@ -4686,7 +4820,14 @@ export function App() {
       }
       if (payload.method === "turn/completed" && payload.threadId) {
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId
-          ? { ...candidate, status: "completed", completionRevision: payload.turn?.id ?? payload.turnId ?? candidate.completionRevision ?? candidate.updatedAt ?? "completed" }
+          ? {
+              ...candidate,
+              status: "completed",
+              completionRevision: payload.turn?.id || payload.turnId
+                ? `turn:${payload.turn?.id ?? payload.turnId}`
+                : candidate.completionRevision ?? `completed:${Date.now()}`,
+              updatedAt: Date.now()
+            }
           : candidate));
       }
       if (payload.method === "thread/status/changed") {

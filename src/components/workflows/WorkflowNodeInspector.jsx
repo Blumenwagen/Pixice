@@ -443,6 +443,25 @@ function FileFields({ config, updateConfig }) {
   );
 }
 
+function CommandFields({ config, updateConfig }) {
+  return (
+    <>
+      <label className={styles.field}><span>Executable</span><input value={config.executable ?? ""} onChange={(event) => updateConfig({ executable: event.target.value })} placeholder="pnpm" /><small>Use a command from Pixice's PATH or a project-relative executable such as ./scripts/release.</small></label>
+      <label className={styles.field}><span>Arguments · JSON array</span><textarea rows={6} value={config.arguments ?? "[]"} onChange={(event) => updateConfig({ arguments: event.target.value })} spellCheck="false" placeholder={'["build"]'} /></label>
+      <label className={styles.field}><span>Working directory</span><input value={config.workingDirectory ?? "."} onChange={(event) => updateConfig({ workingDirectory: event.target.value })} placeholder="." /></label>
+      <label className={styles.field}><span>Environment overrides · JSON object</span><textarea rows={5} value={config.environment ?? "{}"} onChange={(event) => updateConfig({ environment: event.target.value })} spellCheck="false" /></label>
+      <div className={styles.inlineFields}>
+        <label className={styles.field}><span>Timeout · ms</span><input type="number" min="100" max="3600000" value={config.timeoutMs ?? 300000} onChange={(event) => updateConfig({ timeoutMs: Number(event.target.value) })} /></label>
+        <label className={styles.field}><span>Maximum output bytes</span><input type="number" min="1024" max="25000000" value={config.maxBytes ?? 5000000} onChange={(event) => updateConfig({ maxBytes: Number(event.target.value) })} /></label>
+      </div>
+      <Toggle label="Allow command execution" detail="Required before this node may start a local process." checked={Boolean(config.allowExecution)} onChange={(value) => updateConfig({ allowExecution: value })} />
+      <Toggle label="Continue after non-zero exit" detail="Return the exit code and captured output instead of failing the workflow." checked={Boolean(config.continueOnError)} onChange={(value) => updateConfig({ continueOnError: value })} />
+      <small className={styles.safetyNote}>Commands run without a shell, inside the current project, with Pixice's OS permissions. They may modify files or start other processes.</small>
+      <ExpressionHint />
+    </>
+  );
+}
+
 function GitFields({ config, updateConfig }) {
   const operation = config.operation ?? "status";
   return (
@@ -532,6 +551,7 @@ function ConfigFields({ node, models, api, projectId, workflows, currentWorkflow
   if (node.type === "delay") return <DelayFields config={config} updateConfig={updateConfig} />;
   if (node.type === "loop") return <LoopFields config={config} updateConfig={updateConfig} workflows={workflows} currentWorkflowId={currentWorkflowId} />;
   if (node.type === "file") return <FileFields config={config} updateConfig={updateConfig} />;
+  if (node.type === "command") return <CommandFields config={config} updateConfig={updateConfig} />;
   if (node.type === "git") return <GitFields config={config} updateConfig={updateConfig} />;
   if (node.type === "database") return <DatabaseFields config={config} updateConfig={updateConfig} />;
   if (node.type === "executeWorkflow") return <ExecuteWorkflowFields config={config} updateConfig={updateConfig} workflows={workflows} currentWorkflowId={currentWorkflowId} />;
