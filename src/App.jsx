@@ -22,6 +22,8 @@ import { ImageGeneration } from "./components/ImageGeneration.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
 import { KanbanBoard } from "./components/KanbanBoard.jsx";
 import { ProjectCreationDialog, ProjectSwitcher } from "./components/sidebar/ProjectSwitcher.jsx";
+import { ThreadCleanupPopover } from "./components/sidebar/ThreadCleanupPopover.jsx";
+import { normalizeThreadCleanupAgeDays, THREAD_CLEANUP_MAX_DAYS, THREAD_CLEANUP_MIN_DAYS } from "./components/sidebar/thread-cleanup.js";
 import {
   applyRuntimePayload,
   descendantsOf,
@@ -38,6 +40,7 @@ const EMPTY_EXTENSIONS = { skills: [], apps: [], mcp: [], errors: [] };
 const EMPTY_BROWSER_STATE = { native: false, activeTabId: null, tabs: [] };
 const EMPTY_PREVIEW_WORKSPACE = { open: false, browserState: EMPTY_BROWSER_STATE, fileTabs: [], instrumentTabs: [], activeTabId: null };
 const EMPTY_UPDATE_STATUS = { supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." };
+const EMPTY_CODEX_UPDATE_STATUS = { supported: false, enabled: true, state: "unsupported", currentVersion: "unknown", availableVersion: null, installedVersion: null, restartRequired: false, prompt: false, message: "Codex update status is unavailable." };
 const EMPTY_GITHUB_STATUS = { available: false, authenticated: false, source: null, version: null, account: null, message: "Checking GitHub connection…" };
 const EMPTY_AGENT_BEHAVIORS = [];
 const WorkspaceOpenContext = createContext(null);
@@ -65,6 +68,7 @@ const DEFAULT_PREFERENCES = {
   autoOpenTaskMap: false,
   bringApprovalsForward: false,
   density: "compact",
+  threadCleanupAgeDays: 30,
   legacySidebar: false,
   showThirdProjectRow: false,
   showShortcutHints: true,
@@ -165,7 +169,9 @@ const SLASH_COMMANDS = [
 function loadPreferences() {
   try {
     const saved = JSON.parse(localStorage.getItem("loom.preferences") ?? "{}");
-    return { ...DEFAULT_PREFERENCES, ...saved };
+    const preferences = { ...DEFAULT_PREFERENCES, ...saved };
+    preferences.threadCleanupAgeDays = normalizeThreadCleanupAgeDays(preferences.threadCleanupAgeDays);
+    return preferences;
   } catch {
     return DEFAULT_PREFERENCES;
   }
@@ -532,6 +538,9 @@ export function Sidebar({
   selectedThreadId,
   onSelectThread,
   onDeleteThread,
+  onCleanupThreads,
+  protectedThreadIds,
+  threadCleanupAgeDays,
   onNewTask,
   onOpenProject,
   activeView,
@@ -745,9 +754,19 @@ export function Sidebar({
           </>
         ) : (
           <>
-            <div className="rail-divider" />
-            <div className="rail-section-heading">
+            <div className="rail-section-heading thread-section-heading">
               <span className="rail-group-label"><i />Threads</span>
+              <span className="rail-section-rule" aria-hidden="true" />
+              <ThreadCleanupPopover
+                tasks={tasks}
+                selectedThreadId={selectedThreadId}
+                protectedThreadIds={protectedThreadIds}
+                disabled={!selectedProjectId}
+                onDeleteThread={onDeleteThread}
+                onCleanupAll={onCleanupThreads}
+                ageDays={threadCleanupAgeDays}
+                reduceMotion={reduceMotion}
+              />
             </div>
             <SidebarThreadList
               tasks={tasks}
@@ -1951,13 +1970,15 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
   const startedAt = turn.startedAt ?? turn.createdAt;
   const completedAt = turn.completedAt;
   const rendered = [];
+  const workingTraceIndexes = [];
   let traceItems = [];
   let renderedWorkingTrace = false;
 
   const flushTrace = () => {
     if (!traceItems.length) return;
     const key = traceItems[0].renderId ?? traceItems[0].id ?? `trace-${rendered.length}`;
-    rendered.push(<WorkingTrace items={traceItems} running={running} settled={settled} startedAt={startedAt} completedAt={completedAt} key={key} />);
+    workingTraceIndexes.push(rendered.length);
+    rendered.push(<WorkingTrace items={traceItems} running={false} settled={settled} startedAt={startedAt} completedAt={completedAt} key={key} />);
     renderedWorkingTrace = true;
     traceItems = [];
   };
@@ -1993,6 +2014,10 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     );
   });
   flushTrace();
+  if (running && workingTraceIndexes.length) {
+    const activeTraceIndex = workingTraceIndexes.at(-1);
+    rendered[activeTraceIndex] = cloneElement(rendered[activeTraceIndex], { running: true });
+  }
   if (running && !renderedWorkingTrace && finalIndex === -1) {
     rendered.push(<WorkingTrace items={[]} running settled={false} startedAt={startedAt} key={`pending-${turn.renderId ?? turn.id}`} />);
   }
@@ -2637,6 +2662,7 @@ function ConversationWorkspace({
     <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
     <div
       className={`task-workspace${previewLayoutOpen ? " preview-mode" : ""}`}
+      data-question-active={Boolean(composerProps.questionRequest)}
       ref={workspaceRef}
       style={previewChatWidth === null ? undefined : { "--preview-chat-width": `${previewChatWidth}px` }}
     >
@@ -3470,7 +3496,7 @@ function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRe
 }
 
 const SETTINGS_PAGES = [
-  { id: "general", label: "General", description: "Task defaults and safety", icon: Gear, keywords: "permissions model reasoning delete drafts" },
+  { id: "general", label: "General", description: "Task defaults and safety", icon: Gear, keywords: "permissions model reasoning delete drafts cleanup age days custom" },
   { id: "agent-behavior", label: "Agent Behavior", description: "Guidance loaded for every agent", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration tools instruments interactive" },
   { id: "orchestration", label: "Orchestration", description: "How delegated work surfaces", icon: TreeStructure, keywords: "agents progress task map approvals" },
   { id: "appearance", label: "Appearance", description: "Density, projects, hints, and motion", icon: Eye, keywords: "compact comfortable projects sidebar recent third row nine legacy old nested shortcuts animation" },
@@ -3544,7 +3570,12 @@ function SettingsWorkspace({
   updateStatus,
   onCheckForUpdates,
   onDownloadUpdate,
-  onInstallUpdate
+  onInstallUpdate,
+  codexUpdateStatus,
+  checkCodexUpdates,
+  onCheckCodexUpdatesChange,
+  onCheckForCodexUpdates,
+  onInstallCodexUpdate
 }) {
   const selectedPage = SETTINGS_PAGES.find((candidate) => candidate.id === page) ?? SETTINGS_PAGES[0];
   const systemReducedMotion = useReducedMotion();
@@ -3564,6 +3595,7 @@ function SettingsWorkspace({
 
   let pageContent;
   if (page === "general") {
+    const cleanupAgePreset = [30, 14, 7].includes(preferences.threadCleanupAgeDays) ? String(preferences.threadCleanupAgeDays) : "custom";
     pageContent = (
       <>
         <SettingsGroup title="Task defaults" description="Used whenever you begin work in a project.">
@@ -3589,6 +3621,34 @@ function SettingsWorkspace({
           </SettingsRow>
           <SettingsRow title="Keep message drafts" description="Restore unsent text when you move between tasks.">
             <SettingsToggle label="Keep message drafts" checked={preferences.preserveDrafts} onChange={(value) => onPreferenceChange("preserveDrafts", value)} />
+          </SettingsRow>
+          <SettingsRow title="Thread cleanup age" description="Suggest inactive chats after this many days without use.">
+            <div className="settings-inline-controls">
+              <select className="settings-select compact" aria-label="Thread cleanup age" value={cleanupAgePreset} onChange={(event) => onPreferenceChange("threadCleanupAgeDays", event.target.value === "custom" ? 21 : Number(event.target.value))}>
+                <option value="30">30 days</option>
+                <option value="14">14 days</option>
+                <option value="7">7 days</option>
+                <option value="custom">Custom…</option>
+              </select>
+              {cleanupAgePreset === "custom" && (
+                <label className="settings-day-input">
+                  <input
+                    type="number"
+                    aria-label="Custom thread cleanup age"
+                    min={THREAD_CLEANUP_MIN_DAYS}
+                    max={THREAD_CLEANUP_MAX_DAYS}
+                    value={preferences.threadCleanupAgeDays}
+                    onChange={(event) => {
+                      const days = Number(event.target.value);
+                      if (Number.isInteger(days) && days >= THREAD_CLEANUP_MIN_DAYS && days <= THREAD_CLEANUP_MAX_DAYS) {
+                        onPreferenceChange("threadCleanupAgeDays", days);
+                      }
+                    }}
+                  />
+                  <span>days</span>
+                </label>
+              )}
+            </div>
           </SettingsRow>
         </SettingsGroup>
       </>
@@ -3675,7 +3735,26 @@ function SettingsWorkspace({
             </div>
           )}
         </SettingsGroup>
-        <p className="settings-footnote">Pixice checks for updates in the background. Downloads and restarts remain under your control.</p>
+        <SettingsGroup title="Codex updates" description="Pixice uses the official OpenAI Codex release channel and verifies the downloaded runtime before installing it.">
+          <SettingsRow title="Current runtime" description={`Codex ${codexUpdateStatus.currentVersion}`}>
+            <span className="settings-value">{codexUpdateStatus.state === "available" ? `${codexUpdateStatus.availableVersion} available` : "Active"}</span>
+          </SettingsRow>
+          <SettingsRow title="Check when Pixice opens" description="Run a silent background check and show a toast only when a newer Codex runtime is available.">
+            <SettingsToggle label="Check for Codex updates when Pixice opens" checked={checkCodexUpdates} onChange={onCheckCodexUpdatesChange} />
+          </SettingsRow>
+          <SettingsRow title="Update status" description={codexUpdateStatus.message}>
+            {codexUpdateStatus.state === "available" ? (
+              <button className="settings-action primary" onClick={onInstallCodexUpdate}>Update Codex</button>
+            ) : codexUpdateStatus.state === "updating" || codexUpdateStatus.state === "applying" ? (
+              <button className="settings-action" disabled><SpinnerGap className="spin-icon" size={14} />{codexUpdateStatus.state === "applying" ? "Restarting Codex…" : "Updating…"}</button>
+            ) : (
+              <button className="settings-action" disabled={!codexUpdateStatus.supported || codexUpdateStatus.state === "checking"} onClick={onCheckForCodexUpdates}>
+                {codexUpdateStatus.state === "checking" && <SpinnerGap className="spin-icon" size={14} />}{codexUpdateStatus.state === "checking" ? "Checking…" : "Check now"}
+              </button>
+            )}
+          </SettingsRow>
+        </SettingsGroup>
+        <p className="settings-footnote">Pixice checks stay silent unless an update exists. Updating restarts only Codex, but running tasks and workflows may be interrupted.</p>
       </>
     );
   } else if (page === "runtime") {
@@ -3833,6 +3912,9 @@ export function App() {
   const [previewWorkspaces, setPreviewWorkspaces] = useState({});
   const previewWorkspaceSequenceRef = useRef(0);
   const [updateStatus, setUpdateStatus] = useState(EMPTY_UPDATE_STATUS);
+  const [codexUpdateStatus, setCodexUpdateStatus] = useState(EMPTY_CODEX_UPDATE_STATUS);
+  const [checkCodexUpdates, setCheckCodexUpdates] = useState(true);
+  const [codexUpdateToastOpen, setCodexUpdateToastOpen] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number.parseInt(localStorage.getItem("loom.sidebarWidth") ?? "", 10);
@@ -4416,6 +4498,7 @@ export function App() {
       setPermissionMode(resolvedPermission);
       setAgentBehaviorCatalog(behaviorCatalog);
       setAgentBehaviors(resolvedBehaviors);
+      setCheckCodexUpdates(persisted.checkCodexUpdates !== false);
       setDefaultsHydrated(true);
       setRuntime(result.runtime ?? { state: "unavailable", connected: false });
       if (Object.entries(resolvedDefaults).some(([key, value]) => persisted[key] !== value)) {
@@ -4495,6 +4578,17 @@ export function App() {
     let cancelled = false;
     api.updates.status().then((status) => {
       if (!cancelled) setUpdateStatus(status);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [api]);
+
+  useEffect(() => {
+    if (!api?.codexUpdates) return;
+    let cancelled = false;
+    api.codexUpdates.status().then((status) => {
+      if (cancelled) return;
+      setCodexUpdateStatus(status);
+      if (status.prompt) setCodexUpdateToastOpen(true);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [api]);
@@ -4775,6 +4869,12 @@ export function App() {
         setUpdateStatus(event.payload);
         return;
       }
+      if (event.type === "CodexUpdateState") {
+        setCodexUpdateStatus(event.payload);
+        if (event.payload.prompt) setCodexUpdateToastOpen(true);
+        if (event.payload.enabled === false) setCodexUpdateToastOpen(false);
+        return;
+      }
       if (event.type === "UsageUpdated") {
         setUsageRefreshKey((value) => value + 1);
         return;
@@ -4937,12 +5037,12 @@ export function App() {
     setActiveView("task");
   };
 
-  const deleteThread = async (threadId) => {
+  const deleteThread = async (threadId, { skipConfirm = false } = {}) => {
     if (!api || !selectedProjectId) return;
     const projectId = selectedProjectId;
     const target = threads.find((candidate) => candidate.id === threadId);
     const title = threadTitle(target);
-    if (preferences.confirmBeforeDelete && !window.confirm(`Delete “${title}”?\n\nThis removes the conversation from Pixice’s task list.`)) return;
+    if (!skipConfirm && preferences.confirmBeforeDelete && !window.confirm(`Delete “${title}”?\n\nThis removes the conversation from Pixice’s task list.`)) return false;
     try {
       await api.threads.archive({ projectId, threadId });
       localStorage.removeItem(threadConfigurationKey(threadId));
@@ -4965,9 +5065,20 @@ export function App() {
         setDraftMode(!next);
       }
       setError(null);
+      return true;
     } catch (cause) {
       setError(cause.message);
+      return false;
     }
+  };
+
+  const cleanupThreads = async (threadIds) => {
+    const removable = [...new Set(threadIds)].filter((threadId) => threads.some((candidate) => candidate.id === threadId));
+    if (!removable.length) return 0;
+    const label = removable.length === 1 ? "this old chat" : `these ${removable.length} old chats`;
+    if (!window.confirm(`Clean up ${label}?\n\nThis removes the conversations from Pixice’s task list.`)) return 0;
+    const results = await Promise.all(removable.map((threadId) => deleteThread(threadId, { skipConfirm: true })));
+    return results.filter(Boolean).length;
   };
 
   const createBoardTask = async ({ title, description, column }) => {
@@ -5285,6 +5396,26 @@ export function App() {
     }
   }, [api]);
 
+  const changeCodexUpdateChecks = useCallback((enabled) => {
+    setCheckCodexUpdates(enabled);
+    if (!enabled) setCodexUpdateToastOpen(false);
+    savePersistentDefaults({ checkCodexUpdates: enabled });
+  }, [savePersistentDefaults]);
+
+  const runCodexUpdateAction = useCallback(async (action) => {
+    if (!api?.codexUpdates) return;
+    try {
+      const status = await api.codexUpdates[action]();
+      if (status?.state) {
+        setCodexUpdateStatus(status);
+        setCodexUpdateToastOpen(["available", "updating", "applying", "ready", "error"].includes(status.state));
+      }
+    } catch (cause) {
+      setCodexUpdateStatus((current) => ({ ...current, state: "error", prompt: true, message: cause.message }));
+      setCodexUpdateToastOpen(true);
+    }
+  }, [api]);
+
   const submit = async (text, attachments = []) => {
     if (!api || !selectedProjectId || !runtime.connected || submittingRef.current) return false;
     const projectId = selectedProjectId;
@@ -5525,6 +5656,11 @@ export function App() {
         onCheckForUpdates={() => runUpdateAction("check")}
         onDownloadUpdate={() => runUpdateAction("download")}
         onInstallUpdate={() => runUpdateAction("install")}
+        codexUpdateStatus={codexUpdateStatus}
+        checkCodexUpdates={checkCodexUpdates}
+        onCheckCodexUpdatesChange={changeCodexUpdateChecks}
+        onCheckForCodexUpdates={() => runCodexUpdateAction("check")}
+        onInstallCodexUpdate={() => runCodexUpdateAction("install")}
       />
     );
   } else if (activeView === "attention") {
@@ -5603,6 +5739,9 @@ export function App() {
             selectedThreadId={selectedThreadId}
             onSelectThread={selectThread}
             onDeleteThread={deleteThread}
+            onCleanupThreads={cleanupThreads}
+            protectedThreadIds={boardTasks.map((task) => task.threadId).filter(Boolean)}
+            threadCleanupAgeDays={preferences.threadCleanupAgeDays}
             onNewTask={newTask}
             onOpenProject={openProject}
             activeView={activeView}
@@ -5625,6 +5764,40 @@ export function App() {
         {activeView === "task" && !previewOpen && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
       </div>
       <div ref={viewTransitionCurtainRef} className="shell-transition-curtain" aria-hidden="true" />
+      <AnimatePresence initial={false}>
+      {codexUpdateToastOpen && (
+        <motion.div
+          key={codexUpdateStatus.state}
+          className="codex-update-toast"
+          data-state={codexUpdateStatus.state}
+          role={codexUpdateStatus.state === "ready" ? "status" : codexUpdateStatus.state === "error" ? "alert" : "dialog"}
+          aria-label={codexUpdateStatus.state === "ready" ? "Codex updated successfully" : codexUpdateStatus.state === "error" ? "Codex update failed" : "Codex update available"}
+          style={{ "--toast-offset": error ? "76px" : "0px" }}
+          initial={systemReducedMotion ? false : { opacity: 0, y: 12, scale: 0.98, filter: "blur(2px)" }}
+          animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+          exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.99, filter: "blur(2px)" }}
+          transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }}
+        >
+          <motion.span
+            className="codex-update-mark"
+            initial={systemReducedMotion ? false : { opacity: 0, scale: 0.82 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: systemReducedMotion ? 0 : 0.2, ease: MOTION_EASE }}
+          >
+            {codexUpdateStatus.state === "ready" ? <CheckCircle size={16} weight="fill" /> : <ArrowClockwise className={["updating", "applying"].includes(codexUpdateStatus.state) ? "spin-icon" : ""} size={16} />}
+          </motion.span>
+          <span className="codex-update-copy">
+            <strong>{codexUpdateStatus.state === "available" ? `Codex ${codexUpdateStatus.availableVersion} is available` : codexUpdateStatus.state === "updating" ? "Updating Codex" : codexUpdateStatus.state === "applying" ? "Restarting Codex" : codexUpdateStatus.state === "ready" ? "Codex updated successfully" : "Codex update failed"}</strong>
+            <small>{codexUpdateStatus.state === "available" ? `Pixice is using ${codexUpdateStatus.currentVersion}. Running tasks and workflows may be interrupted while Codex restarts.` : codexUpdateStatus.message}</small>
+          </span>
+          <span className="codex-update-actions">
+            {codexUpdateStatus.state === "available" && <button type="button" onClick={() => setCodexUpdateToastOpen(false)}>Not now</button>}
+            {codexUpdateStatus.state === "available" && <button type="button" className="primary" onClick={() => runCodexUpdateAction("install")}>Update Codex</button>}
+            {["ready", "error"].includes(codexUpdateStatus.state) && <button type="button" onClick={() => setCodexUpdateToastOpen(false)}>Dismiss</button>}
+          </span>
+        </motion.div>
+      )}
+      </AnimatePresence>
       <AnimatePresence initial={false}>
       {error && (
         <motion.div

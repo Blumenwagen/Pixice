@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("loom", Object.freeze({
   github: Object.freeze({ status: invoke("github:status"), login: invoke("github:login"), logout: invoke("github:logout") }),
   usage: Object.freeze({ summary: invoke("usage:summary") }),
   updates: Object.freeze({ status: invoke("updates:status"), check: invoke("updates:check"), download: invoke("updates:download"), install: invoke("updates:install") }),
+  codexUpdates: Object.freeze({ status: invoke("codex-updates:status"), check: invoke("codex-updates:check"), install: invoke("codex-updates:install") }),
   browser: Object.freeze({
     state: invoke("browser:state"),
     create: invoke("browser:create"),

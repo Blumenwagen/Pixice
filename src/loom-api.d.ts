@@ -22,6 +22,7 @@ type PixiceEvent = {
     | "WorkflowTriggersUpdated"
     | "WorkflowCredentialsUpdated"
     | "UpdateState"
+    | "CodexUpdateState"
     | "UsageUpdated";
   payload: any;
   at: string;
@@ -200,7 +201,7 @@ declare global {
     loom?: {
       app: {
         bootstrap(): Promise<{ projects: PixiceProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; category: "core" | "loom-native"; defaultEnabled: boolean }> }>;
-        saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; agentBehaviors?: Record<string, boolean> }): Promise<any>;
+        saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; checkCodexUpdates?: boolean; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };
       providers: {
@@ -218,6 +219,11 @@ declare global {
         check(): Promise<any>;
         download(): Promise<any>;
         install(): Promise<{ ok: boolean }>;
+      };
+      codexUpdates: {
+        status(): Promise<any>;
+        check(): Promise<any>;
+        install(): Promise<any>;
       };
       browser: {
         state(payload: { workspaceId: string }): Promise<any>;

@@ -255,6 +255,7 @@ describe("thread runtime persistence", () => {
       defaultModel: "gpt-5.6-sol",
       defaultEffort: "xhigh",
       defaultPermissionMode: "workspace-write",
+      checkCodexUpdates: false,
       agentBehaviors: { structuredPlanning: true, parallelDelegation: false, verification: true }
     });
     database.db.close();
@@ -264,6 +265,7 @@ describe("thread runtime persistence", () => {
       defaultModel: "gpt-5.6-sol",
       defaultEffort: "xhigh",
       defaultPermissionMode: "workspace-write",
+      checkCodexUpdates: false,
       agentBehaviors: { structuredPlanning: true, parallelDelegation: false, verification: true }
     });
     reopenedAfterUpdate.db.close();

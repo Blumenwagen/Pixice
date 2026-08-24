@@ -37,6 +37,7 @@ import {
   instrumentDynamicTools
 } from "./instruments/instrument-service.mjs";
 import { PixiceAppUpdater } from "./updater/app-updater.mjs";
+import { CodexUpdater, installAndActivateCodexUpdate } from "./updater/codex-updater.mjs";
 import { PixiceDatabase } from "./persistence/database.mjs";
 import { inspectRepository, readDiff } from "./git/worktrees.mjs";
 import { GitHubCli, prependGitHubCliToPath } from "./github/github-cli.mjs";
@@ -58,6 +59,7 @@ let codexRuntime;
 let threadNamer;
 let browserWorkspace;
 let appUpdater;
+let codexUpdater;
 let githubCli;
 let loomBridge;
 let loomBoard;
@@ -110,6 +112,7 @@ const appDefaultsSchema = z.object({
   defaultModel: z.string().trim().min(1).max(128).optional(),
   defaultEffort: z.string().trim().regex(/^[a-z][a-z0-9_-]*$/i).max(32).optional(),
   defaultPermissionMode: permissionModeSchema.optional(),
+  checkCodexUpdates: z.boolean().optional(),
   agentBehaviors: agentBehaviorsSchema.optional()
 }).strict().refine((value) => Object.keys(value).length > 0, "At least one default must be provided");
 const imageDataUrlSchema = z.string().max(30 * 1024 * 1024).refine(
@@ -937,7 +940,12 @@ function registerIpc() {
     settings: database.getAppSettings(),
     agentBehaviors: agentBehaviorCatalog()
   }));
-  ipcMain.handle("app:settings:update", (_event, payload) => database.saveAppSettings(appDefaultsSchema.parse(payload)));
+  ipcMain.handle("app:settings:update", (_event, payload) => {
+    const value = appDefaultsSchema.parse(payload);
+    const settings = database.saveAppSettings(value);
+    if (value.checkCodexUpdates !== undefined) codexUpdater.setEnabled(value.checkCodexUpdates);
+    return settings;
+  });
   ipcMain.handle("runtime:status", () => ({ ...runtimeStatus, connected: runtime.connected }));
   ipcMain.handle("providers:list", () => runtime.listProviders());
   ipcMain.handle("usage:summary", (_event, payload) => {
@@ -959,6 +967,9 @@ function registerIpc() {
   ipcMain.handle("updates:check", () => appUpdater.check());
   ipcMain.handle("updates:download", () => appUpdater.download());
   ipcMain.handle("updates:install", () => appUpdater.install());
+  ipcMain.handle("codex-updates:status", () => codexUpdater.snapshot());
+  ipcMain.handle("codex-updates:check", () => codexUpdater.check({ manual: true }));
+  ipcMain.handle("codex-updates:install", () => installAndActivateCodexUpdate({ updater: codexUpdater, runtime: codexRuntime }));
   const browserScope = z.object({ workspaceId: z.string().trim().min(1) });
   ipcMain.handle("browser:state", (_event, payload) => {
     const value = browserScope.parse(payload);
@@ -1506,7 +1517,15 @@ function registerIpc() {
 }
 
 app.whenReady().then(async () => {
-  database = new PixiceDatabase(app.getPath("userData"));
+  const userDataPath = app.getPath("userData");
+  const bundledResourcesPath = isDev ? path.join(__dirname, "../resources") : process.resourcesPath;
+  database = new PixiceDatabase(userDataPath);
+  codexUpdater = new CodexUpdater({
+    bundledResourcesPath,
+    userDataPath,
+    enabled: database.getAppSettings().checkCodexUpdates !== false
+  });
+  codexUpdater.on("status", (status) => send("CodexUpdateState", status));
   developerInstructionsPath = isDev
     ? path.join(__dirname, "../resources/runtime/loom-developer-instructions.md")
     : path.join(process.resourcesPath, "runtime/loom-developer-instructions.md");
@@ -1517,7 +1536,7 @@ app.whenReady().then(async () => {
   prependGitHubCliToPath(process.env, githubCli.resolved);
   githubCli.on("progress", (payload) => send("GitHubAuthProgress", payload));
   codexRuntime = new CodexRuntime({
-    resourcesPath: process.resourcesPath,
+    resourcesPath: codexUpdater.activeResourcesPath(),
     clientVersion: app.getVersion(),
     allowDevelopmentRuntime: !app.isPackaged,
     developerInstructionsPath
@@ -1755,6 +1774,7 @@ app.whenReady().then(async () => {
   createTray();
   registerIpc();
   appUpdater.start();
+  codexUpdater.start();
   await runtime.start();
   app.on("activate", () => mainWindow.show());
 });
@@ -1778,6 +1798,7 @@ app.on("before-quit", async (event) => {
   }
   quitting = true;
   appUpdater?.stop();
+  codexUpdater?.stop();
   browserWorkspace?.destroy();
   await runtime?.stop();
   loomInstruments?.close();

@@ -114,6 +114,11 @@ function createApi(threadValue = thread) {
       download: vi.fn(),
       install: vi.fn()
     },
+    codexUpdates: {
+      status: vi.fn().mockResolvedValue({ supported: true, enabled: true, state: "idle", currentVersion: "0.149.0", availableVersion: null, installedVersion: null, restartRequired: false, prompt: false, message: "Codex update checks are enabled." }),
+      check: vi.fn().mockResolvedValue({ supported: true, enabled: true, state: "not-available", currentVersion: "0.149.0", availableVersion: null, installedVersion: null, restartRequired: false, prompt: false, message: "Codex is up to date." }),
+      install: vi.fn().mockResolvedValue({ supported: true, enabled: true, state: "ready", currentVersion: "0.149.1", availableVersion: null, installedVersion: "0.149.1", restartRequired: false, prompt: true, message: "Codex 0.149.1 is now active. Pixice stayed open." })
+    },
     browser: {
       state: vi.fn(async (payload) => scopedBrowserState(payload)),
       create: vi.fn(async (payload) => scopedBrowserState(payload)),
@@ -691,6 +696,10 @@ describe("Pixice app shell", () => {
 
     fireEvent.change(screen.getByRole("combobox", { name: "Default permissions" }), { target: { value: "read-only" } });
     expect(localStorage.getItem("loom.permissionMode")).toBe("read-only");
+    fireEvent.change(screen.getByRole("combobox", { name: "Thread cleanup age" }), { target: { value: "14" } });
+    expect(JSON.parse(localStorage.getItem("loom.preferences"))).toMatchObject({ threadCleanupAgeDays: 14 });
+    fireEvent.change(screen.getByRole("combobox", { name: "Thread cleanup age" }), { target: { value: "custom" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Custom thread cleanup age" }), { target: { value: "9" } });
 
     fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Show shortcut hints" }));
@@ -699,7 +708,7 @@ describe("Pixice app shell", () => {
     expect(document.querySelector(".loom-app")).toHaveAttribute("data-density", "comfortable");
 
     const saved = JSON.parse(localStorage.getItem("loom.preferences"));
-    expect(saved).toMatchObject({ showShortcutHints: false, density: "comfortable" });
+    expect(saved).toMatchObject({ showShortcutHints: false, density: "comfortable", threadCleanupAgeDays: 9 });
   });
 
   it("connects and disconnects GitHub from Settings", async () => {
@@ -1114,6 +1123,61 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
     await waitFor(() => expect(api.updates.check).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("Pixice is up to date.")).toBeInTheDocument();
+  });
+
+  it("offers a background Codex update in a small opt-in toast", async () => {
+    const api = createApi();
+    window.loom = api;
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    act(() => api.emit({
+      type: "CodexUpdateState",
+      payload: {
+        supported: true,
+        enabled: true,
+        state: "available",
+        currentVersion: "0.149.0",
+        availableVersion: "0.149.1",
+        installedVersion: null,
+        restartRequired: false,
+        prompt: true,
+        message: "Codex 0.149.1 is available."
+      }
+    }));
+
+    const toast = await screen.findByRole("dialog", { name: "Codex update available" });
+    expect(toast).toHaveTextContent("Pixice is using 0.149.0");
+    expect(toast).toHaveTextContent("Running tasks and workflows may be interrupted");
+    await user.click(within(toast).getByRole("button", { name: "Update Codex" }));
+    await waitFor(() => expect(api.codexUpdates.install).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("status", { name: "Codex updated successfully" })).toHaveTextContent("Codex updated successfully");
+    expect(screen.getByText(/Pixice stayed open/)).toBeInTheDocument();
+  });
+
+  it("persists the Codex startup update-check setting", async () => {
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: { checkCodexUpdates: false }
+    });
+    window.loom = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Updates/ }));
+    const toggle = await screen.findByRole("checkbox", { name: "Check for Codex updates when Pixice opens" });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ checkCodexUpdates: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(api.codexUpdates.check).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Codex is up to date.")).toBeInTheDocument();
   });
 
   it("restores persistent model, reasoning, and permission defaults after an app update", async () => {
@@ -1552,6 +1616,38 @@ describe("Pixice app shell", () => {
     expect(disclosure).toHaveAttribute("aria-hidden", "false");
   });
 
+  it("shows only the newest working animation when an active turn has multiple trace groups", async () => {
+    const startedAt = new Date(Date.now() - 30_000).toISOString();
+    const liveThread = {
+      ...thread,
+      status: { type: "active" },
+      turns: [{
+        id: "turn-split-trace",
+        status: "inProgress",
+        startedAt,
+        items: [
+          { id: "user-split-trace", type: "userMessage", content: [{ type: "text", text: "Inspect the generated result" }] },
+          { id: "file-split-trace", type: "fileChange", status: "completed", changes: [{ path: "src/result.js" }] },
+          { id: "image-split-trace", type: "imageGeneration", status: "completed", result: "data:image/png;base64,aA==", revisedPrompt: "A generated result" },
+          { id: "reasoning-split-trace", type: "reasoning", summary: ["Checking the generated result"] }
+        ]
+      }]
+    };
+    window.loom = createApi(liveThread);
+
+    render(<App />);
+    expect(await screen.findByRole("status", { name: "Thinking" })).toBeInTheDocument();
+
+    const traces = document.querySelectorAll(".conversation-column .working-trace");
+    expect(traces).toHaveLength(2);
+    expect(document.querySelectorAll('.conversation-column .working-trace[data-working="true"]')).toHaveLength(1);
+    expect(document.querySelectorAll(".conversation-column .trace-live-toggle")).toHaveLength(1);
+    expect(traces[0]).toHaveAttribute("data-working", "false");
+    expect(traces[0]).toHaveTextContent("Updated files");
+    expect(traces[1]).toHaveAttribute("data-working", "true");
+    expect(traces[1]).toHaveTextContent("Checking the generated result");
+  });
+
   it("pauses stale plan activity while a task is inactive and resumes it with the next turn", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -1747,6 +1843,11 @@ describe("Pixice app shell", () => {
   it("uses icon-only permission and fast controls when preview is open", () => {
     expect(appCss).toMatch(/\.preview-mode \.composer-fast-toggle,\s*\.preview-mode \.composer-picker\.permission \.picker-trigger\s*\{[^}]*width:\s*30px;[^}]*padding:\s*0;/);
     expect(appCss).toMatch(/\.preview-mode \.composer-fast-toggle span,\s*\.preview-mode \.composer-picker\.permission \.picker-trigger-label,\s*\.preview-mode \.composer-picker\.permission \.picker-chevron\s*\{\s*display:\s*none;/);
+  });
+
+  it("shares the transcript geometry with the composer while the task inspector is open", () => {
+    expect(appCss).toMatch(/\.loom-app\[data-inspector-open="true"\] \.conversation-column\s*\{[^}]*width:\s*var\(--inspector-chat-width\);[^}]*margin-left:\s*var\(--inspector-chat-left\);/);
+    expect(appCss).toMatch(/\.loom-app\[data-inspector-open="true"\] \.composer\s*\{[^}]*left:\s*var\(--inspector-chat-left\);[^}]*width:\s*var\(--inspector-chat-width\);/);
   });
 
   it("opens a new task from the sidebar shortcut", async () => {
@@ -2414,5 +2515,41 @@ describe("Pixice app shell", () => {
       answers: { approach: "Build it", scope: "Every model" }
     }));
     expect(await screen.findByRole("textbox", { name: "Task prompt" })).toBeInTheDocument();
+  });
+
+  it("temporarily widens the preview side chat for a question", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+
+    act(() => window.loom.emit({
+      type: "AttentionRequired",
+      payload: {
+        id: "preview-question",
+        method: "loom/requestUserInput",
+        projectId: project.id,
+        params: {
+          threadId: thread.id,
+          questions: [{
+            id: "scope",
+            header: "Scope",
+            question: "Where should it be available?",
+            options: [{ label: "Every model", description: "Expose it across all providers.", recommended: true }]
+          }]
+        }
+      }
+    }));
+
+    const workspace = document.querySelector(".task-workspace");
+    expect(await screen.findByText("Where should it be available?")).toBeInTheDocument();
+    expect(workspace).toHaveAttribute("data-question-active", "true");
+    expect(screen.getByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(appCss).toMatch(/\.task-workspace\.preview-mode\[data-question-active="true"\]\s*\{[^}]*620px[^}]*minmax\(360px, 1fr\);/s);
+
+    await user.click(screen.getByRole("radio", { name: /Every model/ }));
+    await waitFor(() => expect(workspace).toHaveAttribute("data-question-active", "false"));
+    expect(screen.getByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
   });
 });
