@@ -510,72 +510,17 @@ describe("Pixice app shell", () => {
     expect(sent.closest(".assistant-message")).toHaveTextContent("Increase the spacing between sections.");
   });
 
-  it("uses a reversible angled wipe when entering and leaving settings", async () => {
-    const originalAnimate = HTMLElement.prototype.animate;
-    const originalGetAnimations = HTMLElement.prototype.getAnimations;
-    const originalRequestAnimationFrame = window.requestAnimationFrame;
-    const animations = [];
-    HTMLElement.prototype.animate = vi.fn(function animate(keyframes, options) {
-      if (this.classList.contains("shell-transition-curtain")) animations.push({ keyframes, options });
-      return { finished: Promise.resolve(), cancel: vi.fn() };
-    });
-    HTMLElement.prototype.getAnimations = vi.fn(() => []);
-    window.requestAnimationFrame = (callback) => window.setTimeout(callback, 0);
+  it("switches top-level views without a full-screen transition", async () => {
+    const { container } = render(<App />);
+    await screen.findByText("I traced the current flow.");
 
-    try {
-      render(<App />);
-      await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
+    expect(container.querySelector(".shell-transition-curtain")).not.toBeInTheDocument();
+    expect(container.querySelector(".loom-app")).not.toHaveAttribute("data-view-transitioning");
 
-      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-      expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
-      expect(await screen.findByRole("complementary", { name: "Primary navigation" })).toBeInTheDocument();
-
-      expect(document.querySelector(".shell-transition-curtain")).toBeInTheDocument();
-      await waitFor(() => expect(animations.map(({ options }) => options.duration)).toEqual([260, 320, 260, 320]));
-      expect(animations.flatMap(({ keyframes }) => keyframes).every((frame) => frame.transform.includes("skewX(-7deg)"))).toBe(true);
-      expect(animations[0].keyframes[0].transform).toContain("-115%");
-      expect(animations[2].keyframes[0].transform).toContain("115%");
-    } finally {
-      if (originalAnimate) HTMLElement.prototype.animate = originalAnimate;
-      else delete HTMLElement.prototype.animate;
-      if (originalGetAnimations) HTMLElement.prototype.getAnimations = originalGetAnimations;
-      else delete HTMLElement.prototype.getAnimations;
-      if (originalRequestAnimationFrame) window.requestAnimationFrame = originalRequestAnimationFrame;
-      else delete window.requestAnimationFrame;
-    }
-  });
-
-  it("recovers if a settings transition animation never finishes", async () => {
-    const originalAnimate = HTMLElement.prototype.animate;
-    const originalGetAnimations = HTMLElement.prototype.getAnimations;
-    const originalRequestAnimationFrame = window.requestAnimationFrame;
-    const stuckAnimation = { finished: new Promise(() => {}), cancel: vi.fn() };
-    let animationCount = 0;
-    HTMLElement.prototype.animate = vi.fn(function animate() {
-      if (!this.classList.contains("loom-app")) return { finished: Promise.resolve(), cancel: vi.fn() };
-      animationCount += 1;
-      return animationCount === 1 ? stuckAnimation : { finished: Promise.resolve(), cancel: vi.fn() };
-    });
-    HTMLElement.prototype.getAnimations = vi.fn(() => [stuckAnimation]);
-    window.requestAnimationFrame = (callback) => window.setTimeout(callback, 0);
-
-    try {
-      const { container } = render(<App />);
-      await screen.findByText("I traced the current flow.");
-
-      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-      expect(await screen.findByRole("heading", { name: "General" }, { timeout: 1000 })).toBeInTheDocument();
-      await waitFor(() => expect(container.querySelector(".loom-app")).toHaveAttribute("data-view-transitioning", "false"));
-      expect(stuckAnimation.cancel).toHaveBeenCalled();
-    } finally {
-      if (originalAnimate) HTMLElement.prototype.animate = originalAnimate;
-      else delete HTMLElement.prototype.animate;
-      if (originalGetAnimations) HTMLElement.prototype.getAnimations = originalGetAnimations;
-      else delete HTMLElement.prototype.getAnimations;
-      if (originalRequestAnimationFrame) window.requestAnimationFrame = originalRequestAnimationFrame;
-      else delete window.requestAnimationFrame;
-    }
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    expect(await screen.findByRole("complementary", { name: "Primary navigation" })).toBeInTheDocument();
   });
 
   it("renders Codex image generation in progress and swaps in the completed image", async () => {

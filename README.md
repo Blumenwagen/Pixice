@@ -9,7 +9,7 @@ Pixice is a cross-platform Electron client for orchestrating coding agents throu
 - Provider-owned threads routed through one registry, with Codex app-server and an initial Claude Agent SDK adapter using long-lived sessions, resumable cursors, and native approval requests.
 - Electron main/preload/renderer isolation with a narrow `window.loom` bridge and renderer sandboxing.
 - One-session stdio JSONL app-server client with correlation, initialization, event normalization, capability gating, recoverable errors, and restart backoff.
-- Pixice-owned additive developer guidance for its private Codex app-server process, while preserving Codex defaults and project `AGENTS.md` instructions.
+- Pixice-owned additive developer guidance for Codex and Claude, including optional Agent Behavior packs, while preserving each runtime's defaults and native project instructions.
 - Thread-isolated preview workspaces with separate browser tabs and persistent sessions, plus per-thread project-file editor tabs and unsaved drafts.
 - Native Instruments authored by Codex or Claude as strict JSON, with persistent Preview tabs, typed launch inputs, event-refreshed project data, agent events, and a searchable Project Tools library with narrowed grants, revision restore, and confirmed board or workflow actions.
 - SQLite storage for Pixice-owned Project, Task, and TaskViewState metadata.

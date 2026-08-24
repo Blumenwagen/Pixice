@@ -61,17 +61,6 @@ button:disabled { cursor: not-allowed; opacity: .38; }
      filter forces Chromium to recompose the transparent window while scrolling. */
   background: var(--chrome-glass);
 }
-.shell-transition-curtain {
-  position: fixed;
-  inset: -8% -14%;
-  z-index: 90;
-  opacity: 0;
-  background: linear-gradient(90deg, transparent 0, rgba(255, 255, 255, .055) 1px, transparent 2px) right center / 3px 100% no-repeat, color-mix(in oklab, var(--sidebar) 92%, #111);
-  box-shadow: 0 0 44px rgba(0, 0, 0, .28);
-  pointer-events: none;
-  will-change: transform;
-}
-.loom-app[data-view-transitioning="true"] { pointer-events: none; }
 .loom-app {
   --rail-width: 64px;
   position: relative;
@@ -102,8 +91,6 @@ body.preview-resizing .task-workspace { transition: none; }
   height: 28px;
   -webkit-app-region: drag;
 }
-.loom-app[data-view-transitioning="true"] { pointer-events: none; }
-
 /* Shared controls */
 .icon-button {
   width: 34px;
@@ -2662,7 +2649,6 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .loom-app[data-reduce-motion="true"] *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 
 @media (prefers-reduced-motion: reduce) {
-  .shell-transition-curtain { display: none; }
   .animated-icon { pointer-events: none; }
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

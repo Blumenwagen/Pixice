@@ -89,6 +89,10 @@ export class ProviderRegistry extends EventEmitter {
     await Promise.allSettled([...this.providers.values()].map((provider) => provider.stop()));
   }
 
+  refreshDeveloperInstructions() {
+    for (const provider of this.providers.values()) provider.refreshDeveloperInstructions?.();
+  }
+
   async listProviders() {
     return Promise.all([...this.providers.values()].map(async (provider) => {
       let account = null;

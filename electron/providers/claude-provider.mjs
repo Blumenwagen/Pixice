@@ -187,6 +187,8 @@ export function claudeQueryOptions({
     systemPrompt: developerInstructions
       ? { type: "preset", preset: "claude_code", append: developerInstructions }
       : { type: "preset", preset: "claude_code" },
+    // Claude Code initializes native subagents through a separate prompt channel.
+    appendSubagentSystemPrompt: developerInstructions || undefined,
     canUseTool,
     mcpServers,
     env: {
@@ -307,6 +309,15 @@ export class ClaudeProvider extends EventEmitter {
     this.pendingRequests.clear();
     this.started = false;
     this.emit("status", { state: "stopped" });
+  }
+
+  refreshDeveloperInstructions() {
+    for (const context of this.sessions.values()) {
+      if (!context.usesGlobalDeveloperInstructions) continue;
+      context.developerInstructions = null;
+      if (context.currentTurn) context.refreshInstructionsAfterTurn = true;
+      else this.#disposeQuery(context);
+    }
   }
 
   async account() {
@@ -478,6 +489,8 @@ export class ClaudeProvider extends EventEmitter {
       status: threadStatus("idle"),
       turns: []
     };
+    const globalDeveloperInstructions = this.#developerInstructions();
+    const usesGlobalDeveloperInstructions = !params.developerInstructions || params.developerInstructions === globalDeveloperInstructions;
     const context = {
       thread,
       providerThreadId,
@@ -486,7 +499,9 @@ export class ClaudeProvider extends EventEmitter {
       effort: null,
       permissionMode: params.permissionMode || "workspace-write",
       runtimeWorkspaceRoots: params.runtimeWorkspaceRoots || [params.cwd],
-      developerInstructions: params.developerInstructions || null,
+      developerInstructions: usesGlobalDeveloperInstructions ? null : params.developerInstructions,
+      usesGlobalDeveloperInstructions,
+      refreshInstructionsAfterTurn: false,
       query: null,
       queue: null,
       runner: null,
@@ -592,12 +607,26 @@ export class ClaudeProvider extends EventEmitter {
       pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable
     });
     options.abortController = context.abortController;
-    context.query = this.queryFactory({ prompt: context.queue, options });
-    context.runner = this.#consume(context).catch((error) => this.#handleQueryError(context, error));
+    const query = this.queryFactory({ prompt: context.queue, options });
+    context.query = query;
+    context.runner = this.#consume(context, query).catch((error) => {
+      if (context.query === query) this.#handleQueryError(context, error);
+    });
   }
 
-  async #consume(context) {
-    for await (const message of context.query) this.#handleMessage(context, message);
+  #disposeQuery(context) {
+    context.queue?.close();
+    context.abortController?.abort();
+    context.query?.close?.();
+    context.query = null;
+    context.queue = null;
+    context.runner = null;
+    context.abortController = null;
+  }
+
+  async #consume(context, query) {
+    for await (const message of query) this.#handleMessage(context, message);
+    if (context.query !== query) return;
     if (context.currentTurn) this.#completeTurn(context, "failed", "Claude session ended before the turn completed");
     context.query = null;
     context.queue = null;
@@ -764,6 +793,12 @@ export class ClaudeProvider extends EventEmitter {
     context.currentTurn = null;
     this.#persist(context);
     this.#emitEvent("TaskUpdated", { method: "turn/completed", threadId: context.thread.id, turn });
+    if (context.refreshInstructionsAfterTurn) {
+      context.refreshInstructionsAfterTurn = false;
+      queueMicrotask(() => {
+        if (!context.currentTurn) this.#disposeQuery(context);
+      });
+    }
   }
 
   #handleQueryError(context, error) {
@@ -962,6 +997,8 @@ export class ClaudeProvider extends EventEmitter {
       permissionMode: "workspace-write",
       runtimeWorkspaceRoots: [thread.cwd],
       developerInstructions: null,
+      usesGlobalDeveloperInstructions: true,
+      refreshInstructionsAfterTurn: false,
       query: null,
       queue: null,
       runner: null,

@@ -75,8 +75,6 @@ const DEFAULT_PREFERENCES = {
   reduceMotion: false
 };
 
-const VIEW_ANIMATION_TIMEOUT_MS = 900;
-const SHELL_TAKEOVER_VIEWS = new Set(["settings", "tools"]);
 const MOTION_EASE = [0.22, 1, 0.36, 1];
 const NewTaskIcon = APP_ICONS.newTask;
 const BoardIcon = APP_ICONS.board;
@@ -87,34 +85,6 @@ const TaskMapIcon = APP_ICONS.taskMap;
 const TaskProgressIcon = APP_ICONS.taskProgress;
 const FastModeIcon = APP_ICONS.fastMode;
 const AutoReviewIcon = APP_ICONS.autoReview;
-
-function waitForAnimation(animation, timeoutMs = VIEW_ANIMATION_TIMEOUT_MS) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      resolve();
-    };
-    const timeout = window.setTimeout(finish, timeoutMs);
-    Promise.resolve(animation?.finished).then(finish, finish);
-  });
-}
-
-function waitForViewPaint() {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      resolve();
-    };
-    const timeout = window.setTimeout(finish, 100);
-    window.requestAnimationFrame(() => window.requestAnimationFrame(finish));
-  });
-}
 
 // Mirrors the slash-command discovery surface in the installed Codex runtime.
 // Pixice only presents and autocompletes these commands; Codex remains responsible
@@ -3903,11 +3873,6 @@ export function App() {
   const [runtime, setRuntime] = useState({ state: "starting", connected: false });
   const [activeView, setActiveView] = useState("task");
   const [settingsPage, setSettingsPage] = useState("general");
-  const [viewTransitionPending, setViewTransitionPending] = useState(false);
-  const viewTransitionPendingRef = useRef(false);
-  const viewTransitionTargetRef = useRef("task");
-  const viewSurfaceRef = useRef(null);
-  const viewTransitionCurtainRef = useRef(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [previewWorkspaces, setPreviewWorkspaces] = useState({});
   const previewWorkspaceSequenceRef = useRef(0);
@@ -4124,65 +4089,10 @@ export function App() {
     });
   }, [savePersistentDefaults]);
 
-  const changeView = useCallback(async (nextView) => {
-    viewTransitionTargetRef.current = nextView;
-    if (viewTransitionPendingRef.current || nextView === activeView) return;
-
-    const surface = viewSurfaceRef.current;
-    const curtain = viewTransitionCurtainRef.current;
-    const reduceMotion = preferencesRef.current.reduceMotion || systemReducedMotion || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    viewTransitionPendingRef.current = true;
-    setViewTransitionPending(true);
-    let currentView = activeView;
-    try {
-      while (viewTransitionTargetRef.current !== currentView) {
-        const targetView = viewTransitionTargetRef.current;
-        if (targetView !== "task") setPreviewOpen(false);
-        const crossesTakeoverBoundary = SHELL_TAKEOVER_VIEWS.has(currentView) !== SHELL_TAKEOVER_VIEWS.has(targetView);
-
-        if (!crossesTakeoverBoundary || !curtain?.animate || reduceMotion) {
-          setActiveView(targetView);
-          currentView = targetView;
-          continue;
-        }
-
-        const enteringTakeover = SHELL_TAKEOVER_VIEWS.has(targetView);
-        const coveredOffset = enteringTakeover ? "-115%" : "115%";
-        const revealedOffset = enteringTakeover ? "115%" : "-115%";
-        const coverAnimation = curtain.animate(
-          [
-            { opacity: 1, transform: `translate3d(${coveredOffset}, 0, 0) skewX(-7deg)` },
-            { opacity: 1, transform: "translate3d(0, 0, 0) skewX(-7deg)" }
-          ],
-          { duration: 260, easing: "cubic-bezier(.55, .08, .28, .96)", fill: "forwards" }
-        );
-        await waitForAnimation(coverAnimation);
-        setActiveView(targetView);
-        currentView = targetView;
-        await waitForViewPaint();
-        const revealAnimation = curtain.animate(
-          [
-            { opacity: 1, transform: "translate3d(0, 0, 0) skewX(-7deg)" },
-            { opacity: 1, transform: `translate3d(${revealedOffset}, 0, 0) skewX(-7deg)` }
-          ],
-          { duration: 320, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "forwards" }
-        );
-        await waitForAnimation(revealAnimation);
-        coverAnimation.cancel();
-        revealAnimation.cancel();
-      }
-    } catch {
-      const targetView = viewTransitionTargetRef.current;
-      setActiveView(targetView);
-    } finally {
-      surface?.getAnimations?.().forEach((animation) => animation.cancel());
-      curtain?.getAnimations?.().forEach((animation) => animation.cancel());
-      curtain?.style.removeProperty("opacity");
-      curtain?.style.removeProperty("transform");
-      viewTransitionPendingRef.current = false;
-      setViewTransitionPending(false);
-    }
-  }, [activeView, setPreviewOpen, systemReducedMotion]);
+  const changeView = useCallback((nextView) => {
+    if (nextView !== "task") setPreviewOpen(false);
+    setActiveView(nextView);
+  }, [setPreviewOpen]);
 
   const loadModels = useCallback(async () => {
     if (!api) return;
@@ -5705,14 +5615,12 @@ export function App() {
   return (
     <div className="loom-stage">
       <div
-        ref={viewSurfaceRef}
         className={`loom-app view-${activeView}`}
         data-sidebar-expanded={sidebarExpanded}
         data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread)}
         data-density={preferences.density}
         data-reduce-motion={preferences.reduceMotion}
         data-show-shortcuts={preferences.showShortcutHints}
-        data-view-transitioning={viewTransitionPending}
         data-preview-open={activeView === "task" && previewOpen}
         data-active-thread-id={selectedThreadId ?? ""}
         style={{ "--sidebar-width": `${sidebarWidth}px` }}
@@ -5763,7 +5671,6 @@ export function App() {
         <div className="workflow-workspace-slot" data-workflow-workspace-slot />
         {activeView === "task" && !previewOpen && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
       </div>
-      <div ref={viewTransitionCurtainRef} className="shell-transition-curtain" aria-hidden="true" />
       <AnimatePresence initial={false}>
       {codexUpdateToastOpen && (
         <motion.div

@@ -1546,8 +1546,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--chrome-glass);
-  will-change: clip-path;
+  background: transparent;
 }
 
 .workspaceOverlay {
@@ -1561,7 +1560,7 @@
   --workflow-accent: var(--primary);
   left: 0;
   z-index: 24;
-  background: var(--chrome-glass);
+  background: transparent;
 }
 
 .workspaceLayout {

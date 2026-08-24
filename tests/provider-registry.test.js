@@ -37,6 +37,7 @@ class FakeProvider extends EventEmitter {
   }
   async start() { return true; }
   async stop() {}
+  refreshDeveloperInstructions() { this.instructionRefreshes = (this.instructionRefreshes ?? 0) + 1; }
   async request(method, params) {
     this.calls.push({ method, params });
     if (method === "model/list") return { data: this.models.map((model) => ({ model, displayName: model })) };
@@ -51,6 +52,17 @@ class FakeProvider extends EventEmitter {
 }
 
 describe("ProviderRegistry", () => {
+  it("refreshes developer instructions across provider adapters", () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", []));
+    const claude = registry.register(new FakeProvider("claude", []));
+
+    registry.refreshDeveloperInstructions();
+
+    expect(codex.instructionRefreshes).toBe(1);
+    expect(claude.instructionRefreshes).toBe(1);
+  });
+
   it("qualifies models and routes a new thread and its turns to one provider", async () => {
     const database = new MemoryDatabase();
     const registry = new ProviderRegistry({ database });

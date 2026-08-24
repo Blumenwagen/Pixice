@@ -111,10 +111,27 @@ describe("WorkflowHost", () => {
     expect(api.workflows.list).toHaveBeenCalledWith({ projectId: "project-1" });
   });
 
+  it("opens and closes the workflow workspace without a takeover transition", async () => {
+    const { api } = createApi();
+    window.loom = api;
+    const { container } = render(<WorkflowHost><Shell /></WorkflowHost>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Workflows" }));
+    await waitFor(() => expect(document.querySelector('[data-workflow-workspace="true"]')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    expect(document.querySelector('[data-workflow-workspace="true"]')).not.toBeInTheDocument();
+    expect(container.querySelector(".loom-app")).not.toHaveAttribute("data-workflows-active");
+  });
+
   it("takes over the primary sidebar like the Settings workspace", () => {
+    const takeoverRule = workflowWorkspaceCss.match(/\.workflowTakeover\s*\{([^}]*)\}/);
     const overlayRules = [...workflowWorkspaceCss.matchAll(/\.workspaceOverlay\s*\{([^}]*)\}/g)];
+    expect(takeoverRule?.[1]).toContain("background: transparent;");
+    expect(takeoverRule?.[1]).not.toContain("will-change");
     expect(overlayRules.at(-1)?.[1]).toContain("left: 0;");
     expect(overlayRules.at(-1)?.[1]).toContain("z-index: 24;");
+    expect(overlayRules.at(-1)?.[1]).toContain("background: transparent;");
     expect(overlayRules.at(-1)?.[1]).not.toContain("backdrop-filter");
     expect(workflowHostCss).toContain('.loom-app[data-workflows-active="true"] > .sidebar');
     expect(workflowHostCss).toContain("visibility: hidden;");

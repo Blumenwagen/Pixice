@@ -50,6 +50,18 @@ describe("agent behavior packs", () => {
     expect(instructions).not.toContain("# Verification before handoff");
   });
 
+  it("uses provider-neutral base guidance and names each native project instruction file", () => {
+    const instructions = composeAgentInstructions({
+      baseInstructionsPath,
+      behaviorsDirectory,
+      settings: { structuredPlanning: false, parallelDelegation: false, verification: false }
+    });
+
+    expect(instructions).toContain("active provider runtime's normal agent behavior");
+    expect(instructions).toContain("Codex uses `AGENTS.md`; Claude uses `CLAUDE.md`");
+    expect(instructions).not.toContain("control surface for Codex work");
+  });
+
   it("prioritizes Pixice-native visualizations over generic visualization skills", () => {
     const instructions = composeAgentInstructions({
       baseInstructionsPath,

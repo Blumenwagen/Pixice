@@ -130,7 +130,8 @@ describe("Claude provider", () => {
       includePartialMessages: true,
       forwardSubagentText: true,
       settingSources: ["user", "project", "local"],
-      systemPrompt: { type: "preset", preset: "claude_code", append: "Pixice guidance" }
+      systemPrompt: { type: "preset", preset: "claude_code", append: "Pixice guidance" },
+      appendSubagentSystemPrompt: "Pixice guidance"
     });
     expect(options.env.CLAUDE_AGENT_SDK_CLIENT_APP).toBe("loom/1.2.3");
   });

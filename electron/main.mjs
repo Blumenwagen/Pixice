@@ -944,6 +944,7 @@ function registerIpc() {
     const value = appDefaultsSchema.parse(payload);
     const settings = database.saveAppSettings(value);
     if (value.checkCodexUpdates !== undefined) codexUpdater.setEnabled(value.checkCodexUpdates);
+    if (value.agentBehaviors !== undefined) runtime.refreshDeveloperInstructions();
     return settings;
   });
   ipcMain.handle("runtime:status", () => ({ ...runtimeStatus, connected: runtime.connected }));
