@@ -26,8 +26,27 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
 
-  package:
+  prepare-release:
     needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Create draft GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then PRERELEASE_FLAG="--prerelease"; fi
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes $PRERELEASE_FLAG --title "Pixice $GITHUB_REF_NAME"
+          fi
+
+  package:
+    needs: [verify, prepare-release]
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -81,7 +100,13 @@ jobs:
       - name: Preserve architecture-specific macOS update metadata
         if: runner.os == 'macOS'
         run: mv release/latest-mac.yml release/latest-mac-${{ matrix.arch }}.yml
-      - uses: actions/upload-artifact@v4
+      - name: Upload signed files to draft GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release upload "$GITHUB_REF_NAME" release/Pixice-*.dmg release/Pixice-*.zip release/Pixice-*.blockmap release/latest-mac-${{ matrix.arch }}.yml --clobber
+      - name: Upload manual-run artifacts
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
         with:
           name: pixice-${{ matrix.name }}
           if-no-files-found: error
@@ -153,24 +178,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: pixice-*
-          path: release-artifacts
-          merge-multiple: true
+      - name: Download files from draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir release-artifacts
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir release-artifacts
       - name: Merge macOS update metadata
         run: node scripts/merge-mac-update-metadata.mjs release-artifacts/latest-mac-arm64.yml release-artifacts/latest-mac-x64.yml release-artifacts/latest-mac.yml
       - name: Generate release checksums
         run: node scripts/generate-checksums.mjs release-artifacts
-      - name: Publish GitHub Release
+      - name: Finish and publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          PRERELEASE_FLAG=""
-          if [[ "$VERSION" == *-* ]]; then PRERELEASE_FLAG="--prerelease"; fi
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" release-artifacts/* --verify-tag --generate-notes $PRERELEASE_FLAG --title "Pixice $GITHUB_REF_NAME"
-          fi
+          gh release upload "$GITHUB_REF_NAME" release-artifacts/latest-mac.yml release-artifacts/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
