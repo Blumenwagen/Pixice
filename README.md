@@ -52,7 +52,7 @@ Run `pnpm github:sync` before a local desktop build to fetch GitHub CLI for the 
 
 ## App updates
 
-Packaged Pixice builds check the `Blumenwagen/Pixice` GitHub Releases feed in the background. Pushing a version tag that matches `package.json`, such as `v0.1.0-beta.1`, builds separate macOS arm64 and Intel packages, Windows x64, Linux x64, update metadata, and checksums. Tag builds require signing credentials. Versions with a prerelease suffix become GitHub prereleases and remain visible to installed beta builds.
+Packaged Pixice builds check the `Blumenwagen/Pixice` GitHub Releases feed in the background. Pushing a version tag that matches `package.json`, such as `v0.1.0-beta.1`, builds the signed and notarized Apple Silicon package, update metadata, and checksums. Manual workflow runs can also build unsigned Windows and Linux packages. Tag builds require signing credentials. Versions with a prerelease suffix become GitHub prereleases and remain visible to installed beta builds.
 
 In development, Pixice automatically uses a `codex` executable found on `PATH`; `LOOM_CODEX_PATH` can still select an explicit binary. See [`RELEASE.md`](RELEASE.md) for the release runbook and [`PLAN.md`](PLAN.md) for the implementation roadmap.
 

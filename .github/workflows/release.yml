@@ -56,11 +56,6 @@ jobs:
             target: mac
             arch: arm64
             runtime: darwin-arm64
-          - name: mac-x64
-            os: macos-15-intel
-            target: mac
-            arch: x64
-            runtime: darwin-x64
     runs-on: ${{ matrix.os }}
     env:
       PIXICE_RUNTIME_TARGET: ${{ matrix.runtime }}
@@ -184,8 +179,8 @@ jobs:
         run: |
           mkdir release-artifacts
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir release-artifacts
-      - name: Merge macOS update metadata
-        run: node scripts/merge-mac-update-metadata.mjs release-artifacts/latest-mac-arm64.yml release-artifacts/latest-mac-x64.yml release-artifacts/latest-mac.yml
+      - name: Prepare macOS update metadata
+        run: cp release-artifacts/latest-mac-arm64.yml release-artifacts/latest-mac.yml
       - name: Generate release checksums
         run: node scripts/generate-checksums.mjs release-artifacts
       - name: Finish and publish GitHub Release
