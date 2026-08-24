@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { LoomDatabase } from "../electron/persistence/database.mjs";
+import { PixiceDatabase } from "../electron/persistence/database.mjs";
 
 const temporaryDirectories = [];
 
@@ -15,7 +15,7 @@ describe("thread runtime persistence", () => {
   it("round-trips project appearance and multiple folders", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const now = new Date().toISOString();
 
     const created = database.createProject({
@@ -39,7 +39,7 @@ describe("thread runtime persistence", () => {
     });
     database.db.close();
 
-    const reopened = new LoomDatabase(directory);
+    const reopened = new PixiceDatabase(directory);
     expect(reopened.listProjects()).toEqual([expect.objectContaining({
       id: "project-studio",
       canonicalPath: "/workspace/studio",
@@ -54,7 +54,7 @@ describe("thread runtime persistence", () => {
   it("orders projects by persisted recency after selection", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const olderAt = "2026-08-20T10:00:00.000Z";
     const recentAt = "2026-08-21T10:00:00.000Z";
     const selectedAt = "2026-08-22T10:00:00.000Z";
@@ -107,7 +107,7 @@ describe("thread runtime persistence", () => {
     `).run("legacy-project", "/workspace/legacy", "Legacy", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
     sqlite.close();
 
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     expect(database.getProject("legacy-project")).toMatchObject({
       id: "legacy-project",
       canonicalPath: "/workspace/legacy",
@@ -123,7 +123,7 @@ describe("thread runtime persistence", () => {
   it("restores and removes structured plan progress", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const plan = [{ step: "Audit runtime", status: "inProgress" }];
 
     database.saveThreadPlan("thread-1", plan);
@@ -137,7 +137,7 @@ describe("thread runtime persistence", () => {
   it("persists generated thread names independently from Codex list metadata", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
 
     database.saveThreadName("thread-1", "Authentication session repair");
     expect(database.getThreadName("thread-1")).toBe("Authentication session repair");
@@ -150,7 +150,7 @@ describe("thread runtime persistence", () => {
   it("persists, orders, and detaches project board tasks across app restarts", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const now = new Date().toISOString();
     database.upsertProject({
       id: "project-1",
@@ -166,7 +166,7 @@ describe("thread runtime persistence", () => {
     expect(database.listBoardTasks("project-1").map((task) => task.id)).toEqual(["task-2", "task-1"]);
     database.db.close();
 
-    const reopened = new LoomDatabase(directory);
+    const reopened = new PixiceDatabase(directory);
     expect(reopened.getBoardTask("task-1")).toMatchObject({ title: "First", threadId: "thread-1", column: "backlog" });
     reopened.detachBoardTasksForThread("thread-1");
     expect(reopened.getBoardTask("task-1").threadId).toBeNull();
@@ -178,7 +178,7 @@ describe("thread runtime persistence", () => {
   it("persists provider ownership, resume cursors, and canonical snapshots", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
 
     database.saveThreadProviderBinding({
       threadId: "thread-claude",
@@ -204,10 +204,10 @@ describe("thread runtime persistence", () => {
     database.db.close();
   });
 
-  it("persists Loom bridge ancestry and model choices", () => {
+  it("persists Pixice bridge ancestry and model choices", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
 
     database.saveThreadLink({
       childThreadId: "claude-child",
@@ -232,7 +232,7 @@ describe("thread runtime persistence", () => {
   it("keeps task defaults in user data across database migrations and app updates", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
 
     database.saveAppSettings({
       defaultModel: "gpt-5.6-sol",
@@ -242,7 +242,7 @@ describe("thread runtime persistence", () => {
     });
     database.db.close();
 
-    const reopenedAfterUpdate = new LoomDatabase(directory);
+    const reopenedAfterUpdate = new PixiceDatabase(directory);
     expect(reopenedAfterUpdate.getAppSettings()).toEqual({
       defaultModel: "gpt-5.6-sol",
       defaultEffort: "xhigh",
@@ -255,7 +255,7 @@ describe("thread runtime persistence", () => {
   it("deduplicates measured usage and aggregates cost and token history", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const recordedAt = new Date().toISOString();
     const usage = {
       id: "codex:response-1",
@@ -296,7 +296,7 @@ describe("thread runtime persistence", () => {
     expect(summary.heatmapDaily.at(-1)).toMatchObject({ costUsd: 0.023625, events: 1 });
     database.db.close();
 
-    const reopenedAfterUpdate = new LoomDatabase(directory);
+    const reopenedAfterUpdate = new PixiceDatabase(directory);
     const persisted = reopenedAfterUpdate.getUsageSummary({ days: 30 });
     expect(persisted.stats.allTimeCostUsd).toBeCloseTo(0.023625);
     expect(persisted.stats.allTimeTokens).toBe(3_600);

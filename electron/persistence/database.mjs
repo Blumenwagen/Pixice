@@ -78,7 +78,7 @@ function mapBoardTask(row) {
   };
 }
 
-export class LoomDatabase {
+export class PixiceDatabase {
   constructor(userDataPath) {
     this.db = new DatabaseSync(path.join(userDataPath, "loom.sqlite"));
     this.db.exec(`

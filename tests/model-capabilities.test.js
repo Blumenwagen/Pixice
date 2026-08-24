@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { bridgeEligibleModels, bridgeModelProfile, recommendBridgeModel } from "../electron/runtime/model-capabilities.mjs";
 
-describe("Loom bridge model capabilities", () => {
+describe("Pixice bridge model capabilities", () => {
   it("allows only the Luna, Terra, and Sol members of the GPT 5.6 family", () => {
     const models = bridgeEligibleModels([
       { model: "gpt-5.6-luna", provider: "codex" },

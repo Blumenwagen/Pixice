@@ -131,13 +131,13 @@ export const loomWorkflowTools = [
   {
     type: "function",
     name: "describe_nodes",
-    description: "List every Loom workflow node type, its ports, purpose, and configuration fields. Use this before creating or substantially editing a workflow.",
+    description: "List every Pixice workflow node type, its ports, purpose, and configuration fields. Use this before creating or substantially editing a workflow.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
     type: "function",
     name: "inspect_workflow",
-    description: "Read a complete workflow graph and open its canvas in Loom.",
+    description: "Read a complete workflow graph and open its canvas in Pixice.",
     inputSchema: {
       type: "object",
       properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
@@ -147,7 +147,7 @@ export const loomWorkflowTools = [
   {
     type: "function",
     name: "create_workflow",
-    description: "Create a workflow prefilled with Manual Trigger → Loom Agent → Output and open it in Loom.",
+    description: "Create a workflow prefilled with Manual Trigger → Pixice Agent → Output and open it in Pixice.",
     inputSchema: {
       type: "object",
       properties: {
@@ -207,7 +207,7 @@ export const loomWorkflowTools = [
   {
     type: "function",
     name: "open_workflow",
-    description: "Open a workflow in Loom's preview without changing or running it.",
+    description: "Open a workflow in Pixice's preview without changing or running it.",
     inputSchema: {
       type: "object", properties: { workflowId: { type: "string", minLength: 1, maxLength: 160 } },
       required: ["workflowId"], additionalProperties: false
@@ -218,7 +218,7 @@ export const loomWorkflowTools = [
 export const loomWorkflowDynamicTools = [{
   type: "namespace",
   name: LOOM_WORKFLOW_NAMESPACE,
-  description: "Build and run Loom-native visual automations with local triggers, APIs, encrypted credentials, deterministic data operations, SQLite, subworkflows, loops, notifications, attached Skills, board actions, and Loom Agents.",
+  description: "Build and run Pixice-native visual automations with local triggers, APIs, encrypted credentials, deterministic data operations, SQLite, subworkflows, loops, notifications, attached Skills, board actions, and Pixice Agents.",
   tools: loomWorkflowTools
 }];
 
@@ -259,7 +259,7 @@ class WorkflowCancelledError extends Error {
   }
 }
 
-export class LoomWorkflows {
+export class PixiceWorkflows {
   constructor({
     runtime,
     store,
@@ -430,9 +430,9 @@ export class LoomWorkflows {
 
   async handleToolCall(params) {
     try {
-      if (!params?.threadId) throw new Error("Loom workflow tools require an active thread");
+      if (!params?.threadId) throw new Error("Pixice workflow tools require an active thread");
       const context = this.threadContext(params.threadId);
-      if (!context?.projectId) throw new Error("The active thread is not attached to an open Loom project");
+      if (!context?.projectId) throw new Error("The active thread is not attached to an open Pixice project");
       const input = params.arguments ?? {};
 
       if (params.tool === "list_workflows") {
@@ -500,7 +500,7 @@ export class LoomWorkflows {
         });
         return textResult({ run: await this.waitForRun(run.id) });
       }
-      throw new Error(`Unknown Loom workflow tool: ${params.tool}`);
+      throw new Error(`Unknown Pixice workflow tool: ${params.tool}`);
     } catch (error) {
       return textResult({ error: error.message }, false);
     }
@@ -706,7 +706,7 @@ export class LoomWorkflows {
       seen.add(input.sourceNodeId);
       const skillNode = workflow.graph.nodes.find((candidate) => candidate.id === input.sourceNodeId);
       if (!skillNode || skillNode.type !== "useSkill") {
-        throw new Error("A Loom Agent Skill port received an invalid attachment node");
+        throw new Error("A Pixice Agent Skill port received an invalid attachment node");
       }
       let pending = state.skillAttachments.get(skillNode.id);
       if (!pending) {
@@ -741,7 +741,7 @@ export class LoomWorkflows {
     const selected = models.find((model) => model.id === requestedModel || model.model === requestedModel)
       ?? models.find((model) => model.isDefault)
       ?? models[0];
-    if (!selected) throw new Error("No connected model is available for the Loom Agent node");
+    if (!selected) throw new Error("No connected model is available for the Pixice Agent node");
     const modelId = selected.id ?? selected.model;
     const effort = String(node.config?.effort ?? context.defaultEffort ?? selected.defaultReasoningEffort ?? "").trim() || null;
     const permissionMode = ["read-only", "workspace-write", "auto-approve", "full-access"].includes(node.config?.permissionMode)
@@ -855,7 +855,7 @@ export class LoomWorkflows {
     const result = await completion;
     state.threads.delete(thread.id);
     this.#assertActive(state);
-    if (result.status !== "completed") throw new Error(result.error || `Loom Agent node ${completionStatus(result.status)}`);
+    if (result.status !== "completed") throw new Error(result.error || `Pixice Agent node ${completionStatus(result.status)}`);
     return result.answer;
   }
 

@@ -61,7 +61,7 @@ const api = {
 
 createRoot(document.getElementById("root")).render(
   <div className="loom-app" style={{ "--rail-width": "0px" }}>
-    <WorkflowWorkspace api={api} projectId="loom-preview" projectName="Loom" models={[]} />
+    <WorkflowWorkspace api={api} projectId="loom-preview" projectName="Pixice" models={[]} />
   </div>
 );
 

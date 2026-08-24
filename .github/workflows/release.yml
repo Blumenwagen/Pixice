@@ -14,33 +14,64 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - name: mac-arm64
+            os: macos-15
             target: mac
-          - os: windows-2025
+            arch: arm64
+            runtime: darwin-arm64
+          - name: mac-x64
+            os: macos-15-intel
+            target: mac
+            arch: x64
+            runtime: darwin-x64
+          - name: windows-x64
+            os: windows-2025
             target: win
-          - os: ubuntu-24.04
+            arch: x64
+            runtime: win32-x64
+          - name: linux-x64
+            os: ubuntu-24.04
             target: linux
+            arch: x64
+            runtime: linux-x64
     runs-on: ${{ matrix.os }}
+    env:
+      PIXICE_RUNTIME_TARGET: ${{ matrix.runtime }}
+      PIXICE_REQUIRE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
+      GH_TOKEN: ${{ github.token }}
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Fetch target runtime
+        shell: bash
+        run: git lfs pull --include="resources/runtime/${PIXICE_RUNTIME_TARGET}/**" --exclude=""
       - uses: pnpm/action-setup@v4
-        with: { version: 10 }
+        with: { version: 10.15.1 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm release:verify
-      - run: pnpm runtime:verify
+      - run: pnpm release:preflight
+      - run: node scripts/sync-github-cli.mjs --target=${{ matrix.runtime }}
+      - run: node scripts/verify-runtime.mjs --target=${{ matrix.runtime }} --require-github-cli
       - run: pnpm exec vite build --mode desktop
-      - run: pnpm exec electron-builder --${{ matrix.target }} --publish never
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      - run: pnpm exec electron-builder --config electron-builder.config.cjs --${{ matrix.target }} --${{ matrix.arch }} --publish never
+      - name: Preserve architecture-specific macOS update metadata
+        if: runner.os == 'macOS'
+        run: mv release/latest-mac.yml release/latest-mac-${{ matrix.arch }}.yml
       - uses: actions/upload-artifact@v4
         with:
-          name: loom-${{ matrix.target }}
+          name: pixice-${{ matrix.name }}
+          if-no-files-found: error
           path: |
             release/*.dmg
             release/*.zip
@@ -60,17 +91,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: loom-*
+          pattern: pixice-*
           path: release-artifacts
           merge-multiple: true
+      - name: Merge macOS update metadata
+        run: node scripts/merge-mac-update-metadata.mjs release-artifacts/latest-mac-arm64.yml release-artifacts/latest-mac-x64.yml release-artifacts/latest-mac.yml
       - name: Generate release checksums
         run: node scripts/generate-checksums.mjs release-artifacts
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          VERSION=$(node -p "require('./package.json').version")
+          PRERELEASE_FLAG=""
+          if [[ "$VERSION" == *-* ]]; then PRERELEASE_FLAG="--prerelease"; fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" release-artifacts/* --verify-tag --generate-notes --title "Loom $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" release-artifacts/* --verify-tag --generate-notes $PRERELEASE_FLAG --title "Pixice $GITHUB_REF_NAME"
           fi

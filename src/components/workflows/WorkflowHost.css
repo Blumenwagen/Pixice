@@ -8,10 +8,10 @@
   background: rgba(255, 255, 255, .06);
 }
 
-.workflow-nav-item .rail-icon {
-  color: color-mix(in oklab, var(--thread-bright) 72%, var(--muted));
+.loom-app[data-workflows-active="true"] > .sidebar {
+  visibility: hidden;
 }
 
-.workflow-nav-item.active .rail-icon {
-  color: var(--thread-bright);
+.workflow-nav-item .rail-icon {
+  color: inherit;
 }

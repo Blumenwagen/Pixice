@@ -1,0 +1,690 @@
+{
+  "previewUrl": "http://127.0.0.1:5173/?task-progress-preview",
+  "scrollCheck": {
+    "found": true,
+    "ancestors": [
+      {
+        "tag": "FOOTER",
+        "className": "progress-footer",
+        "rect": {
+          "x": 297,
+          "y": 720.28125,
+          "width": 273,
+          "height": 78.5
+        },
+        "clientHeight": 78,
+        "scrollHeight": 78,
+        "scrollTop": 0,
+        "overflowY": "visible"
+      },
+      {
+        "tag": "DIV",
+        "className": "task-progress-disclosure-inner",
+        "rect": {
+          "x": 282,
+          "y": 381.78125,
+          "width": 303,
+          "height": 417
+        },
+        "clientHeight": 417,
+        "scrollHeight": 417,
+        "scrollTop": 0,
+        "overflowY": "hidden"
+      },
+      {
+        "tag": "DIV",
+        "className": "task-progress-disclosure",
+        "rect": {
+          "x": 282,
+          "y": 381.78125,
+          "width": 303,
+          "height": 417
+        },
+        "clientHeight": 417,
+        "scrollHeight": 417,
+        "scrollTop": 0,
+        "overflowY": "visible"
+      },
+      {
+        "tag": "SECTION",
+        "className": "task-progress",
+        "rect": {
+          "x": 281,
+          "y": 315.78125,
+          "width": 305,
+          "height": 484
+        },
+        "clientHeight": 482,
+        "scrollHeight": 482,
+        "scrollTop": 0,
+        "overflowY": "hidden"
+      },
+      {
+        "tag": "DIV",
+        "className": "conversation-column",
+        "rect": {
+          "x": 281,
+          "y": 80,
+          "width": 305,
+          "height": 927.78125
+        },
+        "clientHeight": 928,
+        "scrollHeight": 928,
+        "scrollTop": 0,
+        "overflowY": "visible"
+      },
+      {
+        "tag": "DIV",
+        "className": "conversation-scroll",
+        "rect": {
+          "x": 264,
+          "y": 80,
+          "width": 339,
+          "height": 648
+        },
+        "clientHeight": 648,
+        "scrollHeight": 928,
+        "scrollTop": 0,
+        "overflowY": "auto"
+      },
+      {
+        "tag": "MAIN",
+        "className": "main-canvas",
+        "rect": {
+          "x": 264,
+          "y": 28,
+          "width": 340,
+          "height": 700
+        },
+        "clientHeight": 700,
+        "scrollHeight": 700,
+        "scrollTop": 0,
+        "overflowY": "hidden"
+      },
+      {
+        "tag": "DIV",
+        "className": "task-workspace preview-mode",
+        "rect": {
+          "x": 264,
+          "y": 28,
+          "width": 760,
+          "height": 708
+        },
+        "clientHeight": 708,
+        "scrollHeight": 708,
+        "scrollTop": 0,
+        "overflowY": "hidden"
+      },
+      {
+        "tag": "DIV",
+        "className": "loom-app view-task",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1024,
+          "height": 736
+        },
+        "clientHeight": 736,
+        "scrollHeight": 736,
+        "scrollTop": 0,
+        "overflowY": "visible"
+      },
+      {
+        "tag": "DIV",
+        "className": "loom-stage",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1024,
+          "height": 736
+        },
+        "clientHeight": 736,
+        "scrollHeight": 736,
+        "scrollTop": 0,
+        "overflowY": "visible"
+      },
+      {
+        "tag": "DIV",
+        "className": "",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1024,
+          "height": 736
+        },
+        "clientHeight": 736,
+        "scrollHeight": 736,
+        "scrollTop": 0,
+        "overflowY": "hidden"
+      },
+      {
+        "tag": "BODY",
+        "className": "",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1024,
+          "height": 736
+        },
+        "clientHeight": 736,
+        "scrollHeight": 736,
+        "scrollTop": 0,
+        "overflowY": "hidden"
+      },
+      {
+        "tag": "HTML",
+        "className": "",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1024,
+          "height": 736
+        },
+        "clientHeight": 736,
+        "scrollHeight": 736,
+        "scrollTop": 0,
+        "overflowY": "hidden"
+      }
+    ],
+    "scrolled": true,
+    "selectedScrollable": {
+      "tag": "DIV",
+      "className": "conversation-scroll",
+      "rect": {
+        "x": 264,
+        "y": 80,
+        "width": 339,
+        "height": 648
+      },
+      "clientHeight": 648,
+      "scrollHeight": 928,
+      "scrollTop": 0,
+      "overflowY": "auto"
+    }
+  },
+  "states": [
+    {
+      "label": "preview open, sidebar collapsed",
+      "viewport": {
+        "width": 1440,
+        "height": 868,
+        "devicePixelRatio": 2
+      },
+      "body": {
+        "scrollWidth": 1440,
+        "scrollHeight": 868
+      },
+      "activeElement": {
+        "tag": "BODY",
+        "text": "Workspace\nNew task\nBoard\nAttention\nReview\n31\nWorkflows\nThreads\nProjects\n3\nPixice · 3 running\nSettings\nRefactor authentication flow\nPixice\nRefactor the authentication flow and keep the session migration safe.\n\nCoordinating the backend migration and client-session work in parallel.\n\nThinking\nTask progress\nRefactor authentication flow\n3 / 6\nImplementation\n2 agents working in parallel\nAnalyze current flow\nLead\nDesign cookie model\nLead\nMigrate backend\nAPI migration\nUpdate client sessions\nAPI migration\nAdd fingerprinting\nSession tests\nVerify and review\nLead\n4 agents\n31 files touched\nOpen task map\nGPT-5.6\nHigh\nNew tab\nNew tab\nEnter an address above or ask Codex to investigate a page.",
+        "ariaLabel": null,
+        "title": null,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 868
+        },
+        "outline": "rgb(240, 240, 240) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "sidebarToggle": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Expand navigation labels",
+        "title": "Expand navigation labels",
+        "rect": {
+          "x": 18,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(162, 162, 162) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "previewClose": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Close preview workspace",
+        "title": "Close preview workspace",
+        "rect": {
+          "x": 444,
+          "y": 37,
+          "width": 34,
+          "height": 34
+        },
+        "outline": "rgb(255, 83, 100) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "visibleButtonCount": 25,
+      "clippedControls": [],
+      "screenshot": "/Users/tschlueter/Desktop/Pixice/work/ui-audits/20260822T161158Z/01-preview-open-sidebar-collapsed.png"
+    },
+    {
+      "label": "preview open, sidebar expanded",
+      "viewport": {
+        "width": 1440,
+        "height": 868,
+        "devicePixelRatio": 2
+      },
+      "body": {
+        "scrollWidth": 1440,
+        "scrollHeight": 868
+      },
+      "activeElement": {
+        "tag": "BODY",
+        "text": "Workspace\nNew task\n⌘N\nBoard\nAttention\nReview\n31\nWorkflows\nThreads\nRefactor authentication flow\nBuild Pixice Codex harness\nProjects\n3\nPixice · 3 running\nSettings\n⌘,\nRefactor authentication flow\nPixice\nRefactor the authentication flow and keep the session migration safe.\n\nCoordinating the backend migration and client-session work in parallel.\n\nThinking\nTask progress\nRefactor authentication flow\n3 / 6\nImplementation\n2 agents working in parallel\nAnalyze current flow\nLead\nDesign cookie model\nLead\nMigrate backend\nAPI migration\nUpdate client sessions\nAPI migration\nAdd fingerprinting\nSession tests\nVerify and review\nLead\n4 agents\n31 files touched\nOpen task map\nGPT-5.6\nHigh\nNew tab\nNew tab\nEnter an address above or ask Codex to investigate a page.",
+        "ariaLabel": null,
+        "title": null,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 868
+        },
+        "outline": "rgb(240, 240, 240) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "sidebarToggle": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Collapse navigation labels",
+        "title": "Collapse navigation labels",
+        "rect": {
+          "x": 224,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(162, 162, 162) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "previewClose": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Close preview workspace",
+        "title": "Close preview workspace",
+        "rect": {
+          "x": 644,
+          "y": 37,
+          "width": 34,
+          "height": 34
+        },
+        "outline": "rgb(255, 83, 100) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "visibleButtonCount": 29,
+      "clippedControls": [],
+      "screenshot": "/Users/tschlueter/Desktop/Pixice/work/ui-audits/20260822T161158Z/02-preview-open-sidebar-expanded.png"
+    },
+    {
+      "label": "preview open, first control keyboard focused",
+      "viewport": {
+        "width": 1440,
+        "height": 868,
+        "devicePixelRatio": 2
+      },
+      "body": {
+        "scrollWidth": 1440,
+        "scrollHeight": 868
+      },
+      "activeElement": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Collapse navigation labels",
+        "title": "Collapse navigation labels",
+        "rect": {
+          "x": 224,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "sidebarToggle": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Collapse navigation labels",
+        "title": "Collapse navigation labels",
+        "rect": {
+          "x": 224,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "previewClose": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Close preview workspace",
+        "title": "Close preview workspace",
+        "rect": {
+          "x": 644,
+          "y": 37,
+          "width": 34,
+          "height": 34
+        },
+        "outline": "rgb(255, 83, 100) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "visibleButtonCount": 29,
+      "clippedControls": [],
+      "screenshot": "/Users/tschlueter/Desktop/Pixice/work/ui-audits/20260822T161158Z/03-first-control-keyboard-focus.png"
+    },
+    {
+      "label": "preview open, sidebar collapsed by keyboard activation",
+      "viewport": {
+        "width": 1440,
+        "height": 868,
+        "devicePixelRatio": 2
+      },
+      "body": {
+        "scrollWidth": 1440,
+        "scrollHeight": 868
+      },
+      "activeElement": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Expand navigation labels",
+        "title": "Expand navigation labels",
+        "rect": {
+          "x": 18,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "sidebarToggle": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Expand navigation labels",
+        "title": "Expand navigation labels",
+        "rect": {
+          "x": 18,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "previewClose": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Close preview workspace",
+        "title": "Close preview workspace",
+        "rect": {
+          "x": 444,
+          "y": 37,
+          "width": 34,
+          "height": 34
+        },
+        "outline": "rgb(255, 83, 100) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "visibleButtonCount": 25,
+      "clippedControls": [],
+      "screenshot": "/Users/tschlueter/Desktop/Pixice/work/ui-audits/20260822T161158Z/04-sidebar-collapsed-by-keyboard.png"
+    },
+    {
+      "label": "narrow viewport, preview open, sidebar collapsed",
+      "viewport": {
+        "width": 1024,
+        "height": 736,
+        "devicePixelRatio": 2
+      },
+      "body": {
+        "scrollWidth": 1024,
+        "scrollHeight": 736
+      },
+      "activeElement": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Expand navigation labels",
+        "title": "Expand navigation labels",
+        "rect": {
+          "x": 18,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "sidebarToggle": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Expand navigation labels",
+        "title": "Expand navigation labels",
+        "rect": {
+          "x": 18,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "previewClose": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Close preview workspace",
+        "title": "Close preview workspace",
+        "rect": {
+          "x": 354,
+          "y": 37,
+          "width": 34,
+          "height": 34
+        },
+        "outline": "rgb(255, 83, 100) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "visibleButtonCount": 25,
+      "clippedControls": [
+        {
+          "tag": "BUTTON",
+          "text": "Open task map",
+          "ariaLabel": null,
+          "title": null,
+          "rect": {
+            "x": 143,
+            "y": 760.78125,
+            "width": 92.953125,
+            "height": 30
+          },
+          "outline": "rgb(170, 170, 176) none 0px",
+          "outlineOffset": "0px",
+          "boxShadow": "none"
+        }
+      ],
+      "screenshot": "/Users/tschlueter/Desktop/Pixice/work/ui-audits/20260822T161158Z/05-narrow-preview-open-sidebar-collapsed.png"
+    },
+    {
+      "label": "narrow viewport, preview open, sidebar expanded",
+      "viewport": {
+        "width": 1024,
+        "height": 736,
+        "devicePixelRatio": 2
+      },
+      "body": {
+        "scrollWidth": 1024,
+        "scrollHeight": 736
+      },
+      "activeElement": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Collapse navigation labels",
+        "title": "Collapse navigation labels",
+        "rect": {
+          "x": 224,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "sidebarToggle": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Collapse navigation labels",
+        "title": "Collapse navigation labels",
+        "rect": {
+          "x": 224,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "previewClose": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Close preview workspace",
+        "title": "Close preview workspace",
+        "rect": {
+          "x": 554,
+          "y": 37,
+          "width": 34,
+          "height": 34
+        },
+        "outline": "rgb(255, 83, 100) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "visibleButtonCount": 29,
+      "clippedControls": [
+        {
+          "tag": "BUTTON",
+          "text": "Open task map",
+          "ariaLabel": null,
+          "title": null,
+          "rect": {
+            "x": 343,
+            "y": 760.78125,
+            "width": 92.953125,
+            "height": 30
+          },
+          "outline": "rgb(170, 170, 176) none 0px",
+          "outlineOffset": "0px",
+          "boxShadow": "none"
+        },
+        {
+          "tag": "BUTTON",
+          "text": "",
+          "ariaLabel": "Close preview workspace",
+          "title": "Close preview workspace",
+          "rect": {
+            "x": 999,
+            "y": 37,
+            "width": 30,
+            "height": 30
+          },
+          "outline": "rgb(162, 162, 162) none 0px",
+          "outlineOffset": "0px",
+          "boxShadow": "none"
+        }
+      ],
+      "screenshot": "/Users/tschlueter/Desktop/Pixice/work/ui-audits/20260822T161158Z/06-narrow-preview-open-sidebar-expanded.png"
+    },
+    {
+      "label": "narrow viewport, sidebar expanded, task content scrolled to bottom",
+      "viewport": {
+        "width": 1024,
+        "height": 736,
+        "devicePixelRatio": 2
+      },
+      "body": {
+        "scrollWidth": 1024,
+        "scrollHeight": 736
+      },
+      "activeElement": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Collapse navigation labels",
+        "title": "Collapse navigation labels",
+        "rect": {
+          "x": 224,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "sidebarToggle": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Collapse navigation labels",
+        "title": "Collapse navigation labels",
+        "rect": {
+          "x": 224,
+          "y": 38,
+          "width": 28,
+          "height": 28
+        },
+        "outline": "rgb(255, 83, 100) solid 2px",
+        "outlineOffset": "2px",
+        "boxShadow": "none"
+      },
+      "previewClose": {
+        "tag": "BUTTON",
+        "text": "",
+        "ariaLabel": "Close preview workspace",
+        "title": "Close preview workspace",
+        "rect": {
+          "x": 554,
+          "y": 37,
+          "width": 34,
+          "height": 34
+        },
+        "outline": "rgb(255, 83, 100) none 0px",
+        "outlineOffset": "0px",
+        "boxShadow": "none"
+      },
+      "visibleButtonCount": 29,
+      "clippedControls": [
+        {
+          "tag": "BUTTON",
+          "text": "",
+          "ariaLabel": "Close preview workspace",
+          "title": "Close preview workspace",
+          "rect": {
+            "x": 999,
+            "y": 37,
+            "width": 30,
+            "height": 30
+          },
+          "outline": "rgb(162, 162, 162) none 0px",
+          "outlineOffset": "0px",
+          "boxShadow": "none"
+        }
+      ],
+      "screenshot": "/Users/tschlueter/Desktop/Pixice/work/ui-audits/20260822T161158Z/07-narrow-expanded-task-content-scrolled-bottom.png"
+    }
+  ]
+}

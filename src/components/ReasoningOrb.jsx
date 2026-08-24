@@ -33,7 +33,7 @@ const RING_INDEX = new Map(RING.map(([x, y], index) => [`${x},${y}`, index]));
 
 // All visible orbs share one deliberately low-frequency clock. The old DOM
 // implementation gave every dot its own infinite compositor animation, which
-// kept Chromium producing frames even while the rest of Loom was idle.
+// kept Chromium producing frames even while the rest of Pixice was idle.
 const frameSubscribers = new Set();
 let frameTimer = null;
 let frameRequest = null;

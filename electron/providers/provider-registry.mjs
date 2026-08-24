@@ -43,7 +43,7 @@ function persistedThread(database, binding) {
 }
 
 /**
- * ProviderService equivalent for Loom. It deliberately keeps a compatibility
+ * ProviderService equivalent for Pixice. It deliberately keeps a compatibility
  * request(method, params) surface so the renderer and IPC handlers can migrate
  * incrementally instead of forking into provider-specific code paths.
  */

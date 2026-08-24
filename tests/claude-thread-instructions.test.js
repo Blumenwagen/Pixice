@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AsyncPromptQueue, ClaudeProvider } from "../electron/providers/claude-provider.mjs";
-import { LoomDatabase } from "../electron/persistence/database.mjs";
+import { PixiceDatabase } from "../electron/persistence/database.mjs";
 
 const temporaryDirectories = [];
 
@@ -19,7 +19,7 @@ describe("Claude thread instructions", () => {
   it("uses thread-specific developer instructions for workflow-attached Skills", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-thread-instructions-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const output = new AsyncPromptQueue();
     let queryArguments;
     const query = {
@@ -32,7 +32,7 @@ describe("Claude thread instructions", () => {
     const provider = new ClaudeProvider({
       database,
       clientVersion: "test",
-      developerInstructions: () => "Base Loom instructions",
+      developerInstructions: () => "Base Pixice instructions",
       queryFactory: (arguments_) => {
         queryArguments = arguments_;
         return query;
@@ -40,7 +40,7 @@ describe("Claude thread instructions", () => {
     });
     await provider.start();
 
-    const attachedInstructions = "Base Loom instructions\n\n## Workflow-attached Skills\nAlways inspect the changelog.";
+    const attachedInstructions = "Base Pixice instructions\n\n## Workflow-attached Skills\nAlways inspect the changelog.";
     const { thread } = await provider.request("thread/start", {
       cwd: directory,
       model: "sonnet",

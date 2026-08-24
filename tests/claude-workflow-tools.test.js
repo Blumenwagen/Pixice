@@ -4,7 +4,7 @@ import { loomBridgeDynamicTools, loomBridgeToolShapes } from "../electron/runtim
 import { loomWorkflowTools } from "../electron/workflows/loom-workflows.mjs";
 
 describe("Claude workflow tools", () => {
-  it("registers every workflow operation in the shared Loom bridge catalog", () => {
+  it("registers every workflow operation in the shared Pixice bridge catalog", () => {
     const bridgeNames = loomBridgeDynamicTools[0].tools.map((tool) => tool.name);
     for (const workflowTool of loomWorkflowTools) {
       expect(bridgeNames).toContain(workflowTool.name);

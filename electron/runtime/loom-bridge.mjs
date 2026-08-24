@@ -47,7 +47,7 @@ const listModelsInputSchema = {
 const spawnThreadInputSchema = {
   type: "object",
   properties: {
-    prompt: { type: "string", minLength: 1, maxLength: 100000, description: "The complete task for the new Loom thread." },
+    prompt: { type: "string", minLength: 1, maxLength: 100000, description: "The complete task for the new Pixice thread." },
     model: { type: "string", minLength: 1, maxLength: 160, description: "Qualified model id returned by list_models." },
     effort: { type: "string", pattern: "^[a-zA-Z][a-zA-Z0-9_-]*$", maxLength: 32, description: "A reasoning effort supported by the selected model." },
     permissionMode: {
@@ -73,19 +73,19 @@ const bridgeTools = [
   {
     type: "function",
     name: "list_models",
-    description: "List only currently connected models available to the Loom bridge, Loom's internal 1-5 capability ratings, and a policy-based recommendation for the supplied task. GPT is intentionally limited to 5.6 Luna, Terra, and Sol; every connected Claude model reported by Claude Code is eligible.",
+    description: "List only currently connected models available to the Pixice bridge, Pixice's internal 1-5 capability ratings, and a policy-based recommendation for the supplied task. GPT is intentionally limited to 5.6 Luna, Terra, and Sol; every connected Claude model reported by Claude Code is eligible.",
     inputSchema: listModelsInputSchema
   },
   {
     type: "function",
     name: "spawn_thread",
-    description: "Create a child Loom thread, run the prompt with the selected model and reasoning effort, wait for completion, and return its final answer. The thread remains visible and reusable in Loom.",
+    description: "Create a child Pixice thread, run the prompt with the selected model and reasoning effort, wait for completion, and return its final answer. The thread remains visible and reusable in Pixice.",
     inputSchema: spawnThreadInputSchema
   },
   {
     type: "function",
     name: "send_update",
-    description: "Send a meaningful progress update from a spawned Loom bridge thread to its parent. This is only valid inside a bridge-created child thread.",
+    description: "Send a meaningful progress update from a spawned Pixice bridge thread to its parent. This is only valid inside a bridge-created child thread.",
     inputSchema: sendUpdateInputSchema
   }
 ];
@@ -93,7 +93,7 @@ const bridgeTools = [
 export const loomBridgeDynamicTools = [{
   type: "namespace",
   name: LOOM_BRIDGE_NAMESPACE,
-  description: "Coordinate Loom-native agents and visual workflows. Spawn deliberately selected GPT or Claude threads, inspect or edit project workflows, and run Loom Agent nodes either quietly in the background or as normal foreground tasks. Call list_models before spawning a bridge thread so model choice and availability are evidence-based.",
+  description: "Coordinate Pixice-native agents and visual workflows. Spawn deliberately selected GPT or Claude threads, inspect or edit project workflows, and run Pixice Agent nodes either quietly in the background or as normal foreground tasks. Call list_models before spawning a bridge thread so model choice and availability are evidence-based.",
   tools: [...bridgeTools, ...loomWorkflowTools]
 }];
 
@@ -117,7 +117,7 @@ function completionStatus(status) {
   return status === "cancelled" ? "interrupted" : status;
 }
 
-export class LoomBridge {
+export class PixiceBridge {
   constructor({ runtime, database, threadContext, dynamicTools, onThreadCreated, onActivity }) {
     this.runtime = runtime;
     this.database = database;
@@ -147,17 +147,17 @@ export class LoomBridge {
 
   async handleToolCall(params) {
     try {
-      if (!params?.threadId) throw new Error("Loom bridge tools require a thread-scoped call");
+      if (!params?.threadId) throw new Error("Pixice bridge tools require a thread-scoped call");
       if (WORKFLOW_TOOL_NAMES.has(params.tool)) {
         const integration = this.workflowIntegration ?? await this.workflowReady;
-        if (!integration) throw this.workflowError ?? new Error("Loom workflows are unavailable in this runtime");
+        if (!integration) throw this.workflowError ?? new Error("Pixice workflows are unavailable in this runtime");
         return integration.workflows.handleToolCall(params);
       }
       const input = params.arguments ?? {};
       if (params.tool === "list_models") return textResult(await this.#listModels(listModelsShape, input));
       if (params.tool === "spawn_thread") return textResult(await this.#spawnThread(params, z.object(spawnThreadShape).parse(input)));
       if (params.tool === "send_update") return textResult(this.#sendUpdate(params, z.object(sendUpdateShape).parse(input)));
-      throw new Error(`Unknown Loom bridge tool: ${params.tool}`);
+      throw new Error(`Unknown Pixice bridge tool: ${params.tool}`);
     } catch (error) {
       return textResult({ error: error.message }, false);
     }
@@ -194,14 +194,14 @@ export class LoomBridge {
         deepTechnicalWork: "Prefer GPT 5.6 Sol.",
         uiAndProductTaste: "Prefer Claude Sonnet or Opus when one is connected; GPT remains capable if Claude is unavailable.",
         crossFamilyDirection: "A Claude bridge thread may direct or review a GPT bridge thread, and vice versa.",
-        note: "Only models from connected providers are returned. Ratings are Loom routing heuristics on a 1-5 scale, not vendor benchmarks."
+        note: "Only models from connected providers are returned. Ratings are Pixice routing heuristics on a 1-5 scale, not vendor benchmarks."
       }
     };
   }
 
   async #spawnThread(params, input) {
     const context = this.threadContext(params.threadId);
-    if (!context?.projectId || !context.cwd) throw new Error("The parent thread is not attached to an open Loom project");
+    if (!context?.projectId || !context.cwd) throw new Error("The parent thread is not attached to an open Pixice project");
     const catalog = (await this.#listModels(listModelsShape, {})).models;
     const matches = catalog.filter((model) => model.id === input.model || model.model === input.model);
     if (matches.length !== 1) {
@@ -284,7 +284,7 @@ export class LoomBridge {
 
   #sendUpdate(params, input) {
     const link = this.database.getThreadLink(params.threadId);
-    if (!link || link.kind !== "loomBridge") throw new Error("This thread was not created by the Loom bridge");
+    if (!link || link.kind !== "loomBridge") throw new Error("This thread was not created by the Pixice bridge");
     this.#publishAgentState({
       parentThreadId: link.parentThreadId,
       childThreadId: params.threadId,

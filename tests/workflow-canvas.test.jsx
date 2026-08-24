@@ -1,10 +1,25 @@
+import { readFileSync } from "node:fs";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createDefaultWorkflow } from "../electron/workflows/workflow-model.mjs";
 import { WorkflowCanvas } from "../src/components/workflows/WorkflowCanvas.jsx";
 
+const workflowWorkspaceCss = readFileSync("src/components/workflows/WorkflowWorkspace.module.css", "utf8");
+const workflowNodesCss = readFileSync("src/components/workflows/WorkflowNodes.module.css", "utf8");
+
 describe("WorkflowCanvas", () => {
-  it("lets users promote a Loom Agent node from background to foreground", () => {
+  it("floats canvas controls instead of reserving toolbar and timeline rows", () => {
+    expect(workflowWorkspaceCss).toContain(".editor { grid-template-rows: minmax(0, 1fr); }");
+    expect(workflowWorkspaceCss).toMatch(/\.canvasToolbar\s*\{[^}]*position: absolute;[^}]*background: transparent;/s);
+    expect(workflowWorkspaceCss).toMatch(/\.runTimeline\s*\{[^}]*position: absolute;[^}]*width: fit-content;/s);
+  });
+
+  it("keeps the add-node list scrollable within the popup height", () => {
+    expect(workflowNodesCss).toMatch(/\.nodePicker\s*\{[^}]*max-height:[^;]+;[^}]*display: flex;[^}]*flex-direction: column;/s);
+    expect(workflowNodesCss).toMatch(/\.nodePickerBody\s*\{[^}]*flex: 1 1 auto;[^}]*min-height: 0;[^}]*overflow-y: auto;/s);
+  });
+
+  it("lets users promote a Pixice Agent node from background to foreground", () => {
     const workflow = createDefaultWorkflow({ projectId: "project-1", name: "Release review" });
     const agent = workflow.graph.nodes.find((node) => node.type === "loomAgent");
     const onChange = vi.fn();
@@ -20,7 +35,7 @@ describe("WorkflowCanvas", () => {
     );
 
     expect(screen.getByText("Background")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("group", { name: "Loom Agent: Loom Agent" }));
+    fireEvent.click(screen.getByRole("group", { name: "Pixice Agent: Pixice Agent" }));
     fireEvent.click(screen.getByRole("radio", { name: /Foreground/i }));
 
     const next = onChange.mock.calls.at(-1)[0];
@@ -60,7 +75,7 @@ describe("WorkflowCanvas", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
 
-  it("offers useful action, data, flow, Skill, and Loom nodes from a searchable picker", () => {
+  it("offers useful action, data, flow, Skill, and Pixice nodes from a searchable picker", () => {
     const workflow = createDefaultWorkflow({ projectId: "project-1" });
     const onChange = vi.fn();
     render(
@@ -81,7 +96,7 @@ describe("WorkflowCanvas", () => {
     expect(screen.getByRole("button", { name: /Project File/i })).toBeInTheDocument();
     expect(screen.getByText("Git").closest("button")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Use Skill/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Loom Board/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pixice Board/i })).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText("Search actions, data, flow…"), { target: { value: "skill" } });
     expect(screen.getByRole("button", { name: /Use Skill/i })).toBeInTheDocument();

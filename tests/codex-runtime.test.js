@@ -12,7 +12,7 @@ afterEach(async () => {
 });
 
 describe("CodexRuntime lifecycle", () => {
-  it("injects Loom guidance as additive developer instructions", () => {
+  it("injects Pixice guidance as additive developer instructions", () => {
     const instructions = "Keep the lead thread clear.\nRespect AGENTS.md.";
     expect(codexAppServerArgs(instructions)).toEqual([
       "--config",
@@ -21,11 +21,19 @@ describe("CodexRuntime lifecycle", () => {
     ]);
   });
 
-  it("uses the stock app-server launch when no Loom guidance is configured", () => {
+  it("uses the stock app-server launch when no Pixice guidance is configured", () => {
     expect(codexAppServerArgs()).toEqual(["app-server"]);
   });
 
-  it("reports missing Loom guidance instead of silently dropping it", async () => {
+  it("does not append a subcommand for the packaged app-server entrypoint", () => {
+    expect(codexAppServerArgs("Stay focused.", { direct: true })).toEqual([
+      "--config",
+      `developer_instructions=${JSON.stringify("Stay focused.")}`
+    ]);
+    expect(codexAppServerArgs("", { direct: true })).toEqual([]);
+  });
+
+  it("reports missing Pixice guidance instead of silently dropping it", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "loom-runtime-"));
     temporaryDirectories.push(directory);
     const binary = path.join(directory, process.platform === "win32" ? "codex.exe" : "codex");
@@ -55,19 +63,20 @@ describe("CodexRuntime lifecycle", () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "loom-runtime-"));
     temporaryDirectories.push(directory);
     const key = `${process.platform}-${process.arch}`;
-    const filename = process.platform === "win32" ? "codex.exe" : "codex";
-    const runtimeDirectory = path.join(directory, "runtime", key);
+    const filename = process.platform === "win32" ? "codex-app-server.exe" : "codex-app-server";
+    const runtimeDirectory = path.join(directory, "runtime", key, "bin");
     const binary = path.join(runtimeDirectory, filename);
     const bytes = Buffer.from("fake codex");
     await mkdir(runtimeDirectory, { recursive: true });
     await writeFile(binary, bytes, { mode: 0o755 });
     await writeFile(path.join(directory, "runtime", "manifest.json"), JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      runtimeKind: "app-server-package",
       platforms: {
         [key]: {
-          path: `${key}/${filename}`,
+          path: `${key}/bin/${filename}`,
           sha256: createHash("sha256").update(bytes).digest("hex"),
-          codeModeHostPath: `${key}/${process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host"}`,
+          codeModeHostPath: `${key}/bin/${process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host"}`,
           codeModeHostSha256: "0".repeat(64)
         }
       }

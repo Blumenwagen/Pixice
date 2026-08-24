@@ -1,18 +1,25 @@
 {
-  "name": "loom",
-  "version": "0.0.0",
-  "description": "A cross-platform desktop client for orchestrating Codex agents.",
-  "author": "Loom contributors",
+  "name": "pixice",
+  "version": "0.1.0-beta.1",
+  "description": "A cross-platform desktop client for working with coding agents.",
+  "author": "Pixice contributors",
   "private": true,
+  "packageManager": "pnpm@10.15.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:electron": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build --mode sites && node scripts/prepare-sites-build.mjs",
-    "build:desktop": "node scripts/verify-runtime.mjs && vite build --mode desktop && electron-builder",
+    "build:desktop": "node scripts/verify-runtime.mjs --current --require-github-cli && vite build --mode desktop && electron-builder --config electron-builder.config.cjs",
     "install:local:macos": "node scripts/install-local-macos.mjs",
+    "runtime:sync": "node scripts/sync-codex-runtime.mjs",
+    "github:sync": "node scripts/sync-github-cli.mjs",
     "runtime:verify": "node scripts/verify-runtime.mjs",
     "release:verify": "node scripts/verify-release-version.mjs",
+    "release:preflight": "node scripts/verify-release-readiness.mjs",
     "release:checksums": "node scripts/generate-checksums.mjs",
     "preview": "vite preview",
     "test": "vitest run",
@@ -46,63 +53,5 @@
     "vitest": "3.2.4",
     "wait-on": "8.0.5"
   },
-  "main": "electron/main.mjs",
-  "build": {
-    "appId": "com.loom.orchestrator",
-    "productName": "Loom",
-    "icon": "build/icon.png",
-    "asar": true,
-    "directories": {
-      "output": "release"
-    },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "Blumenwagen",
-        "repo": "Loom",
-        "releaseType": "release"
-      }
-    ],
-    "files": [
-      "dist/client/**/*",
-      "electron/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "build/icon.png",
-        "to": "app-icon.png"
-      },
-      {
-        "from": "resources/app-update.yml",
-        "to": "app-update.yml"
-      },
-      {
-        "from": "resources/runtime",
-        "to": "runtime",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "category": "public.app-category.developer-tools"
-    },
-    "win": {
-      "target": [
-        "nsis"
-      ]
-    },
-    "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "category": "Development"
-    }
-  }
+  "main": "electron/main.mjs"
 }

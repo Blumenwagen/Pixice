@@ -8,7 +8,7 @@ import {
 import { workflowNodeResult } from "../electron/workflows/workflow-node-executors.mjs";
 
 describe("workflow model", () => {
-  it("creates an executable background Loom Agent workflow", () => {
+  it("creates an executable background Pixice Agent workflow", () => {
     const workflow = createDefaultWorkflow({ projectId: "project-1", name: "Ship release" });
     expect(workflow.name).toBe("Ship release");
     expect(workflow.graph.nodes.map((node) => node.type)).toEqual(["manualTrigger", "loomAgent", "output"]);
@@ -35,7 +35,7 @@ describe("workflow model", () => {
     })).toThrow(/execution mode/i);
   });
 
-  it("allows multiple Use Skill nodes only on a Loom Agent Skill input", () => {
+  it("allows multiple Use Skill nodes only on a Pixice Agent Skill input", () => {
     const nodes = [
       { id: "start", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
       { id: "skill-one", type: "useSkill", name: "Release Skill", description: "", position: { x: 0, y: 2 }, config: { source: "installed", skillRef: "release", skillName: "Release" } },
@@ -63,19 +63,19 @@ describe("workflow model", () => {
       nodes,
       edges: [{ id: "wrong-agent-port", source: "skill-one", target: "agent", sourcePort: "skill", targetPort: "input" }],
       viewport: { x: 0, y: 0, zoom: 1 }
-    })).toThrow(/directly to Loom Agent · Skill/i);
+    })).toThrow(/directly to Pixice Agent · Skill/i);
 
     expect(() => validateWorkflowGraph({
       nodes,
       edges: [{ id: "wrong-source", source: "start", target: "agent", sourcePort: "output", targetPort: "skill" }],
       viewport: { x: 0, y: 0, zoom: 1 }
-    })).toThrow(/directly to Loom Agent · Skill/i);
+    })).toThrow(/directly to Pixice Agent · Skill/i);
 
     expect(() => validateWorkflowGraph({
       nodes,
       edges: [{ id: "wrong-target", source: "skill-one", target: "transform", sourcePort: "skill", targetPort: "input" }],
       viewport: { x: 0, y: 0, zoom: 1 }
-    })).toThrow(/directly to Loom Agent · Skill/i);
+    })).toThrow(/directly to Pixice Agent · Skill/i);
   });
 
   it("rejects broken references, invalid ports, and cyclic graphs", () => {

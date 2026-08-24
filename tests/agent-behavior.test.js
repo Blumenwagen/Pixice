@@ -14,9 +14,13 @@ describe("agent behavior packs", () => {
       "structuredPlanning",
       "parallelDelegation",
       "verification",
-      "unslop"
+      "unslop",
+      "workflowAutomation",
+      "boardStewardship",
+      "threadOrchestration"
     ]);
     expect(catalog.every((behavior) => !("filename" in behavior))).toBe(true);
+    expect(catalog.filter((behavior) => behavior.category === "loom-native")).toHaveLength(3);
   });
 
   it("uses safe defaults and honors persisted overrides", () => {
@@ -24,24 +28,27 @@ describe("agent behavior packs", () => {
       structuredPlanning: true,
       parallelDelegation: true,
       verification: false,
-      unslop: false
+      unslop: false,
+      workflowAutomation: false,
+      boardStewardship: false,
+      threadOrchestration: false
     });
   });
 
-  it("composes only enabled Markdown packs after Loom's base guidance", () => {
+  it("composes only enabled Markdown packs after Pixice's base guidance", () => {
     const instructions = composeAgentInstructions({
       baseInstructionsPath,
       behaviorsDirectory,
       settings: { structuredPlanning: false, parallelDelegation: true, verification: false }
     });
 
-    expect(instructions).toContain("# Loom runtime guidance");
+    expect(instructions).toContain("# Pixice runtime guidance");
     expect(instructions).toContain("# Parallel delegation");
     expect(instructions).not.toContain("# Structured planning");
     expect(instructions).not.toContain("# Verification before handoff");
   });
 
-  it("prioritizes Loom-native visualizations over generic visualization skills", () => {
+  it("prioritizes Pixice-native visualizations over generic visualization skills", () => {
     const instructions = composeAgentInstructions({
       baseInstructionsPath,
       behaviorsDirectory,
@@ -50,7 +57,7 @@ describe("agent behavior packs", () => {
 
     expect(instructions).toContain("requests such as `visualize`");
     expect(instructions).toContain("Do not invoke an installed visualization Skill");
-    expect(instructions).toContain("Treat `Loom visualization`, `in-chat visualization`, `inline visualization`, and `native visualization` as explicit format requirements");
+    expect(instructions).toContain("Treat `Pixice visualization`, `in-chat visualization`, `inline visualization`, and `native visualization` as explicit format requirements");
     expect(instructions).toContain("takes precedence over Skills or other instructions that would create an HTML file");
   });
 
@@ -76,5 +83,24 @@ describe("agent behavior packs", () => {
 
     expect(instructions).toContain("# Unslop");
     expect(instructions).toContain("Edit text to remove AI patterns and add human voice.");
+  });
+
+  it("loads Pixice-native guidance independently", () => {
+    const instructions = composeAgentInstructions({
+      baseInstructionsPath,
+      behaviorsDirectory,
+      settings: {
+        structuredPlanning: false,
+        parallelDelegation: false,
+        verification: false,
+        workflowAutomation: true,
+        boardStewardship: false,
+        threadOrchestration: true
+      }
+    });
+
+    expect(instructions).toContain("# Workflow-first automation");
+    expect(instructions).toContain("# Thread orchestration");
+    expect(instructions).not.toContain("# Board stewardship");
   });
 });

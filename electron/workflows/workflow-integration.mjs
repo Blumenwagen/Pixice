@@ -3,7 +3,7 @@ import { WorkflowCredentialStore } from "./workflow-credential-store.mjs";
 import { workflowGraphSchema } from "./workflow-model.mjs";
 import { WorkflowStore } from "./workflow-store.mjs";
 import { WorkflowTriggerHost } from "./workflow-trigger-host.mjs";
-import { LoomWorkflows } from "./loom-workflows.mjs";
+import { PixiceWorkflows } from "./loom-workflows.mjs";
 
 const projectPayload = z.object({ projectId: z.string().trim().min(1).max(160) }).strict();
 const workflowPayload = projectPayload.extend({ workflowId: z.string().trim().min(1).max(160) });
@@ -48,7 +48,7 @@ export function installWorkflowIntegration({
   const store = new WorkflowStore(userDataPath);
   const credentialStore = new WorkflowCredentialStore(userDataPath, { crypto: credentialCrypto });
   let triggerHost = null;
-  const workflows = new LoomWorkflows({
+  const workflows = new PixiceWorkflows({
     runtime,
     store,
     database,

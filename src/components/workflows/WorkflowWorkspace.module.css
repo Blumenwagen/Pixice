@@ -1522,3 +1522,213 @@
   .library { display: grid; }
   .inspector { position: absolute; top: 0; right: 0; bottom: 0; z-index: 15; }
 }
+
+/* Match the native Pixice shell used by Settings. */
+.workspaceOverlay {
+  --workflow-bg: var(--canvas);
+  --workflow-canvas: #171719;
+  --workflow-surface: var(--surface);
+  --workflow-surface-raised: var(--surface-raised);
+  --workflow-border: var(--border);
+  --workflow-muted: var(--quiet);
+  --workflow-copy: var(--foreground);
+  --workflow-accent: var(--primary);
+  left: 0;
+  z-index: 24;
+  background: var(--chrome-glass);
+}
+
+.workspaceLayout {
+  grid-template-columns: clamp(224px, var(--sidebar-width, 264px), 360px) minmax(0, 1fr);
+}
+
+.library {
+  padding: 14px 11px;
+  background: transparent;
+  border-right: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+
+.libraryBack { color: var(--quiet); }
+.libraryBack:hover { color: var(--foreground); background: rgba(255, 255, 255, .035); }
+
+.libraryHeader { padding: 9px 7px 5px; }
+.libraryHeader small { color: var(--quiet); }
+.libraryHeader strong { color: var(--foreground); font-size: 14px; }
+.libraryHeader button {
+  color: var(--foreground);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+.libraryHeader button:hover { color: #fff; background: color-mix(in oklab, var(--foreground) 11%, var(--surface-raised)); }
+
+.librarySearch {
+  color: var(--quiet);
+  background: rgba(255, 255, 255, .035);
+  border-color: color-mix(in oklab, var(--border) 76%, transparent);
+}
+.librarySearch:focus-within { border-color: color-mix(in oklab, var(--primary) 44%, var(--border)); }
+
+.workflowCard { color: var(--quiet); }
+.workflowCard:hover { color: var(--foreground); background: rgba(255, 255, 255, .035); }
+.workflowCard[data-active="true"] { color: var(--foreground); background: rgba(255, 255, 255, .065); }
+.workflowCardIcon { color: var(--quiet); background: transparent; }
+.workflowCard[data-active="true"] .workflowCardIcon { color: var(--foreground); }
+.workflowCardCopy small { color: var(--quiet); }
+.workflowCardCaret { color: var(--quiet); }
+
+.workspaceMain {
+  grid-template-rows: minmax(0, 1fr);
+  margin: 0 var(--app-frame-gap) var(--app-frame-gap) 0;
+  overflow: hidden;
+  background: var(--canvas);
+  border-radius: var(--app-frame-radius);
+}
+.workspaceTopbar {
+  height: 58px;
+  padding: 0 14px 0 20px;
+  background: transparent;
+  border-bottom-color: var(--border);
+  -webkit-app-region: drag;
+}
+.workspaceTopbar > .workflowCardIcon { color: var(--muted); }
+.workspaceTitle small { color: var(--quiet); }
+.workspaceTitle strong { color: var(--foreground); font-size: 13px; }
+.workspaceActions { -webkit-app-region: no-drag; }
+.workspaceActions button { color: var(--muted); }
+.workspaceActions button:hover { color: var(--foreground); background: rgba(255, 255, 255, .07); }
+
+.editor,
+.canvasShell,
+.canvas,
+.canvas :global(.react-flow) { background: var(--workflow-canvas); }
+.canvas :global(.react-flow__controls) {
+  background: rgba(32, 32, 34, .96);
+  border-color: var(--border);
+}
+.canvas :global(.react-flow__controls-button) {
+  color: var(--muted);
+  border-bottom-color: var(--border);
+}
+.canvas :global(.react-flow__controls-button:hover) { color: var(--foreground); background: rgba(255, 255, 255, .07); }
+.canvas :global(.react-flow__minimap) { background: rgba(27, 27, 30, .95); border-color: var(--border); }
+.canvas :global(.react-flow__minimap-mask) { fill: rgba(12, 12, 14, .72); }
+.canvasToolbar { background: rgba(24, 24, 26, .96); border-bottom-color: var(--border); }
+.paletteMeta,
+.settingsButton,
+.saveState,
+.runBadge { color: var(--quiet); }
+.secondaryButton { color: var(--muted); }
+.secondaryButton:hover { color: var(--foreground); background: rgba(255, 255, 255, .07); }
+.primaryButton,
+.addNodeButton { color: #fff !important; background: var(--primary) !important; border-color: var(--thread-bright) !important; }
+
+.node { background: var(--surface); border-color: var(--border); box-shadow: 0 9px 22px rgba(0, 0, 0, .22); }
+.node:hover { background: var(--surface-raised); border-color: rgba(255, 255, 255, .14); }
+.selectedNode { background: var(--surface-raised); border-color: var(--node-tone); }
+.nodeHeader,
+.nodeFooter { border-color: var(--border); }
+.nodeIcon { background: color-mix(in oklab, var(--node-tone) 10%, var(--surface)); }
+.nodeCopy strong { color: var(--foreground); }
+.nodeCopy small,
+.nodeSummary,
+.nodeFooter > span:first-child { color: var(--quiet); }
+.nodeModeBadge { color: var(--muted); background: rgba(255, 255, 255, .045); }
+.port { background: var(--surface); box-shadow: 0 0 0 2px var(--workflow-canvas); }
+.portLabel { color: var(--muted); background: rgba(24, 24, 26, .96); border-color: var(--border); }
+
+.inspector { color: var(--foreground); background: var(--surface); border-left-color: var(--border); }
+.inspectorHeader { border-bottom-color: var(--border); }
+.inspectorHeader small,
+.field > small { color: var(--quiet); }
+.inspectorHeader strong,
+.field > span { color: var(--foreground); }
+.field input,
+.field textarea,
+.field select,
+.runPopover textarea,
+.searchInput { color: var(--foreground); background: #18181a; border-color: var(--border); }
+.executionModePicker button { background: #18181a; border-color: var(--border); }
+.inspectorFooter { border-top-color: var(--border); }
+
+.runTimeline { background: var(--surface); border-top-color: var(--border); }
+.runTimelineSummary strong { color: var(--foreground); }
+.runTimelinePill { color: var(--muted); background: #18181a; border-color: var(--border); }
+.runResult { background: var(--workflow-canvas); border-top-color: var(--border); }
+.runResult summary,
+.runResult pre { color: var(--muted); }
+.nodePicker,
+.runPopover { color: var(--foreground); background: var(--popover); border-color: var(--border); }
+.nodePickerSearch { background: #18181a; border-color: var(--border); }
+.nodePickerGroup button { background: rgba(255, 255, 255, .025); border-color: var(--border); }
+.nodePickerGroup button:hover { background: rgba(255, 255, 255, .07); }
+
+/* Canvas controls float over the graph instead of occupying full-width bars. */
+.editor { grid-template-rows: minmax(0, 1fr); }
+.canvasShell { height: 100%; }
+.canvasToolbar {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  left: 14px;
+  z-index: 12;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+.nodePalette,
+.canvasToolbarCenter,
+.canvasActions { pointer-events: auto; }
+.nodePalette,
+.canvasActions { filter: drop-shadow(0 8px 18px rgba(0, 0, 0, .24)); }
+.canvasActions .deleteWorkflow:hover {
+  color: var(--red);
+  background: color-mix(in oklab, var(--red) 10%, transparent);
+}
+.canvasToolbarCenter {
+  padding: 3px;
+  background: rgba(24, 24, 26, .76);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .2);
+  backdrop-filter: blur(16px) saturate(120%);
+}
+.runTimeline {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  z-index: 12;
+  width: fit-content;
+  max-width: calc(100% - 260px);
+  min-height: 0;
+  padding: 8px 10px;
+  display: flex;
+  grid-template-columns: none;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .28);
+  backdrop-filter: blur(18px) saturate(120%);
+  transform: translateX(-50%);
+}
+.runTimelineSummary { min-width: 76px; flex: none; }
+.runTimelineNodes { flex: 1; }
+.runResult {
+  position: absolute;
+  right: 14px;
+  bottom: 78px;
+  z-index: 13;
+  width: min(420px, calc(100% - 28px));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .28);
+}
+.inspector { position: relative; z-index: 15; }
+
+@media (max-width: 960px) {
+  .workspaceLayout { grid-template-columns: 220px minmax(0, 1fr); }
+  .canvasToolbarCenter { display: none; }
+  .runTimeline { max-width: calc(100% - 160px); }
+}

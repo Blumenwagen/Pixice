@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { LoomBridge } from "../electron/runtime/loom-bridge.mjs";
+import { PixiceBridge } from "../electron/runtime/loom-bridge.mjs";
 
 class MemoryDatabase {
   constructor() { this.links = new Map(); }
@@ -37,7 +37,7 @@ function createBridge(models) {
   const database = new MemoryDatabase();
   const activities = [];
   const onThreadCreated = vi.fn();
-  const bridge = new LoomBridge({
+  const bridge = new PixiceBridge({
     runtime,
     database,
     dynamicTools: () => [{ name: "loom_bridge" }],
@@ -45,7 +45,7 @@ function createBridge(models) {
       projectId: "project-1",
       cwd: "/workspace",
       runtimeWorkspaceRoots: ["/workspace", "/shared"],
-      developerInstructions: "Loom base guidance\n\n# Verification before handoff",
+      developerInstructions: "Pixice base guidance\n\n# Verification before handoff",
       permissionSettings: () => ({
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
@@ -59,7 +59,7 @@ function createBridge(models) {
   return { bridge, runtime, database, activities, onThreadCreated };
 }
 
-describe("Loom bridge", () => {
+describe("Pixice bridge", () => {
   it("reports only eligible models with capability ratings", async () => {
     const { bridge } = createBridge();
     const result = await bridge.handleToolCall({ threadId: "parent-1", tool: "list_models", arguments: {} });
@@ -117,7 +117,7 @@ describe("Loom bridge", () => {
           model: "claude:claude-sonnet-4-6",
           parentThreadId: "parent-1",
           runtimeWorkspaceRoots: ["/workspace", "/shared"],
-          developerInstructions: "Loom base guidance\n\n# Verification before handoff"
+          developerInstructions: "Pixice base guidance\n\n# Verification before handoff"
         })
       }),
       expect.objectContaining({

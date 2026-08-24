@@ -113,7 +113,7 @@ export class WorkflowStore {
     const completedAt = new Date().toISOString();
     return this.db.prepare(`
       UPDATE workflow_runs
-      SET status = 'failed', error = COALESCE(error, 'Loom closed before this workflow run completed'), completed_at = ?
+      SET status = 'failed', error = COALESCE(error, 'Pixice closed before this workflow run completed'), completed_at = ?
       WHERE status IN ('queued', 'running', 'cancelling')
     `).run(completedAt).changes;
   }

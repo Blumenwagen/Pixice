@@ -155,9 +155,9 @@ export function PromptPreviewRail({ items, activeId, onItemSelect, className = "
             <motion.div
               className={styles.preview}
               style={{ top: displayedIndex * itemSize + itemSize / 2 }}
-              initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: "calc(-50% + 5px)", filter: "blur(6px)" }}
-              animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: "-50%", filter: "blur(0px)" }}
-              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: "calc(-50% - 3px)", filter: "blur(4px)" }}
+              initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: "calc(-50% + 5px)" }}
+              animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: "-50%" }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: "calc(-50% - 3px)" }}
               transition={{ duration: reduceMotion ? 0 : 0.17, ease: [0.16, 1, 0.3, 1] }}
               aria-hidden="true"
               key={displayedItem.id}

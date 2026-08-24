@@ -6,10 +6,11 @@ import path from "node:path";
 import { JsonlClient } from "./jsonl-client.mjs";
 import { CapabilityAdapter, normalizeCodexEvent } from "./capability-adapter.mjs";
 
-export function codexAppServerArgs(developerInstructions = "") {
+export function codexAppServerArgs(developerInstructions = "", { direct = false } = {}) {
   const instructions = String(developerInstructions).trim();
-  if (!instructions) return ["app-server"];
-  return ["--config", `developer_instructions=${JSON.stringify(instructions)}`, "app-server"];
+  const args = instructions ? ["--config", `developer_instructions=${JSON.stringify(instructions)}`] : [];
+  if (!direct) args.push("app-server");
+  return args;
 }
 
 export class CodexRuntime extends EventEmitter {
@@ -37,8 +38,8 @@ export class CodexRuntime extends EventEmitter {
       clearTimeout(this.#restartTimer);
       this.#restartTimer = null;
     }
-    const binary = this.#resolveBinary();
-    if (!binary) {
+    const resolvedRuntime = this.#resolveRuntime();
+    if (!resolvedRuntime) {
       const error = new Error("Bundled Codex runtime is unavailable. Set LOOM_CODEX_PATH for development.");
       this.emit("status", { state: "unavailable", message: error.message });
       this.emit("recoverable-error", { code: "runtime_missing", message: error.message });
@@ -48,10 +49,11 @@ export class CodexRuntime extends EventEmitter {
     let args;
     try {
       args = codexAppServerArgs(
-        this.developerInstructionsPath ? readFileSync(this.developerInstructionsPath, "utf8") : ""
+        this.developerInstructionsPath ? readFileSync(this.developerInstructionsPath, "utf8") : "",
+        { direct: resolvedRuntime.directAppServer }
       );
     } catch (error) {
-      const message = `Loom runtime instructions are unavailable: ${error.message}`;
+      const message = `Pixice runtime instructions are unavailable: ${error.message}`;
       this.emit("status", { state: "error", message });
       this.emit("recoverable-error", { code: "developer_instructions_unavailable", message });
       return false;
@@ -60,7 +62,7 @@ export class CodexRuntime extends EventEmitter {
     this.#stopping = false;
     this.#initialized = false;
     this.emit("status", { state: "connecting" });
-    const child = spawn(binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(resolvedRuntime.binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     this.#process = child;
     this.#client = new JsonlClient({ input: child.stdin, output: child.stdout });
     this.#client.on("notification", (event) => this.emit("event", normalizeCodexEvent(event)));
@@ -72,7 +74,7 @@ export class CodexRuntime extends EventEmitter {
 
     try {
       const initialized = await this.#client.request("initialize", {
-        clientInfo: { name: "loom", title: "Loom", version: this.clientVersion },
+        clientInfo: { name: "pixice", title: "Pixice", version: this.clientVersion },
         capabilities: { experimentalApi: true, requestAttestation: false }
       });
       this.#capabilities = new CapabilityAdapter({ experimentalApi: true });
@@ -128,9 +130,9 @@ export class CodexRuntime extends EventEmitter {
     this.emit("status", { state: "stopped" });
   }
 
-  #resolveBinary() {
+  #resolveRuntime() {
     const key = `${process.platform}-${process.arch}`;
-    const filename = process.platform === "win32" ? "codex.exe" : "codex";
+    const filename = process.platform === "win32" ? "codex-app-server.exe" : "codex-app-server";
     const codeModeHostFilename = process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host";
     const runtimeRoot = path.join(this.resourcesPath, "runtime");
     const manifestPath = path.join(runtimeRoot, "manifest.json");
@@ -138,10 +140,12 @@ export class CodexRuntime extends EventEmitter {
       try {
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
         const entry = manifest.platforms?.[key];
-        const expectedPath = `${key}/${filename}`;
-        const expectedCodeModeHostPath = `${key}/${codeModeHostFilename}`;
+        const expectedPath = `${key}/bin/${filename}`;
+        const expectedCodeModeHostPath = `${key}/bin/${codeModeHostFilename}`;
         if (
-          entry?.path === expectedPath
+          manifest.schemaVersion === 2
+          && manifest.runtimeKind === "app-server-package"
+          && entry?.path === expectedPath
           && entry?.codeModeHostPath === expectedCodeModeHostPath
           && /^[a-f0-9]{64}$/.test(entry.sha256 ?? "")
           && /^[a-f0-9]{64}$/.test(entry.codeModeHostSha256 ?? "")
@@ -155,7 +159,9 @@ export class CodexRuntime extends EventEmitter {
             }
             const actual = createHash("sha256").update(readFileSync(candidate)).digest("hex");
             const actualCodeModeHost = createHash("sha256").update(readFileSync(codeModeHost)).digest("hex");
-            if (actual === entry.sha256 && actualCodeModeHost === entry.codeModeHostSha256) return candidate;
+            if (actual === entry.sha256 && actualCodeModeHost === entry.codeModeHostSha256) {
+              return { binary: candidate, directAppServer: true };
+            }
           }
         }
       } catch (error) {
@@ -163,11 +169,14 @@ export class CodexRuntime extends EventEmitter {
       }
     }
     if (!this.allowDevelopmentRuntime) return null;
-    if (process.env.LOOM_CODEX_PATH && existsSync(process.env.LOOM_CODEX_PATH)) return process.env.LOOM_CODEX_PATH;
+    const developmentFilename = process.platform === "win32" ? "codex.exe" : "codex";
+    if (process.env.LOOM_CODEX_PATH && existsSync(process.env.LOOM_CODEX_PATH)) {
+      return { binary: process.env.LOOM_CODEX_PATH, directAppServer: false };
+    }
     for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
       if (!directory) continue;
-      const installed = path.join(directory, filename);
-      if (existsSync(installed)) return installed;
+      const installed = path.join(directory, developmentFilename);
+      if (existsSync(installed)) return { binary: installed, directAppServer: false };
     }
     return null;
   }

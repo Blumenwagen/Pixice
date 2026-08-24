@@ -278,7 +278,7 @@ export function WorkflowHost({ children }) {
       {nav}
       {workspace}
       {workflowPreview}
-      {!api && <div className={styles.notice} data-tone="error">Loom workflows require the desktop bridge.</div>}
+      {!api && <div className={styles.notice} data-tone="error">Pixice workflows require the desktop bridge.</div>}
     </>
   );
 }

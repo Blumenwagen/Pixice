@@ -23,7 +23,7 @@ describe("Git review scoping", () => {
     await writeFile(path.join(nested, "inside.txt"), "inside before\n");
     await run("git", ["init"], { cwd: root });
     await run("git", ["config", "user.email", "loom@example.test"], { cwd: root });
-    await run("git", ["config", "user.name", "Loom Tests"], { cwd: root });
+    await run("git", ["config", "user.name", "Pixice Tests"], { cwd: root });
     await run("git", ["add", "."], { cwd: root });
     await run("git", ["commit", "-m", "initial"], { cwd: root });
 
@@ -38,5 +38,25 @@ describe("Git review scoping", () => {
     expect(diff).toContain("packages/app/inside-new.txt");
     expect(diff).not.toContain("outside.txt");
     expect(diff).not.toContain("outside-new.txt");
+  });
+
+  it("reads untracked LFS files when the optional Git LFS filter is unavailable", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pixice-git-lfs-"));
+    temporaryDirectories.push(root);
+    await writeFile(path.join(root, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    await run("git", ["init"], { cwd: root });
+    await run("git", ["config", "user.email", "pixice@example.test"], { cwd: root });
+    await run("git", ["config", "user.name", "Pixice Tests"], { cwd: root });
+    await run("git", ["add", ".gitattributes"], { cwd: root });
+    await run("git", ["commit", "-m", "initial"], { cwd: root });
+    await run("git", ["config", "filter.lfs.process", "pixice-missing-git-lfs filter-process"], { cwd: root });
+    await run("git", ["config", "filter.lfs.required", "true"], { cwd: root });
+    await writeFile(path.join(root, "runtime.bin"), Buffer.from([0, 1, 2, 3, 4]));
+
+    const repository = await inspectRepository(root);
+    const diff = await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit });
+
+    expect(diff).toContain("runtime.bin");
+    expect(diff).toContain("Binary files");
   });
 });

@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 /**
  * Keeps the Codex app-server behind the same provider boundary used by Claude.
  * The adapter is intentionally thin: Codex remains the canonical implementation
- * while Loom migrates its callers to provider-neutral operations.
+ * while Pixice migrates its callers to provider-neutral operations.
  */
 export class CodexProvider extends EventEmitter {
   constructor(runtime) {

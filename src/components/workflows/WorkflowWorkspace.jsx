@@ -7,7 +7,6 @@ import {
   MagnifyingGlass,
   Plus,
   SpinnerGap,
-  Trash,
   TreeStructure,
   Warning,
   X
@@ -222,7 +221,7 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
   };
 }
 
-function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, compact = false, onSaved, onDeleted }) {
+function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, compact = false, onSaved, onDeleted, onDelete }) {
   const editor = useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted });
   const [loadedWorkflows, setLoadedWorkflows] = useState(workflows);
 
@@ -263,6 +262,7 @@ function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, co
         onChange={editor.change}
         onRun={editor.runWorkflow}
         onCancel={editor.cancelRun}
+        onDelete={onDelete}
       />
       {editor.error && <div className={styles.notice} data-tone="error"><Warning size={14} /><span>{editor.error}</span></div>}
     </>
@@ -386,8 +386,6 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
     if (!needle) return workflows;
     return workflows.filter((candidate) => `${candidate.name} ${candidate.description}`.toLowerCase().includes(needle));
   }, [query, workflows]);
-  const selected = workflows.find((candidate) => candidate.id === selectedId) ?? null;
-
   return (
     <div className={styles.workspaceOverlay} data-workflow-workspace="true">
       <div className={styles.workspaceLayout}>
@@ -426,21 +424,13 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
               <div className={styles.emptyLibrary}>
                 <span><TreeStructure size={18} /></span>
                 <strong>{workflows.length ? "No matches" : "No workflows yet"}</strong>
-                <small>{workflows.length ? "Try another search." : "Create one or ask a Loom Agent to build it."}</small>
+                <small>{workflows.length ? "Try another search." : "Create one or ask a Pixice Agent to build it."}</small>
               </div>
             )}
           </nav>
         </aside>
 
         <main className={styles.workspaceMain}>
-          <header className={styles.workspaceTopbar}>
-            <span className={styles.workflowCardIcon}><TreeStructure size={15} /></span>
-            <span className={styles.workspaceTitle}><small>Workflows</small><strong>{selected?.name ?? projectName ?? "Loom"}</strong></span>
-            <div className={styles.workspaceActions}>
-              <button type="button" aria-label="Refresh workflows" title="Refresh workflows" onClick={() => void loadList(selectedId)}><ArrowClockwise size={14} /></button>
-              {selected && <button type="button" className={styles.deleteWorkflow} aria-label="Delete workflow" title="Delete workflow" onClick={() => void deleteWorkflow()}><Trash size={14} /></button>}
-            </div>
-          </header>
           <div className={styles.editorFrame}>
             {selectedId ? (
               <WorkflowEditor
@@ -451,14 +441,15 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
                 models={models}
                 onSaved={(saved) => setWorkflows((current) => current.map((candidate) => candidate.id === saved.id ? { ...candidate, ...saved } : candidate))}
                 onDeleted={() => void loadList()}
+                onDelete={() => void deleteWorkflow()}
               />
             ) : loading ? (
               <div className={styles.loadingState}><SpinnerGap className={styles.spin} size={17} />Loading workflow…</div>
             ) : (
               <div className={styles.emptyWorkspace}>
                 <span><TreeStructure size={22} /></span>
-                <strong>Build a Loom-native workflow</strong>
-                <small>Connect schedules or local webhooks to APIs, deterministic data processing, SQLite, subworkflows, notifications, Loom Board actions, and Loom Agents.</small>
+                <strong>Build a Pixice-native workflow</strong>
+                <small>Connect schedules or local webhooks to APIs, deterministic data processing, SQLite, subworkflows, notifications, Pixice Board actions, and Pixice Agents.</small>
                 <button type="button" className={styles.primaryButton} onClick={() => void createWorkflow()}><Plus size={14} />Create workflow</button>
               </div>
             )}
@@ -481,7 +472,7 @@ export function WorkflowPreview({ api = window.loom, projectId, workflowId, work
     <section className={styles.previewOverlay} aria-label="Workflow preview" data-workflow-preview="true">
       <header className={styles.previewHeader}>
         <span className={styles.previewTab}><TreeStructure size={13} /><span>{title}</span></span>
-        <small>{reason === "run" ? "Agent is running this workflow" : reason === "edit" ? "Agent is editing this workflow" : "Loom workflow canvas"}</small>
+        <small>{reason === "run" ? "Agent is running this workflow" : reason === "edit" ? "Agent is editing this workflow" : "Pixice workflow canvas"}</small>
         <div className={styles.previewActions}>
           <button type="button" onClick={() => onOpenWorkspace?.(workflowId)}><Eye size={13} />Open full workspace</button>
           <button type="button" className={styles.iconButton} aria-label="Close workflow preview" title="Close workflow preview" onClick={onClose}><X size={13} /></button>

@@ -70,7 +70,7 @@ function TaskEditor({ task, busy, onSave, onDelete, onClose }) {
     await onSave(task.id, { title: title.trim(), description: description.trim(), column });
   };
   const remove = async () => {
-    if (!window.confirm(`Delete “${task.title}”?\n\nIts linked thread will stay in Loom.`)) return;
+    if (!window.confirm(`Delete “${task.title}”?\n\nIts linked thread will stay in Pixice.`)) return;
     await onDelete(task.id);
   };
   return (
@@ -186,7 +186,7 @@ export function KanbanBoard({ project, tasks = [], threads = [], attention = [],
   if (!project) return <div className={styles.noProject}><Circle size={28} /><h1>Open a project to use the board</h1><p>Each project keeps its own tasks.</p></div>;
   return (
     <div className={styles.boardWorkspace}>
-      <div className={styles.boardHeader}><div><span>Project board</span><h1>Plan work before it runs</h1><p>Add and order tasks here. Start one when it is ready, or let an active Loom agent manage the same board.</p></div><div className={styles.boardActions}><label className={styles.search}><MagnifyingGlass size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter tasks" aria-label="Filter board tasks" /></label><button className={styles.newTask} onClick={() => setAddingColumn("backlog")}><Plus size={15} />Add task</button></div></div>
+      <div className={styles.boardHeader}><div><span>Project board</span><h1>Plan work before it runs</h1><p>Add and order tasks here. Start one when it is ready, or let an active Pixice agent manage the same board.</p></div><div className={styles.boardActions}><label className={styles.search}><MagnifyingGlass size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter tasks" aria-label="Filter board tasks" /></label><button className={styles.newTask} onClick={() => setAddingColumn("backlog")}><Plus size={15} />Add task</button></div></div>
       {loading ? <div className={styles.loading}><SpinnerGap size={22} className="spin-icon" />Loading board</div> : <div className={styles.columns} role="region" aria-label={`${project.displayName} task board`}>{KANBAN_COLUMNS.map((column) => <BoardColumn key={column.id} column={column} tasks={columns.get(column.id) ?? []} threadsById={threadsById} draggingId={draggingId} waitingThreadIds={waitingThreadIds} adding={addingColumn === column.id} creating={creating} startingId={startingId} onBeginAdd={setAddingColumn} onCancelAdd={() => setAddingColumn(null)} onCreate={create} onOpen={onOpenThread} onEdit={setEditingTask} onStart={start} onMove={onMove} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} />)}</div>}
       {editingTask && <TaskEditor task={editingTask} busy={saving} onSave={save} onDelete={remove} onClose={() => setEditingTask(null)} />}
     </div>

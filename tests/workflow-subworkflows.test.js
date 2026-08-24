@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LoomWorkflows } from "../electron/workflows/loom-workflows.mjs";
+import { PixiceWorkflows } from "../electron/workflows/loom-workflows.mjs";
 import { WorkflowStore } from "../electron/workflows/workflow-store.mjs";
 
 const temporaryDirectories = [];
@@ -22,7 +22,7 @@ function capability(directory) {
   runtime.connected = true;
   runtime.request = vi.fn(async () => { throw new Error("No agent request expected"); });
   const store = new WorkflowStore(directory);
-  const workflows = new LoomWorkflows({
+  const workflows = new PixiceWorkflows({
     runtime,
     store,
     database: {},

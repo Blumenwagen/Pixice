@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LoomDatabase } from "../electron/persistence/database.mjs";
-import { LoomBoard, loomBoardDynamicTools } from "../electron/runtime/loom-board.mjs";
+import { PixiceDatabase } from "../electron/persistence/database.mjs";
+import { PixiceBoard, loomBoardDynamicTools } from "../electron/runtime/loom-board.mjs";
 
 const temporaryDirectories = [];
 
@@ -15,15 +15,15 @@ function resultValue(result) {
   return JSON.parse(result.contentItems[0].text);
 }
 
-describe("Loom board agent capability", () => {
+describe("Pixice board agent capability", () => {
   it("lets an active agent inspect, add, edit, order, attach, and remove board tasks", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-board-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const now = new Date().toISOString();
     database.upsertProject({ id: "project-1", canonicalPath: "/workspace", displayName: "Workspace", createdAt: now, updatedAt: now });
     const onChange = vi.fn();
-    const board = new LoomBoard({
+    const board = new PixiceBoard({
       database,
       threadContext: (threadId) => threadId.startsWith("thread-") ? { projectId: "project-1", cwd: "/workspace" } : null,
       onChange

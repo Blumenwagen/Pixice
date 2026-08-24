@@ -41,7 +41,7 @@ describe("agent hierarchy projection", () => {
     expect(completed[1]).toMatchObject({ status: "completed", agentStatusMessage: "Audit complete" });
   });
 
-  it("keeps Loom bridge provenance in the live child projection", () => {
+  it("keeps Pixice bridge provenance in the live child projection", () => {
     const threads = projectCollabAgents([{ id: "lead", parentThreadId: null }], {
       type: "collabAgentToolCall",
       tool: "spawnAgent",
@@ -65,7 +65,7 @@ describe("agent hierarchy projection", () => {
     });
   });
 
-  it("shows Loom bridge children in the sidebar without promoting ordinary subagents", () => {
+  it("shows Pixice bridge children in the sidebar without promoting ordinary subagents", () => {
     expect(isSidebarThread({ id: "lead", parentThreadId: null })).toBe(true);
     expect(isSidebarThread({
       id: "bridge-child",

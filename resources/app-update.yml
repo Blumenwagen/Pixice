@@ -1,4 +1,4 @@
 provider: github
 owner: Blumenwagen
-repo: Loom
-updaterCacheDirName: loom-updater
+repo: Pixice
+updaterCacheDirName: pixice-updater

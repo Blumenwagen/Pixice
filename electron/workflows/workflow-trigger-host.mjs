@@ -306,7 +306,7 @@ export class WorkflowTriggerHost {
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     const method = String(request.method ?? "GET").toUpperCase();
     const route = routes.find((candidate) => candidate.config.method === method && candidate.config.path === url.pathname);
-    if (!route) return sendJson(response, 404, { error: "No enabled Loom webhook matches this method and path" });
+    if (!route) return sendJson(response, 404, { error: "No enabled Pixice webhook matches this method and path" });
     const status = this.statuses.get(statusKey(route.workflow.id, route.node.id));
 
     if (route.config.authCredentialId) {
@@ -319,7 +319,7 @@ export class WorkflowTriggerHost {
         return sendJson(response, 503, { error: "Webhook authentication credential is unavailable" });
       }
       if (!workflowCredentialAuthorizesRequest(credential, { url, headers: request.headers })) {
-        response.setHeader("www-authenticate", credential.type === "basic" ? "Basic realm=\"Loom workflow\"" : "Bearer");
+        response.setHeader("www-authenticate", credential.type === "basic" ? "Basic realm=\"Pixice workflow\"" : "Bearer");
         return sendJson(response, 401, { error: "Webhook authentication failed" });
       }
     }

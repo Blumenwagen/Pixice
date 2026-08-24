@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 
 const SIX_HOURS = 6 * 60 * 60 * 1000;
 
-export class LoomAppUpdater extends EventEmitter {
+export class PixiceAppUpdater extends EventEmitter {
   #updater;
   #app;
   #timer = null;
@@ -23,7 +23,7 @@ export class LoomAppUpdater extends EventEmitter {
       transferred: 0,
       total: 0,
       checkedAt: null,
-      message: app.isPackaged ? "Ready to check GitHub releases." : "Updates are available in packaged Loom builds."
+      message: app.isPackaged ? "Ready to check GitHub releases." : "Updates are available in packaged Pixice builds."
     };
   }
 
@@ -36,19 +36,19 @@ export class LoomAppUpdater extends EventEmitter {
     this.#started = true;
     this.#updater.autoDownload = false;
     this.#updater.autoInstallOnAppQuit = true;
-    this.#updater.allowPrerelease = false;
+    this.#updater.allowPrerelease = this.#app.getVersion().includes("-");
 
-    this.#updater.on("checking-for-update", () => this.#update({ state: "checking", message: "Checking GitHub for a newer Loom release." }));
+    this.#updater.on("checking-for-update", () => this.#update({ state: "checking", message: "Checking GitHub for a newer Pixice release." }));
     this.#updater.on("update-available", (info) => this.#update({
       state: "available",
       availableVersion: info.version,
       checkedAt: new Date().toISOString(),
-      message: `Loom ${info.version} is ready to download.`
+      message: `Pixice ${info.version} is ready to download.`
     }));
     this.#updater.on("update-not-available", () => this.#update({
       state: "not-available",
       checkedAt: new Date().toISOString(),
-      message: "Loom is up to date."
+      message: "Pixice is up to date."
     }));
     this.#updater.on("download-progress", (progress) => this.#update({
       state: "downloading",
@@ -56,13 +56,13 @@ export class LoomAppUpdater extends EventEmitter {
       bytesPerSecond: progress.bytesPerSecond || 0,
       transferred: progress.transferred || 0,
       total: progress.total || 0,
-      message: `Downloading Loom ${this.#status.availableVersion ?? "update"}.`
+      message: `Downloading Pixice ${this.#status.availableVersion ?? "update"}.`
     }));
     this.#updater.on("update-downloaded", (info) => this.#update({
       state: "downloaded",
       availableVersion: info.version ?? this.#status.availableVersion,
       percent: 100,
-      message: "Update downloaded. Restart Loom to install it."
+      message: "Update downloaded. Restart Pixice to install it."
     }));
     this.#updater.on("error", (error) => this.#fail(error));
 
@@ -80,7 +80,7 @@ export class LoomAppUpdater extends EventEmitter {
   async check() {
     if (!this.#status.supported) return this.snapshot();
     if (["checking", "downloading"].includes(this.#status.state)) return this.snapshot();
-    this.#update({ state: "checking", message: "Checking GitHub for a newer Loom release." });
+    this.#update({ state: "checking", message: "Checking GitHub for a newer Pixice release." });
     try {
       await this.#updater.checkForUpdates();
     } catch (error) {
@@ -91,8 +91,8 @@ export class LoomAppUpdater extends EventEmitter {
 
   async download() {
     if (!this.#status.supported) return this.snapshot();
-    if (this.#status.state !== "available") throw new Error("No Loom update is ready to download");
-    this.#update({ state: "downloading", percent: 0, message: `Downloading Loom ${this.#status.availableVersion}.` });
+    if (this.#status.state !== "available") throw new Error("No Pixice update is ready to download");
+    this.#update({ state: "downloading", percent: 0, message: `Downloading Pixice ${this.#status.availableVersion}.` });
     try {
       await this.#updater.downloadUpdate();
     } catch (error) {
@@ -102,7 +102,7 @@ export class LoomAppUpdater extends EventEmitter {
   }
 
   install() {
-    if (this.#status.state !== "downloaded") throw new Error("The Loom update has not finished downloading");
+    if (this.#status.state !== "downloaded") throw new Error("The Pixice update has not finished downloading");
     this.#updater.quitAndInstall(false, true);
     return { ok: true };
   }

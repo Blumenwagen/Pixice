@@ -121,7 +121,7 @@ describe("workflow node executors", () => {
       maxBytes: 1_000
     }, { projectRoot: directory });
     expect(readFileSync(path.join(directory, "generated/result.txt"), "utf8")).toBe("Ship it");
-    await expect(execute("file", { operation: "readText", path: "../secret.txt" }, { projectRoot: directory })).rejects.toThrow(/current Loom project/i);
+    await expect(execute("file", { operation: "readText", path: "../secret.txt" }, { projectRoot: directory })).rejects.toThrow(/current Pixice project/i);
   });
 
   it("inspects a real Git repository without exposing arbitrary shell arguments", async () => {
@@ -129,7 +129,7 @@ describe("workflow node executors", () => {
     temporaryDirectories.push(directory);
     execFileSync("git", ["init", "-q"], { cwd: directory });
     execFileSync("git", ["config", "user.email", "loom@example.test"], { cwd: directory });
-    execFileSync("git", ["config", "user.name", "Loom"], { cwd: directory });
+    execFileSync("git", ["config", "user.name", "Pixice"], { cwd: directory });
     writeFileSync(path.join(directory, "file.txt"), "one\n", "utf8");
     execFileSync("git", ["add", "file.txt"], { cwd: directory });
     execFileSync("git", ["commit", "-qm", "Initial"], { cwd: directory });
@@ -143,7 +143,7 @@ describe("workflow node executors", () => {
     expect(log.output.commits[0].subject).toBe("Initial");
   });
 
-  it("creates and moves durable Loom board tasks", async () => {
+  it("creates and moves durable Pixice board tasks", async () => {
     const tasks = new Map();
     const database = {
       listBoardTasks: () => [...tasks.values()],

@@ -6,7 +6,7 @@ export const WORKFLOW_NODE_GUIDE = [
   },
   {
     type: "scheduleTrigger",
-    purpose: "Run an enabled workflow automatically on an interval or five-field cron schedule while Loom is running.",
+    purpose: "Run an enabled workflow automatically on an interval or five-field cron schedule while Pixice is running.",
     inputPorts: [], outputPorts: ["output"],
     config: {
       mode: "interval | cron", every: "Positive integer", unit: "seconds | minutes | hours | days",
@@ -25,9 +25,9 @@ export const WORKFLOW_NODE_GUIDE = [
   },
   {
     type: "useSkill",
-    purpose: "Attach one installed Codex Skill or one project-scoped .md instruction file directly to a Loom Agent. Multiple Use Skill nodes may connect to the same Agent Skill port.",
+    purpose: "Attach one installed Codex Skill or one project-scoped .md instruction file directly to a Pixice Agent. Multiple Use Skill nodes may connect to the same Agent Skill port.",
     inputPorts: [], outputPorts: ["skill"],
-    connection: "Connect Use Skill · skill directly to Loom Agent · skill. It is not a normal data edge.",
+    connection: "Connect Use Skill · skill directly to Pixice Agent · skill. It is not a normal data edge.",
     config: {
       source: "installed | markdown", skillRef: "Stable installed-skill reference", skillName: "Display name",
       path: "Project-relative .md path when source is markdown", maxBytes: "1024-2000000"
@@ -35,7 +35,7 @@ export const WORKFLOW_NODE_GUIDE = [
   },
   {
     type: "loomAgent",
-    purpose: "Run a real Loom Agent and pass its final answer downstream. Its dedicated Skill input accepts any number of Use Skill attachments.",
+    purpose: "Run a real Pixice Agent and pass its final answer downstream. Its dedicated Skill input accepts any number of Use Skill attachments.",
     inputPorts: ["input", "skill"], outputPorts: ["output"],
     config: {
       prompt: "Template text; ordinary upstream values are appended as structured context.",
@@ -132,7 +132,7 @@ export const WORKFLOW_NODE_GUIDE = [
   },
   {
     type: "board",
-    purpose: "List, create, edit, move, or delete durable tasks on the current Loom board.",
+    purpose: "List, create, edit, move, or delete durable tasks on the current Pixice board.",
     inputPorts: ["input"], outputPorts: ["output"],
     config: { operation: "list | create | update | move | delete", taskId: "Task id template", title: "Title template", description: "Description template", column: "backlog | ready | active | done", beforeTaskId: "Optional", attachSourceThread: "Boolean" }
   },

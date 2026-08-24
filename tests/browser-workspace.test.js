@@ -66,7 +66,7 @@ describe("BrowserWorkspace", () => {
     expect(normalizeBrowserUrl("data:text/html,untrusted")).toBe("https://data:text/html,untrusted");
   });
 
-  it("opens a fresh thread-scoped workspace through the Loom browser tool route", async () => {
+  it("opens a fresh thread-scoped workspace through the Pixice browser tool route", async () => {
     const { workspace, emit } = createHarness();
 
     const response = await workspace.handleToolCall({

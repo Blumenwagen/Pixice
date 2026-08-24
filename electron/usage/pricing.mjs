@@ -8,7 +8,7 @@ const rate = (input, cachedInput, output, cacheWriteInput = input) => ({
 });
 
 // USD per million text tokens. This is intentionally limited to the text models
-// Loom can run as an agent harness; image/audio generation and tool-call fees do
+// Pixice can run as an agent harness; image/audio generation and tool-call fees do
 // not share the token usage shape recorded by the runtimes.
 const PRICE_CATALOG = [
   {

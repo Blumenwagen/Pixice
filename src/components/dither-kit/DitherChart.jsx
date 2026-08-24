@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 // Source-adapted from Dither Kit's registry paint engine:
-// https://tripwire.sh/r/core.json. Loom does not use Tailwind, so this keeps
-// the kit's ordered-Bayer canvas treatment while using Loom-native markup.
+// https://tripwire.sh/r/core.json. Pixice does not use Tailwind, so this keeps
+// the kit's ordered-Bayer canvas treatment while using Pixice-native markup.
 const BAYER = [
   [0, 8, 2, 10],
   [12, 4, 14, 6],

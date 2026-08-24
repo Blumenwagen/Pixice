@@ -318,7 +318,7 @@ export function ProjectCreationDialog({
       const selected = await onAddFolders();
       setFolders((current) => mergeFolders(current, selected));
     } catch (cause) {
-      setError(cause?.message ?? "Loom could not add those folders.");
+      setError(cause?.message ?? "Pixice could not add those folders.");
     } finally {
       setAddingFolders(false);
     }
@@ -342,7 +342,7 @@ export function ProjectCreationDialog({
         folders: folders.map(folderPath)
       });
     } catch (cause) {
-      setError(cause?.message ?? "Loom could not create this project.");
+      setError(cause?.message ?? "Pixice could not create this project.");
     }
   };
 
@@ -368,7 +368,7 @@ export function ProjectCreationDialog({
           <span className={styles.dialogMark} aria-hidden="true"><FolderOpen size={20} /></span>
           <span className={styles.dialogHeading}>
             <strong id={titleId}>Create project</strong>
-            <small id={descriptionId}>Group related folders, threads, and Loom tools.</small>
+            <small id={descriptionId}>Group related folders, threads, and Pixice tools.</small>
           </span>
           <button type="button" className={styles.closeButton} aria-label="Close project dialog" disabled={busy} onClick={onClose}>
             <X size={16} />

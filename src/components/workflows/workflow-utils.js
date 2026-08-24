@@ -25,7 +25,7 @@ export const WORKFLOW_NODE_META = {
     icon: "gauge",
     tone: "violet",
     defaultName: "Schedule",
-    defaultDescription: "Run automatically on an interval or cron schedule while Loom is open.",
+    defaultDescription: "Run automatically on an interval or cron schedule while Pixice is open.",
     defaultConfig: {
       mode: "interval",
       every: 15,
@@ -60,11 +60,11 @@ export const WORKFLOW_NODE_META = {
   useSkill: {
     label: "Use Skill",
     action: "Attach instructions",
-    category: "Loom",
+    category: "Pixice",
     icon: "skill",
     tone: "orange",
     defaultName: "Use Skill",
-    defaultDescription: "Attach an installed Skill or project Markdown instructions directly to a Loom Agent.",
+    defaultDescription: "Attach an installed Skill or project Markdown instructions directly to a Pixice Agent.",
     defaultConfig: {
       source: "installed",
       skillRef: "",
@@ -76,13 +76,13 @@ export const WORKFLOW_NODE_META = {
     outputPorts: [{ id: "skill", label: "Skill" }]
   },
   loomAgent: {
-    label: "Loom Agent",
+    label: "Pixice Agent",
     action: "Run agent",
-    category: "Loom",
+    category: "Pixice",
     icon: "brain",
     tone: "orange",
-    defaultName: "Loom Agent",
-    defaultDescription: "Run a Loom-native coding agent with upstream workflow context and attached Skills.",
+    defaultName: "Pixice Agent",
+    defaultDescription: "Run a Pixice-native coding agent with upstream workflow context and attached Skills.",
     defaultConfig: {
       prompt: "Complete the workflow task using the incoming context.",
       model: null,
@@ -175,7 +175,7 @@ export const WORKFLOW_NODE_META = {
     icon: "workflow",
     tone: "green",
     defaultName: "Execute workflow",
-    defaultDescription: "Run another Loom workflow and wait for its result.",
+    defaultDescription: "Run another Pixice workflow and wait for its result.",
     defaultConfig: {
       workflowId: "",
       input: "{{input}}",
@@ -195,7 +195,7 @@ export const WORKFLOW_NODE_META = {
     defaultName: "Desktop notification",
     defaultDescription: "Show a native notification from deterministic workflow data.",
     defaultConfig: {
-      title: "Loom workflow",
+      title: "Pixice workflow",
       body: "{{input.message ?? input}}",
       urgency: "normal",
       silent: false
@@ -303,13 +303,13 @@ export const WORKFLOW_NODE_META = {
     outputPorts: [{ id: "output", label: "Results" }]
   },
   board: {
-    label: "Loom Board",
+    label: "Pixice Board",
     action: "Manage task",
-    category: "Loom",
+    category: "Pixice",
     icon: "list",
     tone: "orange",
-    defaultName: "Loom Board",
-    defaultDescription: "List, create, update, move, or delete a durable Loom task.",
+    defaultName: "Pixice Board",
+    defaultDescription: "List, create, update, move, or delete a durable Pixice task.",
     defaultConfig: {
       operation: "list",
       taskId: "",
@@ -336,7 +336,7 @@ export const WORKFLOW_NODE_META = {
   }
 };
 
-export const WORKFLOW_NODE_CATEGORIES = ["Triggers", "Actions", "Data", "Flow", "Loom"];
+export const WORKFLOW_NODE_CATEGORIES = ["Triggers", "Actions", "Data", "Flow", "Pixice"];
 
 export function workflowId(prefix = "workflow") {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;

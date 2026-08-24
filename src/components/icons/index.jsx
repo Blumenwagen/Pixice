@@ -43,7 +43,7 @@ import { XIcon } from "./x";
 import { ZapIcon } from "./zap";
 
 function loomIcon(Icon, displayName) {
-  const LoomIcon = forwardRef(({ weight: _weight, mirrored: _mirrored, className = "", "aria-label": ariaLabel, onMouseEnter, onMouseLeave, ...props }, ref) => {
+  const PixiceIcon = forwardRef(({ weight: _weight, mirrored: _mirrored, className = "", "aria-label": ariaLabel, onMouseEnter, onMouseLeave, ...props }, ref) => {
     const animationRef = useRef(null);
     const iconId = useId();
 
@@ -85,8 +85,8 @@ function loomIcon(Icon, displayName) {
       />
     );
   });
-  LoomIcon.displayName = displayName;
-  return LoomIcon;
+  PixiceIcon.displayName = displayName;
+  return PixiceIcon;
 }
 
 export const ArrowClockwise = loomIcon(RefreshCWIcon, "ArrowClockwise");

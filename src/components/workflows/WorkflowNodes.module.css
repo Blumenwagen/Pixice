@@ -110,8 +110,8 @@
   z-index: 40;
   width: min(430px, calc(100vw - 90px));
   max-height: min(650px, calc(100vh - 120px));
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   color: #eee4d7;
   background: rgba(39, 35, 30, .99);
@@ -121,6 +121,7 @@
   backdrop-filter: blur(28px) saturate(120%);
 }
 .nodePicker > header {
+  flex: 0 0 auto;
   min-height: 55px;
   padding: 10px 10px 9px 14px;
   display: flex;
@@ -133,6 +134,7 @@
 .nodePicker > header small { color: #777780; font-size: 8.5px; }
 
 .nodePickerSearch {
+  flex: 0 0 auto;
   height: 38px;
   margin: 10px 11px 7px;
   padding: 0 10px;
@@ -157,6 +159,7 @@
 }
 
 .nodePickerBody {
+  flex: 1 1 auto;
   min-height: 0;
   padding: 3px 8px 12px;
   overflow-y: auto;

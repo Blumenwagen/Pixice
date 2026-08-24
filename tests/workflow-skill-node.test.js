@@ -80,7 +80,7 @@ describe("workflow skill attachments", () => {
     await expect(resolveWorkflowSkillAttachment({
       node: useSkill({ source: "markdown", path: "../secret.md", maxBytes: 50_000 }),
       projectRoot: directory
-    })).rejects.toThrow(/inside the current Loom project/i);
+    })).rejects.toThrow(/inside the current Pixice project/i);
 
     if (process.platform !== "win32") {
       symlinkSync(path.join(outside, "secret.md"), path.join(directory, "instructions", "linked.md"));

@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App.jsx";
+
+const appCss = readFileSync("src/styles.css", "utf8");
 
 const project = {
   id: "project-1",
@@ -55,6 +58,11 @@ function createApi(threadValue = thread) {
       ]),
       login: vi.fn().mockResolvedValue({ provider: "claude", opened: true })
     },
+    github: {
+      status: vi.fn().mockResolvedValue({ available: true, authenticated: false, source: "bundled", version: "2.80.0", account: null, message: "Sign in to use GitHub from agents." }),
+      login: vi.fn().mockResolvedValue({ available: true, authenticated: true, source: "bundled", version: "2.80.0", account: { login: "octocat", name: "The Octocat" }, message: "Signed in as octocat." }),
+      logout: vi.fn().mockResolvedValue({ available: true, authenticated: false, source: "bundled", version: "2.80.0", account: null, message: "Sign in to use GitHub from agents." })
+    },
     usage: {
       summary: vi.fn().mockResolvedValue({
         rangeDays: 30,
@@ -101,8 +109,8 @@ function createApi(threadValue = thread) {
       })
     },
     updates: {
-      status: vi.fn().mockResolvedValue({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Loom builds." }),
-      check: vi.fn().mockResolvedValue({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Loom builds." }),
+      status: vi.fn().mockResolvedValue({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." }),
+      check: vi.fn().mockResolvedValue({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." }),
       download: vi.fn(),
       install: vi.fn()
     },
@@ -202,7 +210,12 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe("Loom app shell", () => {
+describe("Pixice app shell", () => {
+  it("does not apply a viewport-sized backdrop filter over native window vibrancy", () => {
+    const stageRule = appCss.match(/\.loom-stage\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(stageRule).not.toContain("backdrop-filter");
+  });
+
   it("creates a project with chosen metadata and multiple folders", async () => {
     const createdProject = {
       id: "project-new",
@@ -375,7 +388,7 @@ describe("Loom app shell", () => {
     }));
   });
 
-  it("shows a bridge-created Loom thread in the sidebar like a regular task", async () => {
+  it("shows a bridge-created Pixice thread in the sidebar like a regular task", async () => {
     const bridgeThread = {
       ...thread,
       id: "bridge-thread",
@@ -453,13 +466,13 @@ describe("Loom app shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Cross-model UI review" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Cross-model UI review" })).toHaveAttribute("aria-current", "page"));
-    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Take another pass at the hierarchy");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Take another pass at the hierarchy");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(threadOrder()[0]).toBe("Cross-model UI review"));
   });
 
-  it("labels prompts and answers relayed through a Loom bridge thread", async () => {
+  it("labels prompts and answers relayed through a Pixice bridge thread", async () => {
     const bridgeThread = {
       ...thread,
       id: "bridge-thread",
@@ -478,7 +491,7 @@ describe("Loom app shell", () => {
 
     const { container } = render(<App />);
 
-    const opened = await screen.findByText("Task opened by another Loom agent");
+    const opened = await screen.findByText("Task opened by another Pixice agent");
     const sent = await screen.findByText("Sent answer to main agent");
     expect(opened).toHaveClass("bridge-prompt-status");
     expect(sent).toHaveClass("bridge-answer-status");
@@ -667,6 +680,27 @@ describe("Loom app shell", () => {
     expect(saved).toMatchObject({ showShortcutHints: false, density: "comfortable" });
   });
 
+  it("connects and disconnects GitHub from Settings", async () => {
+    const api = createApi();
+    window.loom = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^GitHub/ }));
+    await waitFor(() => expect(api.github.status).toHaveBeenCalled());
+    expect(await screen.findByText("Sign in required")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(api.github.login).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("The Octocat · @octocat")).toBeInTheDocument();
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(api.github.logout).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Sign in required")).toBeInTheDocument();
+  });
+
   it("keeps the third project row off by default and persists the nine-tile opt-in", async () => {
     const additionalProjects = Array.from({ length: 9 }, (_, index) => ({
       id: `project-${index + 2}`,
@@ -797,7 +831,7 @@ describe("Loom app shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Polish the sidebar" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Polish the sidebar" })).toHaveAttribute("aria-current", "page"));
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
     await user.type(composer, "Tighten the spacing too");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -866,7 +900,7 @@ describe("Loom app shell", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Borealis" })).toHaveAttribute("title", "Borealis"));
   });
 
-  it("persists agent behavior packs for every Loom agent", async () => {
+  it("persists agent behavior packs for every Pixice agent", async () => {
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({
       projects: [project],
@@ -874,9 +908,12 @@ describe("Loom app shell", () => {
       runtime: { state: "ready", connected: true },
       settings: { agentBehaviors: { structuredPlanning: true, parallelDelegation: false, verification: true } },
       agentBehaviors: [
-        { id: "structuredPlanning", label: "Structured planning", description: "Plan multi-step work.", defaultEnabled: true },
-        { id: "parallelDelegation", label: "Parallel delegation", description: "Use focused helper agents.", defaultEnabled: false },
-        { id: "verification", label: "Verification before handoff", description: "Run proportionate checks.", defaultEnabled: true }
+        { id: "structuredPlanning", label: "Structured planning", description: "Plan multi-step work.", category: "core", defaultEnabled: true },
+        { id: "parallelDelegation", label: "Parallel delegation", description: "Use focused helper agents.", category: "core", defaultEnabled: false },
+        { id: "verification", label: "Verification before handoff", description: "Run proportionate checks.", category: "core", defaultEnabled: true },
+        { id: "workflowAutomation", label: "Workflow-first automation", description: "Use Pixice workflows.", category: "loom-native", defaultEnabled: false },
+        { id: "boardStewardship", label: "Board stewardship", description: "Keep board tasks current.", category: "loom-native", defaultEnabled: false },
+        { id: "threadOrchestration", label: "Thread orchestration", description: "Spawn focused Pixice threads.", category: "loom-native", defaultEnabled: false }
       ]
     });
     window.loom = api;
@@ -886,11 +923,20 @@ describe("Loom app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("button", { name: /^Agent Behavior/ }));
     expect(await screen.findByRole("heading", { name: "Agent Behavior" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Pixice-native features" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Parallel delegation" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Thread orchestration" })).not.toBeChecked();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Parallel delegation" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Thread orchestration" }));
     expect(api.app.saveSettings).toHaveBeenCalledWith({
-      agentBehaviors: { structuredPlanning: true, parallelDelegation: true, verification: true }
+      agentBehaviors: {
+        structuredPlanning: true,
+        parallelDelegation: false,
+        verification: true,
+        workflowAutomation: false,
+        boardStewardship: false,
+        threadOrchestration: true
+      }
     });
   });
 
@@ -942,7 +988,7 @@ describe("Loom app shell", () => {
   it("checks GitHub releases from the Updates settings page", async () => {
     const api = createApi();
     api.updates.status.mockResolvedValue({ supported: true, state: "idle", currentVersion: "0.1.0", availableVersion: null, percent: 0, message: "Ready to check GitHub releases." });
-    api.updates.check.mockResolvedValue({ supported: true, state: "not-available", currentVersion: "0.1.0", availableVersion: null, percent: 0, message: "Loom is up to date." });
+    api.updates.check.mockResolvedValue({ supported: true, state: "not-available", currentVersion: "0.1.0", availableVersion: null, percent: 0, message: "Pixice is up to date." });
     window.loom = api;
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -950,11 +996,11 @@ describe("Loom app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(await screen.findByRole("button", { name: /^Updates/ }));
     expect(await screen.findByRole("heading", { name: "Updates" })).toBeInTheDocument();
-    expect(screen.getByText("Loom 0.1.0")).toBeInTheDocument();
+    expect(screen.getByText("Pixice 0.1.0")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
     await waitFor(() => expect(api.updates.check).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText("Loom is up to date.")).toBeInTheDocument();
+    expect(await screen.findByText("Pixice is up to date.")).toBeInTheDocument();
   });
 
   it("restores persistent model, reasoning, and permission defaults after an app update", async () => {
@@ -1240,7 +1286,7 @@ describe("Loom app shell", () => {
           threadId: "thread-1",
           serverName: "Browser",
           mode: "form",
-          message: "Choose how Loom should continue",
+          message: "Choose how Pixice should continue",
           requestedSchema: {
             type: "object",
             properties: { destination: { type: "string", title: "Destination" } },
@@ -1547,7 +1593,7 @@ describe("Loom app shell", () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
     await user.type(composer, "Implement the refresh flow");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -1564,6 +1610,26 @@ describe("Loom app shell", () => {
     });
   });
 
+  it("expands multiline prompts upward and caps the textarea height", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
+    let scrollHeight = 132;
+    Object.defineProperty(composer, "scrollHeight", { configurable: true, get: () => scrollHeight });
+
+    fireEvent.change(composer, { target: { value: "First line\nSecond line\nThird line" } });
+    expect(composer).toHaveStyle({ height: "132px", overflowY: "hidden" });
+
+    scrollHeight = 360;
+    fireEvent.change(composer, { target: { value: "First line\nSecond line\nThird line\nFourth line" } });
+    expect(composer).toHaveStyle({ height: "240px", overflowY: "auto" });
+  });
+
+  it("uses icon-only permission and fast controls when preview is open", () => {
+    expect(appCss).toMatch(/\.preview-mode \.composer-fast-toggle,\s*\.preview-mode \.composer-picker\.permission \.picker-trigger\s*\{[^}]*width:\s*30px;[^}]*padding:\s*0;/);
+    expect(appCss).toMatch(/\.preview-mode \.composer-fast-toggle span,\s*\.preview-mode \.composer-picker\.permission \.picker-trigger-label,\s*\.preview-mode \.composer-picker\.permission \.picker-chevron\s*\{\s*display:\s*none;/);
+  });
+
   it("opens a new task from the sidebar shortcut", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -1571,14 +1637,14 @@ describe("Loom app shell", () => {
     fireEvent.keyDown(window, { key: "n", metaKey: true });
 
     await waitFor(() => expect(screen.getByRole("button", { name: "New task" })).toHaveAttribute("aria-current", "page"));
-    expect(screen.getByRole("heading", { name: "What should Codex work on?" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What are we working on?" })).toBeInTheDocument();
   });
 
   it("discovers and autocompletes Codex commands from the slash menu", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("I traced the current flow.");
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
 
     await user.type(composer, "/");
     const commands = screen.getByRole("listbox", { name: "Slash commands" });
@@ -1596,7 +1662,7 @@ describe("Loom app shell", () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("I traced the current flow.");
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
 
     await user.type(composer, "/compact");
     const commands = screen.getByRole("listbox", { name: "Slash commands" });
@@ -1614,7 +1680,7 @@ describe("Loom app shell", () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
-    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Only once");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Only once");
     const send = screen.getByRole("button", { name: "Send message" });
     fireEvent.click(send);
     fireEvent.click(send);
@@ -1623,10 +1689,10 @@ describe("Loom app shell", () => {
     expect(window.loom.threads.create).toHaveBeenCalledTimes(1);
   });
 
-  it("pastes image attachments and sends an image-only prompt", async () => {
+  it("pastes image attachments and sends an attachment-only prompt", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
     const image = new File([new Uint8Array([137, 80, 78, 71])], "clipboard.png", { type: "image/png" });
 
     fireEvent.paste(composer, { clipboardData: { files: [image], items: [{ kind: "file", type: image.type, getAsFile: () => image }] } });
@@ -1638,24 +1704,53 @@ describe("Loom app shell", () => {
 
     await waitFor(() => expect(window.loom.turns.start).toHaveBeenCalledWith(expect.objectContaining({
       text: "",
-      images: [expect.stringMatching(/^data:image\/png;base64,/)]
+      attachments: [{
+        name: "clipboard.png",
+        type: "image/png",
+        size: 4,
+        dataUrl: expect.stringMatching(/^data:image\/png;base64,/)
+      }]
     })));
   });
 
-  it("accepts dropped images anywhere in Loom and lets the user remove them", async () => {
+  it("accepts dropped files anywhere in Pixice and lets the user remove them", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
     const image = new File([new Uint8Array([82, 73, 70, 70])], "dropped.webp", { type: "image/webp" });
     const transfer = { files: [image], items: [{ kind: "file", type: image.type }] };
 
     fireEvent.dragEnter(window, { dataTransfer: transfer });
-    expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+    expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
     fireEvent.drop(window, { dataTransfer: transfer });
 
     expect(await screen.findByRole("img", { name: "dropped.webp" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Remove dropped.webp" }));
     expect(screen.queryByRole("img", { name: "dropped.webp" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  });
+
+  it("attaches code and Office documents without an image-only accept filter", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const input = document.querySelector('input[type="file"]');
+    expect(input).not.toHaveAttribute("accept");
+    expect(screen.getByRole("button", { name: "Attach files" })).toBeInTheDocument();
+
+    const code = new File(["export const answer = 42;"], "answer.ts", { type: "text/typescript" });
+    const workbook = new File([new Uint8Array([80, 75, 3, 4])], "budget.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    fireEvent.change(input, { target: { files: [code, workbook] } });
+
+    expect(await screen.findByText("answer.ts")).toBeInTheDocument();
+    expect(screen.getByText("budget.xlsx")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(window.loom.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      text: "",
+      attachments: [
+        expect.objectContaining({ name: "answer.ts", type: "text/typescript", dataUrl: expect.stringMatching(/^data:text\/typescript;base64,/) }),
+        expect.objectContaining({ name: "budget.xlsx", type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", dataUrl: expect.stringMatching(/^data:application\/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,/) })
+      ]
+    })));
   });
 
   it("uses accessible model, reasoning, and permission pickers", async () => {
@@ -1705,7 +1800,7 @@ describe("Loom app shell", () => {
     await user.click(fastToggle);
     expect(fastToggle).toHaveAttribute("aria-pressed", "true");
 
-    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Ship this quickly");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Ship this quickly");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(api.threads.create).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: "priority" })));
@@ -1713,7 +1808,7 @@ describe("Loom app shell", () => {
 
     await waitFor(() => expect(fastToggle).toBeEnabled());
     await user.click(fastToggle);
-    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Return to standard speed");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Return to standard speed");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(api.turns.start).toHaveBeenLastCalledWith(expect.objectContaining({ serviceTier: null })));
@@ -1748,13 +1843,13 @@ describe("Loom app shell", () => {
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Permissions: Workspace access" }));
     await user.click(screen.getByRole("option", { name: /Read only/ }));
-    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Inspect this thread without edits");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Inspect this thread without edits");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(window.loom.turns.start).toHaveBeenLastCalledWith(expect.objectContaining({ permissionMode: "read-only" })));
 
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
     expect(screen.getByRole("button", { name: "Permissions: Workspace access" })).toBeInTheDocument();
-    await user.type(screen.getByRole("textbox", { name: "Message Codex" }), "Start with the default access");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Start with the default access");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(window.loom.threads.create).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "workspace-write" })));
@@ -1787,7 +1882,7 @@ describe("Loom app shell", () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
     await user.type(composer, "Start immediately");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -1824,7 +1919,7 @@ describe("Loom app shell", () => {
 
     render(<App />);
     await screen.findByText("I traced the current flow.");
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
     await user.type(composer, "What about retries?");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -1883,7 +1978,7 @@ describe("Loom app shell", () => {
 
     render(<App />);
     await screen.findByText("I traced the current flow.");
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
     await user.type(composer, prompt);
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -1946,19 +2041,23 @@ describe("Loom app shell", () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
     const sidebar = screen.getByRole("complementary", { name: "Primary navigation" });
+    const app = document.querySelector(".loom-app");
 
     expect(sidebar).toHaveAttribute("data-expanded", "true");
     fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
 
     expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
     expect(document.querySelector(".task-workspace")).toHaveClass("preview-mode");
-    expect(document.querySelector(".loom-app")).toHaveAttribute("data-preview-open", "true");
+    expect(app).toHaveAttribute("data-preview-open", "true");
     expect(sidebar).toHaveAttribute("data-expanded", "false");
+    expect(app).toHaveAttribute("data-sidebar-expanded", "false");
 
     const expandButton = screen.getByRole("button", { name: "Expand navigation labels" });
     expect(expandButton).toBeEnabled();
     fireEvent.click(expandButton);
     expect(sidebar).toHaveAttribute("data-expanded", "true");
+    expect(app).toHaveAttribute("data-sidebar-expanded", "true");
+    expect(appCss).toMatch(/\.loom-app\[data-preview-open="true"\]\[data-sidebar-expanded="false"\]\s*\{\s*--rail-width:\s*64px;/);
 
     fireEvent.click(screen.getByRole("button", { name: "New browser tab" }));
     expect(window.loom.browser.create).toHaveBeenCalledWith({ workspaceId: "thread-1" });
@@ -2093,7 +2192,7 @@ describe("Loom app shell", () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("I traced the current flow.");
-    expect(screen.getByRole("textbox", { name: "Message Codex" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toBeInTheDocument();
 
     act(() => window.loom.emit({
       type: "AttentionRequired",
@@ -2107,7 +2206,7 @@ describe("Loom app shell", () => {
             {
               id: "approach",
               header: "Approach",
-              question: "How should Loom proceed?",
+              question: "How should Pixice proceed?",
               options: [
                 { label: "Build it", description: "Implement the complete flow.", recommended: true },
                 { label: "Plan only", description: "Stop after the implementation plan.", recommended: false }
@@ -2127,8 +2226,8 @@ describe("Loom app shell", () => {
       }
     }));
 
-    expect(await screen.findByText("How should Loom proceed?")).toBeInTheDocument();
-    expect(screen.queryByRole("textbox", { name: "Message Codex" })).not.toBeInTheDocument();
+    expect(await screen.findByText("How should Pixice proceed?")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Task prompt" })).not.toBeInTheDocument();
     expect(screen.getByText("Recommended")).toBeInTheDocument();
 
     await user.click(screen.getByRole("radio", { name: /Build it/ }));
@@ -2140,6 +2239,6 @@ describe("Loom app shell", () => {
       action: "answer",
       answers: { approach: "Build it", scope: "Every model" }
     }));
-    expect(await screen.findByRole("textbox", { name: "Message Codex" })).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Task prompt" })).toBeInTheDocument();
   });
 });

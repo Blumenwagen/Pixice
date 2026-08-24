@@ -12,7 +12,7 @@ import {
 } from "./index.jsx";
 
 // Product-level meanings live here so the same glyph does not quietly acquire
-// a second, unrelated job in another part of Loom.
+// a second, unrelated job in another part of Pixice.
 export const APP_ICONS = Object.freeze({
   newTask: PencilSimple,
   board: List,

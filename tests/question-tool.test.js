@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  isLoomQuestionToolCall,
+  isPixiceQuestionToolCall,
   loomQuestionRequest,
   loomQuestionToolResult,
   questionDynamicTools
@@ -18,7 +18,7 @@ const request = {
       questions: [{
         id: "approach",
         header: "Approach",
-        question: "How should Loom proceed?",
+        question: "How should Pixice proceed?",
         options: [
           { label: "Build it", description: "Implement the flow.", recommended: false },
           { label: "Plan it", description: "Prepare a plan.", recommended: false }
@@ -28,7 +28,7 @@ const request = {
   }
 };
 
-describe("Loom question tool", () => {
+describe("Pixice question tool", () => {
   it("is advertised as an always-available dynamic tool", () => {
     expect(questionDynamicTools).toEqual([
       expect.objectContaining({
@@ -39,7 +39,7 @@ describe("Loom question tool", () => {
   });
 
   it("normalizes a tool call into a thread-scoped composer request", () => {
-    expect(isLoomQuestionToolCall(request)).toBe(true);
+    expect(isPixiceQuestionToolCall(request)).toBe(true);
     expect(loomQuestionRequest(request)).toMatchObject({
       id: 42,
       method: "loom/requestUserInput",

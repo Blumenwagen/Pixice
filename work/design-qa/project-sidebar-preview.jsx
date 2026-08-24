@@ -5,7 +5,7 @@ import { ProjectCreationDialog } from "../../src/components/sidebar/ProjectSwitc
 import "../../src/styles.css";
 
 const PROJECTS = [
-  { id: "loom", displayName: "Loom", icon: "code", color: "pink", lastUsedAt: "2026-08-22T12:09:00.000Z", canonicalPath: "/work/loom", folders: ["/work/loom"] },
+  { id: "loom", displayName: "Pixice", icon: "code", color: "pink", lastUsedAt: "2026-08-22T12:09:00.000Z", canonicalPath: "/work/loom", folders: ["/work/loom"] },
   { id: "studio", displayName: "Studio", icon: "sparkles", color: "purple", lastUsedAt: "2026-08-22T12:08:00.000Z", canonicalPath: "/work/studio", folders: ["/work/studio", "/work/shared"] },
   { id: "terminal", displayName: "Tooling", icon: "terminal", color: "green", lastUsedAt: "2026-08-22T12:07:00.000Z", canonicalPath: "/work/tooling", folders: ["/work/tooling"] },
   { id: "web", displayName: "Website", icon: "globe", color: "blue", lastUsedAt: "2026-08-22T12:06:00.000Z", canonicalPath: "/work/website", folders: ["/work/website"] },

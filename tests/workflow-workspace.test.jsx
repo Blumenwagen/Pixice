@@ -53,17 +53,20 @@ describe("WorkflowWorkspace", () => {
   it("uses a settings-style workflow sidebar with a back action", async () => {
     const api = createApi();
     const onBack = vi.fn();
-    render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Loom" onBack={onBack} />);
+    render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Pixice" onBack={onBack} />);
 
     expect(await screen.findByRole("complementary", { name: "Workflow navigation" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Select workflow")).not.toBeInTheDocument();
+    const deleteButton = await screen.findByRole("button", { name: "Delete workflow" });
+    expect(screen.queryByRole("button", { name: "Refresh workflows" })).not.toBeInTheDocument();
+    expect(deleteButton.parentElement).toBe(screen.getByRole("button", { name: "Tidy" }).parentElement);
     fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
     expect(onBack).toHaveBeenCalledOnce();
   });
 
   it("keeps the editor mounted when an autosave emits WorkflowUpdated", async () => {
     const api = createApi();
-    render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Loom" />);
+    render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Pixice" />);
 
     await screen.findByRole("button", { name: "Workflow settings" });
     expect(api.workflows.list).toHaveBeenCalledTimes(1);

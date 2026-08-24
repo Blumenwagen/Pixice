@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkflowHost } from "../src/components/workflows/WorkflowHost.jsx";
 
 const workflowWorkspaceCss = readFileSync("src/components/workflows/WorkflowWorkspace.module.css", "utf8");
+const workflowHostCss = readFileSync("src/components/workflows/WorkflowHost.css", "utf8");
 
 const workflow = {
   id: "workflow-1",
@@ -31,7 +32,7 @@ const workflow = {
 function createApi(threads = [{ id: "thread-lead", name: "Lead task", parentThreadId: null }]) {
   const listeners = new Set();
   const api = {
-    projects: { list: vi.fn(async () => [{ id: "project-1", displayName: "Loom", canonicalPath: "/workspace" }]) },
+    projects: { list: vi.fn(async () => [{ id: "project-1", displayName: "Pixice", canonicalPath: "/workspace" }]) },
     models: { list: vi.fn(async () => []) },
     threads: { list: vi.fn(async () => ({ data: threads })) },
     browser: { setViewport: vi.fn(async () => ({ native: false, activeTabId: null, tabs: [] })) },
@@ -107,10 +108,18 @@ describe("WorkflowHost", () => {
     expect(api.workflows.list).toHaveBeenCalledWith({ projectId: "project-1" });
   });
 
-  it("leaves the primary navigation visible beside the Workflows workspace", () => {
+  it("takes over the primary sidebar like the Settings workspace", () => {
     const overlayRules = [...workflowWorkspaceCss.matchAll(/\.workspaceOverlay\s*\{([^}]*)\}/g)];
-    expect(overlayRules.at(-1)?.[1]).toContain("left: var(--rail-width);");
-    expect(overlayRules.at(-1)?.[1]).toContain("z-index: 18;");
+    expect(overlayRules.at(-1)?.[1]).toContain("left: 0;");
+    expect(overlayRules.at(-1)?.[1]).toContain("z-index: 24;");
+    expect(overlayRules.at(-1)?.[1]).not.toContain("backdrop-filter");
+    expect(workflowHostCss).toContain('.loom-app[data-workflows-active="true"] > .sidebar');
+    expect(workflowHostCss).toContain("visibility: hidden;");
+  });
+
+  it("uses the shared neutral navigation color for the Workflows icon", () => {
+    expect(workflowHostCss).toMatch(/\.workflow-nav-item \.rail-icon\s*\{[^}]*color:\s*inherit;/);
+    expect(workflowHostCss).not.toMatch(/\.workflow-nav-item(?:\.active)? \.rail-icon\s*\{[^}]*--thread-bright/);
   });
 
   it("keeps the Workflows navigation item when the app navigation remounts", async () => {

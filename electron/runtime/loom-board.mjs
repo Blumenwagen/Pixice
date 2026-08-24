@@ -59,7 +59,7 @@ const toolSchemas = {
       title: { type: "string", minLength: 1, maxLength: 240 },
       description: { type: "string", maxLength: 10000 },
       column: { type: "string", enum: ["backlog", "ready", "active", "done"], description: "Defaults to backlog." },
-      attachCurrentThread: { type: "boolean", description: "Link this active Loom thread to the new task. Defaults to false." }
+      attachCurrentThread: { type: "boolean", description: "Link this active Pixice thread to the new task. Defaults to false." }
     },
     required: ["title"],
     additionalProperties: false
@@ -94,7 +94,7 @@ const toolSchemas = {
     type: "object",
     properties: {
       taskId: { type: "string", minLength: 1, maxLength: 160 },
-      threadId: { type: "string", minLength: 1, maxLength: 160, description: "Defaults to the active Loom thread." }
+      threadId: { type: "string", minLength: 1, maxLength: 160, description: "Defaults to the active Pixice thread." }
     },
     required: ["taskId"],
     additionalProperties: false
@@ -107,13 +107,13 @@ const descriptions = {
   update_task: "Edit a kanban task's title or description.",
   move_task: "Move or reorder a kanban task.",
   delete_task: "Delete a kanban task. This does not delete its linked thread.",
-  attach_thread: "Attach a Loom thread to an existing kanban task. Defaults to the active thread."
+  attach_thread: "Attach a Pixice thread to an existing kanban task. Defaults to the active thread."
 };
 
 export const loomBoardDynamicTools = [{
   type: "namespace",
   name: LOOM_BOARD_NAMESPACE,
-  description: "Inspect and manage the current Loom project's kanban board. Tasks exist independently from threads, and may optionally link to a running thread.",
+  description: "Inspect and manage the current Pixice project's kanban board. Tasks exist independently from threads, and may optionally link to a running thread.",
   tools: Object.keys(toolSchemas).map((name) => ({
     type: "function",
     name,
@@ -129,7 +129,7 @@ function textResult(value, success = true) {
   };
 }
 
-export class LoomBoard {
+export class PixiceBoard {
   constructor({ database, threadContext, onChange }) {
     this.database = database;
     this.threadContext = threadContext;
@@ -138,11 +138,11 @@ export class LoomBoard {
 
   async handleToolCall(params) {
     try {
-      if (!params?.threadId) throw new Error("Loom board tools require an active thread");
+      if (!params?.threadId) throw new Error("Pixice board tools require an active thread");
       const context = this.threadContext(params.threadId);
-      if (!context?.projectId) throw new Error("The active thread is not attached to an open Loom project");
+      if (!context?.projectId) throw new Error("The active thread is not attached to an open Pixice project");
       const schema = schemas[params.tool];
-      if (!schema) throw new Error(`Unknown Loom board tool: ${params.tool}`);
+      if (!schema) throw new Error(`Unknown Pixice board tool: ${params.tool}`);
       const input = schema.parse(params.arguments ?? {});
       if (params.tool === "list_tasks") {
         const tasks = this.database.listBoardTasks(context.projectId)
@@ -193,7 +193,7 @@ export class LoomBoard {
         this.#changed("updated", updated);
         return textResult({ task: updated });
       }
-      throw new Error(`Unknown Loom board tool: ${params.tool}`);
+      throw new Error(`Unknown Pixice board tool: ${params.tool}`);
     } catch (error) {
       return textResult({ error: error.message }, false);
     }

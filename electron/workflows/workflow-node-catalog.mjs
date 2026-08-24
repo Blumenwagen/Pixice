@@ -147,7 +147,7 @@ const DEFAULT_CONFIGS = {
     timeoutMs: 300_000
   },
   notification: {
-    title: "Loom workflow",
+    title: "Pixice workflow",
     body: "{{input.message ?? input}}",
     urgency: "normal",
     silent: false
@@ -392,7 +392,7 @@ export function normalizeWorkflowNodeConfig(node) {
   if (node.type === "notification") {
     return {
       ...source,
-      title: stringValue(source.title, "Loom workflow").slice(0, 240),
+      title: stringValue(source.title, "Pixice workflow").slice(0, 240),
       body: stringValue(source.body, "{{input.message ?? input}}").slice(0, 10_000),
       urgency: enumValue(source.urgency, ["low", "normal", "critical"], "normal"),
       silent: Boolean(source.silent)

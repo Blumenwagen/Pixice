@@ -1,10 +1,10 @@
-import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useMemo, useRef, useState, useContext } from "react";
+import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useContext } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   ArrowClockwise, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
   Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
   Globe, Info, LockKey, MagnifyingGlass, PaperPlaneTilt, Pause,
-  ImageSquare, PencilSimple, PlugsConnected, Plus, ShieldCheck, Sparkle, SpinnerGap, Stack,
+  PencilSimple, PlugsConnected, Plus, ShieldCheck, Sparkle, SpinnerGap, Stack,
   TerminalWindow, Trash, TreeStructure, Warning, X
 } from "./components/icons/index.jsx";
 import { APP_ICONS } from "./components/icons/app-iconography.jsx";
@@ -13,6 +13,8 @@ import { ReasoningOrb } from "./components/ReasoningOrb.jsx";
 import { StreamingText } from "./components/StreamingText.jsx";
 import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
 import { InlineVisualization, parseVisualizationSpec } from "./components/InlineVisualization.jsx";
+import { InstrumentHost } from "./components/instruments/InstrumentHost.jsx";
+import { ProjectToolsWorkspace } from "./components/instruments/ProjectToolsWorkspace.jsx";
 import { DitherAreaChart, DitherBarChart } from "./components/dither-kit/DitherChart.jsx";
 import { UsageHeatMap } from "./components/dither-kit/UsageHeatMap.jsx";
 import { NumberTicker } from "./components/NumberTicker.jsx";
@@ -34,15 +36,18 @@ import {
 
 const EMPTY_EXTENSIONS = { skills: [], apps: [], mcp: [], errors: [] };
 const EMPTY_BROWSER_STATE = { native: false, activeTabId: null, tabs: [] };
-const EMPTY_PREVIEW_WORKSPACE = { open: false, browserState: EMPTY_BROWSER_STATE, fileTabs: [], activeTabId: null };
-const EMPTY_UPDATE_STATUS = { supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Loom builds." };
+const EMPTY_PREVIEW_WORKSPACE = { open: false, browserState: EMPTY_BROWSER_STATE, fileTabs: [], instrumentTabs: [], activeTabId: null };
+const EMPTY_UPDATE_STATUS = { supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." };
+const EMPTY_GITHUB_STATUS = { available: false, authenticated: false, source: null, version: null, account: null, message: "Checking GitHub connection…" };
 const EMPTY_AGENT_BEHAVIORS = [];
 const WorkspaceOpenContext = createContext(null);
 const MIN_SIDEBAR_WIDTH = 224;
 const MAX_SIDEBAR_WIDTH = 360;
 const DEFAULT_SIDEBAR_WIDTH = 264;
-const MAX_COMPOSER_IMAGES = 10;
-const MAX_COMPOSER_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_COMPOSER_ATTACHMENTS = 10;
+const MAX_COMPOSER_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MIN_COMPOSER_TEXTAREA_HEIGHT = 54;
+const MAX_COMPOSER_TEXTAREA_HEIGHT = 240;
 const MAX_RETAINED_PREVIEW_WORKSPACES = 2;
 const THREAD_COMPLETIONS_SEEN_KEY = "loom.threadCompletionsSeen";
 const THREAD_MESSAGE_RECENCY_KEY = "loom.threadMessageRecency";
@@ -100,7 +105,7 @@ function waitForViewPaint() {
 }
 
 // Mirrors the slash-command discovery surface in the installed Codex runtime.
-// Loom only presents and autocompletes these commands; Codex remains responsible
+// Pixice only presents and autocompletes these commands; Codex remains responsible
 // for interpreting them when the user submits the composer.
 const SLASH_COMMANDS = [
   { name: "model", description: "Choose what model and reasoning effort to use" },
@@ -288,29 +293,49 @@ function IconButton({ label, children, className = "", ...props }) {
   return <button className={`icon-button ${className}`} aria-label={label} title={label} {...props}>{children}</button>;
 }
 
-function readComposerImage(file) {
+function readComposerAttachment(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.addEventListener("load", () => resolve({
       id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
-      name: file.name || "Pasted image",
-      type: file.type,
+      name: file.name || "Attachment",
+      type: file.type || "application/octet-stream",
       size: file.size,
       url: reader.result
     }));
-    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read image")));
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read attachment")));
     reader.readAsDataURL(file);
   });
 }
 
-function imageFilesFromTransfer(transfer) {
-  return Array.from(transfer?.files ?? []).filter((file) => COMPOSER_IMAGE_TYPES.has(file.type));
+function attachmentFilesFromTransfer(transfer) {
+  return Array.from(transfer?.files ?? []);
 }
 
-function transferHasImages(transfer) {
+function transferHasFiles(transfer) {
   const items = Array.from(transfer?.items ?? []);
-  if (items.some((item) => item.kind === "file" && COMPOSER_IMAGE_TYPES.has(item.type))) return true;
-  return imageFilesFromTransfer(transfer).length > 0;
+  if (items.some((item) => item.kind === "file")) return true;
+  return attachmentFilesFromTransfer(transfer).length > 0;
+}
+
+function attachmentExtension(name) {
+  const extension = String(name ?? "").split(".").at(-1);
+  return extension && extension !== name ? extension.slice(0, 8).toUpperCase() : "FILE";
+}
+
+function attachmentSize(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function resizeComposerTextarea(textarea) {
+  if (!textarea) return;
+  textarea.style.height = "0px";
+  const contentHeight = textarea.scrollHeight;
+  const height = Math.min(MAX_COMPOSER_TEXTAREA_HEIGHT, Math.max(MIN_COMPOSER_TEXTAREA_HEIGHT, contentHeight));
+  textarea.style.height = `${height}px`;
+  textarea.style.overflowY = contentHeight > MAX_COMPOSER_TEXTAREA_HEIGHT ? "auto" : "hidden";
 }
 
 function StatusDot({ status }) {
@@ -407,6 +432,7 @@ export function Sidebar({
   onView,
   attentionCount,
   changedCount,
+  toolCount,
   runtime,
   legacySidebar = false,
   recentProjectLimit = 6,
@@ -426,7 +452,7 @@ export function Sidebar({
     ? enteringPreview ? sidebarHoveredRef.current : previewPinnedExpanded
     : pinnedExpanded;
 
-  useEffect(() => onExpandedChange(expanded), [expanded, onExpandedChange]);
+  useLayoutEffect(() => onExpandedChange(expanded), [expanded, onExpandedChange]);
   useEffect(() => {
     if (collapseForPreview && !previewModeRef.current) {
       setPreviewPinnedExpanded(sidebarHoveredRef.current);
@@ -533,7 +559,7 @@ export function Sidebar({
         <div className="rail-header">
           <div className="brand-mark"><img src={loomIcon} alt="" /></div>
           <div className="brand-copy">
-            <strong>Loom</strong>
+            <strong>Pixice</strong>
             <small>{runtime?.connected ? "Codex connected" : "Codex offline"}</small>
           </div>
           <IconButton
@@ -566,6 +592,7 @@ export function Sidebar({
           <SidebarNavItem icon={BoardIcon} label="Board" active={activeView === "board"} disabled={!selectedProjectId} onClick={() => onView("board")} />
           <SidebarNavItem icon={AttentionIcon} label="Attention" active={activeView === "attention"} badge={attentionCount} badgeTone="attention" onClick={() => onView("attention")} />
           <SidebarNavItem icon={ReviewIcon} label="Review" active={activeView === "review"} badge={changedCount} disabled={!selectedProjectId} onClick={() => onView("review")} />
+          <SidebarNavItem icon={Stack} label="Tools" active={activeView === "tools"} badge={toolCount} disabled={!selectedProjectId} onClick={() => onView("tools")} />
           <div className="workflow-nav-slot" data-workflow-nav-slot />
         </div>
 
@@ -738,14 +765,15 @@ function FileSurface({ file, onUpdate, onSave }) {
   if (file.previewKind === "html") return <iframe className="html-preview" title={`Preview ${file.name}`} srcDoc={source} sandbox="allow-scripts allow-forms allow-modals" />;
   if (file.previewKind === "image") return <div className="file-media-preview"><img src={file.dataUrl} alt={file.name} /></div>;
   if (file.previewKind === "pdf") return <iframe className="pdf-preview" title={file.name} src={file.dataUrl} />;
-  if (file.previewKind === "unsupported") return <div className="file-empty"><File size={28} /><strong>Preview unavailable</strong><small>This binary format cannot be displayed or edited in Loom yet.</small></div>;
+  if (file.previewKind === "unsupported") return <div className="file-empty"><File size={28} /><strong>Preview unavailable</strong><small>This binary format cannot be displayed or edited in Pixice yet.</small></div>;
   return <pre className="text-file-preview"><code>{source}</code></pre>;
 }
 
-function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fileTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose }) {
+function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fileTabs, instrumentTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource }) {
   const viewportRef = useRef(null);
   const activeFile = fileTabs.find((tab) => tab.id === activeTabId) ?? null;
-  const activeTab = activeFile ? null : state.tabs.find((tab) => tab.id === activeTabId) ?? state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
+  const activeInstrument = instrumentTabs.find((tab) => `instrument:${tab.id}` === activeTabId) ?? null;
+  const activeTab = activeFile || activeInstrument ? null : state.tabs.find((tab) => tab.id === activeTabId) ?? state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
   const [address, setAddress] = useState(activeTab?.url ?? "");
 
   useEffect(() => setAddress(activeTab?.url ?? ""), [activeTab?.id, activeTab?.url]);
@@ -830,11 +858,25 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
               <IconButton label={`Close ${file.name}`} onClick={() => onFileClose(file.id)}>{file.dirty ? <Circle size={8} weight="fill" /> : <X size={11} />}</IconButton>
             </div>
           ))}
+          {instrumentTabs.map((instrument) => (
+            <div className={`browser-tab instrument-tab${`instrument:${instrument.id}` === activeTabId ? " active" : ""}`} role="presentation" key={instrument.id}>
+              <button role="tab" aria-selected={`instrument:${instrument.id}` === activeTabId} onClick={() => onActiveTabChange(`instrument:${instrument.id}`)}>
+                <Gauge size={12} />
+                <span>{instrument.document.title}</span>
+              </button>
+              <IconButton label={`Close ${instrument.document.title}`} onClick={() => onInstrumentClose(instrument.id)}><X size={11} /></IconButton>
+            </div>
+          ))}
           <IconButton label="New browser tab" className="browser-new-tab" onClick={() => void run(() => api.browser.create({ workspaceId }), true)}><Plus size={15} /></IconButton>
         </div>
         <IconButton label="Close preview workspace" className="browser-close" onClick={onClose}><X size={15} /></IconButton>
       </div>
-      {activeFile ? (
+      {activeInstrument ? (
+        <div className="file-navigation instrument-navigation">
+          <span className="file-breadcrumb"><Gauge size={14} /><span>Native Instrument</span></span>
+          <div className="file-actions"><span>v{activeInstrument.documentVersion}</span></div>
+        </div>
+      ) : activeFile ? (
         <div className="file-navigation">
           <span className="file-breadcrumb"><Folder size={14} /><span>{activeFile.relativePath}</span></span>
           <div className="file-actions">
@@ -855,14 +897,23 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
         </div>
       )}
       {activeTab?.error && <div className="browser-error"><Warning size={13} />{activeTab.error}</div>}
-      {activeFile ? (
+      {activeInstrument ? (
+        <InstrumentHost
+          instrument={activeInstrument}
+          onOpenResource={onOpenResource}
+          onRefreshData={(source) => onInstrumentRefresh(activeInstrument.id, source)}
+          onAgentEvent={(actionId, payload) => onInstrumentEvent(activeInstrument.id, actionId, payload)}
+          onInvokeCapability={(actionId, argumentsValue) => onInstrumentInvoke(activeInstrument.id, actionId, argumentsValue)}
+          onSetPinned={(pinned) => onInstrumentPin(activeInstrument.id, pinned)}
+        />
+      ) : activeFile ? (
         <FileSurface file={activeFile} onUpdate={onFileUpdate} onSave={saveFile} />
       ) : activeTab ? (
         <div className="browser-viewport" ref={viewportRef}>
           {!state.native && (
             <div className="browser-mock-page">
               <span><Globe size={23} /></span>
-              <strong>{activeTab.title || "Browse with Loom"}</strong>
+              <strong>{activeTab.title || "Browse with Pixice"}</strong>
               <small>{activeTab.url || "Enter an address above or ask Codex to investigate a page."}</small>
             </div>
           )}
@@ -1277,7 +1328,7 @@ function ConversationItem({ item, forceFinal = false, responseKey, seenResponseI
     if (!text && images.length === 0) return null;
     return (
       <div className={`user-message-block${openedByAgent ? " bridge-origin" : ""}`}>
-        {openedByAgent && <div className="bridge-prompt-status"><GitBranch size={11} />Task opened by another Loom agent</div>}
+        {openedByAgent && <div className="bridge-prompt-status"><GitBranch size={11} />Task opened by another Pixice agent</div>}
         <div className="message user-message" id={promptAnchorId ?? undefined} data-prompt-id={item.id ?? undefined}>
           {images.length > 0 && (
             <div className="user-message-images" aria-label={`${images.length} attached image${images.length === 1 ? "" : "s"}`}>
@@ -1506,6 +1557,7 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
         type="button"
         className="picker-trigger"
         aria-label={`${label}: ${selected?.label ?? "Choose model"}`}
+        title={`${label}: ${selected?.label ?? "Choose model"}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
@@ -1663,9 +1715,9 @@ export function WorkingTrace({ items, running, settled }) {
                 <motion.span
                   className="trace-live-item"
                   key={latestActionKey}
-                  initial={systemReducedMotion ? false : { opacity: 0, y: 5, filter: "blur(3px)" }}
-                  animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                  exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -5, filter: "blur(3px)" }}
+                  initial={systemReducedMotion ? false : { opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -5 }}
                   transition={{ duration: systemReducedMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] }}
                 >
                   <strong>{latestActivity.label}</strong>
@@ -1899,9 +1951,9 @@ function ComposerQuestion({ request, onResolve }) {
 
 function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt }) {
   const [text, setText] = useState("");
-  const [images, setImages] = useState([]);
-  const [draggingImages, setDraggingImages] = useState(false);
-  const [imageNotice, setImageNotice] = useState("");
+  const [attachments, setAttachments] = useState([]);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const [attachmentNotice, setAttachmentNotice] = useState("");
   const [commandSelection, setCommandSelection] = useState(0);
   const [commandsDismissed, setCommandsDismissed] = useState(false);
   const storageKey = `loom.draft.${draftKey}`;
@@ -1923,56 +1975,58 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
   });
   useEffect(() => {
     setText(preserveDrafts ? localStorage.getItem(storageKey) ?? "" : "");
-    setImages([]);
-    setImageNotice("");
+    setAttachments([]);
+    setAttachmentNotice("");
     setCommandsDismissed(false);
     setCommandSelection(0);
     if (!preserveDrafts) localStorage.removeItem(storageKey);
   }, [preserveDrafts, storageKey]);
 
-  const addImageFiles = useCallback(async (files) => {
+  useLayoutEffect(() => {
+    resizeComposerTextarea(textareaRef.current);
+  }, [text]);
+
+  const addAttachmentFiles = useCallback(async (files) => {
     if (disabled) return;
     const candidates = Array.from(files ?? []);
-    const supported = candidates.filter((file) => COMPOSER_IMAGE_TYPES.has(file.type));
-    const withinLimit = supported.filter((file) => file.size <= MAX_COMPOSER_IMAGE_BYTES);
-    if (supported.length !== candidates.length) setImageNotice("Use PNG, JPEG, WebP, GIF, or AVIF images.");
-    else if (withinLimit.length !== supported.length) setImageNotice("Images must be 20 MB or smaller.");
-    else setImageNotice("");
-    const available = Math.max(0, MAX_COMPOSER_IMAGES - images.length);
+    const withinLimit = candidates.filter((file) => file.size <= MAX_COMPOSER_ATTACHMENT_BYTES);
+    if (withinLimit.length !== candidates.length) setAttachmentNotice("Files must be 25 MB or smaller.");
+    else setAttachmentNotice("");
+    const available = Math.max(0, MAX_COMPOSER_ATTACHMENTS - attachments.length);
     if (available === 0) {
-      setImageNotice(`You can attach up to ${MAX_COMPOSER_IMAGES} images.`);
+      setAttachmentNotice(`You can attach up to ${MAX_COMPOSER_ATTACHMENTS} files.`);
       return;
     }
     try {
-      const additions = await Promise.all(withinLimit.slice(0, available).map(readComposerImage));
-      setImages((current) => [...current, ...additions].slice(0, MAX_COMPOSER_IMAGES));
-      if (withinLimit.length > available) setImageNotice(`You can attach up to ${MAX_COMPOSER_IMAGES} images.`);
+      const additions = await Promise.all(withinLimit.slice(0, available).map(readComposerAttachment));
+      setAttachments((current) => [...current, ...additions].slice(0, MAX_COMPOSER_ATTACHMENTS));
+      if (withinLimit.length > available) setAttachmentNotice(`You can attach up to ${MAX_COMPOSER_ATTACHMENTS} files.`);
       textareaRef.current?.focus();
     } catch {
-      setImageNotice("One of the images could not be read.");
+      setAttachmentNotice("One of the files could not be read.");
     }
-  }, [disabled, images.length]);
+  }, [attachments.length, disabled]);
 
   useEffect(() => {
     const onDragEnter = (event) => {
-      if (disabled || questionRequest || !transferHasImages(event.dataTransfer)) return;
+      if (disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
-      setDraggingImages(true);
+      setDraggingFiles(true);
     };
     const onDragOver = (event) => {
-      if (disabled || questionRequest || !transferHasImages(event.dataTransfer)) return;
+      if (disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-      setDraggingImages(true);
+      setDraggingFiles(true);
     };
     const onDragLeave = (event) => {
-      if (!event.relatedTarget) setDraggingImages(false);
+      if (!event.relatedTarget) setDraggingFiles(false);
     };
     const onDrop = (event) => {
-      if (disabled || questionRequest || !transferHasImages(event.dataTransfer)) return;
+      if (disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
-      setDraggingImages(false);
-      addImageFiles(imageFilesFromTransfer(event.dataTransfer));
+      setDraggingFiles(false);
+      addAttachmentFiles(attachmentFilesFromTransfer(event.dataTransfer));
     };
     window.addEventListener("dragenter", onDragEnter);
     window.addEventListener("dragover", onDragOver);
@@ -1984,7 +2038,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
       window.removeEventListener("dragleave", onDragLeave);
       window.removeEventListener("drop", onDrop);
     };
-  }, [addImageFiles, disabled, questionRequest]);
+  }, [addAttachmentFiles, disabled, questionRequest]);
   const slashMatch = text.match(/^\/([^\s]*)$/);
   const slashQuery = slashMatch?.[1].toLowerCase() ?? null;
   const matchingCommands = slashQuery === null ? [] : SLASH_COMMANDS.filter((command) => {
@@ -2007,16 +2061,21 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
   };
   const submit = async () => {
     const value = text.trim();
-    if ((!value && images.length === 0) || disabled || busy || !selected) return;
-    const submittedImages = images;
+    if ((!value && attachments.length === 0) || disabled || busy || !selected) return;
+    const submittedAttachments = attachments;
     setText("");
-    setImages([]);
-    setImageNotice("");
+    setAttachments([]);
+    setAttachmentNotice("");
     localStorage.removeItem(storageKey);
-    const accepted = await onSubmit(value, submittedImages.map((image) => image.url));
+    const accepted = await onSubmit(value, submittedAttachments.map((attachment) => ({
+      name: attachment.name,
+      type: attachment.type,
+      size: attachment.size,
+      dataUrl: attachment.url
+    })));
     if (accepted === false) {
       setText((current) => current || value);
-      setImages((current) => current.length ? current : submittedImages);
+      setAttachments((current) => current.length ? current : submittedAttachments);
       if (preserveDrafts) localStorage.setItem(storageKey, value);
     }
   };
@@ -2028,11 +2087,11 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
     );
   }
   return (
-    <div className="composer" data-dragging-images={draggingImages}>
-      {draggingImages && (
+    <div className="composer" data-dragging-files={draggingFiles}>
+      {draggingFiles && (
         <div className="composer-drop-target" role="status">
-          <ImageSquare size={22} />
-          <span>Drop images to attach</span>
+          <Files size={22} />
+          <span>Drop files to attach</span>
         </div>
       )}
       {commandMenuOpen && (
@@ -2065,12 +2124,20 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
           </div>
         </div>
       )}
-      {images.length > 0 && (
-        <div className="composer-attachments" aria-label="Attached images">
-          {images.map((image) => (
-            <figure className="composer-attachment" key={image.id}>
-              <img src={image.url} alt={image.name} />
-              <button type="button" aria-label={`Remove ${image.name}`} onClick={() => setImages((current) => current.filter((candidate) => candidate.id !== image.id))}>
+      {attachments.length > 0 && (
+        <div className="composer-attachments" aria-label="Attached files">
+          {attachments.map((attachment) => (
+            <figure className="composer-attachment" key={attachment.id} title={`${attachment.name} · ${attachmentSize(attachment.size)}`}>
+              {COMPOSER_IMAGE_TYPES.has(attachment.type) ? (
+                <img src={attachment.url} alt={attachment.name} />
+              ) : (
+                <div className="composer-file-tile">
+                  <File size={24} />
+                  <strong>{attachmentExtension(attachment.name)}</strong>
+                  <span>{attachment.name}</span>
+                </div>
+              )}
+              <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((candidate) => candidate.id !== attachment.id))}>
                 <X size={10} weight="bold" />
               </button>
             </figure>
@@ -2079,17 +2146,17 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
       )}
       <textarea
         ref={textareaRef}
-        aria-label="Message Codex"
+        aria-label="Task prompt"
         aria-autocomplete="list"
         aria-expanded={commandMenuOpen}
         aria-controls={commandMenuOpen ? commandListId : undefined}
         aria-activedescendant={commandMenuOpen && activeCommand ? `${commandListId}-${activeCommand.name}` : undefined}
-        placeholder={disabled ? "Connect Codex and select a project to begin" : running ? "Steer the active task" : "Ask Codex to work on this project"}
+        placeholder={disabled ? "Connect a provider and select a project to begin" : running ? "Steer the active task" : "Describe the task you want to work on"}
         value={text}
         disabled={disabled}
         onPaste={(event) => {
-          const files = imageFilesFromTransfer(event.clipboardData);
-          if (files.length > 0) addImageFiles(files);
+          const files = attachmentFilesFromTransfer(event.clipboardData);
+          if (files.length > 0) addAttachmentFiles(files);
         }}
         onFocus={() => setCommandsDismissed(false)}
         onBlur={() => setCommandsDismissed(true)}
@@ -2123,22 +2190,21 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
           }
         }}
       />
-      {imageNotice && <div className="composer-image-notice" role="status">{imageNotice}</div>}
+      {attachmentNotice && <div className="composer-image-notice" role="status">{attachmentNotice}</div>}
       <div className="composer-controls">
         <div className="composer-primary-actions">
           <input
             ref={fileInputRef}
             className="composer-file-input"
             type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
             multiple
             tabIndex={-1}
             onChange={(event) => {
-              addImageFiles(event.target.files);
+              addAttachmentFiles(event.target.files);
               event.target.value = "";
             }}
           />
-          <IconButton label="Attach images" className="composer-attach" onClick={() => fileInputRef.current?.click()} disabled={disabled || images.length >= MAX_COMPOSER_IMAGES}>
+          <IconButton label="Attach files" className="composer-attach" onClick={() => fileInputRef.current?.click()} disabled={disabled || attachments.length >= MAX_COMPOSER_ATTACHMENTS}>
             <Plus size={18} />
           </IconButton>
           <ComposerPicker
@@ -2189,7 +2255,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
             disabled={disabled || running}
           />
           {running && <IconButton label="Interrupt task" className="turn-button" onClick={onInterrupt}><Pause size={16} weight="fill" /></IconButton>}
-          <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || !selected || (!text.trim() && images.length === 0)}>
+          <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || !selected || (!text.trim() && attachments.length === 0)}>
             <PaperPlaneTilt size={17} weight="fill" />
           </IconButton>
         </div>
@@ -2204,7 +2270,7 @@ function EmptyConversation({ project, runtime, onOpenProject }) {
       <div className="empty-state">
         <span className="empty-mark"><FolderOpen size={25} /></span>
         <h1>Create a project</h1>
-        <p>Choose a local folder. Loom will keep its tasks, board, review, and workflows together.</p>
+        <p>Choose a local folder. Pixice will keep its tasks, board, review, and workflows together.</p>
         <button type="button" className="primary-button" onClick={onOpenProject}><FolderOpen size={16} />New project</button>
       </div>
     );
@@ -2212,8 +2278,8 @@ function EmptyConversation({ project, runtime, onOpenProject }) {
   return (
     <div className="empty-state">
       <span className="empty-mark"><Sparkle size={25} /></span>
-      <h1>What should Codex work on?</h1>
-      <p>{runtime.connected ? `Start a task in ${project.displayName}. Its conversation, plan, agents, and changes will appear here.` : "The project is ready, but the local Codex runtime is not connected yet."}</p>
+      <h1>What are we working on?</h1>
+      <p>{runtime.connected ? `Pixice is ready in ${project.displayName}. Start a task to see its conversation, plan, agents, and changes here.` : "The project is ready, but the local agent runtime is not connected yet."}</p>
     </div>
   );
 }
@@ -2237,10 +2303,16 @@ function ConversationWorkspace({
   browserState,
   onBrowserState,
   previewFileTabs,
+  previewInstrumentTabs,
   previewActiveTabId,
   onPreviewActiveTabChange,
   onPreviewFileUpdate,
   onPreviewFileClose,
+  onPreviewInstrumentClose,
+  onPreviewInstrumentRefresh,
+  onPreviewInstrumentEvent,
+  onPreviewInstrumentInvoke,
+  onPreviewInstrumentPin,
   onOpenWorkspaceReference,
   composerProps
 }) {
@@ -2254,6 +2326,7 @@ function ConversationWorkspace({
     return paths.length ? paths : [item.path || item.filePath].filter(Boolean);
   })).size || changedCount;
   const scrollRef = useRef(null);
+  const scrollFrameRef = useRef(null);
   const followLatestRef = useRef(true);
   const followedThreadRef = useRef(thread?.id);
   const [activePromptId, setActivePromptId] = useState("");
@@ -2274,7 +2347,7 @@ function ConversationWorkspace({
     setActivePromptId((current) => current === nextId ? current : nextId);
   }, [promptItems]);
   const liveLength = items.map((item) => (item.text?.length ?? 0) + (item.aggregatedOutput?.length ?? 0) + (Array.isArray(item.summary) ? item.summary.join("").length : 0)).join(":");
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (followedThreadRef.current !== thread?.id) {
       followedThreadRef.current = thread?.id;
       followLatestRef.current = true;
@@ -2286,11 +2359,19 @@ function ConversationWorkspace({
     return () => window.cancelAnimationFrame(frame);
   }, [thread?.id, items.length, liveLength, promptItems, updateActivePrompt]);
 
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
+
   const handleConversationScroll = () => {
     const node = scrollRef.current;
     if (!node) return;
     followLatestRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
-    updateActivePrompt();
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      updateActivePrompt();
+    });
   };
 
   const handlePromptSelect = (item) => {
@@ -2310,7 +2391,7 @@ function ConversationWorkspace({
     <div className={`task-workspace${previewOpen ? " preview-mode" : ""}`}>
       <main className="main-canvas">
         <AppToolbar
-          title={thread ? threadTitle(thread) : project?.displayName ?? "Loom"}
+          title={thread ? threadTitle(thread) : project?.displayName ?? "Pixice"}
           subtitle={thread ? project?.displayName : project?.canonicalPath}
           inspectorOpen={inspectorOpen}
           onInspectorToggle={onInspectorToggle}
@@ -2363,10 +2444,17 @@ function ConversationWorkspace({
           onClose={onPreviewToggle}
           projectId={project?.id}
           fileTabs={previewFileTabs}
+          instrumentTabs={previewInstrumentTabs}
           activeTabId={previewActiveTabId}
           onActiveTabChange={onPreviewActiveTabChange}
           onFileUpdate={onPreviewFileUpdate}
           onFileClose={onPreviewFileClose}
+          onInstrumentClose={onPreviewInstrumentClose}
+          onInstrumentRefresh={onPreviewInstrumentRefresh}
+          onInstrumentEvent={onPreviewInstrumentEvent}
+          onInstrumentInvoke={onPreviewInstrumentInvoke}
+          onInstrumentPin={onPreviewInstrumentPin}
+          onOpenResource={onOpenWorkspaceReference}
         />
       )}
     </div>
@@ -2517,7 +2605,7 @@ function ApprovalCard({ request, onResolve }) {
           })}
           <button className="approve" disabled={questions.some((question, index) => !(answers[question.id ?? `question-${index + 1}`] ?? "").trim())} onClick={submitAnswers}><Check size={15} />Submit answers</button>
         </div>
-      ) : <small>This request type is not supported by this Loom version.</small>}
+      ) : <small>This request type is not supported by this Pixice version.</small>}
     </section>
   );
 }
@@ -2749,7 +2837,7 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin }) {
   return (
     <div className="providers-pane">
       <div className="settings-controls">
-        <p className="providers-intro">Accounts stay with the provider. Loom only opens its sign-in flow and reads the resulting account status.</p>
+        <p className="providers-intro">Accounts stay with the provider. Pixice only opens its sign-in flow and reads the resulting account status.</p>
         <IconButton label="Refresh providers" onClick={onRefresh} disabled={loading}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
       </div>
       <div className="provider-list" aria-label="AI providers">
@@ -2787,7 +2875,7 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin }) {
       {bridgeModels.length > 0 && (
         <section className="bridge-model-overview" aria-labelledby="bridge-model-title">
           <header>
-            <span><h2 id="bridge-model-title">Loom bridge routing</h2><p>Internal fit ratings used when agents choose a model for a new Loom thread.</p></span>
+            <span><h2 id="bridge-model-title">Pixice bridge routing</h2><p>Internal fit ratings used when agents choose a model for a new Pixice thread.</p></span>
             <small>1–5 heuristic</small>
           </header>
           <div className="bridge-model-list">
@@ -2806,9 +2894,53 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin }) {
               </article>
             ))}
           </div>
-          <p className="bridge-model-note">Connected models only. Loom normally prefers cost-effective GPT 5.6 Luna, Terra, or Sol; Claude is preferred when requested, when it is the only family available, or for UI and taste work.</p>
+          <p className="bridge-model-note">Connected models only. Pixice normally prefers cost-effective GPT 5.6 Luna, Terra, or Sol; Claude is preferred when requested, when it is the only family available, or for UI and taste work.</p>
         </section>
       )}
+    </div>
+  );
+}
+
+function GitHubSettings({ status, loading, progress, onRefresh, onLogin, onLogout }) {
+  const connected = status.authenticated;
+  const busy = loading || progress?.state === "starting" || progress?.state === "waiting";
+  const accountLabel = status.account?.name || status.account?.login;
+  const stateLabel = connected ? "Connected" : status.available ? "Sign in required" : "Unavailable";
+  const detail = connected
+    ? `${accountLabel}${status.account?.name && status.account?.login ? ` · @${status.account.login}` : ""}`
+    : status.message;
+
+  return (
+    <div className="github-settings-pane">
+      <div className="settings-controls">
+        <p className="providers-intro">Pixice includes GitHub CLI in release builds so agents can use <code>gh</code> without a separate install.</p>
+        <IconButton label="Refresh GitHub connection" onClick={onRefresh} disabled={loading}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
+      </div>
+      <article className="github-account-card" aria-label="GitHub account">
+        <span className="github-account-brand"><GitBranch size={22} /></span>
+        <span className="github-account-copy">
+          <span className="github-account-heading"><strong>GitHub</strong><span className={`settings-status ${connected ? "ready" : "offline"}`}><i />{stateLabel}</span></span>
+          <span>{detail}</span>
+          <small>{status.version ? `GitHub CLI ${status.version} · ${status.source === "bundled" ? "Included with Pixice" : "System install"}` : "GitHub CLI is missing from this development build."}</small>
+        </span>
+        {connected ? (
+          <button className="settings-action" disabled={busy} onClick={onLogout}>{busy ? <SpinnerGap className="spin-icon" size={14} /> : null}Disconnect</button>
+        ) : (
+          <button className="settings-action primary" disabled={busy || !status.available} onClick={onLogin}>{busy ? <><SpinnerGap className="spin-icon" size={14} />Waiting…</> : "Sign in"}</button>
+        )}
+      </article>
+      {progress?.state === "waiting" && (
+        <div className="github-login-progress" role="status">
+          <Info size={16} />
+          <span><strong>{progress.message}</strong><small>The browser flow may ask for the one-time code.</small></span>
+          {progress.code && <kbd>{progress.code}</kbd>}
+        </div>
+      )}
+      <SettingsGroup title="Where the connection is used">
+        <SettingsRow title="Pixice agents" description="Agents can run GitHub CLI commands for repositories, pull requests, issues, releases, fetch, and push."><span className="settings-value">gh</span></SettingsRow>
+        <SettingsRow title="Workflow Git nodes" description="These inspect the local repository and stay read-only, so they work without a GitHub account."><span className="settings-value">No login needed</span></SettingsRow>
+      </SettingsGroup>
+      <p className="settings-footnote">GitHub CLI owns the account session and uses its normal credential storage. Disconnecting here signs GitHub CLI out of github.com.</p>
     </div>
   );
 }
@@ -3011,15 +3143,16 @@ function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRe
 
 const SETTINGS_PAGES = [
   { id: "general", label: "General", description: "Task defaults and safety", icon: Gear, keywords: "permissions model reasoning delete drafts" },
-  { id: "agent-behavior", label: "Agent Behavior", description: "Guidance loaded for every agent", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification" },
+  { id: "agent-behavior", label: "Agent Behavior", description: "Guidance loaded for every agent", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration" },
   { id: "orchestration", label: "Orchestration", description: "How delegated work surfaces", icon: TreeStructure, keywords: "agents progress task map approvals" },
   { id: "appearance", label: "Appearance", description: "Density, projects, hints, and motion", icon: Eye, keywords: "compact comfortable projects sidebar recent third row nine legacy old nested shortcuts animation" },
   { id: "updates", label: "Updates", description: "Version and GitHub releases", icon: ArrowClockwise, keywords: "version release download install github update" },
+  { id: "github", label: "GitHub", description: "Account and agent access", icon: GitBranch, keywords: "github gh cli login sign in account pull request issues push fetch workflow" },
   { id: "providers", label: "Providers", description: "Accounts, models, and sessions", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions" },
   { id: "usage", label: "Usage", description: "Tokens, trends, and API cost", icon: ChartLineUp, keywords: "cost spend pricing tokens input output cache daily weekly monthly charts" },
   { id: "runtime", label: "Runtime", description: "Codex connection and context", icon: Gauge, keywords: "status models project connected" },
   { id: "capabilities", label: "Capabilities", description: "Skills, apps, and MCP", icon: PlugsConnected, keywords: "extensions plugins tools servers" },
-  { id: "shortcuts", label: "Shortcuts", description: "Fast paths through Loom", icon: Code, keywords: "keyboard new task settings" }
+  { id: "shortcuts", label: "Shortcuts", description: "Fast paths through Pixice", icon: Code, keywords: "keyboard new task settings" }
 ];
 
 function SettingsSidebar({ page, onPageChange, onBack }) {
@@ -3066,6 +3199,12 @@ function SettingsWorkspace({
   providersLoading,
   onRefreshProviders,
   onProviderLogin,
+  githubStatus,
+  githubLoading,
+  githubProgress,
+  onRefreshGitHub,
+  onGitHubLogin,
+  onGitHubLogout,
   usageSummary,
   usageLoading,
   usageError,
@@ -3117,21 +3256,29 @@ function SettingsWorkspace({
       </>
     );
   } else if (page === "agent-behavior") {
+    const coreBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category !== "loom-native");
+    const loomNativeBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category === "loom-native");
+    const renderBehavior = (behavior) => (
+      <SettingsRow key={behavior.id} title={behavior.label} description={behavior.description}>
+        <SettingsToggle label={behavior.label} checked={agentBehaviors[behavior.id] ?? behavior.defaultEnabled} onChange={(value) => onAgentBehaviorChange(behavior.id, value)} />
+      </SettingsRow>
+    );
     pageContent = (
       <>
-        <SettingsGroup title="Behavior packs" description="Bundled Markdown guidance added to every new or resumed Loom agent.">
-          {agentBehaviorCatalog.map((behavior) => (
-            <SettingsRow key={behavior.id} title={behavior.label} description={behavior.description}>
-              <SettingsToggle label={behavior.label} checked={agentBehaviors[behavior.id] ?? behavior.defaultEnabled} onChange={(value) => onAgentBehaviorChange(behavior.id, value)} />
-            </SettingsRow>
-          ))}
+        <SettingsGroup title="Behavior packs" description="Bundled Markdown guidance added to every new or resumed Pixice agent.">
+          {coreBehaviors.map(renderBehavior)}
         </SettingsGroup>
-        <p className="settings-footnote">New agents use changes immediately. Existing sessions pick them up when Loom next resumes them; an active turn keeps its current guidance.</p>
+        {loomNativeBehaviors.length > 0 && (
+          <SettingsGroup title="Pixice-native features" description="Optional guidance that makes agents more proactive with Pixice's own coordination tools.">
+            {loomNativeBehaviors.map(renderBehavior)}
+          </SettingsGroup>
+        )}
+        <p className="settings-footnote">New agents use changes immediately. Existing sessions pick them up when Pixice next resumes them; an active turn keeps its current guidance.</p>
       </>
     );
   } else if (page === "orchestration") {
     pageContent = (
-      <SettingsGroup title="Live orchestration" description="Decide how Loom reveals parallel work and decisions.">
+      <SettingsGroup title="Live orchestration" description="Decide how Pixice reveals parallel work and decisions.">
         <SettingsRow title="Show task progress" description="Keep live plans, completion, agents, and touched files in the conversation.">
           <SettingsToggle label="Show task progress" checked={preferences.showTaskProgress} onChange={(value) => onPreferenceChange("showTaskProgress", value)} />
         </SettingsRow>
@@ -3145,7 +3292,7 @@ function SettingsWorkspace({
     );
   } else if (page === "appearance") {
     pageContent = (
-      <SettingsGroup title="Interface" description="Tune the shell without changing Loom's native character.">
+      <SettingsGroup title="Interface" description="Tune the shell without changing Pixice's native character.">
         <SettingsRow title="Interface density" description="Choose tighter or roomier navigation and setting rows.">
           <select className="settings-select" aria-label="Interface density" value={preferences.density} onChange={(event) => onPreferenceChange("density", event.target.value)}>
             <option value="compact">Compact</option>
@@ -3175,8 +3322,8 @@ function SettingsWorkspace({
         : { label: updateStatus.state === "error" ? "Try again" : updateStatus.state === "not-available" ? "Check again" : "Check for updates", run: onCheckForUpdates };
     pageContent = (
       <>
-        <SettingsGroup title="Loom updates" description="Packaged releases are downloaded directly from the official GitHub repository.">
-          <SettingsRow title="Current version" description={`Loom ${updateStatus.currentVersion}`}>
+        <SettingsGroup title="Pixice updates" description="Packaged releases are downloaded directly from the official GitHub repository.">
+          <SettingsRow title="Current version" description={`Pixice ${updateStatus.currentVersion}`}>
             <span className="settings-value">{updateStatus.supported ? "Release build" : "Development build"}</span>
           </SettingsRow>
           <SettingsRow title={updateStatus.state === "downloaded" ? "Ready to install" : "Update status"} description={updateStatus.message}>
@@ -3190,7 +3337,7 @@ function SettingsWorkspace({
             </div>
           )}
         </SettingsGroup>
-        <p className="settings-footnote">Loom checks for updates in the background. Downloads and restarts remain under your control.</p>
+        <p className="settings-footnote">Pixice checks for updates in the background. Downloads and restarts remain under your control.</p>
       </>
     );
   } else if (page === "runtime") {
@@ -3212,13 +3359,15 @@ function SettingsWorkspace({
     );
   } else if (page === "providers") {
     pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} />;
+  } else if (page === "github") {
+    pageContent = <GitHubSettings status={githubStatus} loading={githubLoading} progress={githubProgress} onRefresh={onRefreshGitHub} onLogin={onGitHubLogin} onLogout={onGitHubLogout} />;
   } else if (page === "usage") {
     pageContent = <UsageSettings summary={usageSummary} loading={usageLoading} error={usageError} rangeDays={usageRangeDays} onRangeChange={onUsageRangeChange} onRefresh={onRefreshUsage} />;
   } else if (page === "capabilities") {
     pageContent = <CapabilitiesSettings extensions={extensions} loading={extensionsLoading} onRefresh={onRefreshCapabilities} />;
   } else {
     pageContent = (
-      <SettingsGroup title="App shortcuts" description="These shortcuts are available anywhere in Loom.">
+      <SettingsGroup title="App shortcuts" description="These shortcuts are available anywhere in Pixice.">
         <SettingsRow title="New task" description="Start a blank task in the selected project."><kbd className="settings-shortcut">{isMac ? "⌘ N" : "Ctrl N"}</kbd></SettingsRow>
         <SettingsRow title="Open settings" description="Jump directly to this settings workspace."><kbd className="settings-shortcut">{isMac ? "⌘ ," : "Ctrl ,"}</kbd></SettingsRow>
       </SettingsGroup>
@@ -3242,7 +3391,7 @@ function AttentionWorkspace({ attention, onResolve }) {
     <main className="main-canvas workspace">
       <AppToolbar title="Attention" subtitle={`${attention.length} pending`} />
       <div className="attention-column">
-        <div className="settings-title"><span>Attention</span><h1>Decisions waiting on you</h1><p>Approval requests from every active Loom task appear here.</p></div>
+        <div className="settings-title"><span>Attention</span><h1>Decisions waiting on you</h1><p>Approval requests from every active Pixice task appear here.</p></div>
         {attention.length === 0 ? <div className="empty-state compact"><CheckCircle size={28} weight="fill" /><h2>Nothing needs attention</h2><p>Active tasks can continue without input.</p></div> : attention.map((request) => <ApprovalCard request={request} onResolve={onResolve} key={request.id} />)}
       </div>
     </main>
@@ -3288,6 +3437,7 @@ export function App() {
   const threadsLoadRequestRef = useRef(0);
   const reviewLoadRequestRef = useRef(0);
   const boardLoadRequestRef = useRef(0);
+  const toolsLoadRequestRef = useRef(0);
   const extensionsLoadRequestRef = useRef(0);
   const usageLoadRequestRef = useRef(0);
   const submittingRef = useRef(false);
@@ -3300,8 +3450,11 @@ export function App() {
   const [attention, setAttention] = useState([]);
   const [review, setReview] = useState({ repository: null, diff: "" });
   const [boardTasks, setBoardTasks] = useState([]);
+  const [projectTools, setProjectTools] = useState([]);
   const [extensions, setExtensions] = useState(EMPTY_EXTENSIONS);
   const [providers, setProviders] = useState([]);
+  const [githubStatus, setGithubStatus] = useState(EMPTY_GITHUB_STATUS);
+  const [githubProgress, setGithubProgress] = useState(null);
   const [usageSummary, setUsageSummary] = useState(null);
   const [usageError, setUsageError] = useState(null);
   const [usageRangeDays, setUsageRangeDays] = useState(30);
@@ -3350,7 +3503,7 @@ export function App() {
   }, []);
   const [draftMode, setDraftMode] = useState(false);
   const draftModeRef = useRef(false);
-  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, board: false, extensions: false, providers: false, usage: false });
+  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, board: false, tools: false, extensions: false, providers: false, github: false, usage: false });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -3367,6 +3520,7 @@ export function App() {
   const previewOpen = previewWorkspace.open;
   const browserState = previewWorkspace.browserState;
   const previewFileTabs = previewWorkspace.fileTabs;
+  const previewInstrumentTabs = previewWorkspace.instrumentTabs ?? [];
   const previewActiveTabId = previewWorkspace.activeTabId;
   const updatePreviewWorkspace = useCallback((workspaceId, updater) => {
     if (!workspaceId) return;
@@ -3393,6 +3547,12 @@ export function App() {
     updatePreviewWorkspace(previewWorkspaceId, (workspace) => ({
       ...workspace,
       fileTabs: typeof value === "function" ? value(workspace.fileTabs) : value
+    }));
+  }, [previewWorkspaceId, updatePreviewWorkspace]);
+  const setPreviewInstrumentTabs = useCallback((value) => {
+    updatePreviewWorkspace(previewWorkspaceId, (workspace) => ({
+      ...workspace,
+      instrumentTabs: typeof value === "function" ? value(workspace.instrumentTabs ?? []) : value
     }));
   }, [previewWorkspaceId, updatePreviewWorkspace]);
   const setPreviewActiveTabId = useCallback((value) => {
@@ -3738,6 +3898,26 @@ export function App() {
     }
   }, [api]);
 
+  const loadProjectTools = useCallback(async (projectId) => {
+    if (!api?.instruments || !projectId) {
+      setProjectTools([]);
+      return;
+    }
+    const requestId = ++toolsLoadRequestRef.current;
+    setLoading((state) => ({ ...state, tools: true }));
+    try {
+      const result = await api.instruments.tools({ projectId });
+      if (requestId !== toolsLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
+      setProjectTools(result.data ?? []);
+    } catch (cause) {
+      if (requestId !== toolsLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
+      setError(cause.message);
+      setProjectTools([]);
+    } finally {
+      if (requestId === toolsLoadRequestRef.current) setLoading((state) => ({ ...state, tools: false }));
+    }
+  }, [api]);
+
   const loadExtensions = useCallback(async () => {
     if (!api) return;
     const requestId = ++extensionsLoadRequestRef.current;
@@ -3773,6 +3953,44 @@ export function App() {
     await loadModels();
   }, [loadModels, loadProviders]);
 
+  const loadGitHubStatus = useCallback(async () => {
+    if (!api?.github) return;
+    setLoading((state) => ({ ...state, github: true }));
+    try {
+      setGithubStatus(await api.github.status());
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setLoading((state) => ({ ...state, github: false }));
+    }
+  }, [api]);
+
+  const loginGitHub = useCallback(async () => {
+    if (!api?.github) return;
+    setGithubProgress({ state: "starting", code: null, message: "Opening GitHub sign-in…" });
+    try {
+      setGithubStatus(await api.github.login());
+      setGithubProgress(null);
+    } catch (cause) {
+      setGithubProgress(null);
+      setError(cause.message);
+      await loadGitHubStatus();
+    }
+  }, [api, loadGitHubStatus]);
+
+  const logoutGitHub = useCallback(async () => {
+    if (!api?.github) return;
+    setLoading((state) => ({ ...state, github: true }));
+    try {
+      setGithubStatus(await api.github.logout());
+      setGithubProgress(null);
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setLoading((state) => ({ ...state, github: false }));
+    }
+  }, [api]);
+
   useEffect(() => {
     loadProviders();
   }, [loadProviders]);
@@ -3797,7 +4015,7 @@ export function App() {
   useEffect(() => {
     if (!api) {
       setRuntime({ state: "unavailable", connected: false });
-      setError("Loom’s desktop bridge is unavailable. Run the Electron app to connect projects and Codex.");
+      setError("Pixice’s desktop bridge is unavailable. Run the Electron app to connect projects and Codex.");
       setLoading((state) => ({ ...state, app: false }));
       return;
     }
@@ -3902,6 +4120,19 @@ export function App() {
   }, [api, previewWorkspaceId, updatePreviewWorkspace]);
 
   useEffect(() => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) return;
+    let cancelled = false;
+    api.instruments.list({ projectId: selectedProjectId, threadId: selectedThreadId }).then((response) => {
+      if (cancelled) return;
+      updatePreviewWorkspace(selectedThreadId, (workspace) => ({
+        ...workspace,
+        instrumentTabs: response.data ?? []
+      }));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [api, selectedProjectId, selectedThreadId, updatePreviewWorkspace]);
+
+  useEffect(() => {
     if (!api?.updates) return;
     let cancelled = false;
     api.updates.status().then((status) => {
@@ -3982,7 +4213,8 @@ export function App() {
     loadThreads(selectedProjectId);
     loadReview(selectedProjectId);
     loadBoard(selectedProjectId);
-  }, [selectedProjectId, loadBoard, loadReview, loadThreads, runtime.connected]);
+    loadProjectTools(selectedProjectId);
+  }, [selectedProjectId, loadBoard, loadProjectTools, loadReview, loadThreads, runtime.connected]);
 
   useEffect(() => {
     setPlan([]);
@@ -4038,9 +4270,30 @@ export function App() {
   useEffect(() => {
     if (activeView === "settings") loadExtensions();
     if (activeView === "settings" && settingsPage === "providers") loadProviders();
+    if (activeView === "settings" && settingsPage === "github") loadGitHubStatus();
     if (activeView === "settings" && settingsPage === "usage") loadUsage(usageRangeDays);
     if (activeView === "review" && selectedProjectId) loadReview(selectedProjectId);
-  }, [activeView, loadExtensions, loadProviders, loadReview, loadUsage, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey]);
+    if (activeView === "tools" && selectedProjectId) loadProjectTools(selectedProjectId);
+  }, [activeView, loadExtensions, loadGitHubStatus, loadProjectTools, loadProviders, loadReview, loadUsage, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey]);
+
+  const refreshEventInstrumentSources = useCallback((capabilities, eventProjectId) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId || eventProjectId && eventProjectId !== selectedProjectId) return;
+    const requested = new Set(capabilities);
+    const refreshes = previewInstrumentTabs.flatMap((instrument) => Object.entries(instrument.document.sources ?? {})
+      .filter(([, source]) => source.refresh === "event" && requested.has(source.capability))
+      .map(([source]) => ({ instrumentId: instrument.id, source })));
+    if (!refreshes.length) return;
+    void (async () => {
+      for (const refresh of refreshes) {
+        try {
+          const instrument = await api.instruments.refresh({ projectId: selectedProjectId, threadId: selectedThreadId, ...refresh });
+          setPreviewInstrumentTabs((current) => current.map((candidate) => candidate.id === instrument.id ? { ...instrument, launchValues: candidate.launchValues } : candidate));
+        } catch {
+          // The Instrument keeps its last good snapshot and exposes the source error.
+        }
+      }
+    })();
+  }, [api, previewInstrumentTabs, selectedProjectId, selectedThreadId, setPreviewInstrumentTabs]);
 
   useEffect(() => {
     if (!api) return;
@@ -4060,6 +4313,11 @@ export function App() {
         setError(event.payload.message);
         return;
       }
+      if (event.type === "GitHubAuthProgress") {
+        setGithubProgress(event.payload);
+        if (event.payload.state === "complete") loadGitHubStatus();
+        return;
+      }
       if (event.type === "AttentionRequired") {
         setAttention((current) => current.some((request) => request.id === event.payload.id) ? current : [...current, event.payload]);
         const questionForCurrentThread = isQuestionRequest(event.payload) && event.payload.params?.threadId === selectedThreadIdRef.current;
@@ -4075,7 +4333,9 @@ export function App() {
         updatePreviewWorkspace(workspaceId, (workspace) => ({
           ...workspace,
           browserState: event.payload,
-          activeTabId: workspace.activeTabId?.startsWith("file:") ? workspace.activeTabId : event.payload.activeTabId ?? workspace.activeTabId
+          activeTabId: workspace.activeTabId?.startsWith("file:") || workspace.activeTabId?.startsWith("instrument:")
+            ? workspace.activeTabId
+            : event.payload.activeTabId ?? workspace.activeTabId
         }));
         return;
       }
@@ -4087,9 +4347,65 @@ export function App() {
         }
         return;
       }
+      if (event.type === "InstrumentUpdated") {
+        const workspaceId = event.payload.workspaceId ?? event.payload.threadId;
+        const instrument = event.payload.instrument;
+        if (instrument?.projectId === selectedProjectIdRef.current) {
+          setProjectTools((current) => {
+            const without = current.filter((candidate) => candidate.id !== instrument.id);
+            return instrument.lifecycle === "pinned" && event.payload.action !== "deleted" ? [instrument, ...without] : without;
+          });
+        }
+        if (!workspaceId || !instrument) return;
+        updatePreviewWorkspace(workspaceId, (workspace) => {
+          const current = workspace.instrumentTabs ?? [];
+          if (event.payload.action === "deleted") {
+            const instrumentTabId = `instrument:${instrument.id}`;
+            const nextTabs = current.filter((candidate) => candidate.id !== instrument.id);
+            return {
+              ...workspace,
+              instrumentTabs: nextTabs,
+              activeTabId: workspace.activeTabId === instrumentTabId
+                ? nextTabs.length ? `instrument:${nextTabs[0].id}` : workspace.browserState?.activeTabId ?? workspace.fileTabs?.at(-1)?.id ?? null
+                : workspace.activeTabId
+            };
+          }
+          const exists = current.some((candidate) => candidate.id === instrument.id);
+          return {
+            ...workspace,
+            instrumentTabs: exists
+              ? current.map((candidate) => candidate.id === instrument.id ? { ...instrument, launchValues: candidate.launchValues } : candidate)
+              : [...current, instrument]
+          };
+        });
+        return;
+      }
+      if (event.type === "InstrumentOpenRequested") {
+        const workspaceId = event.payload.workspaceId ?? event.payload.threadId;
+        const instrument = event.payload.instrument;
+        if (!workspaceId || !instrument) return;
+        updatePreviewWorkspace(workspaceId, (workspace) => {
+          const current = workspace.instrumentTabs ?? [];
+          const exists = current.some((candidate) => candidate.id === instrument.id);
+          return {
+            ...workspace,
+            open: true,
+            activeTabId: `instrument:${instrument.id}`,
+            instrumentTabs: exists
+              ? current.map((candidate) => candidate.id === instrument.id ? { ...instrument, launchValues: instrument.launchValues ?? candidate.launchValues } : candidate)
+              : [...current, instrument]
+          };
+        });
+        if (workspaceId === selectedThreadIdRef.current && document.querySelector(".loom-app.view-task")) setInspectorOpen(false);
+        return;
+      }
       if (event.type === "BoardUpdated") {
         if (!event.payload?.projectId || event.payload.projectId === selectedProjectId) loadBoard(selectedProjectId);
+        refreshEventInstrumentSources(["board.list"], event.payload?.projectId);
         return;
+      }
+      if (event.type === "WorkflowRunUpdated" || event.type === "WorkflowUpdated") {
+        refreshEventInstrumentSources(["workflows.list", "workflow.output"], event.payload?.projectId);
       }
       if (event.type === "UpdateState") {
         setUpdateStatus(event.payload);
@@ -4152,6 +4468,7 @@ export function App() {
           setThread((current) => current?.id === payload.threadId ? { ...current, name: payload.name } : current);
         }
       }
+      if (payload.method === "turn/plan/updated") refreshEventInstrumentSources(["tasks.plan"], payload.projectId);
       if (payload.method === "thread/started" && payload.thread && (!payload.projectId || payload.projectId === selectedProjectId)) {
         setThreads((current) => {
           const existing = current.find((candidate) => candidate.id === payload.thread.id);
@@ -4178,7 +4495,7 @@ export function App() {
         }
       }
     });
-  }, [api, commitRuntimePayload, loadAgents, loadBoard, loadModels, loadReview, loadThreads, normalizePlan, refreshThread, selectedProjectId, updatePreviewWorkspace]);
+  }, [api, commitRuntimePayload, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadReview, loadThreads, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, updatePreviewWorkspace]);
 
   const openProject = () => {
     if (!api?.projects) return;
@@ -4254,7 +4571,7 @@ export function App() {
     const projectId = selectedProjectId;
     const target = threads.find((candidate) => candidate.id === threadId);
     const title = threadTitle(target);
-    if (preferences.confirmBeforeDelete && !window.confirm(`Delete “${title}”?\n\nThis removes the conversation from Loom’s task list.`)) return;
+    if (preferences.confirmBeforeDelete && !window.confirm(`Delete “${title}”?\n\nThis removes the conversation from Pixice’s task list.`)) return;
     try {
       await api.threads.archive({ projectId, threadId });
       localStorage.removeItem(threadConfigurationKey(threadId));
@@ -4430,6 +4747,10 @@ export function App() {
     setInspectorOpen(false);
     setPreviewOpen(true);
     if (previewActiveTabId) return;
+    if (previewInstrumentTabs.length) {
+      setPreviewActiveTabId(`instrument:${previewInstrumentTabs[0].id}`);
+      return;
+    }
     if (!api?.browser) return;
     try {
       const current = await api.browser.state({ workspaceId: previewWorkspaceId });
@@ -4439,7 +4760,7 @@ export function App() {
     } catch (cause) {
       setError(cause.message);
     }
-  }, [api, previewActiveTabId, previewOpen, previewWorkspaceId, setBrowserState, setPreviewActiveTabId, setPreviewOpen]);
+  }, [api, previewActiveTabId, previewInstrumentTabs, previewOpen, previewWorkspaceId, setBrowserState, setPreviewActiveTabId, setPreviewOpen]);
 
   const updatePreviewFile = useCallback((tabId, patch) => {
     setPreviewFileTabs((current) => current.map((tab) => tab.id === tabId ? { ...tab, ...patch } : tab));
@@ -4450,8 +4771,117 @@ export function App() {
     if (target?.dirty && !window.confirm(`Close “${target.name}” without saving your changes?`)) return;
     const remaining = previewFileTabs.filter((tab) => tab.id !== tabId);
     setPreviewFileTabs(remaining);
-    if (previewActiveTabId === tabId) setPreviewActiveTabId(remaining.at(-1)?.id ?? browserState.activeTabId ?? null);
-  }, [browserState.activeTabId, previewActiveTabId, previewFileTabs, setPreviewActiveTabId, setPreviewFileTabs]);
+    if (previewActiveTabId === tabId) setPreviewActiveTabId(remaining.at(-1)?.id ?? (previewInstrumentTabs[0] ? `instrument:${previewInstrumentTabs[0].id}` : null) ?? browserState.activeTabId ?? null);
+  }, [browserState.activeTabId, previewActiveTabId, previewFileTabs, previewInstrumentTabs, setPreviewActiveTabId, setPreviewFileTabs]);
+
+  const closePreviewInstrument = useCallback((instrumentId) => {
+    const tabId = `instrument:${instrumentId}`;
+    const remaining = previewInstrumentTabs.filter((instrument) => instrument.id !== instrumentId);
+    setPreviewInstrumentTabs(remaining);
+    if (previewActiveTabId === tabId) setPreviewActiveTabId(remaining[0] ? `instrument:${remaining[0].id}` : previewFileTabs.at(-1)?.id ?? browserState.activeTabId ?? null);
+  }, [browserState.activeTabId, previewActiveTabId, previewFileTabs, previewInstrumentTabs, setPreviewActiveTabId, setPreviewInstrumentTabs]);
+
+  const refreshPreviewInstrument = useCallback(async (instrumentId, source) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Instrument data refresh is unavailable");
+    const instrument = await api.instruments.refresh({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, source });
+    setPreviewInstrumentTabs((current) => current.map((candidate) => candidate.id === instrument.id ? { ...instrument, launchValues: candidate.launchValues } : candidate));
+    return instrument;
+  }, [api, selectedProjectId, selectedThreadId, setPreviewInstrumentTabs]);
+
+  const sendPreviewInstrumentEvent = useCallback(async (instrumentId, actionId, payload) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Instrument agent events are unavailable");
+    const model = models.find((candidate) => candidate.model === selectedModel);
+    return api.instruments.event({
+      projectId: selectedProjectId,
+      threadId: selectedThreadId,
+      instrumentId,
+      actionId,
+      payload,
+      model: selectedModel || undefined,
+      serviceTier: fastMode ? fastServiceTier(model) : null,
+      effort: effort || undefined,
+      permissionMode
+    });
+  }, [api, effort, fastMode, models, permissionMode, selectedModel, selectedProjectId, selectedThreadId]);
+
+  const invokePreviewInstrumentCapability = useCallback(async (instrumentId, actionId, argumentsValue) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Trusted Instrument actions are unavailable");
+    return api.instruments.invoke({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, actionId, arguments: argumentsValue, requestId: window.crypto.randomUUID() });
+  }, [api, selectedProjectId, selectedThreadId]);
+
+  const pinPreviewInstrument = useCallback(async (instrumentId, pinned) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Instrument pinning is unavailable");
+    const instrument = await api.instruments.pin({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, pinned });
+    setPreviewInstrumentTabs((current) => current.map((candidate) => candidate.id === instrument.id ? { ...instrument, launchValues: candidate.launchValues } : candidate));
+    return instrument;
+  }, [api, selectedProjectId, selectedThreadId, setPreviewInstrumentTabs]);
+
+  const launchProjectTool = useCallback(async (instrumentId, values) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Select or create a task before launching a project tool");
+    const instrument = await api.instruments.launch({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, values });
+    updatePreviewWorkspace(selectedThreadId, (workspace) => {
+      const current = workspace.instrumentTabs ?? [];
+      return {
+        ...workspace,
+        open: true,
+        activeTabId: `instrument:${instrument.id}`,
+        instrumentTabs: current.some((candidate) => candidate.id === instrument.id)
+          ? current.map((candidate) => candidate.id === instrument.id ? instrument : candidate)
+          : [...current, instrument]
+      };
+    });
+    await changeView("task");
+    setInspectorOpen(false);
+    await loadProjectTools(selectedProjectId);
+    return instrument;
+  }, [api, changeView, loadProjectTools, selectedProjectId, selectedThreadId, updatePreviewWorkspace]);
+
+  const renameProjectTool = useCallback(async (instrumentId, name) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Select a task before editing a project tool");
+    const instrument = await api.instruments.rename({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, name });
+    await loadProjectTools(selectedProjectId);
+    return instrument;
+  }, [api, loadProjectTools, selectedProjectId, selectedThreadId]);
+
+  const changeProjectToolGrants = useCallback(async (instrumentId, grants) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Select a task before editing tool capabilities");
+    const instrument = await api.instruments.grants({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, grants });
+    await loadProjectTools(selectedProjectId);
+    return instrument;
+  }, [api, loadProjectTools, selectedProjectId, selectedThreadId]);
+
+  const duplicateProjectTool = useCallback(async (instrumentId) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Select a task before duplicating a project tool");
+    const instrument = await api.instruments.duplicate({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId });
+    await loadProjectTools(selectedProjectId);
+    return instrument;
+  }, [api, loadProjectTools, selectedProjectId, selectedThreadId]);
+
+  const deleteProjectTool = useCallback(async (instrumentId) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Select a task before deleting a project tool");
+    const instrument = await api.instruments.deleteTool({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId });
+    await loadProjectTools(selectedProjectId);
+    return instrument;
+  }, [api, loadProjectTools, selectedProjectId, selectedThreadId]);
+
+  const loadProjectToolRevisions = useCallback(async (instrumentId) => {
+    if (!api?.instruments || !selectedProjectId) return [];
+    const result = await api.instruments.revisions({ projectId: selectedProjectId, instrumentId });
+    return result.data ?? [];
+  }, [api, selectedProjectId]);
+
+  const loadProjectToolReceipts = useCallback(async (instrumentId) => {
+    if (!api?.instruments || !selectedProjectId) return [];
+    const result = await api.instruments.receipts({ projectId: selectedProjectId, instrumentId });
+    return result.data ?? [];
+  }, [api, selectedProjectId]);
+
+  const restoreProjectTool = useCallback(async (instrumentId, version) => {
+    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Select a task before restoring a project tool");
+    const instrument = await api.instruments.restore({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, version });
+    await loadProjectTools(selectedProjectId);
+    return instrument;
+  }, [api, loadProjectTools, selectedProjectId, selectedThreadId]);
 
   const openWorkspaceReference = useCallback(async (target) => {
     if (!api || !selectedProjectId || !previewWorkspaceId) return;
@@ -4484,7 +4914,7 @@ export function App() {
     }
   }, [api]);
 
-  const submit = async (text, images = []) => {
+  const submit = async (text, attachments = []) => {
     if (!api || !selectedProjectId || !runtime.connected || submittingRef.current) return false;
     const projectId = selectedProjectId;
     const startingThreadId = selectedThreadId;
@@ -4527,7 +4957,7 @@ export function App() {
         }
       }
       if (activeTurn && targetThreadId === startingThreadId) {
-        await api.turns.steer({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, images });
+        await api.turns.steer({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, attachments });
         if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
           window.setTimeout(() => refreshThread(projectId, targetThreadId), 250);
         }
@@ -4536,7 +4966,7 @@ export function App() {
           projectId,
           threadId: targetThreadId,
           text,
-          images,
+          attachments,
           model: selectedModel || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
           effort,
@@ -4658,6 +5088,24 @@ export function App() {
         onStartTask={startBoardTask}
       />
     );
+  } else if (activeView === "tools") {
+    content = (
+      <ProjectToolsWorkspace
+        project={selectedProject}
+        threadId={selectedThreadId}
+        tools={projectTools}
+        loading={loading.tools}
+        onReload={() => loadProjectTools(selectedProjectId)}
+        onLaunch={launchProjectTool}
+        onRename={renameProjectTool}
+        onGrants={changeProjectToolGrants}
+        onDuplicate={duplicateProjectTool}
+        onDelete={deleteProjectTool}
+        onRevisions={loadProjectToolRevisions}
+        onReceipts={loadProjectToolReceipts}
+        onRestore={restoreProjectTool}
+      />
+    );
   } else if (activeView === "review") {
     content = <ReviewWorkspace project={selectedProject} review={review} loading={loading.review} onRefresh={() => loadReview(selectedProjectId)} onExternal={openExternal} />;
   } else if (activeView === "settings") {
@@ -4684,6 +5132,12 @@ export function App() {
         providersLoading={loading.providers}
         onRefreshProviders={refreshProviders}
         onProviderLogin={loginProvider}
+        githubStatus={githubStatus}
+        githubLoading={loading.github}
+        githubProgress={githubProgress}
+        onRefreshGitHub={loadGitHubStatus}
+        onGitHubLogin={loginGitHub}
+        onGitHubLogout={logoutGitHub}
         usageSummary={usageSummary}
         usageLoading={loading.usage}
         usageError={usageError}
@@ -4721,10 +5175,16 @@ export function App() {
         browserState={browserState}
         onBrowserState={setBrowserState}
         previewFileTabs={previewFileTabs}
+        previewInstrumentTabs={previewInstrumentTabs}
         previewActiveTabId={previewActiveTabId}
         onPreviewActiveTabChange={setPreviewActiveTabId}
         onPreviewFileUpdate={updatePreviewFile}
         onPreviewFileClose={closePreviewFile}
+        onPreviewInstrumentClose={closePreviewInstrument}
+        onPreviewInstrumentRefresh={refreshPreviewInstrument}
+        onPreviewInstrumentEvent={sendPreviewInstrumentEvent}
+        onPreviewInstrumentInvoke={invokePreviewInstrumentCapability}
+        onPreviewInstrumentPin={pinPreviewInstrument}
         onOpenWorkspaceReference={openWorkspaceReference}
         composerProps={composerProps}
       />
@@ -4766,6 +5226,7 @@ export function App() {
             onView={changeView}
             attentionCount={attention.length}
             changedCount={changedCount}
+            toolCount={projectTools.length}
             runtime={runtime}
             legacySidebar={preferences.legacySidebar}
             recentProjectLimit={preferences.showThirdProjectRow ? 9 : 6}
@@ -4783,7 +5244,7 @@ export function App() {
       {error && (
         <div className="runtime-toast" role="alert">
           <Warning size={17} />
-          <span><strong>Loom needs attention</strong><small>{error}</small></span>
+          <span><strong>Pixice needs attention</strong><small>{error}</small></span>
           <IconButton label="Dismiss error" onClick={() => setError(null)}><X size={15} /></IconButton>
         </div>
       )}

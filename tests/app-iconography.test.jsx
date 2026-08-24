@@ -1,8 +1,11 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { APP_ICONS } from "../src/components/icons/app-iconography.jsx";
 import { WORKFLOW_ICONS } from "../src/components/workflows/workflow-icons.jsx";
 
-describe("Loom product iconography", () => {
+const menuIconSource = readFileSync("src/components/icons/menu.tsx", "utf8");
+
+describe("Pixice product iconography", () => {
   it("keeps the primary workspace destinations visually distinct", () => {
     const destinations = [
       APP_ICONS.board,
@@ -22,6 +25,11 @@ describe("Loom product iconography", () => {
   it("uses one board glyph in navigation and workflow actions", () => {
     expect(APP_ICONS.board.displayName).toBe("List");
     expect(WORKFLOW_ICONS.board).toBe(APP_ICONS.board);
+  });
+
+  it("keeps the board glyph recognizable as a list while it animates", () => {
+    expect(menuIconSource).not.toContain("rotate:");
+    expect(menuIconSource).not.toMatch(/opacity:\s*custom\s*===\s*2\s*\?\s*0/);
   });
 
   it("separates workflow nodes that previously shared unrelated glyphs", () => {

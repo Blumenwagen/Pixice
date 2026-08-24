@@ -4,15 +4,21 @@ import { promisify } from "node:util";
 import path from "node:path";
 
 const execFileAsync = promisify(execFile);
+const REVIEW_FILTER_OVERRIDES = [
+  "-c", "filter.lfs.process=",
+  "-c", "filter.lfs.clean=",
+  "-c", "filter.lfs.smudge=",
+  "-c", "filter.lfs.required=false"
+];
 
 async function git(cwd, args) {
   const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   return stdout.trim();
 }
 
-async function gitDiff(cwd, args) {
+async function gitUntrackedDiff(cwd, args) {
   try {
-    return await git(cwd, args);
+    return await git(cwd, [...REVIEW_FILTER_OVERRIDES, ...args]);
   } catch (error) {
     if (error.code === 1 && typeof error.stdout === "string") return error.stdout.trim();
     throw error;
@@ -64,7 +70,7 @@ export async function readDiff({ workingPath, baseCommit, scopePath = workingPat
     while (nextIndex < untracked.length) {
       const index = nextIndex;
       nextIndex += 1;
-      additions[index] = await gitDiff(workingPath, ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", untracked[index]]);
+      additions[index] = await gitUntrackedDiff(workingPath, ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", untracked[index]]);
     }
   }));
   return [tracked, ...additions].filter(Boolean).join("\n");

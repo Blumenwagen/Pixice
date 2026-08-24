@@ -71,7 +71,7 @@ function validateSkillEdge(edge, source, target) {
   const isSkillConnection = source.type === "useSkill" || edge.sourcePort === "skill" || edge.targetPort === "skill";
   if (!isSkillConnection) return;
   if (source.type !== "useSkill" || edge.sourcePort !== "skill" || target.type !== "loomAgent" || edge.targetPort !== "skill") {
-    throw new Error(`Workflow edge ${edge.id} must connect Use Skill · Skill directly to Loom Agent · Skill`);
+    throw new Error(`Workflow edge ${edge.id} must connect Use Skill · Skill directly to Pixice Agent · Skill`);
   }
 }
 
@@ -224,8 +224,8 @@ export function createDefaultWorkflow({
         {
           id: agentId,
           type: "loomAgent",
-          name: "Loom Agent",
-          description: "Run a Loom-native coding agent with the upstream context.",
+          name: "Pixice Agent",
+          description: "Run a Pixice-native coding agent with the upstream context.",
           position: { x: 410, y: 180 },
           config: defaultWorkflowNodeConfig("loomAgent")
         },

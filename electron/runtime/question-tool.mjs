@@ -64,16 +64,16 @@ const questionInputSchema = {
 export const questionDynamicTools = [{
   type: "namespace",
   name: "loom",
-  description: "Interact with Loom's native UI. These tools are available in every mode.",
+  description: "Interact with Pixice's native UI. These tools are available in every mode.",
   tools: [{
     type: "function",
     name: LOOM_QUESTION_TOOL_NAME,
-    description: "Ask the user one to three short multiple-choice questions in Loom's composer and wait for their answers. Use when an answer materially changes the work. Put the recommended choice first and mark exactly one option per question as recommended.",
+    description: "Ask the user one to three short multiple-choice questions in Pixice's composer and wait for their answers. Use when an answer materially changes the work. Put the recommended choice first and mark exactly one option per question as recommended.",
     inputSchema: questionInputSchema
   }]
 }];
 
-export function normalizeLoomQuestions(input) {
+export function normalizePixiceQuestions(input) {
   const parsed = loomQuestionInputSchema.parse(input);
   return parsed.questions.map((question) => {
     const firstRecommended = question.options.findIndex((option) => option.recommended);
@@ -87,7 +87,7 @@ export function normalizeLoomQuestions(input) {
   });
 }
 
-export function isLoomQuestionToolCall(request) {
+export function isPixiceQuestionToolCall(request) {
   return request?.method === "item/tool/call"
     && request.params?.namespace === "loom"
     && request.params?.tool === LOOM_QUESTION_TOOL_NAME;
@@ -100,7 +100,7 @@ export function loomQuestionRequest(request) {
     params: {
       threadId: request.params?.threadId,
       turnId: request.params?.turnId,
-      questions: normalizeLoomQuestions(request.params?.arguments ?? {})
+      questions: normalizePixiceQuestions(request.params?.arguments ?? {})
     }
   };
 }

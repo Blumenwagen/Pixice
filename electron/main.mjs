@@ -1,8 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, Tray, WebContentsView } from "electron";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import electronUpdater from "electron-updater";
@@ -10,23 +10,36 @@ import { CodexRuntime } from "./runtime/codex-runtime.mjs";
 import { ThreadSessionRegistry } from "./runtime/thread-session-registry.mjs";
 import { ThreadNamer } from "./runtime/thread-namer.mjs";
 import { buildCodexUserInput } from "./runtime/user-input.mjs";
+import {
+  MAX_PROMPT_ATTACHMENTS,
+  MAX_PROMPT_ATTACHMENT_BYTES,
+  appendAttachmentContext,
+  attachmentProjectRoot,
+  stagePromptAttachments
+} from "./runtime/prompt-attachments.mjs";
 import { AGENT_BEHAVIOR_IDS, agentBehaviorCatalog, composeAgentInstructions } from "./runtime/agent-behavior.mjs";
 import { CodexProvider } from "./providers/codex-provider.mjs";
 import { ClaudeProvider, resolveClaudeCodeExecutable, resolvePackagedClaudeCodeExecutable } from "./providers/claude-provider.mjs";
 import { ProviderRegistry } from "./providers/provider-registry.mjs";
 import { BrowserWorkspace, browserDynamicTools } from "./browser/browser-workspace.mjs";
 import {
-  isLoomQuestionToolCall,
+  isPixiceQuestionToolCall,
   LOOM_QUESTION_METHOD,
   loomQuestionRequest,
   loomQuestionToolResult,
   questionDynamicTools
 } from "./runtime/question-tool.mjs";
-import { LoomBridge, LOOM_BRIDGE_NAMESPACE, loomBridgeDynamicTools } from "./runtime/loom-bridge.mjs";
-import { LoomBoard, LOOM_BOARD_NAMESPACE, loomBoardDynamicTools } from "./runtime/loom-board.mjs";
-import { LoomAppUpdater } from "./updater/app-updater.mjs";
-import { LoomDatabase } from "./persistence/database.mjs";
+import { PixiceBridge, LOOM_BRIDGE_NAMESPACE, loomBridgeDynamicTools } from "./runtime/loom-bridge.mjs";
+import { PixiceBoard, LOOM_BOARD_NAMESPACE, loomBoardDynamicTools } from "./runtime/loom-board.mjs";
+import {
+  InstrumentService,
+  LOOM_INSTRUMENTS_NAMESPACE,
+  instrumentDynamicTools
+} from "./instruments/instrument-service.mjs";
+import { PixiceAppUpdater } from "./updater/app-updater.mjs";
+import { PixiceDatabase } from "./persistence/database.mjs";
 import { inspectRepository, readDiff } from "./git/worktrees.mjs";
+import { GitHubCli, prependGitHubCliToPath } from "./github/github-cli.mjs";
 import { calculateUsageCost, listPricingCatalog, PRICING_VERIFIED_AT } from "./usage/pricing.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -44,8 +57,10 @@ let codexRuntime;
 let threadNamer;
 let browserWorkspace;
 let appUpdater;
+let githubCli;
 let loomBridge;
 let loomBoard;
+let loomInstruments;
 let database;
 let quitting = false;
 let runtimeStatus = { state: "starting" };
@@ -58,7 +73,13 @@ const threadProjects = new Map();
 const pendingRequests = new Map();
 const pendingTaskNames = new Set();
 const scheduledThreadNames = new Set();
-const loomDynamicTools = [...browserDynamicTools, ...questionDynamicTools, ...loomBridgeDynamicTools, ...loomBoardDynamicTools];
+const loomDynamicTools = [
+  ...browserDynamicTools,
+  ...questionDynamicTools,
+  ...loomBridgeDynamicTools,
+  ...loomBoardDynamicTools,
+  ...instrumentDynamicTools
+];
 let runtimeGeneration = 0;
 let developerInstructionsPath;
 let agentBehaviorsDirectory;
@@ -94,13 +115,24 @@ const imageDataUrlSchema = z.string().max(30 * 1024 * 1024).refine(
   (value) => /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[a-z0-9+/=]+$/i.test(value),
   "Image must be a supported base64 data URL"
 );
+const attachmentDataUrlSchema = z.string().max(35 * 1024 * 1024).refine(
+  (value) => /^data:[^;,]*;base64,[a-z0-9+/=]*$/i.test(value),
+  "Attachment must be a base64 data URL"
+);
+const promptAttachmentSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  type: z.string().trim().max(255).default("application/octet-stream"),
+  size: z.number().int().nonnegative().max(MAX_PROMPT_ATTACHMENT_BYTES),
+  dataUrl: attachmentDataUrlSchema
+}).strict();
 const promptInputSchema = {
   text: z.string().trim().max(100_000).default(""),
-  images: z.array(imageDataUrlSchema).max(10).default([])
+  images: z.array(imageDataUrlSchema).max(10).default([]),
+  attachments: z.array(promptAttachmentSchema).max(MAX_PROMPT_ATTACHMENTS).default([])
 };
 const requirePromptInput = (value, context) => {
-  if (!value.text && value.images.length === 0) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "A message or image is required" });
+  if (!value.text && value.images.length === 0 && value.attachments.length === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "A message or attachment is required" });
   }
 };
 const send = (type, payload = {}) => mainWindow?.webContents.send("loom:event", { type, payload, at: new Date().toISOString() });
@@ -136,7 +168,7 @@ function permissionSettings(mode, project) {
     sandbox: "workspace-write",
     sandboxPolicy: {
       type: "workspaceWrite",
-      writableRoots: projectRoots(project),
+      writableRoots: runtimeRoots(project),
       networkAccess: false,
       excludeTmpdirEnvVar: false,
       excludeSlashTmp: false
@@ -146,6 +178,25 @@ function permissionSettings(mode, project) {
 
 function projectRoots(project) {
   return [...new Set(project?.folders?.length ? project.folders : [project?.canonicalPath])].filter(Boolean);
+}
+
+function runtimeRoots(project) {
+  const attachmentRoot = attachmentProjectRoot(app.getPath("userData"), project.id);
+  mkdirSync(attachmentRoot, { recursive: true, mode: 0o700 });
+  return [...new Set([...projectRoots(project), attachmentRoot])];
+}
+
+function preparePromptInput(value, project, threadId) {
+  const staged = stagePromptAttachments({
+    attachments: value.attachments,
+    userDataPath: app.getPath("userData"),
+    projectId: project.id,
+    threadId
+  });
+  return {
+    text: appendAttachmentContext(value.text, staged.files),
+    images: [...value.images, ...staged.images]
+  };
 }
 
 function projectPrimaryRoot(project) {
@@ -218,7 +269,7 @@ function projectFileTarget(projectId, reference) {
 function readProjectFile(projectId, reference) {
   const { project, resolved, metadata } = projectFileTarget(projectId, reference);
   const folderPath = projectRootForTarget(project, resolved) ?? projectPrimaryRoot(project);
-  if (metadata.size > MAX_PREVIEW_BYTES) throw new Error("File is too large to open in Loom");
+  if (metadata.size > MAX_PREVIEW_BYTES) throw new Error("File is too large to open in Pixice");
   const extension = path.extname(resolved).toLowerCase();
   const buffer = readFileSync(resolved);
   const imageMime = IMAGE_MIME_TYPES.get(extension);
@@ -356,7 +407,7 @@ function updateTrayMenu() {
   if (!tray) return;
   const count = activeTurns.size;
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "Open Loom", click: () => mainWindow.show() },
+    { label: "Open Pixice", click: () => mainWindow.show() },
     { label: count ? `${count} active turn${count === 1 ? "" : "s"}` : "No active turns", enabled: false },
     { type: "separator" },
     { label: "Quit", click: () => app.quit() }
@@ -435,7 +486,7 @@ function createTray() {
   const iconPath = isDev ? path.join(__dirname, "../build/icon.png") : path.join(process.resourcesPath, "app-icon.png");
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
   tray = new Tray(icon);
-  tray.setToolTip("Loom");
+  tray.setToolTip("Pixice");
   updateTrayMenu();
   tray.on("click", () => mainWindow.show());
 }
@@ -596,6 +647,266 @@ async function ensureThreadLoaded(project, threadId) {
   return cwd;
 }
 
+function boundedTextResult(value, maximumBytes) {
+  const buffer = Buffer.from(String(value ?? ""), "utf8");
+  if (buffer.byteLength <= maximumBytes) return { content: buffer.toString("utf8"), truncated: false };
+  return { content: buffer.subarray(0, maximumBytes).toString("utf8"), truncated: true };
+}
+
+function compactRepository(repository) {
+  const dirtyPaths = (repository.dirtyPaths ?? []).slice(0, 1_000);
+  return {
+    kind: repository.kind,
+    baseCommit: repository.baseCommit,
+    dirtyPaths,
+    dirtyCount: repository.dirtyPaths?.length ?? 0,
+    truncated: (repository.dirtyPaths?.length ?? 0) > dirtyPaths.length
+  };
+}
+
+function instrumentTargetVersion(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+async function readInstrumentCapability({ projectId, threadId, capability, arguments: rawArguments }) {
+  const project = getProject(projectId);
+  const emptyArguments = z.object({}).strict();
+  if (capability === "project.summary") {
+    emptyArguments.parse(rawArguments);
+    return {
+      id: project.id,
+      name: project.displayName,
+      folders: projectRoots(project).slice(0, 20),
+      repository: compactRepository(await inspectRepository(projectPrimaryRoot(project)))
+    };
+  }
+  if (capability === "git.status") {
+    emptyArguments.parse(rawArguments);
+    const repository = await inspectRepository(projectPrimaryRoot(project));
+    return compactRepository(repository);
+  }
+  if (capability === "git.diff") {
+    const value = z.object({ maxBytes: z.number().int().min(1_000).max(160_000).default(80_000) }).strict().parse(rawArguments);
+    const primaryRoot = projectPrimaryRoot(project);
+    const repository = await inspectRepository(primaryRoot);
+    const diff = repository.kind === "git"
+      ? await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: primaryRoot })
+      : "";
+    return { ...boundedTextResult(diff, value.maxBytes), baseCommit: repository.baseCommit };
+  }
+  if (capability === "files.readText") {
+    const value = z.object({ path: z.string().trim().min(1), maxBytes: z.number().int().min(1_000).max(160_000).default(80_000) }).strict().parse(rawArguments);
+    const file = readProjectFile(projectId, value.path);
+    if (typeof file.content !== "string") throw new Error("Instrument file sources support text files only");
+    return { path: file.relativePath, language: file.language, ...boundedTextResult(file.content, value.maxBytes) };
+  }
+  if (capability === "board.list") {
+    emptyArguments.parse(rawArguments);
+    return database.listBoardTasks(projectId).slice(0, 200).map((task) => ({
+      id: task.id,
+      title: task.title,
+      description: String(task.description ?? "").slice(0, 500),
+      column: task.column,
+      threadId: task.threadId,
+      updatedAt: task.updatedAt
+    }));
+  }
+  if (capability === "workflows.list") {
+    emptyArguments.parse(rawArguments);
+    const integration = loomBridge.workflowIntegration ?? await loomBridge.workflowReady;
+    if (!integration) throw loomBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+    return integration.workflows.list(projectId).slice(0, 200).map((workflow) => ({
+      id: workflow.id,
+      name: workflow.name,
+      description: String(workflow.description ?? "").slice(0, 500),
+      enabled: workflow.enabled,
+      updatedAt: workflow.updatedAt
+    }));
+  }
+  if (capability === "workflow.output") {
+    const value = z.object({
+      workflowId: z.string().trim().min(1).max(160),
+      runId: z.string().trim().min(1).max(160).optional()
+    }).strict().parse(rawArguments);
+    const integration = loomBridge.workflowIntegration ?? await loomBridge.workflowReady;
+    if (!integration) throw loomBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+    const result = integration.workflows.read(projectId, value.workflowId);
+    const run = value.runId ? result.runs.find((candidate) => candidate.id === value.runId) : result.runs[0];
+    if (value.runId && !run) throw new Error("Workflow run not found in this project");
+    return run ? {
+      id: run.id,
+      workflowId: run.workflowId,
+      status: run.status,
+      output: run.output,
+      error: run.error,
+      createdAt: run.createdAt,
+      startedAt: run.startedAt,
+      completedAt: run.completedAt
+    } : null;
+  }
+  if (capability === "tasks.plan") {
+    emptyArguments.parse(rawArguments);
+    if (!threadId) throw new Error("The Instrument is not attached to a thread");
+    return (threadPlans.get(threadId) ?? database.getThreadPlan(threadId) ?? []).slice(0, 200).map((step) => ({
+      step: String(step.step ?? step.description ?? "").slice(0, 1_000),
+      status: step.status,
+      detail: step.detail ? String(step.detail).slice(0, 500) : undefined
+    }));
+  }
+  throw new Error(`Unsupported Instrument capability: ${capability}`);
+}
+
+async function resolveInstrumentCapability({ projectId, capability, arguments: rawArguments }) {
+  getProject(projectId);
+  if (capability === "board.create") {
+    const value = z.object({
+      title: boardTaskTitleSchema,
+      description: boardTaskDescriptionSchema.default(""),
+      column: boardColumnSchema.default("backlog")
+    }).strict().parse(rawArguments);
+    return { arguments: value, targetVersion: null, summary: `Create “${value.title}” in ${value.column}.` };
+  }
+  if (capability === "board.update") {
+    const value = z.object({
+      taskId: z.string().min(1),
+      title: boardTaskTitleSchema.optional(),
+      description: boardTaskDescriptionSchema.optional()
+    }).strict().refine((entry) => entry.title !== undefined || entry.description !== undefined, "A board task change is required").parse(rawArguments);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== projectId) throw new Error("Kanban task not found in this project");
+    const changes = [value.title !== undefined ? `rename it to “${value.title}”` : null, value.description !== undefined ? "replace its description" : null].filter(Boolean).join(" and ");
+    return { arguments: value, targetVersion: instrumentTargetVersion(task), summary: `Update “${task.title}”: ${changes}.` };
+  }
+  if (capability === "board.move") {
+    const value = z.object({
+      taskId: z.string().min(1),
+      column: boardColumnSchema,
+      beforeTaskId: z.string().min(1).optional()
+    }).strict().parse(rawArguments);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== projectId) throw new Error("Kanban task not found in this project");
+    let before = null;
+    if (value.beforeTaskId) {
+      before = database.getBoardTask(value.beforeTaskId);
+      if (!before || before.projectId !== projectId || before.column !== value.column) throw new Error("The target task is invalid for this move");
+    }
+    return {
+      arguments: value,
+      targetVersion: instrumentTargetVersion([task, before]),
+      summary: `Move “${task.title}” from ${task.column} to ${value.column}${before ? ` before “${before.title}”` : ""}.`
+    };
+  }
+  if (capability === "workflow.run") {
+    const value = z.object({
+      workflowId: z.string().trim().min(1).max(160),
+      input: z.unknown().optional(),
+      triggerNodeId: z.string().trim().min(1).max(160).optional()
+    }).strict().parse(rawArguments);
+    const integration = loomBridge.workflowIntegration ?? await loomBridge.workflowReady;
+    if (!integration) throw loomBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+    const { workflow } = integration.workflows.read(projectId, value.workflowId);
+    return { arguments: value, targetVersion: instrumentTargetVersion(workflow), summary: `Run workflow “${workflow.name}”.` };
+  }
+  throw new Error(`Unsupported trusted Instrument capability: ${capability}`);
+}
+
+async function invokeInstrumentCapability({ projectId, threadId, capability, arguments: rawArguments, resolution }) {
+  const currentResolution = await resolveInstrumentCapability({ projectId, threadId, capability, arguments: rawArguments });
+  if (resolution?.targetVersion !== null && resolution?.targetVersion !== undefined && resolution.targetVersion !== currentResolution.targetVersion) {
+    throw new Error("The action target changed after confirmation. Review the current state and try again.");
+  }
+  const value = currentResolution.arguments;
+  if (capability === "board.create") {
+    const task = database.createBoardTask({ id: randomUUID(), projectId, ...value, createdByThreadId: threadId });
+    send("BoardUpdated", { action: "created", projectId, task });
+    return task;
+  }
+  if (capability === "board.update") {
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== projectId) throw new Error("Kanban task not found in this project");
+    const updated = database.updateBoardTask(value.taskId, value);
+    send("BoardUpdated", { action: "updated", projectId, task: updated });
+    return updated;
+  }
+  if (capability === "board.move") {
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== projectId) throw new Error("Kanban task not found in this project");
+    if (value.beforeTaskId) {
+      const before = database.getBoardTask(value.beforeTaskId);
+      if (!before || before.projectId !== projectId || before.column !== value.column) throw new Error("The target task is invalid for this move");
+    }
+    const moved = database.moveBoardTask(value.taskId, value.column, value.beforeTaskId ?? null);
+    send("BoardUpdated", { action: "moved", projectId, task: moved });
+    return moved;
+  }
+  if (capability === "workflow.run") {
+    const integration = loomBridge.workflowIntegration ?? await loomBridge.workflowReady;
+    if (!integration) throw loomBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+    return integration.workflows.startRun({
+      projectId,
+      workflowId: value.workflowId,
+      input: value.input ?? {},
+      triggerNodeId: value.triggerNodeId ?? null,
+      sourceThreadId: threadId
+    });
+  }
+  throw new Error(`Unsupported trusted Instrument capability: ${capability}`);
+}
+
+function instrumentEventPrompt(instrument, event) {
+  return [
+    `[Pixice Instrument interaction: ${event.event}]`,
+    `Instrument: ${instrument.document.title}`,
+    `Instrument ID: ${instrument.id}`,
+    "The user deliberately activated this Instrument action.",
+    "Payload:",
+    JSON.stringify(event.payload, null, 2),
+    "Continue the task using this input. Inspect and update the same Instrument when its interface or data should change."
+  ].join("\n");
+}
+
+async function deliverInstrumentAgentEvent({ instrument, event, runtimeOptions }) {
+  const project = getProject(instrument.projectId);
+  const cwd = await ensureThreadLoaded(project, instrument.threadId);
+  const prompt = instrumentEventPrompt(instrument, event);
+  const activeTurnId = activeTurns.get(instrument.threadId);
+  if (activeTurnId) {
+    return runtime.request("turn/steer", {
+      threadId: instrument.threadId,
+      expectedTurnId: activeTurnId,
+      input: buildCodexUserInput(prompt, [])
+    });
+  }
+  const defaults = database.getAppSettings();
+  const permissionMode = runtimeOptions.permissionMode ?? defaults.defaultPermissionMode ?? "workspace-write";
+  const permissions = permissionSettings(permissionMode, project);
+  const model = runtimeOptions.model ?? defaults.defaultModel ?? null;
+  const effort = runtimeOptions.effort ?? defaults.defaultEffort ?? null;
+  const serviceTier = runtimeOptions.serviceTier ?? null;
+  const response = await runtime.request("turn/start", {
+    threadId: instrument.threadId,
+    input: buildCodexUserInput(prompt, []),
+    cwd,
+    runtimeWorkspaceRoots: runtimeRoots(project),
+    model,
+    ...(runtimeOptions.serviceTier !== undefined ? { serviceTier } : {}),
+    effort,
+    permissionMode,
+    approvalPolicy: permissions.approvalPolicy,
+    approvalsReviewer: permissions.approvalsReviewer,
+    sandboxPolicy: permissions.sandboxPolicy
+  });
+  activeTurns.set(instrument.threadId, response.turn.id);
+  turnUsageMetadata.set(instrument.threadId, {
+    turnId: response.turn.id,
+    model,
+    serviceTier,
+    provider: runtime.providerForThread(instrument.threadId)
+  });
+  updateTrayMenu();
+  return response;
+}
+
 function registerIpc() {
   ipcMain.handle("app:bootstrap", async () => ({
     projects: await listProjects(),
@@ -619,6 +930,9 @@ function registerIpc() {
     const { provider } = z.object({ provider: z.string().trim().min(1).max(64) }).parse(payload);
     return startProviderLogin(provider);
   });
+  ipcMain.handle("github:status", () => githubCli.status());
+  ipcMain.handle("github:login", () => githubCli.login());
+  ipcMain.handle("github:logout", () => githubCli.logout());
   ipcMain.handle("updates:status", () => appUpdater.snapshot());
   ipcMain.handle("updates:check", () => appUpdater.check());
   ipcMain.handle("updates:download", () => appUpdater.download());
@@ -778,6 +1092,116 @@ function registerIpc() {
     return updated;
   });
 
+  const instrumentScope = idPayload.extend({ instrumentId: z.string().trim().min(1).max(160) });
+  ipcMain.handle("instruments:list", (_event, payload) => {
+    const value = idPayload.extend({ threadId: z.string().trim().min(1).max(160).optional() }).parse(payload);
+    getProject(value.projectId);
+    return { data: loomInstruments.list(value.projectId, value.threadId) };
+  });
+  ipcMain.handle("instruments:tools", (_event, payload) => {
+    const value = idPayload.parse(payload);
+    getProject(value.projectId);
+    return { data: loomInstruments.listTools(value.projectId) };
+  });
+  ipcMain.handle("instruments:read", (_event, payload) => {
+    const value = instrumentScope.parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.read(value.projectId, value.instrumentId);
+  });
+  ipcMain.handle("instruments:open", (_event, payload) => {
+    const value = instrumentScope.extend({ workspaceId: z.string().trim().min(1).max(240).optional() }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.open(value.projectId, value.instrumentId, value.workspaceId);
+  });
+  ipcMain.handle("instruments:refresh", (_event, payload) => {
+    const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), source: z.string().trim().min(1).max(160).optional() }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.refresh(value.projectId, value.instrumentId, value.source, value.threadId);
+  });
+  ipcMain.handle("instruments:event", (_event, payload) => {
+    const value = instrumentScope.extend({
+      threadId: z.string().trim().min(1).max(160),
+      actionId: z.string().trim().min(1).max(160),
+      payload: z.unknown().optional(),
+      model: z.string().optional(),
+      serviceTier: z.string().nullable().optional(),
+      effort: z.string().optional(),
+      permissionMode: permissionModeSchema.optional()
+    }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.dispatchAgentEvent(value.projectId, value.instrumentId, value.actionId, value.payload, {
+      model: value.model,
+      serviceTier: value.serviceTier,
+      effort: value.effort,
+      permissionMode: value.permissionMode
+    }, value.threadId);
+  });
+  ipcMain.handle("instruments:invoke", (_event, payload) => {
+    const value = instrumentScope.extend({
+      threadId: z.string().trim().min(1).max(160),
+      actionId: z.string().trim().min(1).max(160),
+      arguments: z.unknown().optional(),
+      requestId: z.string().uuid()
+    }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.dispatchCapability(value.projectId, value.instrumentId, value.actionId, value.arguments, value.threadId, value.requestId);
+  });
+  ipcMain.handle("instruments:pin", (_event, payload) => {
+    const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), pinned: z.boolean() }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.setPinned(value.projectId, value.instrumentId, value.pinned, value.threadId);
+  });
+  ipcMain.handle("instruments:events", (_event, payload) => {
+    const value = instrumentScope.parse(payload);
+    getProject(value.projectId);
+    return { data: loomInstruments.listEvents(value.projectId, value.instrumentId) };
+  });
+  ipcMain.handle("instruments:receipts", (_event, payload) => {
+    const value = instrumentScope.parse(payload);
+    getProject(value.projectId);
+    return { data: loomInstruments.listReceipts(value.projectId, value.instrumentId) };
+  });
+  ipcMain.handle("instruments:launch", (_event, payload) => {
+    const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), values: z.record(z.unknown()).default({}) }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.launch(value.projectId, value.instrumentId, value.values, value.threadId);
+  });
+  ipcMain.handle("instruments:rename", (_event, payload) => {
+    const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), name: z.string().trim().min(1).max(160) }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.renameTool(value.projectId, value.instrumentId, value.name, value.threadId);
+  });
+  ipcMain.handle("instruments:grants", (_event, payload) => {
+    const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), grants: z.array(z.string().trim().min(1).max(120)).max(20) }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.setGrants(value.projectId, value.instrumentId, value.grants, value.threadId);
+  });
+  ipcMain.handle("instruments:duplicate", (_event, payload) => {
+    const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160) }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.duplicateTool(value.projectId, value.instrumentId, value.threadId);
+  });
+  ipcMain.handle("instruments:revisions", (_event, payload) => {
+    const value = instrumentScope.parse(payload);
+    getProject(value.projectId);
+    return { data: loomInstruments.listRevisions(value.projectId, value.instrumentId) };
+  });
+  ipcMain.handle("instruments:restore", (_event, payload) => {
+    const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), version: z.number().int().positive() }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.restoreRevision(value.projectId, value.instrumentId, value.version, value.threadId);
+  });
+  ipcMain.handle("instruments:delete-tool", (_event, payload) => {
+    const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160) }).parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.deleteTool(value.projectId, value.instrumentId, value.threadId);
+  });
+  ipcMain.handle("instruments:delete", (_event, payload) => {
+    const value = instrumentScope.parse(payload);
+    getProject(value.projectId);
+    return loomInstruments.delete(value.projectId, value.instrumentId);
+  });
+
   ipcMain.handle("threads:list", async (_event, payload) => {
     const { projectId } = idPayload.parse(payload);
     const project = getProject(projectId);
@@ -827,7 +1251,7 @@ function registerIpc() {
     }).parse(payload);
     const project = getProject(value.projectId);
     const permissions = permissionSettings(value.permissionMode, project);
-    const roots = projectRoots(project);
+    const roots = runtimeRoots(project);
     const cwd = projectPrimaryRoot(project);
     const response = await runtime.request("thread/start", {
       cwd,
@@ -872,11 +1296,12 @@ function registerIpc() {
     const project = getProject(value.projectId);
     const permissions = permissionSettings(value.permissionMode, project);
     const cwd = await ensureThreadLoaded(project, value.threadId);
+    const prompt = preparePromptInput(value, project, value.threadId);
     const response = await runtime.request("turn/start", {
       threadId: value.threadId,
-      input: buildCodexUserInput(value.text, value.images),
+      input: buildCodexUserInput(prompt.text, prompt.images),
       cwd,
-      runtimeWorkspaceRoots: projectRoots(project),
+      runtimeWorkspaceRoots: runtimeRoots(project),
       model: value.model || null,
       ...(value.serviceTier !== undefined ? { serviceTier: value.serviceTier } : {}),
       effort: value.effort || null,
@@ -894,7 +1319,8 @@ function registerIpc() {
     });
     updateTrayMenu();
     if (pendingTaskNames.delete(value.threadId)) {
-      scheduleThreadName({ project, threadId: value.threadId, source: value.text || `${value.images.length} attached image${value.images.length === 1 ? "" : "s"}`, kind: "task" });
+      const attachmentCount = value.images.length + value.attachments.length;
+      scheduleThreadName({ project, threadId: value.threadId, source: value.text || `${attachmentCount} attached file${attachmentCount === 1 ? "" : "s"}`, kind: "task" });
     }
     return response;
   });
@@ -905,10 +1331,11 @@ function registerIpc() {
     }).superRefine(requirePromptInput).parse(payload);
     const project = getProject(value.projectId);
     await ensureThreadLoaded(project, value.threadId);
+    const prompt = preparePromptInput(value, project, value.threadId);
     return runtime.request("turn/steer", {
       threadId: value.threadId,
       expectedTurnId: value.turnId,
-      input: buildCodexUserInput(value.text, value.images)
+      input: buildCodexUserInput(prompt.text, prompt.images)
     });
   });
   ipcMain.handle("turns:interrupt", async (_event, payload) => {
@@ -1009,8 +1436,8 @@ function registerIpc() {
     }).parse(payload);
     const current = projectFileTarget(value.projectId, value.path);
     const file = readProjectFile(value.projectId, current.resolved);
-    if (!file.editable) throw new Error("This file cannot be edited in Loom");
-    if (Buffer.byteLength(value.content, "utf8") > MAX_EDITABLE_BYTES) throw new Error("Edited file is too large to save in Loom");
+    if (!file.editable) throw new Error("This file cannot be edited in Pixice");
+    if (Buffer.byteLength(value.content, "utf8") > MAX_EDITABLE_BYTES) throw new Error("Edited file is too large to save in Pixice");
     if (value.expectedMtimeMs !== undefined && Math.abs(current.metadata.mtimeMs - value.expectedMtimeMs) > 1) {
       throw new Error("This file changed on disk. Reopen it before saving so those changes are not overwritten.");
     }
@@ -1055,13 +1482,16 @@ function registerIpc() {
 }
 
 app.whenReady().then(async () => {
-  database = new LoomDatabase(app.getPath("userData"));
+  database = new PixiceDatabase(app.getPath("userData"));
   developerInstructionsPath = isDev
     ? path.join(__dirname, "../resources/runtime/loom-developer-instructions.md")
     : path.join(process.resourcesPath, "runtime/loom-developer-instructions.md");
   agentBehaviorsDirectory = isDev
     ? path.join(__dirname, "../resources/runtime/agent-behaviors")
     : path.join(process.resourcesPath, "runtime/agent-behaviors");
+  githubCli = new GitHubCli({ resourcesPath: isDev ? path.join(__dirname, "../resources") : process.resourcesPath });
+  prependGitHubCliToPath(process.env, githubCli.resolved);
+  githubCli.on("progress", (payload) => send("GitHubAuthProgress", payload));
   codexRuntime = new CodexRuntime({
     resourcesPath: process.resourcesPath,
     clientVersion: app.getVersion(),
@@ -1075,12 +1505,34 @@ app.whenReady().then(async () => {
     const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
     return project ? { projectId: project.id, cwd: binding?.cwd || projectPrimaryRoot(project) } : null;
   };
-  loomBoard = new LoomBoard({
+  loomBoard = new PixiceBoard({
     database,
     threadContext: boardThreadContext,
     onChange: (payload) => send("BoardUpdated", payload)
   });
-  loomBridge = new LoomBridge({
+  loomInstruments = new InstrumentService({
+    userDataPath: app.getPath("userData"),
+    threadContext: boardThreadContext,
+    readCapability: readInstrumentCapability,
+    onAgentEvent: deliverInstrumentAgentEvent,
+    resolveCapability: resolveInstrumentCapability,
+    confirmCapability: async ({ instrument, action, resolution }) => {
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: "question",
+        buttons: ["Cancel", "Run action"],
+        defaultId: 0,
+        cancelId: 0,
+        message: `Allow ${action.capability}?`,
+        detail: `${resolution.summary}\n\nTool request: ${action.confirmation}\nInstrument: ${instrument.metadata?.name || instrument.document.title}`
+      });
+      return result.response === 1;
+    },
+    invokeCapability: invokeInstrumentCapability,
+    onChange: (payload) => send("InstrumentUpdated", payload),
+    onOpen: (payload) => send("InstrumentOpenRequested", payload),
+    onEventChange: (payload) => send("InstrumentInteractionUpdated", payload)
+  });
+  loomBridge = new PixiceBridge({
     runtime,
     database,
     dynamicTools: () => loomDynamicTools,
@@ -1114,6 +1566,7 @@ app.whenReady().then(async () => {
     developerInstructions: currentAgentInstructions,
     loomBridge,
     loomBoard,
+    loomInstruments,
     pathToClaudeCodeExecutable: resolveClaudeCodeExecutable()
       ?? (app.isPackaged ? resolvePackagedClaudeCodeExecutable({ resourcesPath: process.resourcesPath }) : undefined),
     requireExternalExecutable: app.isPackaged
@@ -1178,6 +1631,7 @@ app.whenReady().then(async () => {
       database.saveThreadPlan(threadId, plan);
     }
     if ((method === "thread/deleted" || method === "thread/archived") && threadId) {
+      loomInstruments.removeEphemeralForThread(threadId);
       threadPlans.delete(threadId);
       threadMonitorCache.delete(threadId);
       threadSessions.delete(threadId);
@@ -1213,6 +1667,12 @@ app.whenReady().then(async () => {
         .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
       return;
     }
+    if (request.method === "item/tool/call" && request.params?.namespace === LOOM_INSTRUMENTS_NAMESPACE) {
+      void loomInstruments.handleToolCall(request.params)
+        .then((response) => runtime.respond(request.id, response))
+        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
+      return;
+    }
     if (request.method === "item/tool/call" && request.params?.namespace === LOOM_BRIDGE_NAMESPACE) {
       void loomBridge.handleToolCall(request.params)
         .then((response) => runtime.respond(request.id, response))
@@ -1227,14 +1687,14 @@ app.whenReady().then(async () => {
     }
     let displayRequest = request;
     let kind = "runtime-request";
-    if (isLoomQuestionToolCall(request)) {
+    if (isPixiceQuestionToolCall(request)) {
       try {
         displayRequest = loomQuestionRequest(request);
         kind = "loom-question-tool";
       } catch (error) {
         runtime.respond(request.id, {
           success: false,
-          contentItems: [{ type: "inputText", text: `Invalid Loom question: ${error.message}` }]
+          contentItems: [{ type: "inputText", text: `Invalid Pixice question: ${error.message}` }]
         });
         return;
       }
@@ -1242,18 +1702,18 @@ app.whenReady().then(async () => {
     pendingRequests.set(requestKey(request.id), { request, kind, generation: runtimeGeneration });
     send("AttentionRequired", { ...displayRequest, projectId: threadProjects.get(request.params?.threadId) });
     if (Notification.isSupported()) {
-      new Notification({ title: kind.startsWith("loom-question") ? "A task has a question" : "Loom needs your attention", body: displayRequest.method }).show();
+      new Notification({ title: kind.startsWith("loom-question") ? "A task has a question" : "Pixice needs your attention", body: displayRequest.method }).show();
     }
   });
   runtime.on("recoverable-error", (error) => send("RuntimeError", error));
 
   createWindow();
   browserWorkspace = new BrowserWorkspace({ window: mainWindow, WebContentsView, emit: send });
-  appUpdater = new LoomAppUpdater({ updater: autoUpdater, app });
+  appUpdater = new PixiceAppUpdater({ updater: autoUpdater, app });
   appUpdater.on("status", (status) => {
     send("UpdateState", status);
     if (status.state === "downloaded" && Notification.isSupported()) {
-      new Notification({ title: "Loom update ready", body: "Restart Loom when you are ready to install it." }).show();
+      new Notification({ title: "Pixice update ready", body: "Restart Pixice when you are ready to install it." }).show();
     }
   });
   createTray();
@@ -1269,11 +1729,11 @@ app.on("before-quit", async (event) => {
     event.preventDefault();
     const result = await dialog.showMessageBox(mainWindow, {
       type: "warning",
-      buttons: ["Keep Loom running", "Interrupt and quit"],
+      buttons: ["Keep Pixice running", "Interrupt and quit"],
       defaultId: 0,
       cancelId: 0,
       message: `${activeTurns.size} active turn${activeTurns.size === 1 ? " is" : "s are"} still running.`,
-      detail: "Quitting will interrupt active work. Closing the window keeps Loom running in the tray."
+      detail: "Quitting will interrupt active work. Closing the window keeps Pixice running in the tray."
     });
     if (result.response === 0) return;
     await Promise.allSettled([...activeTurns].map(([threadId, turnId]) =>
@@ -1284,6 +1744,7 @@ app.on("before-quit", async (event) => {
   appUpdater?.stop();
   browserWorkspace?.destroy();
   await runtime?.stop();
+  loomInstruments?.close();
   app.quit();
 });
 

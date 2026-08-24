@@ -5,9 +5,14 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { buildClaudeUserMessage } from "../runtime/user-input.mjs";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import { normalizeLoomQuestions, loomQuestionToolShape } from "../runtime/question-tool.mjs";
+import { normalizePixiceQuestions, loomQuestionToolShape } from "../runtime/question-tool.mjs";
 import { LOOM_BRIDGE_MCP_TOOLS, loomBridgeToolShapes } from "../runtime/loom-bridge.mjs";
 import { LOOM_BOARD_MCP_TOOLS, loomBoardToolShapes } from "../runtime/loom-board.mjs";
+import {
+  LOOM_INSTRUMENTS_MCP_TOOLS,
+  instrumentToolShapes,
+  instrumentTools
+} from "../instruments/instrument-service.mjs";
 import { loomWorkflowTools } from "../workflows/loom-workflows.mjs";
 
 const FALLBACK_MODELS = [
@@ -142,12 +147,20 @@ export function claudePermissionSettings(mode) {
     permissionMode: "default",
     allowDangerouslySkipPermissions: false,
     sandbox: { enabled: true },
-    tools: [...READ_TOOLS, "AskUserQuestion", LOOM_QUESTION_MCP_TOOL, ...LOOM_BRIDGE_MCP_TOOLS, ...LOOM_BOARD_MCP_TOOLS]
+    tools: [
+      ...READ_TOOLS,
+      "AskUserQuestion",
+      LOOM_QUESTION_MCP_TOOL,
+      ...LOOM_BRIDGE_MCP_TOOLS,
+      ...LOOM_BOARD_MCP_TOOLS,
+      ...LOOM_INSTRUMENTS_MCP_TOOLS
+    ]
   };
 }
 
 export function claudeQueryOptions({
   cwd,
+  runtimeWorkspaceRoots,
   model,
   effort,
   permissionMode,
@@ -162,7 +175,7 @@ export function claudeQueryOptions({
   const permissions = claudePermissionSettings(permissionMode);
   return {
     cwd,
-    additionalDirectories: [cwd],
+    additionalDirectories: [...new Set([cwd, ...(runtimeWorkspaceRoots ?? [])])],
     model: model || undefined,
     effort: effort || undefined,
     sessionId: resume ? undefined : sessionId,
@@ -235,6 +248,7 @@ export class ClaudeProvider extends EventEmitter {
     queryFactory = null,
     loomBridge = null,
     loomBoard = null,
+    loomInstruments = null,
     pathToClaudeCodeExecutable = resolveClaudeCodeExecutable(),
     requireExternalExecutable = false
   }) {
@@ -247,6 +261,7 @@ export class ClaudeProvider extends EventEmitter {
     this.queryFactory = queryFactory;
     this.loomBridge = loomBridge;
     this.loomBoard = loomBoard;
+    this.loomInstruments = loomInstruments;
     this.pathToClaudeCodeExecutable = pathToClaudeCodeExecutable;
     this.requireExternalExecutable = requireExternalExecutable;
     this.sessions = new Map();
@@ -263,7 +278,7 @@ export class ClaudeProvider extends EventEmitter {
   async start() {
     try {
       if (this.requireExternalExecutable && !this.pathToClaudeCodeExecutable) {
-        throw new Error("Claude Code is unavailable. Install `claude`, set LOOM_CLAUDE_PATH, or reinstall Loom with its Claude runtime.");
+        throw new Error("Claude Code is unavailable. Install `claude`, set LOOM_CLAUDE_PATH, or reinstall Pixice with its Claude runtime.");
       }
       if (!this.queryFactory) this.queryFactory = (await import("@anthropic-ai/claude-agent-sdk")).query;
       this.started = true;
@@ -287,7 +302,7 @@ export class ClaudeProvider extends EventEmitter {
     for (const pending of this.pendingRequests.values()) {
       pending.resolve(pending.kind === "loom-question"
         ? { cancelled: true, answers: {} }
-        : { behavior: "deny", message: "Loom stopped the Claude session", interrupt: true });
+        : { behavior: "deny", message: "Pixice stopped the Claude session", interrupt: true });
     }
     this.pendingRequests.clear();
     this.started = false;
@@ -470,6 +485,7 @@ export class ClaudeProvider extends EventEmitter {
       model: params.model || null,
       effort: null,
       permissionMode: params.permissionMode || "workspace-write",
+      runtimeWorkspaceRoots: params.runtimeWorkspaceRoots || [params.cwd],
       developerInstructions: params.developerInstructions || null,
       query: null,
       queue: null,
@@ -509,6 +525,7 @@ export class ClaudeProvider extends EventEmitter {
     context.model = params.model || context.model;
     context.effort = params.effort || context.effort;
     context.permissionMode = params.permissionMode || context.permissionMode;
+    context.runtimeWorkspaceRoots = params.runtimeWorkspaceRoots || context.runtimeWorkspaceRoots;
     const message = this.#inputMessage(params.input);
     message.session_id = context.providerThreadId;
     const turn = {
@@ -557,6 +574,7 @@ export class ClaudeProvider extends EventEmitter {
     context.abortController = new AbortController();
     const options = claudeQueryOptions({
       cwd: context.thread.cwd,
+      runtimeWorkspaceRoots: context.runtimeWorkspaceRoots,
       model: context.model,
       effort: context.effort,
       permissionMode: context.permissionMode,
@@ -568,7 +586,8 @@ export class ClaudeProvider extends EventEmitter {
       mcpServers: {
         loom: this.#loomQuestionServer(context),
         ...(this.loomBridge ? { loom_bridge: this.#loomBridgeServer(context) } : {}),
-        ...(this.loomBoard ? { loom_board: this.#loomBoardServer(context) } : {})
+        ...(this.loomBoard ? { loom_board: this.#loomBoardServer(context) } : {}),
+        ...(this.loomInstruments ? { loom_instruments: this.#loomInstrumentsServer(context) } : {})
       },
       pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable
     });
@@ -755,7 +774,7 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   #canUseTool(context, toolName, input, details) {
-    if (toolName === LOOM_QUESTION_MCP_TOOL || LOOM_BRIDGE_MCP_TOOLS.has(toolName)) {
+    if (toolName === LOOM_QUESTION_MCP_TOOL || LOOM_BRIDGE_MCP_TOOLS.has(toolName) || LOOM_INSTRUMENTS_MCP_TOOLS.has(toolName)) {
       return Promise.resolve({ behavior: "allow", updatedInput: input });
     }
     if (context.permissionMode === "read-only" && READ_TOOLS.has(toolName)) {
@@ -800,10 +819,10 @@ export class ClaudeProvider extends EventEmitter {
       alwaysLoad: true,
       tools: [tool(
         "request_user_input",
-        "Ask the user one to three short multiple-choice questions in Loom's composer and wait for their answers. Available in every mode. Put the recommended choice first and mark exactly one option per question as recommended.",
+        "Ask the user one to three short multiple-choice questions in Pixice's composer and wait for their answers. Available in every mode. Put the recommended choice first and mark exactly one option per question as recommended.",
         loomQuestionToolShape,
         async (input) => {
-          const result = await this.#requestLoomQuestion(context, input);
+          const result = await this.#requestPixiceQuestion(context, input);
           return { content: [{ type: "text", text: JSON.stringify(result) }] };
         }
       )]
@@ -831,8 +850,8 @@ export class ClaudeProvider extends EventEmitter {
       version: this.clientVersion || "1.0.0",
       alwaysLoad: true,
       tools: [
-        tool("list_models", "List only connected GPT and Claude models available for cross-model Loom delegation, including capability ratings and a recommendation. Normally prefer GPT for cost efficiency; prefer Claude only when requested, when it is the only connected family, or for UI design and taste.", loomBridgeToolShapes.list_models, run("list_models")),
-        tool("spawn_thread", "Spawn a new Loom thread on a connected selected model, wait for it to finish, and return its answer. Cross-family direction is supported in either direction.", loomBridgeToolShapes.spawn_thread, run("spawn_thread")),
+        tool("list_models", "List only connected GPT and Claude models available for cross-model Pixice delegation, including capability ratings and a recommendation. Normally prefer GPT for cost efficiency; prefer Claude only when requested, when it is the only connected family, or for UI design and taste.", loomBridgeToolShapes.list_models, run("list_models")),
+        tool("spawn_thread", "Spawn a new Pixice thread on a connected selected model, wait for it to finish, and return its answer. Cross-family direction is supported in either direction.", loomBridgeToolShapes.spawn_thread, run("spawn_thread")),
         tool("send_update", "Send a progress update from a bridge-created child thread to its parent.", loomBridgeToolShapes.send_update, run("send_update")),
         ...loomWorkflowTools.map((definition) => tool(
           definition.name,
@@ -868,13 +887,40 @@ export class ClaudeProvider extends EventEmitter {
         tool("update_task", "Edit a kanban task's title or description.", loomBoardToolShapes.update_task, run("update_task")),
         tool("move_task", "Move or reorder a kanban task.", loomBoardToolShapes.move_task, run("move_task")),
         tool("delete_task", "Delete a kanban task without deleting its linked thread.", loomBoardToolShapes.delete_task, run("delete_task")),
-        tool("attach_thread", "Attach a Loom thread to a kanban task. Defaults to the active thread.", loomBoardToolShapes.attach_thread, run("attach_thread"))
+        tool("attach_thread", "Attach a Pixice thread to a kanban task. Defaults to the active thread.", loomBoardToolShapes.attach_thread, run("attach_thread"))
       ]
     });
   }
 
-  #requestLoomQuestion(context, input) {
-    const questions = normalizeLoomQuestions(input);
+  #loomInstrumentsServer(context) {
+    const run = (name) => async (input) => {
+      const result = await this.loomInstruments.handleToolCall({
+        namespace: "loom_instruments",
+        tool: name,
+        threadId: context.thread.id,
+        turnId: context.currentTurn?.id,
+        arguments: input
+      });
+      return {
+        content: (result.contentItems ?? []).map((item) => ({ type: "text", text: item.text ?? "" })),
+        isError: result.success === false
+      };
+    };
+    return createSdkMcpServer({
+      name: "loom_instruments",
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: instrumentTools.map((definition) => tool(
+        definition.name,
+        definition.description,
+        instrumentToolShapes[definition.name],
+        run(definition.name)
+      ))
+    });
+  }
+
+  #requestPixiceQuestion(context, input) {
+    const questions = normalizePixiceQuestions(input);
     const id = `claude-loom-question:${randomUUID()}`;
     const request = {
       id,
@@ -914,6 +960,7 @@ export class ClaudeProvider extends EventEmitter {
       model: null,
       effort: null,
       permissionMode: "workspace-write",
+      runtimeWorkspaceRoots: [thread.cwd],
       developerInstructions: null,
       query: null,
       queue: null,
@@ -948,7 +995,7 @@ export class ClaudeProvider extends EventEmitter {
       try {
         return String(this.developerInstructions()).trim();
       } catch (error) {
-        this.emit("diagnostic", `Claude could not compose Loom developer instructions: ${error.message}`);
+        this.emit("diagnostic", `Claude could not compose Pixice developer instructions: ${error.message}`);
         return "";
       }
     }
@@ -956,7 +1003,7 @@ export class ClaudeProvider extends EventEmitter {
     try {
       return readFileSync(this.developerInstructionsPath, "utf8").trim();
     } catch (error) {
-      this.emit("diagnostic", `Claude could not load Loom developer instructions: ${error.message}`);
+      this.emit("diagnostic", `Claude could not load Pixice developer instructions: ${error.message}`);
       return "";
     }
   }

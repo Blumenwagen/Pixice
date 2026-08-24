@@ -29,7 +29,7 @@ describe.each([
   });
 
   it("repaints updates without restarting the reveal animation", () => {
-    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Loom chart test" });
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Pixice chart test" });
     const context = drawingContext();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => context);
     const requestAnimationFrame = vi.fn((callback) => {
@@ -57,7 +57,7 @@ describe.each([
   });
 
   it("ignores referential-only data changes", () => {
-    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Loom chart test" });
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Pixice chart test" });
     const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => drawingContext());
     const requestAnimationFrame = vi.fn(() => 1);
     vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
@@ -72,7 +72,7 @@ describe.each([
   });
 
   it("changes canvas geometry against a fixed reactive scale", () => {
-    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Loom chart test" });
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Pixice chart test" });
     const context = drawingContext();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => context);
     const requestAnimationFrame = vi.fn((callback) => {

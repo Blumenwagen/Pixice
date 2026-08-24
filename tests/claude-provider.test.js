@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AsyncPromptQueue, ClaudeProvider, claudeAccountIsAuthenticated, claudePermissionSettings, claudeQueryOptions, resolveClaudeCodeExecutable, resolvePackagedClaudeCodeExecutable } from "../electron/providers/claude-provider.mjs";
-import { LoomDatabase } from "../electron/persistence/database.mjs";
+import { PixiceDatabase } from "../electron/persistence/database.mjs";
 
 const temporaryDirectories = [];
 
@@ -26,7 +26,7 @@ describe("Claude provider", () => {
   it("uses exactly the models reported by the Claude SDK", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-models-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const provider = new ClaudeProvider({
       database,
       queryFactory: () => ({
@@ -55,7 +55,7 @@ describe("Claude provider", () => {
   it("does not cache the minimal fallback when model discovery fails", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-model-retry-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const supportedModels = vi.fn()
       .mockRejectedValueOnce(new Error("Sign in required"))
       .mockResolvedValueOnce([{ value: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", description: "Latest Sonnet" }]);
@@ -101,7 +101,7 @@ describe("Claude provider", () => {
     expect(resolvePackagedClaudeCodeExecutable({ resourcesPath: directory })).toBe(executable);
   });
 
-  it("maps Loom permissions to the same Claude Code modes used by T3", () => {
+  it("maps Pixice permissions to the same Claude Code modes used by T3", () => {
     expect(claudePermissionSettings("workspace-write").permissionMode).toBe("acceptEdits");
     expect(claudePermissionSettings("auto-approve").permissionMode).toBe("auto");
     expect(claudePermissionSettings("full-access")).toMatchObject({
@@ -111,6 +111,7 @@ describe("Claude provider", () => {
     expect(claudePermissionSettings("read-only").tools).toContain("mcp__loom__request_user_input");
     expect(claudePermissionSettings("read-only").tools).toContain("mcp__loom_board__list_tasks");
     expect(claudePermissionSettings("read-only").tools).toContain("mcp__loom_board__create_task");
+    expect(claudePermissionSettings("read-only").tools).toContain("mcp__loom_instruments__create_instrument");
   });
 
   it("uses the Claude Code system preset and preserves the host environment", () => {
@@ -118,7 +119,7 @@ describe("Claude provider", () => {
       cwd: "/workspace",
       permissionMode: "workspace-write",
       sessionId: "session-1",
-      developerInstructions: "Loom guidance",
+      developerInstructions: "Pixice guidance",
       clientVersion: "1.2.3",
       canUseTool: vi.fn()
     });
@@ -129,7 +130,7 @@ describe("Claude provider", () => {
       includePartialMessages: true,
       forwardSubagentText: true,
       settingSources: ["user", "project", "local"],
-      systemPrompt: { type: "preset", preset: "claude_code", append: "Loom guidance" }
+      systemPrompt: { type: "preset", preset: "claude_code", append: "Pixice guidance" }
     });
     expect(options.env.CLAUDE_AGENT_SDK_CLIENT_APP).toBe("loom/1.2.3");
   });
@@ -137,7 +138,7 @@ describe("Claude provider", () => {
   it("reads the Claude account and starts the SDK sign-in flow", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-account-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const queries = [];
     const provider = new ClaudeProvider({
       database,
@@ -172,10 +173,10 @@ describe("Claude provider", () => {
     database.db.close();
   });
 
-  it("keeps one streaming query open and translates SDK output to canonical Loom events", async () => {
+  it("keeps one streaming query open and translates SDK output to canonical Pixice events", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-provider-"));
     temporaryDirectories.push(directory);
-    const database = new LoomDatabase(directory);
+    const database = new PixiceDatabase(directory);
     const output = new AsyncPromptQueue();
     let queryArguments;
     const query = {
@@ -189,6 +190,7 @@ describe("Claude provider", () => {
       database,
       clientVersion: "test",
       loomBridge: { handleToolCall: vi.fn() },
+      loomInstruments: { handleToolCall: vi.fn() },
       queryFactory: (args) => { queryArguments = args; return query; }
     });
     const events = [];
@@ -212,8 +214,10 @@ describe("Claude provider", () => {
     expect(queryArguments.options).toMatchObject({ model: "sonnet", effort: "high", permissionMode: "acceptEdits" });
     expect(queryArguments.options.mcpServers.loom).toMatchObject({ type: "sdk", name: "loom" });
     expect(queryArguments.options.mcpServers.loom_bridge).toMatchObject({ type: "sdk", name: "loom_bridge" });
+    expect(queryArguments.options.mcpServers.loom_instruments).toMatchObject({ type: "sdk", name: "loom_instruments" });
     await expect(queryArguments.options.canUseTool("mcp__loom__request_user_input", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__loom_bridge__spawn_thread", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    await expect(queryArguments.options.canUseTool("mcp__loom_instruments__create_instrument", {}, {})).resolves.toMatchObject({ behavior: "allow" });
 
     output.push({ type: "system", subtype: "init", session_id: thread.providerThreadId, uuid: "init-1" });
     output.push({

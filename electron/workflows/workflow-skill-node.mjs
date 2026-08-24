@@ -61,7 +61,7 @@ function projectRelativeTarget(projectRoot, configuredPath) {
   const candidate = path.resolve(root, value);
   const relative = path.relative(root, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Use Skill Markdown files must remain inside the current Loom project");
+    throw new Error("Use Skill Markdown files must remain inside the current Pixice project");
   }
   return { root, candidate, relative: relative || path.basename(candidate) };
 }
@@ -70,7 +70,7 @@ async function ensureRealPathInside(root, candidate) {
   const [realRoot, realCandidate] = await Promise.all([realpath(root), realpath(candidate)]);
   const relative = path.relative(realRoot, realCandidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Use Skill Markdown file escapes the current Loom project through a symbolic link");
+    throw new Error("Use Skill Markdown file escapes the current Pixice project through a symbolic link");
   }
   return realCandidate;
 }
@@ -195,7 +195,7 @@ export function workflowSkillDeveloperInstructions(attachments) {
   ].filter(Boolean).join("\n"));
   return [
     "## Workflow-attached Skills",
-    "The following instruction documents were explicitly connected to this Loom Agent node. Apply all compatible instructions while completing this workflow step. When instructions conflict, preserve Loom runtime safety and follow the more specific attached instruction.",
+    "The following instruction documents were explicitly connected to this Pixice Agent node. Apply all compatible instructions while completing this workflow step. When instructions conflict, preserve Pixice runtime safety and follow the more specific attached instruction.",
     "",
     ...sections
   ].join("\n\n");

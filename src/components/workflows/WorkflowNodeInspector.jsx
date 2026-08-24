@@ -155,7 +155,7 @@ function CredentialSelect({ api, projectId, value, onChange, label = "Credential
           <small className={styles.safetyNote}>Secrets are encrypted by the operating system and are never shown again after saving.</small>
         </div>
       )}
-      {!credentialApi && <small>Credentials are available in the Loom desktop runtime.</small>}
+      {!credentialApi && <small>Credentials are available in the Pixice desktop runtime.</small>}
       {error && <small className={styles.safetyNote}>{error}</small>}
     </div>
   );
@@ -188,7 +188,7 @@ function AgentFields({ node, models, updateConfig }) {
             <Brain size={16} /><span><strong>Background</strong><small>Stay inside the workflow and source task.</small></span>
           </button>
           <button type="button" role="radio" aria-checked={executionMode === "foreground"} data-selected={executionMode === "foreground"} onClick={() => updateConfig({ executionMode: "foreground" })}>
-            <Eye size={16} /><span><strong>Foreground</strong><small>Create a normal Loom task thread.</small></span>
+            <Eye size={16} /><span><strong>Foreground</strong><small>Create a normal Pixice task thread.</small></span>
           </button>
         </div>
         <small>Both modes pass the final answer downstream. Foreground threads can be steered and continued directly.</small>
@@ -233,9 +233,9 @@ function ScheduleFields({ config, updateConfig }) {
           <label className={styles.field}><span>Unit</span><select value={config.unit ?? "minutes"} onChange={(event) => updateConfig({ unit: event.target.value })}><option value="seconds">Seconds</option><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select></label>
         </div>
       ) : <label className={styles.field}><span>Cron</span><input value={config.cron ?? "0 * * * *"} onChange={(event) => updateConfig({ cron: event.target.value })} placeholder="minute hour day month weekday" /><small>Five fields in the computer’s local timezone. Names, lists, ranges, and steps are supported.</small></label>}
-      <Toggle label="Run when Loom starts" detail="Fires once when this enabled workflow is loaded." checked={Boolean(config.runOnStartup)} onChange={(value) => updateConfig({ runOnStartup: value })} />
+      <Toggle label="Run when Pixice starts" detail="Fires once when this enabled workflow is loaded." checked={Boolean(config.runOnStartup)} onChange={(value) => updateConfig({ runOnStartup: value })} />
       <label className={styles.field}><span>Overlapping runs</span><select value={config.overlapPolicy ?? "skip"} onChange={(event) => updateConfig({ overlapPolicy: event.target.value })}><option value="skip">Skip while already running</option><option value="allow">Allow parallel runs</option></select></label>
-      <small className={styles.safetyNote}>Schedule triggers run only while the Loom desktop app is running and the workflow is enabled.</small>
+      <small className={styles.safetyNote}>Schedule triggers run only while the Pixice desktop app is running and the workflow is enabled.</small>
     </>
   );
 }
@@ -488,7 +488,7 @@ function ExecuteWorkflowFields({ config, updateConfig, workflows, currentWorkflo
 function NotificationFields({ config, updateConfig }) {
   return (
     <>
-      <label className={styles.field}><span>Title</span><input value={config.title ?? "Loom workflow"} onChange={(event) => updateConfig({ title: event.target.value })} /></label>
+      <label className={styles.field}><span>Title</span><input value={config.title ?? "Pixice workflow"} onChange={(event) => updateConfig({ title: event.target.value })} /></label>
       <label className={styles.field}><span>Body</span><textarea rows={7} value={config.body ?? ""} onChange={(event) => updateConfig({ body: event.target.value })} /></label>
       <label className={styles.field}><span>Urgency</span><select value={config.urgency ?? "normal"} onChange={(event) => updateConfig({ urgency: event.target.value })}><option value="low">Low</option><option value="normal">Normal</option><option value="critical">Critical</option></select></label>
       <Toggle label="Silent notification" checked={Boolean(config.silent)} onChange={(value) => updateConfig({ silent: value })} />

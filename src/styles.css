@@ -6,6 +6,8 @@
   font-family: "Manrope Variable", system-ui, sans-serif;
   font-synthesis: none;
   --chrome-glass: rgba(24, 24, 24, .58);
+  --app-frame-gap: 8px;
+  --app-frame-radius: 14px;
   --stage: #1b1b1b;
   --canvas: #171717;
   --surface: #222222;
@@ -55,9 +57,9 @@ button:disabled { cursor: not-allowed; opacity: .38; }
   z-index: 1;
   width: 100%;
   height: 100%;
+  /* Electron supplies the window blur on macOS. A viewport-sized CSS backdrop
+     filter forces Chromium to recompose the transparent window while scrolling. */
   background: var(--chrome-glass);
-  -webkit-backdrop-filter: blur(42px) saturate(128%);
-  backdrop-filter: blur(42px) saturate(128%);
 }
 .loom-app {
   --rail-width: 64px;
@@ -73,7 +75,7 @@ button:disabled { cursor: not-allowed; opacity: .38; }
 }
 .loom-app[data-sidebar-expanded="true"] { --rail-width: clamp(224px, var(--sidebar-width), 360px); }
 .loom-app.view-settings { --rail-width: clamp(224px, var(--sidebar-width), 360px); }
-.loom-app[data-preview-open="true"] { --rail-width: 64px; }
+.loom-app[data-preview-open="true"][data-sidebar-expanded="false"] { --rail-width: 64px; }
 body.sidebar-resizing,
 body.sidebar-resizing * { cursor: col-resize !important; }
 body.sidebar-resizing .loom-app { transition: none; }
@@ -525,13 +527,13 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
   position: relative;
   min-width: 0;
   min-height: 0;
-  margin: 0 8px 8px 0;
+  margin: 0 var(--app-frame-gap) var(--app-frame-gap) 0;
   display: flex;
   flex-direction: column;
   isolation: isolate;
   overflow: hidden;
   background: var(--canvas);
-  border-radius: 14px;
+  border-radius: var(--app-frame-radius);
   box-shadow: none;
 }
 .app-toolbar {
@@ -555,7 +557,7 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 }
 .preview-mode .main-canvas {
   margin-right: 0;
-  border-radius: 14px 0 0 14px;
+  border-radius: var(--app-frame-radius) 0 0 var(--app-frame-radius);
   border-right: 1px solid var(--border);
 }
 .preview-mode .app-toolbar { height: 52px; padding-right: 9px; padding-left: 15px; }
@@ -579,17 +581,26 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
   border-radius: 18px;
 }
 .preview-mode .composer textarea { min-height: 54px; }
+.preview-mode .composer-fast-toggle,
+.preview-mode .composer-picker.permission .picker-trigger {
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}
+.preview-mode .composer-fast-toggle span,
+.preview-mode .composer-picker.permission .picker-trigger-label,
+.preview-mode .composer-picker.permission .picker-chevron { display: none; }
 
 .browser-panel {
   min-width: 0;
   min-height: 0;
-  margin: 0 8px 8px 0;
+  margin: 0 var(--app-frame-gap) var(--app-frame-gap) 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   color: var(--foreground);
   background: var(--canvas);
-  border-radius: 0 14px 14px 0;
+  border-radius: 0 var(--app-frame-radius) var(--app-frame-radius) 0;
 }
 .browser-tabbar {
   height: 42px;
@@ -706,6 +717,7 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 .file-breadcrumb svg { flex: none; }
 .file-breadcrumb span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .file-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.instrument-navigation .file-actions > span { color: var(--quiet); font: 10px/1 "JetBrains Mono Variable", monospace; }
 .file-actions button {
   height: 29px;
   padding: 0 9px;
@@ -1036,9 +1048,9 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 .assistant-message.commentary { color: color-mix(in oklab, var(--foreground) 82%, var(--muted)); }
 .quiet-empty { margin: 0; color: var(--quiet); font-size: 13px; }
 .task-progress {
-  --progress-accent: #a787ff;
-  --progress-accent-bright: #b89cff;
-  --progress-active: #2e2a3a;
+  --progress-accent: var(--thread);
+  --progress-accent-bright: var(--thread-bright);
+  --progress-active: color-mix(in oklab, var(--thread) 11%, #242424);
   margin: 0 12px 34px;
   overflow: hidden;
   color: #ececef;
@@ -1064,7 +1076,7 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 .progress-title { min-width: 0; display: flex; flex: 1; flex-direction: column; }
 .progress-title strong { color: #f0f0f2; font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
 .progress-title small { margin-top: 2px; overflow: hidden; color: #8f8f95; font-size: 10px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.progress-glyph { width: 31px; height: 31px; display: grid; place-items: center; flex: none; color: #eee8ff; background: #3c355a; border-radius: 10px; }
+.progress-glyph { width: 31px; height: 31px; display: grid; place-items: center; flex: none; color: color-mix(in oklab, var(--thread-bright) 68%, var(--foreground)); background: color-mix(in oklab, var(--thread) 17%, var(--surface-raised)); border-radius: 10px; }
 .progress-count { display: flex; align-items: baseline; gap: 4px; color: #f4f4f6; white-space: nowrap; }
 .progress-count strong { font-size: 13px; font-weight: 760; }
 .progress-count small { color: #919196; font-size: 9px; }
@@ -1079,7 +1091,7 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 .progress-content { padding: 14px 15px 10px; }
 .progress-phase { min-height: 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .progress-phase > span { min-width: 0; display: flex; align-items: center; gap: 5px; }
-.progress-phase svg { flex: none; color: var(--progress-accent-bright); filter: drop-shadow(0 0 4px rgba(167, 135, 255, .4)); }
+.progress-phase svg { flex: none; color: var(--progress-accent-bright); filter: drop-shadow(0 0 4px var(--thread-glow)); }
 .progress-phase strong { overflow: hidden; color: #d9d9de; font-size: 10px; font-weight: 690; text-overflow: ellipsis; white-space: nowrap; }
 .progress-phase > small { color: #85858a; font-size: 9px; white-space: nowrap; }
 .progress-steps { margin-top: 7px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3px 9px; }
@@ -1103,7 +1115,7 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 .progress-agent-stack { min-width: 45px; display: flex; align-items: center; }
 .progress-agent-avatar { width: 17px; height: 17px; margin-left: -3px; display: grid; place-items: center; color: #111217; border: 1.5px solid #212121; border-radius: 50%; }
 .progress-agent-avatar:first-child { margin-left: 0; }
-.progress-agent-avatar.tone-0 { color: #b9a7ff; background: #2f2b45; }
+.progress-agent-avatar.tone-0 { color: var(--thread-bright); background: color-mix(in oklab, var(--thread) 15%, var(--surface-raised)); }
 .progress-agent-avatar.tone-1 { color: #10271d; background: #55d687; }
 .progress-agent-avatar.tone-2 { color: #263054; background: #89a4ee; }
 .progress-agent-avatar.tone-3 { color: #452e12; background: #e4ae63; }
@@ -1468,6 +1480,31 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
   border: 1px solid rgba(255, 255, 255, .14);
   border-radius: 12px;
 }
+.composer-file-tile {
+  width: 100%;
+  height: 100%;
+  padding: 12px 8px 7px;
+  display: grid;
+  grid-template-rows: 1fr auto auto;
+  place-items: center;
+  gap: 2px;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--surface) 90%, var(--primary) 10%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.composer-file-tile svg { color: var(--primary); }
+.composer-file-tile strong { font: 650 9px/1 "JetBrains Mono Variable", monospace; letter-spacing: .04em; }
+.composer-file-tile span {
+  width: 100%;
+  overflow: hidden;
+  color: var(--quiet);
+  font-size: 8px;
+  line-height: 1.2;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .composer-attachment > button {
   position: absolute;
   top: 1px;
@@ -1532,7 +1569,10 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 .composer textarea {
   width: 100%;
   height: 54px;
+  min-height: 54px;
+  max-height: 240px;
   padding: 0 2px;
+  overflow-y: hidden;
   resize: none;
   color: var(--foreground);
   background: transparent;
@@ -1776,11 +1816,11 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 /* Inspector and approvals */
 .inspector {
   position: fixed;
-  top: 70px;
+  top: 78px;
   right: 16px;
   z-index: 15;
   width: 292px;
-  max-height: calc(100vh - 86px);
+  max-height: calc(100vh - 94px);
   display: none;
   overflow: auto;
   color: var(--foreground);
@@ -2145,6 +2185,29 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 .provider-meta span { position: relative; }
 .provider-meta span + span::before { position: absolute; left: -8px; content: "·"; }
 .provider-login { min-width: 78px; justify-content: center; }
+.github-settings-pane { margin-top: -2px; }
+.github-account-card {
+  min-height: 104px;
+  margin-top: 18px;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  background: color-mix(in oklab, var(--surface) 78%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 15px;
+}
+.github-account-brand { width: 42px; height: 42px; display: grid; place-items: center; color: var(--foreground); background: var(--surface-raised); border-radius: 12px; }
+.github-account-copy { min-width: 0; display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 10.5px; }
+.github-account-copy > small { color: var(--quiet); font-size: 9.5px; }
+.github-account-heading { display: flex; align-items: center; gap: 10px; }
+.github-account-heading > strong { color: var(--foreground); font-size: 13px; font-weight: 650; }
+.github-login-progress { margin-top: 10px; padding: 11px 13px; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 10px; color: var(--muted); background: color-mix(in oklab, var(--primary) 7%, var(--surface)); border: 1px solid color-mix(in oklab, var(--primary) 24%, var(--border)); border-radius: 11px; }
+.github-login-progress > span { display: flex; flex-direction: column; gap: 2px; }
+.github-login-progress strong { color: var(--foreground); font-size: 10.5px; font-weight: 610; }
+.github-login-progress small { color: var(--quiet); font-size: 9px; }
+.github-login-progress kbd { padding: 5px 8px; color: var(--foreground); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 7px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; user-select: text; }
 .bridge-model-overview { margin-top: 26px; }
 .bridge-model-overview > header { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
 .bridge-model-overview > header h2 { margin: 0; font-size: 12px; font-weight: 650; }

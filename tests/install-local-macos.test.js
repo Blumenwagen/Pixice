@@ -12,19 +12,19 @@ const installerPath = path.resolve(testDirectory, "../scripts/install-local-maco
 describe("local macOS installer", () => {
   it("creates unique staging, backup, plan, and log paths", () => {
     const paths = localInstallPaths({
-      source: "/tmp/build/Loom.app",
-      target: "/tmp/apps/Loom.app",
+      source: "/tmp/build/Pixice.app",
+      target: "/tmp/apps/Pixice.app",
       date: new Date("2026-08-21T12:00:00.000Z"),
       processId: 42
     });
 
     expect(paths).toEqual({
-      source: "/tmp/build/Loom.app",
-      target: "/tmp/apps/Loom.app",
-      staging: "/tmp/apps/Loom.app.staging-42",
-      backup: "/tmp/apps/Loom.app.backup-20260821T120000Z",
-      plan: path.join(tmpdir(), "loom-local-install-42-20260821T120000Z.json"),
-      log: path.join(tmpdir(), "loom-local-install-42-20260821T120000Z.log")
+      source: "/tmp/build/Pixice.app",
+      target: "/tmp/apps/Pixice.app",
+      staging: "/tmp/apps/Pixice.app.staging-42",
+      backup: "/tmp/apps/Pixice.app.backup-20260821T120000Z",
+      plan: path.join(tmpdir(), "pixice-local-install-42-20260821T120000Z.json"),
+      log: path.join(tmpdir(), "pixice-local-install-42-20260821T120000Z.log")
     });
   });
 

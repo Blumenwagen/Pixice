@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("loom", Object.freeze({
   app: Object.freeze({ bootstrap: invoke("app:bootstrap"), saveSettings: invoke("app:settings:update") }),
   runtime: Object.freeze({ status: invoke("runtime:status") }),
   providers: Object.freeze({ list: invoke("providers:list"), login: invoke("providers:login") }),
+  github: Object.freeze({ status: invoke("github:status"), login: invoke("github:login"), logout: invoke("github:logout") }),
   usage: Object.freeze({ summary: invoke("usage:summary") }),
   updates: Object.freeze({ status: invoke("updates:status"), check: invoke("updates:check"), download: invoke("updates:download"), install: invoke("updates:install") }),
   browser: Object.freeze({
@@ -39,6 +40,26 @@ contextBridge.exposeInMainWorld("loom", Object.freeze({
     move: invoke("board:move"),
     delete: invoke("board:delete"),
     attach: invoke("board:attach")
+  }),
+  instruments: Object.freeze({
+    list: invoke("instruments:list"),
+    tools: invoke("instruments:tools"),
+    read: invoke("instruments:read"),
+    open: invoke("instruments:open"),
+    refresh: invoke("instruments:refresh"),
+    event: invoke("instruments:event"),
+    invoke: invoke("instruments:invoke"),
+    pin: invoke("instruments:pin"),
+    events: invoke("instruments:events"),
+    receipts: invoke("instruments:receipts"),
+    launch: invoke("instruments:launch"),
+    rename: invoke("instruments:rename"),
+    grants: invoke("instruments:grants"),
+    duplicate: invoke("instruments:duplicate"),
+    revisions: invoke("instruments:revisions"),
+    restore: invoke("instruments:restore"),
+    deleteTool: invoke("instruments:delete-tool"),
+    delete: invoke("instruments:delete")
   }),
   workflows: Object.freeze({
     list: invoke("workflows:list"),

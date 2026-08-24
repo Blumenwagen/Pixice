@@ -1,6 +1,6 @@
 export {};
 
-type LoomEvent = {
+type PixiceEvent = {
   type:
     | "TaskUpdated"
     | "AgentUpdated"
@@ -12,6 +12,9 @@ type LoomEvent = {
     | "BrowserState"
     | "BrowserOpenRequested"
     | "BoardUpdated"
+    | "InstrumentUpdated"
+    | "InstrumentOpenRequested"
+    | "InstrumentInteractionUpdated"
     | "WorkflowUpdated"
     | "WorkflowRunUpdated"
     | "WorkflowOpenRequested"
@@ -28,7 +31,7 @@ type ProjectScope = { projectId: string };
 type ThreadScope = ProjectScope & { threadId: string };
 type ProjectIcon = "folder" | "code" | "terminal" | "globe" | "sparkles" | "stack" | "brain" | "chart" | "desktop" | "file" | "files" | "git-branch" | "image" | "lock" | "shield" | "workflow" | "gauge" | "connect";
 type ProjectColor = "gray" | "blue" | "indigo" | "purple" | "pink" | "rose" | "red" | "orange" | "amber" | "yellow" | "green" | "teal";
-type LoomProject = {
+type PixiceProject = {
   id: string;
   canonicalPath: string;
   displayName: string;
@@ -39,6 +42,35 @@ type LoomProject = {
   repository?: any;
   createdAt: string;
   updatedAt: string;
+};
+type InstrumentDocument = {
+  id: string;
+  projectId: string;
+  threadId: string;
+  lifecycle: "ephemeral" | "pinned";
+  documentVersion: number;
+  document: {
+    version: 1;
+    title: string;
+    description: string;
+    parameters: Record<string, { label: string; description: string; type: "string" | "number" | "boolean" | "select"; required: boolean; default?: string | number | boolean; placeholder?: string; options?: Array<{ label: string; value: string | number | boolean }> }>;
+    state: Record<string, unknown>;
+    data: Record<string, unknown>;
+    sources: Record<string, { capability: "project.summary" | "git.status" | "git.diff" | "files.readText" | "board.list" | "workflows.list" | "workflow.output" | "tasks.plan"; arguments: Record<string, unknown>; refresh: "manual" | "onOpen" | "event" }>;
+    sourceState: Record<string, { status: "pending" | "ready" | "error"; refreshedAt: string | null; error: string | null }>;
+    layout: Record<string, unknown>;
+    actions: Record<string, unknown>;
+  };
+  status: string;
+  metadata: { name?: string };
+  grants: string[];
+  requestedCapabilities: string[];
+  usageCount: number;
+  lastError: string | null;
+  launchValues?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  lastOpenedAt: string | null;
 };
 type WorkflowNodeType =
   | "manualTrigger"
@@ -167,13 +199,18 @@ declare global {
   interface Window {
     loom?: {
       app: {
-        bootstrap(): Promise<{ projects: LoomProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; defaultEnabled: boolean }> }>;
+        bootstrap(): Promise<{ projects: PixiceProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; category: "core" | "loom-native"; defaultEnabled: boolean }> }>;
         saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };
       providers: {
         list(): Promise<any[]>;
         login(payload: { provider: string }): Promise<{ provider: string; opened: boolean; loginId?: string | null }>;
+      };
+      github: {
+        status(): Promise<{ available: boolean; authenticated: boolean; source: "bundled" | "system" | null; version: string | null; account: { login: string; name?: string | null; avatarUrl?: string | null } | null; message: string }>;
+        login(): Promise<any>;
+        logout(): Promise<any>;
       };
       usage: { summary(payload: { days: number }): Promise<any> };
       updates: {
@@ -198,11 +235,11 @@ declare global {
         write(payload: ProjectScope & { path: string; content: string; expectedMtimeMs?: number }): Promise<any>;
       };
       projects: {
-        list(): Promise<LoomProject[]>;
-        touch(payload: ProjectScope): Promise<LoomProject>;
+        list(): Promise<PixiceProject[]>;
+        touch(payload: ProjectScope): Promise<PixiceProject>;
         pickFolders(): Promise<string[]>;
-        create(payload: { displayName: string; icon: ProjectIcon; color: ProjectColor; folders: string[] }): Promise<LoomProject>;
-        open(): Promise<LoomProject | null>;
+        create(payload: { displayName: string; icon: ProjectIcon; color: ProjectColor; folders: string[] }): Promise<PixiceProject>;
+        open(): Promise<PixiceProject | null>;
       };
       board: {
         list(payload: ProjectScope): Promise<{ data: Array<{ id: string; projectId: string; title: string; description: string; column: "backlog" | "ready" | "active" | "done"; position: number; threadId: string | null; createdByThreadId: string | null; createdAt: string; updatedAt: string }> }>;
@@ -211,6 +248,26 @@ declare global {
         move(payload: ProjectScope & { taskId: string; column: "backlog" | "ready" | "active" | "done"; beforeTaskId?: string }): Promise<any>;
         delete(payload: ProjectScope & { taskId: string }): Promise<any>;
         attach(payload: ProjectScope & { taskId: string; threadId: string }): Promise<any>;
+      };
+      instruments: {
+        list(payload: ProjectScope & { threadId?: string }): Promise<{ data: InstrumentDocument[] }>;
+        tools(payload: ProjectScope): Promise<{ data: InstrumentDocument[] }>;
+        read(payload: ProjectScope & { instrumentId: string }): Promise<InstrumentDocument>;
+        open(payload: ProjectScope & { instrumentId: string; workspaceId?: string }): Promise<InstrumentDocument>;
+        refresh(payload: ProjectScope & { threadId: string; instrumentId: string; source?: string }): Promise<InstrumentDocument>;
+        event(payload: ProjectScope & { threadId: string; instrumentId: string; actionId: string; payload?: unknown; model?: string; serviceTier?: string | null; effort?: string; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ id: string; status: string; turnId: string | null }>;
+        invoke(payload: ProjectScope & { threadId: string; instrumentId: string; actionId: string; arguments?: unknown; requestId: string }): Promise<{ cancelled?: boolean; duplicate?: boolean; receipt: unknown; result: unknown }>;
+        pin(payload: ProjectScope & { threadId: string; instrumentId: string; pinned: boolean }): Promise<InstrumentDocument>;
+        events(payload: ProjectScope & { instrumentId: string }): Promise<{ data: Array<{ id: string; instrumentId: string; event: string; payload: unknown; status: string; turnId: string | null; error: string | null; createdAt: string; updatedAt: string }> }>;
+        receipts(payload: ProjectScope & { instrumentId: string }): Promise<{ data: unknown[] }>;
+        launch(payload: ProjectScope & { threadId: string; instrumentId: string; values?: Record<string, unknown> }): Promise<InstrumentDocument>;
+        rename(payload: ProjectScope & { threadId: string; instrumentId: string; name: string }): Promise<InstrumentDocument>;
+        grants(payload: ProjectScope & { threadId: string; instrumentId: string; grants: string[] }): Promise<InstrumentDocument>;
+        duplicate(payload: ProjectScope & { threadId: string; instrumentId: string }): Promise<InstrumentDocument>;
+        revisions(payload: ProjectScope & { instrumentId: string }): Promise<{ data: Array<{ id: string; instrumentId: string; version: number; document: unknown; createdAt: string }> }>;
+        restore(payload: ProjectScope & { threadId: string; instrumentId: string; version: number }): Promise<InstrumentDocument>;
+        deleteTool(payload: ProjectScope & { threadId: string; instrumentId: string }): Promise<InstrumentDocument>;
+        delete(payload: ProjectScope & { instrumentId: string }): Promise<InstrumentDocument>;
       };
       workflows: {
         list(payload: ProjectScope): Promise<{ data: WorkflowDocument[] }>;
@@ -236,8 +293,8 @@ declare global {
         archive(payload: ThreadScope): Promise<unknown>;
       };
       turns: {
-        start(payload: ThreadScope & { text: string; images?: string[]; model?: string; serviceTier?: string | null; effort?: string; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ turn: any }>;
-        steer(payload: ThreadScope & { turnId: string; text: string; images?: string[] }): Promise<unknown>;
+        start(payload: ThreadScope & { text: string; images?: string[]; attachments?: Array<{ name: string; type: string; size: number; dataUrl: string }>; model?: string; serviceTier?: string | null; effort?: string; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ turn: any }>;
+        steer(payload: ThreadScope & { turnId: string; text: string; images?: string[]; attachments?: Array<{ name: string; type: string; size: number; dataUrl: string }> }): Promise<unknown>;
         interrupt(payload: ThreadScope & { turnId: string }): Promise<unknown>;
       };
       approvals: {
@@ -260,7 +317,7 @@ declare global {
         openTerminal(payload: ProjectScope & { path?: string }): Promise<unknown>;
         reveal(payload: ProjectScope & { path?: string }): Promise<unknown>;
       };
-      events: { subscribe(listener: (event: LoomEvent) => void): () => void };
+      events: { subscribe(listener: (event: PixiceEvent) => void): () => void };
     };
   }
 }

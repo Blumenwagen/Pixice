@@ -57,4 +57,42 @@ describe("workflow preload bridge", () => {
       credentialId: "credential-1"
     });
   });
+
+  it("exposes GitHub account actions", async () => {
+    const { api, invoke } = loadPreload();
+
+    await api.github.status();
+    await api.github.login();
+    await api.github.logout();
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "github:status", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(2, "github:login", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(3, "github:logout", undefined);
+  });
+
+  it("exposes the Instrument Preview bridge", async () => {
+    const { api, invoke } = loadPreload();
+
+    await api.instruments.list({ projectId: "project-1", threadId: "thread-1" });
+    await api.instruments.tools({ projectId: "project-1" });
+    await api.instruments.open({ projectId: "project-1", instrumentId: "instrument-1", workspaceId: "thread-1" });
+    await api.instruments.refresh({ projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", source: "status" });
+    await api.instruments.event({ projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", actionId: "investigate", payload: { selected: ["src/app.js"] } });
+    await api.instruments.invoke({ projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", actionId: "move", arguments: { taskId: "task-1", column: "done" }, requestId: "request-1" });
+    await api.instruments.pin({ projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", pinned: true });
+    await api.instruments.launch({ projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", values: { environment: "staging" } });
+    await api.instruments.grants({ projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", grants: ["workflow.run"] });
+    await api.instruments.revisions({ projectId: "project-1", instrumentId: "instrument-1" });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "instruments:list", { projectId: "project-1", threadId: "thread-1" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "instruments:tools", { projectId: "project-1" });
+    expect(invoke).toHaveBeenNthCalledWith(3, "instruments:open", { projectId: "project-1", instrumentId: "instrument-1", workspaceId: "thread-1" });
+    expect(invoke).toHaveBeenNthCalledWith(4, "instruments:refresh", { projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", source: "status" });
+    expect(invoke).toHaveBeenNthCalledWith(5, "instruments:event", { projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", actionId: "investigate", payload: { selected: ["src/app.js"] } });
+    expect(invoke).toHaveBeenNthCalledWith(6, "instruments:invoke", { projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", actionId: "move", arguments: { taskId: "task-1", column: "done" }, requestId: "request-1" });
+    expect(invoke).toHaveBeenNthCalledWith(7, "instruments:pin", { projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", pinned: true });
+    expect(invoke).toHaveBeenNthCalledWith(8, "instruments:launch", { projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", values: { environment: "staging" } });
+    expect(invoke).toHaveBeenNthCalledWith(9, "instruments:grants", { projectId: "project-1", threadId: "thread-1", instrumentId: "instrument-1", grants: ["workflow.run"] });
+    expect(invoke).toHaveBeenNthCalledWith(10, "instruments:revisions", { projectId: "project-1", instrumentId: "instrument-1" });
+  });
 });

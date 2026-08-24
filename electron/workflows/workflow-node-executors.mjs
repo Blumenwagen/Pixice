@@ -212,7 +212,7 @@ function projectPath(root, configuredPath) {
   const resolvedRoot = path.resolve(root);
   const candidate = path.resolve(resolvedRoot, configuredPath || ".");
   const relative = path.relative(resolvedRoot, candidate);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Workflow nodes may access only the current Loom project");
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Workflow nodes may access only the current Pixice project");
   return { root: resolvedRoot, candidate, relative: relative || "." };
 }
 
@@ -238,7 +238,7 @@ async function assertRealPathInside(root, candidate, allowMissing = false) {
   }
   const realRoot = await realpath(root);
   const relative = path.relative(realRoot, realCandidate);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Workflow path escapes the current Loom project through a symbolic link");
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Workflow path escapes the current Pixice project through a symbolic link");
   return realCandidate;
 }
 
@@ -474,7 +474,7 @@ function boardTask(database, projectId, taskId) {
 }
 
 async function executeBoardNode({ config, context, database, workflow, run }) {
-  if (!database) throw new Error("The Loom board is unavailable");
+  if (!database) throw new Error("The Pixice board is unavailable");
   if (config.operation === "list") return { tasks: database.listBoardTasks(workflow.projectId) };
   const taskId = renderString(config.taskId, context).trim();
   if (config.operation === "create") {
@@ -644,7 +644,7 @@ export async function executeBuiltInWorkflowNode({
   if (node.type === "executeWorkflow") return workflowNodeResult(await executeNestedNode({ config, context, executeWorkflow }));
   if (node.type === "notification") {
     if (typeof notify !== "function") throw new Error("Desktop notifications are unavailable in this runtime");
-    const title = renderString(config.title, context).trim() || "Loom workflow";
+    const title = renderString(config.title, context).trim() || "Pixice workflow";
     const body = renderString(config.body, context).trim();
     const result = await notify({ title, body, urgency: config.urgency, silent: config.silent });
     return workflowNodeResult({ shown: result !== false, title, body, urgency: config.urgency });

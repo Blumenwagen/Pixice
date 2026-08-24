@@ -18,18 +18,16 @@ interface MenuIconProps extends HTMLAttributes<HTMLDivElement> {
 
 const LINE_VARIANTS: Variants = {
   normal: {
-    rotate: 0,
-    y: 0,
+    x: 0,
     opacity: 1,
   },
   animate: (custom: number) => ({
-    rotate: custom === 1 ? 45 : custom === 3 ? -45 : 0,
-    y: custom === 1 ? 6 : custom === 3 ? -6 : 0,
-    opacity: custom === 2 ? 0 : 1,
+    x: [-2, 2, 0],
+    opacity: [0.65, 1],
     transition: {
-      type: "spring",
-      stiffness: 260,
-      damping: 20,
+      duration: 0.32,
+      delay: (custom - 1) * 0.04,
+      ease: "easeOut",
     },
   }),
 };

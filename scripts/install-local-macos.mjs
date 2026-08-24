@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 const execFile = promisify(execFileCallback);
 const scriptPath = fileURLToPath(import.meta.url);
 const repositoryRoot = path.resolve(path.dirname(scriptPath), "..");
-const appId = "com.loom.orchestrator";
+const appId = "com.blumenwagen.pixice";
 const relaunchDelayMs = 10_000;
 
 function timestampTag(date = new Date()) {
@@ -19,8 +19,8 @@ function timestampTag(date = new Date()) {
 }
 
 export function localInstallPaths({
-  source = path.join(repositoryRoot, "release", "mac-arm64", "Loom.app"),
-  target = path.join(homedir(), "Applications", "Loom.app"),
+  source = path.join(repositoryRoot, "release", "mac-arm64", "Pixice.app"),
+  target = path.join(homedir(), "Applications", "Pixice.app"),
   date = new Date(),
   processId = process.pid
 } = {}) {
@@ -30,8 +30,8 @@ export function localInstallPaths({
     target: path.resolve(target),
     staging: `${path.resolve(target)}.staging-${processId}`,
     backup: `${path.resolve(target)}.backup-${tag}`,
-    plan: path.join(tmpdir(), `loom-local-install-${processId}-${tag}.json`),
-    log: path.join(tmpdir(), `loom-local-install-${processId}-${tag}.log`)
+    plan: path.join(tmpdir(), `pixice-local-install-${processId}-${tag}.json`),
+    log: path.join(tmpdir(), `pixice-local-install-${processId}-${tag}.log`)
   };
 }
 
@@ -50,15 +50,15 @@ export function detachWorker({ planPath, logPath, spawn = spawnProcess, nodePath
 }
 
 async function assertAppBundle(appPath) {
-  const executable = path.join(appPath, "Contents", "MacOS", "Loom");
+  const executable = path.join(appPath, "Contents", "MacOS", "Pixice");
   const [bundleStats, executableStats] = await Promise.all([stat(appPath), stat(executable)]);
   if (!bundleStats.isDirectory() || !executableStats.isFile()) {
-    throw new Error(`Not a Loom app bundle: ${appPath}`);
+    throw new Error(`Not a Pixice app bundle: ${appPath}`);
   }
 }
 
-async function runningLoomPids(target) {
-  const executable = path.join(target, "Contents", "MacOS", "Loom");
+async function runningPixicePids(target) {
+  const executable = path.join(target, "Contents", "MacOS", "Pixice");
   const { stdout } = await execFile("/bin/ps", ["-ax", "-o", "pid=,command="], { maxBuffer: 4 * 1024 * 1024 });
   return stdout.split("\n").flatMap((line) => {
     const match = line.trim().match(/^(\d+)\s+(.+)$/);
@@ -107,7 +107,7 @@ async function quitRunningApp(processIds) {
   }
   if (await waitForExit(processIds, 2_000)) return;
 
-  throw new Error(`Loom did not quit; refusing to replace a running app bundle (PID ${processIds.join(", ")})`);
+  throw new Error(`Pixice did not quit; refusing to replace a running app bundle (PID ${processIds.join(", ")})`);
 }
 
 async function finishInstall(planPath) {
@@ -142,18 +142,18 @@ async function prepareInstall(options = {}) {
   await execFile("/usr/bin/ditto", [paths.source, paths.staging]);
   await assertAppBundle(paths.staging);
 
-  const plan = { ...paths, runningPids: await runningLoomPids(paths.target) };
+  const plan = { ...paths, runningPids: await runningPixicePids(paths.target) };
   await writeFile(paths.plan, `${JSON.stringify(plan, null, 2)}\n`, { mode: 0o600 });
   const workerPid = detachWorker({ planPath: paths.plan, logPath: paths.log });
 
   console.log(`Staged ${paths.source}`);
-  console.log(`Loom will relaunch once from detached worker PID ${workerPid}.`);
+  console.log(`Pixice will relaunch once from detached worker PID ${workerPid}.`);
   console.log(`Backup: ${paths.backup}`);
   console.log(`Log: ${paths.log}`);
 }
 
 async function main() {
-  if (process.platform !== "darwin") throw new Error("Local Loom installation is currently supported only on macOS");
+  if (process.platform !== "darwin") throw new Error("Local Pixice installation is currently supported only on macOS");
   if (process.argv[2] === "--finish-install") {
     if (!process.argv[3]) throw new Error("Missing install plan path");
     await finishInstall(path.resolve(process.argv[3]));

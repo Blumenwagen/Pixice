@@ -1,10 +1,10 @@
-# Loom implementation plan
+# Pixice implementation plan
 
 ## Product outcome
 
-Loom is a local desktop control surface for Codex work. A user opens a local project, sees the real Codex tasks associated with that project, starts or continues work, follows live agent/tool/plan activity, resolves approvals, and reviews the resulting Git changes without leaving the app.
+Pixice is a local desktop control surface for Codex work. A user opens a local project, sees the real Codex tasks associated with that project, starts or continues work, follows live agent/tool/plan activity, resolves approvals, and reviews the resulting Git changes without leaving the app.
 
-The lead conversation is the source of truth. Delegated agents appear as a hierarchy beneath it; Loom does not invent a second orchestration model on top of Codex.
+The lead conversation is the source of truth. Delegated agents appear as a hierarchy beneath it; Pixice does not invent a second orchestration model on top of Codex.
 
 ## Architecture contract
 
@@ -12,8 +12,8 @@ The lead conversation is the source of truth. Delegated agents appear as a hiera
 - **Preload bridge:** `window.loom` is the only renderer-to-main boundary. Every privileged call is named and validated.
 - **Electron main:** owns dialogs, local persistence, Git access, external app actions, and the Codex runtime lifecycle.
 - **Codex runtime:** one `codex app-server` JSONL session is initialized at app startup. The installed Codex binary is used in development; signed, checksum-pinned `codex` and `codex-code-mode-host` binaries are bundled together for releases.
-- **Persistence:** SQLite stores Loom-owned project metadata and view state. Codex remains authoritative for thread and turn history.
-- **Git:** Loom reads status and diffs directly. Isolated worktrees are optional task execution environments and may only be removed when clean.
+- **Persistence:** SQLite stores Pixice-owned project metadata and view state. Codex remains authoritative for thread and turn history.
+- **Git:** Pixice reads status and diffs directly. Isolated worktrees are optional task execution environments and may only be removed when clean.
 
 ## Delivery phases
 

@@ -63,7 +63,7 @@ export function WorkflowSkillInspector({ node, api, projectId, onUpdate, onDelet
   const loadSkills = useCallback(async () => {
     if (!api?.extensions?.list || !projectId) {
       setSkills([]);
-      setError("Installed Skills require the Loom desktop capability bridge.");
+      setError("Installed Skills require the Pixice desktop capability bridge.");
       return;
     }
     setLoading(true);
@@ -182,7 +182,7 @@ export function WorkflowSkillInspector({ node, api, projectId, onUpdate, onDelet
         </label>
 
         <small className={styles.safetyNote}>
-          Connect this node’s Skill output directly to a Loom Agent’s Skill input. Attach as many Use Skill nodes to the same Agent as needed; they add instructions without becoming workflow data or activating an otherwise inactive branch.
+          Connect this node’s Skill output directly to a Pixice Agent’s Skill input. Attach as many Use Skill nodes to the same Agent as needed; they add instructions without becoming workflow data or activating an otherwise inactive branch.
         </small>
         {error && <small className={styles.safetyNote}>{error}</small>}
       </div>

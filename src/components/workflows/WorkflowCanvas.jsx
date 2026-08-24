@@ -21,6 +21,7 @@ import {
   Plus,
   Sparkle,
   SpinnerGap,
+  Trash,
   TreeStructure,
   Warning,
   X
@@ -241,7 +242,7 @@ function NodePicker({ query, onQueryChange, onAdd, onClose }) {
   return (
     <div className={styles.nodePicker} role="dialog" aria-label="Add workflow node">
       <header>
-        <span><strong>Add node</strong><small>Native building blocks for useful Loom automations.</small></span>
+        <span><strong>Add node</strong><small>Native building blocks for useful Pixice automations.</small></span>
         <IconButton label="Close node picker" onClick={onClose}><X size={13} /></IconButton>
       </header>
       <label className={styles.nodePickerSearch}>
@@ -294,7 +295,7 @@ function WorkflowInspector({ workflow, onChange, onClose }) {
           <input type="checkbox" checked={Boolean(workflow.enabled)} onChange={(event) => onChange({ ...workflow, enabled: event.target.checked })} />
           <span>
             <strong>Enable automatic triggers</strong>
-            <small>{automaticTriggerCount ? `${automaticTriggerCount} Schedule or Webhook trigger${automaticTriggerCount === 1 ? "" : "s"} will be hosted while Loom is running.` : "Add a Schedule or Local Webhook node before enabling this workflow."}</small>
+            <small>{automaticTriggerCount ? `${automaticTriggerCount} Schedule or Webhook trigger${automaticTriggerCount === 1 ? "" : "s"} will be hosted while Pixice is running.` : "Add a Schedule or Local Webhook node before enabling this workflow."}</small>
           </span>
         </label>
         <div className={styles.workflowFacts}>
@@ -327,7 +328,8 @@ export function WorkflowCanvas({
   compact = false,
   onChange,
   onRun,
-  onCancel
+  onCancel,
+  onDelete
 }) {
   const canvasRef = useRef(null);
   const flowRef = useRef(null);
@@ -456,7 +458,7 @@ export function WorkflowCanvas({
     const targetNode = nodesById.get(targetId);
     if (!workflowCanConnect(sourceNode, sourcePort, targetNode, targetPort)) {
       setConnectionError(sourceNode?.type === "useSkill" || sourcePort === "skill" || targetPort === "skill"
-        ? "Use Skill nodes connect only from Skill to a Loom Agent’s Skill input."
+        ? "Use Skill nodes connect only from Skill to a Pixice Agent’s Skill input."
         : "These workflow ports cannot be connected.");
       return false;
     }
@@ -576,6 +578,7 @@ export function WorkflowCanvas({
             setInspectorOpen((open) => !open);
           }}><Sparkle size={14} /></IconButton>
           <button type="button" className={styles.secondaryButton} onClick={autoLayout}><TreeStructure size={14} />Tidy</button>
+          {onDelete && <IconButton label="Delete workflow" className={styles.deleteWorkflow} onClick={onDelete}><Trash size={14} /></IconButton>}
           {activeRun ? (
             <button type="button" className={styles.stopButton} disabled={run.status === "cancelling"} onClick={() => onCancel(run.id)}><Pause size={14} />{run.status === "cancelling" ? "Stopping" : "Stop"}</button>
           ) : (
@@ -699,7 +702,7 @@ export function WorkflowCanvas({
             <div className={styles.emptyCanvas}>
               <span><Plus size={22} /></span>
               <strong>Build your first useful workflow</strong>
-              <small>Trigger on time or local webhooks, call APIs, aggregate data, query SQLite, loop through subworkflows, attach Skills to Agents, notify yourself, inspect Git, manage files or board tasks, and hand ambiguous work to Loom Agents.</small>
+              <small>Trigger on time or local webhooks, call APIs, aggregate data, query SQLite, loop through subworkflows, attach Skills to Agents, notify yourself, inspect Git, manage files or board tasks, and hand ambiguous work to Pixice Agents.</small>
               <button type="button" className={styles.primaryButton} onClick={() => setNodePickerOpen(true)}><Plus size={14} />Browse nodes</button>
             </div>
           )}

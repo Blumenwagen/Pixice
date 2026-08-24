@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LoomWorkflows, loomWorkflowDynamicTools } from "../electron/workflows/loom-workflows.mjs";
+import { PixiceWorkflows, loomWorkflowDynamicTools } from "../electron/workflows/loom-workflows.mjs";
 import { WorkflowStore } from "../electron/workflows/workflow-store.mjs";
 
 const temporaryDirectories = [];
@@ -64,7 +64,7 @@ function createCapability({
   const onOpen = vi.fn();
   const onChange = vi.fn();
   const onRun = vi.fn();
-  const workflows = new LoomWorkflows({
+  const workflows = new PixiceWorkflows({
     runtime,
     store,
     database: { saveThreadLink },
@@ -75,7 +75,7 @@ function createCapability({
       defaultModel: "gpt-test",
       defaultEffort: "high",
       defaultPermissionMode: "workspace-write",
-      developerInstructions: "base Loom instructions",
+      developerInstructions: "base Pixice instructions",
       permissionSettings: () => ({
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
@@ -93,7 +93,7 @@ function createCapability({
   return { workflows, onOpen, onChange, onRun, onForeground, onAgentActivity, saveThreadLink };
 }
 
-describe("Loom workflow capability", () => {
+describe("Pixice workflow capability", () => {
   it("lets an agent discover, create, inspect, edit, open, and run a background workflow agent", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-agent-"));
     temporaryDirectories.push(directory);
@@ -113,7 +113,7 @@ describe("Loom workflow capability", () => {
     const created = resultValue(await capability.workflows.handleToolCall({
       threadId: "thread-parent",
       tool: "create_workflow",
-      arguments: { name: "Investigate regression", description: "Use a Loom Agent" }
+      arguments: { name: "Investigate regression", description: "Use a Pixice Agent" }
     })).workflow;
     const createdAgent = created.graph.nodes.find((node) => node.type === "loomAgent");
     expect(createdAgent.config.executionMode).toBe("background");
@@ -204,7 +204,7 @@ describe("Loom workflow capability", () => {
 
     expect(completed).toMatchObject({ status: "completed", output: "workflow answer" });
     const threadStart = runtime.requests.find((request) => request.method === "thread/start");
-    expect(threadStart.payload.developerInstructions).toContain("base Loom instructions");
+    expect(threadStart.payload.developerInstructions).toContain("base Pixice instructions");
     expect(threadStart.payload.developerInstructions).toContain("Attached Skill 1: Release Review");
     expect(threadStart.payload.developerInstructions).toContain("Always inspect the changelog");
     expect(threadStart.payload.developerInstructions).toContain("Attached Skill 2: Security Review");
@@ -299,7 +299,7 @@ describe("Loom workflow capability", () => {
     store.close();
   });
 
-  it("promotes foreground agent nodes to normal root Loom threads", async () => {
+  it("promotes foreground agent nodes to normal root Pixice threads", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-foreground-"));
     temporaryDirectories.push(directory);
     const store = new WorkflowStore(directory);
@@ -343,7 +343,7 @@ describe("Loom workflow capability", () => {
     store.close();
   });
 
-  it("advertises the Loom workflow namespace", () => {
+  it("advertises the Pixice workflow namespace", () => {
     expect(loomWorkflowDynamicTools[0]).toMatchObject({ type: "namespace", name: "loom_workflows" });
     expect(loomWorkflowDynamicTools[0].tools.map((tool) => tool.name)).toEqual([
       "list_workflows",
