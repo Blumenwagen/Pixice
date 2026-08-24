@@ -36,16 +36,6 @@ jobs:
             target: mac
             arch: x64
             runtime: darwin-x64
-          - name: windows-x64
-            os: windows-2025
-            target: win
-            arch: x64
-            runtime: win32-x64
-          - name: linux-x64
-            os: ubuntu-24.04
-            target: linux
-            arch: x64
-            runtime: linux-x64
     runs-on: ${{ matrix.os }}
     env:
       PIXICE_RUNTIME_TARGET: ${{ matrix.runtime }}
@@ -92,6 +82,57 @@ jobs:
           path: |
             release/*.dmg
             release/*.zip
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest*.yml
+
+  package-portable:
+    if: github.event_name == 'workflow_dispatch'
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-2025
+            target: win
+            arch: x64
+            runtime: win32-x64
+          - name: linux-x64
+            os: ubuntu-24.04
+            target: linux
+            arch: x64
+            runtime: linux-x64
+    runs-on: ${{ matrix.os }}
+    env:
+      PIXICE_RUNTIME_TARGET: ${{ matrix.runtime }}
+      PIXICE_REQUIRE_SIGNING: 0
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Fetch target runtime
+        shell: bash
+        run: git lfs pull --include="resources/runtime/${PIXICE_RUNTIME_TARGET}/**" --exclude=""
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm release:verify
+      - run: pnpm release:preflight
+      - run: node scripts/sync-github-cli.mjs --target=${{ matrix.runtime }}
+      - run: node scripts/verify-runtime.mjs --target=${{ matrix.runtime }} --require-github-cli
+      - run: pnpm exec vite build --mode desktop
+      - run: pnpm exec electron-builder --config electron-builder.config.cjs --${{ matrix.target }} --${{ matrix.arch }} --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pixice-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
             release/*.exe
             release/*.AppImage
             release/*.deb
