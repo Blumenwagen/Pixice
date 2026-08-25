@@ -1525,6 +1525,18 @@
   font-size: 8px;
 }
 .runResult pre { max-height: 120px; margin: 0; padding: 0 16px 12px; color: #aaa093; }
+.runResult > button {
+  min-height: 28px;
+  margin: 0 16px 12px;
+  padding: 0 10px;
+  color: #bdb3a7;
+  background: rgba(232, 215, 190, .04);
+  border: 1px solid rgba(232, 215, 190, .12);
+  border-radius: 7px;
+  font-size: 8px;
+  cursor: pointer;
+}
+.runResult > button:hover { background: rgba(232, 215, 190, .08); }
 
 .nodePicker,
 .runPopover { color: #eee4d7; background: rgba(39, 35, 30, .99); border-color: rgba(232, 215, 190, .14); }
@@ -1752,6 +1764,127 @@
   box-shadow: 0 12px 32px rgba(0, 0, 0, .28);
 }
 .inspector { position: relative; z-index: 15; }
+
+.field input:disabled,
+.field textarea:disabled,
+.field select:disabled {
+  cursor: wait;
+  opacity: .62;
+}
+
+.generationAction {
+  padding: 11px;
+  display: grid;
+  gap: 10px;
+  background: color-mix(in oklab, var(--primary) 6%, #18181a);
+  border: 1px solid color-mix(in oklab, var(--primary) 20%, var(--border));
+  border-radius: 11px;
+}
+.generationAction > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.generationAction strong { color: var(--foreground); font-size: 10px; font-weight: 680; }
+.generationAction small { color: var(--quiet); font-size: 9px; line-height: 1.45; }
+.generationAction[data-state="error"] {
+  background: color-mix(in oklab, var(--red) 5%, #18181a);
+  border-color: color-mix(in oklab, var(--red) 24%, var(--border));
+}
+.generationAction[data-state="error"] small { color: color-mix(in oklab, var(--red) 70%, var(--muted)); }
+
+.generateButton {
+  width: 100%;
+  height: 34px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: #fff;
+  background: var(--primary);
+  border: 1px solid var(--thread-bright);
+  border-radius: 9px;
+  box-shadow: 0 8px 20px color-mix(in oklab, var(--primary) 17%, transparent);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 680;
+  transition: filter 150ms ease, transform 150ms ease, opacity 150ms ease;
+}
+.generateButton:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+.generateButton:disabled { cursor: not-allowed; opacity: .48; box-shadow: none; }
+
+.generationOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(14, 14, 16, .46);
+  backdrop-filter: blur(2px);
+}
+.generationCard {
+  width: min(390px, 100%);
+  padding: 17px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px 12px;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--surface-raised) 92%, transparent);
+  border: 1px solid color-mix(in oklab, var(--primary) 24%, var(--border));
+  border-radius: 15px;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, .38);
+  backdrop-filter: blur(20px) saturate(125%);
+}
+.generationGlyph {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  grid-row: 1;
+  color: var(--thread-bright);
+  background: color-mix(in oklab, var(--primary) 12%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--primary) 22%, var(--border));
+  border-radius: 11px;
+}
+.generationOverlay[data-state="complete"] .generationGlyph { color: #69c990; }
+.generationCopy { min-width: 0; display: grid; gap: 3px; }
+.generationCopy strong { font-size: 12px; font-weight: 680; }
+.generationCopy small { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.generationTrack {
+  height: 2px;
+  grid-column: 1 / -1;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--primary) 10%, var(--border));
+  border-radius: 999px;
+}
+.generationTrack i {
+  width: 42%;
+  height: 100%;
+  display: block;
+  background: var(--thread-bright);
+  border-radius: inherit;
+  animation: workflow-generation-progress 1.25s cubic-bezier(.22, 1, .36, 1) infinite;
+}
+.generationElapsed {
+  grid-column: 1 / -1;
+  color: var(--quiet);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+@keyframes workflow-generation-progress {
+  from { transform: translateX(-112%); }
+  to { transform: translateX(238%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generationTrack i { width: 100%; animation: none; }
+  .generateButton { transition: none; }
+  .generateButton:hover:not(:disabled) { transform: none; }
+}
 
 @media (max-width: 960px) {
   .workspaceLayout { grid-template-columns: 220px minmax(0, 1fr); }

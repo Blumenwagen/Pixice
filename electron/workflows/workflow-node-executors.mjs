@@ -11,6 +11,7 @@ import {
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
+import { buildTaskPlan } from "../runtime/task-scheduler.mjs";
 import { applyWorkflowCredential } from "./workflow-credential-store.mjs";
 import { normalizeWorkflowNodeConfig } from "./workflow-node-catalog.mjs";
 import {
@@ -613,8 +614,16 @@ async function executeBoardNode({ config, context, database, workflow, run }) {
       title,
       description: renderString(config.description, context),
       column: config.column,
+      kind: config.kind,
+      priority: config.priority,
+      estimateMinutes: workflowRenderTemplate(config.estimateMinutes, context),
+      owner: renderString(config.owner, context),
+      schedule: workflowRenderTemplate(config.schedule, context),
+      dependencies: workflowRenderTemplate(config.dependencies, context),
       threadId: config.attachSourceThread ? run.sourceThreadId : null,
-      createdByThreadId: run.sourceThreadId
+      createdByThreadId: run.sourceThreadId,
+      actorKind: "workflow",
+      actorId: workflow.id
     });
     return { task };
   }
@@ -627,12 +636,44 @@ async function executeBoardNode({ config, context, database, workflow, run }) {
     return { task: database.moveBoardTask(task.id, config.column, beforeTaskId) };
   }
   const title = renderString(config.title, context).trim();
+  const triggeredTask = run.input?.task?.id === task.id ? run.input.task : null;
   return {
     task: database.updateBoardTask(task.id, {
       ...(title ? { title } : {}),
-      description: renderString(config.description, context)
+      description: renderString(config.description, context),
+      kind: config.kind,
+      priority: config.priority,
+      estimateMinutes: workflowRenderTemplate(config.estimateMinutes, context),
+      owner: renderString(config.owner, context),
+      schedule: workflowRenderTemplate(config.schedule, context),
+      dependencies: workflowRenderTemplate(config.dependencies, context),
+      expectedRevision: triggeredTask?.revision ?? task.revision,
+      expectedScheduleRevision: triggeredTask?.schedule?.revision ?? task.schedule?.revision ?? 0,
+      actorKind: "workflow",
+      actorId: workflow.id
     })
   };
+}
+
+function executePlanWorkNode({ config, context, database, workflow, run }) {
+  if (!database) throw new Error("The Pixice board is unavailable");
+  const input = objectValue(workflowParseJsonTemplate(config.plan, context, "Plan input"), "Plan input");
+  const existingTasks = database.listBoardTasks(workflow.projectId);
+  const plan = buildTaskPlan(input, existingTasks);
+  if (!config.createProposal) return { plan, proposal: null };
+  const baseRevisions = Object.fromEntries(plan.items.flatMap((item) => {
+    const existing = database.getBoardTask(item.id);
+    return existing ? [[item.id, existing.revision]] : [];
+  }));
+  const proposal = database.createBoardPlanProposal({
+    id: randomUUID(),
+    projectId: workflow.projectId,
+    threadId: run.sourceThreadId,
+    title: plan.title,
+    proposal: plan,
+    baseRevisions
+  });
+  return { plan, proposal };
 }
 
 async function executeNestedNode({ config, context, executeWorkflow }) {
@@ -777,6 +818,7 @@ export async function executeBuiltInWorkflowNode({
     const result = await notify({ title, body, urgency: config.urgency, silent: config.silent });
     return workflowNodeResult({ shown: result !== false, title, body, urgency: config.urgency });
   }
+  if (node.type === "planWork") return workflowNodeResult(executePlanWorkNode({ config, context, database, workflow, run }));
   if (node.type === "board") return workflowNodeResult(await executeBoardNode({ config, context, database, workflow, run }));
   return null;
 }

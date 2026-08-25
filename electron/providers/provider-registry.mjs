@@ -53,6 +53,7 @@ export class ProviderRegistry extends EventEmitter {
     this.database = database;
     this.providers = new Map();
     this.requestOwners = new Map();
+    this.threadOwners = new Map();
     this.modelProviders = new Map();
     this.statuses = new Map();
   }
@@ -150,7 +151,7 @@ export class ProviderRegistry extends EventEmitter {
   }
 
   providerForThread(threadId) {
-    return this.database.getThreadProviderBinding(threadId)?.provider ?? "codex";
+    return this.threadOwners.get(threadId) ?? this.database.getThreadProviderBinding(threadId)?.provider ?? "codex";
   }
 
   #providerForRequest(method, params) {
@@ -240,7 +241,16 @@ export class ProviderRegistry extends EventEmitter {
   }
 
   #rememberResponse(providerId, method, params, response) {
+    if (method === "thread/archive" && params.threadId) {
+      this.threadOwners.delete(params.threadId);
+      this.database.deleteThreadProviderBinding(params.threadId);
+      return response;
+    }
     if (response?.thread?.id) {
+      if (response.thread.ephemeral === true) {
+        this.threadOwners.set(response.thread.id, providerId);
+        return { ...response, thread: tagProvider(response.thread, providerId) };
+      }
       this.#saveBinding(providerId, {
         threadId: response.thread.id,
         providerThreadId: response.thread.providerThreadId,
@@ -250,7 +260,6 @@ export class ProviderRegistry extends EventEmitter {
       this.#saveThreadSummary(providerId, thread);
       return { ...response, thread };
     }
-    if (method === "thread/archive" && params.threadId) this.database.deleteThreadProviderBinding(params.threadId);
     return response;
   }
 

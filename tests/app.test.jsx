@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { App, formatElapsedDuration, horizontalPopoverShift } from "../src/App.jsx";
+import { App, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift } from "../src/App.jsx";
 
 const appCss = readFileSync("src/styles.css", "utf8");
 
@@ -47,10 +47,11 @@ const thread = {
   }]
 };
 
-function createApi(threadValue = thread) {
+function createApi(threadValue = thread, initialProactiveSuggestions = []) {
   let eventListener = null;
   const threadValues = Array.isArray(threadValue) ? threadValue : [threadValue];
   let boardTasks = [];
+  let proactiveSuggestions = [...initialProactiveSuggestions];
   const browserState = {
     native: false,
     activeTabId: "browser-1",
@@ -60,7 +61,8 @@ function createApi(threadValue = thread) {
   const api = {
     emit(event) { eventListener?.(event); },
     app: {
-      bootstrap: vi.fn().mockResolvedValue({ projects: [project], models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], runtime: { state: "ready", connected: true }, settings: {} }),
+      platform: "test",
+      bootstrap: vi.fn().mockResolvedValue({ projects: [project], models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", provider: "codex", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], runtime: { state: "ready", connected: true }, settings: {} }),
       saveSettings: vi.fn().mockResolvedValue({})
     },
     runtime: { status: vi.fn().mockResolvedValue({ state: "ready", connected: true }) },
@@ -119,6 +121,61 @@ function createApi(threadValue = thread) {
           { provider: "codex", model: "gpt-5.6-sol", label: "GPT-5.6 Sol", rates: { input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 30 }, fastRates: { input: 10, cachedInput: 1, cacheWriteInput: 12.5, output: 60 } },
           { provider: "claude", model: "claude-sonnet-5", label: "Claude Sonnet 5", rates: { input: 2, cachedInput: 0.2, cacheWriteInput: 2.5, output: 10 }, fastRates: null }
         ]
+      }),
+      limits: vi.fn().mockResolvedValue({
+        status: "available",
+        fetchedAt: "2026-08-25T10:00:00.000Z",
+        providers: [{
+          provider: "codex",
+          label: "Codex",
+          status: "available",
+          planType: "prolite",
+          limits: [
+          {
+            id: "codex",
+            name: null,
+            planType: "prolite",
+            windows: [{ usedPercent: 34, remainingPercent: 66, windowDurationMins: 10_080, resetsAt: Math.floor(Date.now() / 1000) + 86_400 }],
+            credits: { hasCredits: false, unlimited: false, balance: "0" },
+            individualLimit: null,
+            spendControlReached: false,
+            rateLimitReachedType: null
+          },
+          {
+            id: "codex_spark",
+            name: "GPT-5.3-Codex-Spark",
+            planType: "prolite",
+            windows: [
+              { usedPercent: 12, remainingPercent: 88, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 3_600 },
+              { usedPercent: 47, remainingPercent: 53, windowDurationMins: 10_080, resetsAt: Math.floor(Date.now() / 1000) + 172_800 }
+            ],
+            credits: null,
+            individualLimit: null,
+            spendControlReached: false,
+            rateLimitReachedType: null
+          }
+          ],
+          resetCredits: { availableCount: 1, credits: [{ id: "reset-1", title: "Full reset", description: null, expiresAt: null }] }
+        }, {
+          provider: "claude",
+          label: "Claude",
+          status: "available",
+          planType: "max",
+          limits: [{
+            id: "claude",
+            name: "Claude",
+            planType: "max",
+            windows: [
+              { usedPercent: 21, remainingPercent: 79, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 3_600 },
+              { usedPercent: 43, remainingPercent: 57, windowDurationMins: 10_080, resetsAt: Math.floor(Date.now() / 1000) + 172_800 }
+            ],
+            credits: null,
+            individualLimit: null,
+            spendControlReached: false,
+            rateLimitReachedType: null
+          }],
+          resetCredits: { availableCount: 0, credits: [] }
+        }]
       })
     },
     updates: {
@@ -198,6 +255,14 @@ function createApi(threadValue = thread) {
         return boardTasks.find((task) => task.id === taskId);
       })
     },
+    proactivity: {
+      list: vi.fn(async ({ threadId }) => ({ data: proactiveSuggestions.filter((suggestion) => !threadId || suggestion.threadId === threadId) })),
+      resolve: vi.fn(async ({ suggestionId, decision }) => {
+        const suggestion = proactiveSuggestions.find((candidate) => candidate.id === suggestionId);
+        proactiveSuggestions = proactiveSuggestions.filter((candidate) => candidate.id !== suggestionId);
+        return { suggestion: { ...suggestion, status: decision === "accept" ? "accepted" : "dismissed" } };
+      })
+    },
     threads: {
       list: vi.fn().mockResolvedValue({ data: threadValues, nextCursor: null }),
       read: vi.fn(async ({ threadId }) => ({ thread: threadValues.find((candidate) => candidate.id === threadId) ?? threadValues[0] })),
@@ -229,10 +294,58 @@ beforeEach(() => {
 });
 
 describe("Pixice app shell", () => {
+  it("builds an image revision prompt and reattaches local generated image data", () => {
+    expect(generatedImageRevisionPrompt("Make the sky warmer", "A blue dawn scene")).toContain("Make the sky warmer");
+    expect(generatedImageRevisionPrompt("Make the sky warmer", "A blue dawn scene")).toContain("A blue dawn scene");
+    expect(generatedImageRevisionPrompt("Make the sky warmer", null, false)).toContain("most recent generated image");
+    expect(generatedImageAttachment("data:image/png;base64,AA==")).toEqual([{
+      name: "generated-image.png",
+      type: "image/png",
+      size: 1,
+      dataUrl: "data:image/png;base64,AA=="
+    }]);
+    expect(generatedImageAttachment("https://example.com/image.png")).toEqual([]);
+  });
+
   it("formats elapsed work time without noisy units", () => {
     expect(formatElapsedDuration(8_000)).toBe("8s");
     expect(formatElapsedDuration(68_000)).toBe("1m 8s");
     expect(formatElapsedDuration(6_480_000)).toBe("1h 48m");
+  });
+
+  it("surfaces repeated work as a reviewable workflow draft suggestion", async () => {
+    const suggestion = {
+      id: "suggestion-1",
+      projectId: project.id,
+      threadId: thread.id,
+      type: "workflow-pattern",
+      status: "open",
+      title: "Turn this into a workflow?",
+      message: "Pixice has seen this sequence 3 times.",
+      payload: {
+        count: 3,
+        suggestedName: "Desktop release check",
+        steps: [
+          { action: "command:git:status", label: "Run git status --short" },
+          { action: "command:pnpm:test", label: "Run pnpm test" }
+        ]
+      }
+    };
+    window.pixice = createApi(thread, [suggestion]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const card = await screen.findByRole("region", { name: "Turn this into a workflow?" });
+    expect(card).toHaveTextContent("Pixice has seen this sequence 3 times.");
+    expect(card).toHaveTextContent("Run pnpm test");
+    await user.click(within(card).getByRole("button", { name: "Create draft" }));
+
+    expect(window.pixice.proactivity.resolve).toHaveBeenCalledWith({
+      projectId: project.id,
+      suggestionId: suggestion.id,
+      decision: "accept"
+    });
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Turn this into a workflow?" })).not.toBeInTheDocument());
   });
 
   it("does not apply a viewport-sized backdrop filter over native window vibrancy", () => {
@@ -412,6 +525,44 @@ describe("Pixice app shell", () => {
     }));
   });
 
+  it("defaults scheduled work to Board and keeps the same items in Timeline", async () => {
+    const api = createApi();
+    await api.board.create({
+      projectId: project.id,
+      title: "Schedule editor",
+      description: "Shared scheduled work",
+      column: "active",
+      kind: "task",
+      owner: "UI agent",
+      schedule: {
+        plannedStart: "2026-08-17T08:00:00.000Z",
+        plannedEnd: "2026-08-28T16:00:00.000Z",
+        hardDeadline: "2026-08-28T16:00:00.000Z",
+        timezone: "Europe/Zurich"
+      }
+    });
+    window.pixice = api;
+    localStorage.setItem(`pixice.boardDate.${project.id}`, "2026-08-25T12:00:00.000Z");
+    localStorage.setItem(`pixice.boardView.${project.id}`, "calendar");
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+
+    expect(await screen.findByRole("tab", { name: "Board" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("tab", { name: "Calendar" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Schedule editor").length).toBeGreaterThan(0);
+    expect(localStorage.getItem(`pixice.boardView.${project.id}`)).toBe("board");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Timeline" }));
+    expect(screen.getByLabelText("Scheduled work timeline")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Timeline" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Previous range" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Today" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next range" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Schedule editor").length).toBeGreaterThan(0);
+    expect(localStorage.getItem(`pixice.boardView.${project.id}`)).toBe("board");
+  });
+
   it("shows a bridge-created Pixice thread in the sidebar like a regular task", async () => {
     const bridgeThread = {
       ...thread,
@@ -537,6 +688,7 @@ describe("Pixice app shell", () => {
   });
 
   it("renders Codex image generation in progress and swaps in the completed image", async () => {
+    const user = userEvent.setup();
     const imageThread = {
       ...thread,
       status: { type: "active" },
@@ -578,6 +730,23 @@ describe("Pixice app shell", () => {
     const result = await screen.findByRole("img", { name: "a glassy lake beneath a pink dawn sky" });
     expect(result).toHaveAttribute("src", "data:image/png;base64,AA==");
     expect(screen.getByText("Generated image")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Inspect a glassy lake beneath a pink dawn sky" }));
+    await user.type(screen.getByRole("textbox", { name: "Picture revision comments" }), "Add a small red canoe");
+    await user.click(screen.getByRole("button", { name: "Generate revision" }));
+
+    await waitFor(() => expect(window.pixice.turns.steer).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      threadId: "thread-1",
+      turnId: "turn-image",
+      text: expect.stringContaining("Add a small red canoe"),
+      attachments: [{
+        name: "generated-image.png",
+        type: "image/png",
+        size: 1,
+        dataUrl: "data:image/png;base64,AA=="
+      }]
+    })));
   });
 
   it("loads real task data and moves between review and settings", async () => {
@@ -646,6 +815,8 @@ describe("Pixice app shell", () => {
   });
 
   it("wires settings controls to real app preferences", async () => {
+    const api = createApi();
+    window.pixice = api;
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -654,19 +825,78 @@ describe("Pixice app shell", () => {
 
     fireEvent.change(screen.getByRole("combobox", { name: "Default permissions" }), { target: { value: "read-only" } });
     expect(localStorage.getItem("pixice.permissionMode")).toBe("read-only");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use Fast mode for new tasks" }));
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ defaultFastMode: true });
+    fireEvent.change(screen.getByRole("combobox", { name: "Thread name model" }), { target: { value: "off" } });
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ threadNamingModel: "off" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Workflow generation model" }), { target: { value: "codex:gpt-5.6" } });
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ workflowGenerationModel: "codex:gpt-5.6" });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Keep System awake" }));
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ keepSystemAwake: true });
     fireEvent.change(screen.getByRole("combobox", { name: "Thread cleanup age" }), { target: { value: "14" } });
     expect(JSON.parse(localStorage.getItem("pixice.preferences"))).toMatchObject({ threadCleanupAgeDays: 14 });
     fireEvent.change(screen.getByRole("combobox", { name: "Thread cleanup age" }), { target: { value: "custom" } });
     fireEvent.change(screen.getByRole("spinbutton", { name: "Custom thread cleanup age" }), { target: { value: "9" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Conversation/ }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Send shortcut" }), { target: { value: "mod-enter" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Check spelling in prompts" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show slash command suggestions" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show message timestamps" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Completed work details" }), { target: { value: "expanded" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Orchestration/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Expand task progress by default" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Notifications/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Notify when tasks finish" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Play notification sounds" }));
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ completionNotifications: true });
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ notificationSound: false });
 
     fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Show shortcut hints" }));
     expect(document.querySelector(".pixice-app")).toHaveAttribute("data-show-shortcuts", "false");
     fireEvent.change(screen.getByRole("combobox", { name: "Interface density" }), { target: { value: "comfortable" } });
     expect(document.querySelector(".pixice-app")).toHaveAttribute("data-density", "comfortable");
+    fireEvent.change(screen.getByRole("combobox", { name: "Conversation width" }), { target: { value: "wide" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Conversation text size" }), { target: { value: "large" } });
+    fireEvent.click(screen.getByRole("radio", { name: "Teal accent" }));
+    expect(screen.getByRole("radio", { name: "Teal accent" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Reduce transparency" }));
+
+    const app = document.querySelector(".pixice-app");
+    expect(app).toHaveAttribute("data-conversation-width", "wide");
+    expect(app).toHaveAttribute("data-conversation-text-size", "large");
+    expect(app).toHaveAttribute("data-accent-color", "teal");
+    expect(app).toHaveAttribute("data-reduce-transparency", "true");
 
     const saved = JSON.parse(localStorage.getItem("pixice.preferences"));
-    expect(saved).toMatchObject({ showShortcutHints: false, density: "comfortable", threadCleanupAgeDays: 9 });
+    expect(saved).toMatchObject({
+      showShortcutHints: false,
+      density: "comfortable",
+      conversationWidth: "wide",
+      conversationTextSize: "large",
+      accentColor: "teal",
+      reduceTransparency: true,
+      sendShortcut: "mod-enter",
+      spellCheckComposer: false,
+      showSlashCommands: false,
+      showMessageTimestamps: false,
+      completedWorkDetails: "expanded",
+      expandTaskProgress: false,
+      threadCleanupAgeDays: 9
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    const prompt = await screen.findByRole("textbox", { name: "Task prompt" });
+    expect(prompt).toHaveAttribute("spellcheck", "false");
+    expect(document.querySelectorAll("time.message-timestamp")).toHaveLength(0);
+    fireEvent.change(prompt, { target: { value: "Use the customized composer" } });
+    fireEvent.keyDown(prompt, { key: "Enter" });
+    expect(api.turns.start).not.toHaveBeenCalled();
+    fireEvent.keyDown(prompt, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledTimes(1));
   });
 
   it("connects and disconnects GitHub from Settings", async () => {
@@ -752,7 +982,7 @@ describe("Pixice app shell", () => {
     expect(within(projectNode).getByRole("button", { name: "Refactor authentication" })).toBeInTheDocument();
   });
 
-  it("keeps the modern collapse control beside Workspace and the project switcher above Settings", async () => {
+  it("keeps Workspace fixed, scrolls only threads, and fades when more threads remain", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -762,11 +992,84 @@ describe("Pixice app shell", () => {
     const settings = within(sidebar).getByRole("button", { name: "Settings" });
 
     const workspaceHeading = sidebar.querySelector(".workspace-heading");
+    const threadRegion = sidebar.querySelector(".thread-scroll-region");
+    const threadScroller = sidebar.querySelector(".thread-list-scroll");
+    const overflowFade = sidebar.querySelector(".thread-overflow-fade");
     expect(workspaceHeading).toHaveTextContent("Workspace");
     expect(within(workspaceHeading).getByRole("button", { name: "Collapse navigation labels" })).toBeInTheDocument();
+    expect(navigation.children[0]).toBe(workspaceHeading.closest(".rail-group"));
+    expect(navigation.children[1]).toBe(threadRegion);
+    expect(threadRegion).toContainElement(screen.getByRole("button", { name: "Refactor authentication" }));
+    expect(overflowFade).toHaveAttribute("data-visible", "false");
+
+    Object.defineProperties(threadScroller, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 0 }
+    });
+    fireEvent.scroll(threadScroller);
+    expect(overflowFade).toHaveAttribute("data-visible", "true");
+
+    threadScroller.scrollTop = 200;
+    fireEvent.scroll(threadScroller);
+    expect(overflowFade).toHaveAttribute("data-visible", "false");
+    expect(appCss).toMatch(/\.rail-scroll\s*\{[^}]*overflow-y:\s*hidden;/s);
+    expect(appCss).toMatch(/\.thread-list-scroll\s*\{[^}]*overflow-y:\s*auto;/s);
     expect(sidebar.children[0]).toBe(navigation);
     expect(sidebar.children[1]).toBe(projectHeader);
     expect(sidebar.children[2]).toBe(settings);
+  });
+
+  it("shows saved plan completion at the bottom of each sidebar thread row", async () => {
+    window.pixice = createApi({ ...thread, status: { type: "idle" }, turns: [], planProgress: { completed: 4, total: 5 } });
+    render(<App />);
+
+    const sidebar = await screen.findByRole("complementary", { name: "Primary navigation" });
+    const progress = await within(sidebar).findByRole("progressbar", { name: "4 of 5 complete" });
+    expect(progress).toHaveAttribute("aria-valuenow", "4");
+    expect(progress).toHaveAttribute("aria-valuemax", "5");
+    expect(progress.querySelector("span")).toHaveStyle({ width: "80%" });
+    expect(progress.closest(".task-row")).toContainElement(within(sidebar).getByRole("button", { name: "Refactor authentication" }));
+
+    act(() => window.pixice.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "turn/plan/updated",
+        threadId: thread.id,
+        plan: [
+          { step: "One", status: "completed" },
+          { step: "Two", status: "completed" },
+          { step: "Three", status: "in_progress" },
+          { step: "Four", status: "pending" },
+          { step: "Five", status: "pending" }
+        ]
+      }
+    }));
+
+    const updatedProgress = await within(sidebar).findByRole("progressbar", { name: "2 of 5 complete" });
+    expect(updatedProgress.querySelector("span")).toHaveStyle({ width: "40%" });
+
+    act(() => window.pixice.emit({
+      type: "RuntimeEvent",
+      payload: { method: "turn/started", threadId: thread.id, turn: { id: "next-turn" } }
+    }));
+    await waitFor(() => expect(within(sidebar).queryByRole("progressbar")).not.toBeInTheDocument());
+  });
+
+  it("keeps completed plan progress hidden after a finished thread has been read", async () => {
+    window.pixice = createApi({
+      ...thread,
+      status: { type: "idle" },
+      turns: thread.turns.map((turn) => ({ ...turn, status: "idle" })),
+      planProgress: { completed: 5, total: 5 }
+    });
+    render(<App />);
+
+    await screen.findByText("I traced the current flow.");
+    const sidebar = await screen.findByRole("complementary", { name: "Primary navigation" });
+    const threadRow = within(sidebar).getByRole("button", { name: "Refactor authentication" }).closest(".task-row");
+    expect(threadRow).toHaveClass("active");
+    expect(threadRow.querySelector(".task-row-progress")).not.toBeInTheDocument();
   });
 
   it("clears a finished thread badge after the thread is opened", async () => {
@@ -775,10 +1078,21 @@ describe("Pixice app shell", () => {
       id: "thread-2",
       name: "Finished background task",
       preview: "Finished background task",
+      planProgress: { completed: 5, total: 5 },
       updatedAt: Math.floor(Date.now() / 1000) + 1,
       turns: [{ id: "turn-2", status: "completed", items: [] }]
     };
-    window.pixice = createApi([thread, secondThread]);
+    const incompleteFinalThread = {
+      ...secondThread,
+      id: "thread-3",
+      name: "Final answer with remaining work",
+      preview: "Final answer with remaining work",
+      planProgress: { completed: 4, total: 5 },
+      updatedAt: Math.floor(Date.now() / 1000) + 2,
+      turns: [{ id: "turn-3", status: "completed", items: [] }]
+    };
+    const api = createApi([thread, secondThread, incompleteFinalThread]);
+    window.pixice = api;
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -789,10 +1103,159 @@ describe("Pixice app shell", () => {
     expect(threadRow).toHaveClass("finished");
     expect(threadButton).toHaveAttribute("title", "Finished background task · Finished");
     expect(threadRow.querySelector(".task-finished-badge")).toHaveAttribute("title", "Finished");
+    expect(threadRow.querySelector(".task-row-progress")).not.toBeInTheDocument();
+
+    const incompleteFinalRow = screen.getByRole("button", { name: "Final answer with remaining work" }).closest(".task-row");
+    expect(incompleteFinalRow.querySelector(".task-finished-badge")).toHaveAttribute("title", "Finished");
+    expect(incompleteFinalRow.querySelector(".task-row-progress")).toHaveAttribute("aria-valuenow", "4");
+    expect(incompleteFinalRow.querySelector(".task-row-progress")).toHaveAttribute("aria-valuemax", "5");
 
     fireEvent.click(threadButton);
     await waitFor(() => expect(screen.getByRole("button", { name: "Finished background task" }).closest(".task-row")).not.toHaveClass("finished"));
+    expect(screen.getByRole("button", { name: "Finished background task" }).closest(".task-row").querySelector(".task-row-progress")).not.toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem("pixice.threadCompletionsSeen"))).toMatchObject({ "thread-2": "turn:turn-2" });
+    expect(api.app.saveSettings).toHaveBeenCalledWith({
+      threadCompletionsSeen: expect.objectContaining({ "thread-2": "turn:turn-2" })
+    });
+  });
+
+  it("keeps a read completion seen after restart and project switching", async () => {
+    const secondProject = {
+      id: "project-2",
+      displayName: "Beacon",
+      canonicalPath: "/work/beacon",
+      icon: "terminal",
+      color: "green",
+      folders: ["/work/beacon"]
+    };
+    const completedThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Finished today",
+      preview: "Finished today",
+      updatedAt: Math.floor(Date.now() / 1000) + 30,
+      completionRevision: "turn:turn-2",
+      planProgress: { completed: 5, total: 5 },
+      turns: [{ id: "turn-2", status: "completed", items: [] }]
+    };
+    const beaconThread = {
+      ...thread,
+      id: "thread-3",
+      name: "Beacon task",
+      preview: "Beacon task",
+      cwd: "/work/beacon"
+    };
+    const createRestartApi = () => {
+      const api = createApi();
+      api.app.bootstrap.mockResolvedValue({
+        projects: [project, secondProject],
+        models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+        runtime: { state: "ready", connected: true },
+        settings: {}
+      });
+      api.threads.list.mockImplementation(async ({ projectId }) => ({
+        data: projectId === secondProject.id ? [beaconThread] : [thread, completedThread],
+        nextCursor: null
+      }));
+      api.threads.read.mockImplementation(async ({ projectId, threadId }) => ({
+        thread: projectId === secondProject.id
+          ? beaconThread
+          : [thread, completedThread].find((candidate) => candidate.id === threadId) ?? thread
+      }));
+      return api;
+    };
+
+    window.pixice = createRestartApi();
+    const firstRender = render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    const completedButton = screen.getByRole("button", { name: "Finished today" });
+    expect(completedButton.closest(".task-row")).toHaveClass("finished");
+    fireEvent.click(completedButton);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Finished today" }).closest(".task-row")).not.toHaveClass("finished"));
+    firstRender.unmount();
+
+    window.pixice = createRestartApi();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    expect(screen.getByRole("button", { name: "Finished today" }).closest(".task-row")).not.toHaveClass("finished");
+
+    fireEvent.click(screen.getByRole("button", { name: "Beacon" }));
+    expect(await screen.findByRole("button", { name: "Beacon task" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Aurora" }));
+    await screen.findByRole("button", { name: "Finished today" });
+    expect(screen.getByRole("button", { name: "Finished today" }).closest(".task-row")).not.toHaveClass("finished");
+  });
+
+  it("keeps legacy timestamp read records seen after restoring stable completion identities", async () => {
+    const updatedAt = Math.floor(Date.now() / 1000) + 10;
+    const completedThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Previously read task",
+      preview: "Previously read task",
+      updatedAt,
+      completionRevision: "turn:turn-2",
+      turns: [{ id: "turn-2", status: "completed", items: [] }]
+    };
+    localStorage.setItem("pixice.threadCompletionsSeen", JSON.stringify({
+      __baselineAt: Date.now() - 60_000,
+      "thread-2": String(updatedAt)
+    }));
+    window.pixice = createApi([thread, completedThread]);
+    render(<App />);
+
+    await screen.findByText("I traced the current flow.");
+    expect(screen.getByRole("button", { name: "Previously read task" }).closest(".task-row")).not.toHaveClass("finished");
+  });
+
+  it("treats existing completions as seen when an app update resets renderer storage", async () => {
+    const completedThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Completed before update",
+      preview: "Completed before update",
+      updatedAt: Math.floor(Date.now() / 1000) - 30,
+      completionRevision: "turn:turn-2",
+      turns: [{ id: "turn-2", status: "completed", items: [] }]
+    };
+    window.pixice = createApi([thread, completedThread]);
+    render(<App />);
+
+    await screen.findByText("I traced the current flow.");
+    expect(screen.getByRole("button", { name: "Completed before update" }).closest(".task-row")).not.toHaveClass("finished");
+  });
+
+  it("restores completion read state from durable app settings", async () => {
+    const completedThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Durably read task",
+      preview: "Durably read task",
+      updatedAt: Math.floor(Date.now() / 1000) + 30,
+      completionRevision: "turn:turn-2",
+      turns: [{ id: "turn-2", status: "completed", items: [] }]
+    };
+    const api = createApi([thread, completedThread]);
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", provider: "codex", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {
+        threadCompletionsSeen: {
+          __baselineAt: Date.now() - 60_000,
+          "thread-2": "turn:turn-2"
+        }
+      }
+    });
+    window.pixice = api;
+    render(<App />);
+
+    await screen.findByText("I traced the current flow.");
+    expect(screen.getByRole("button", { name: "Durably read task" }).closest(".task-row")).not.toHaveClass("finished");
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("pixice.threadCompletionsSeen"))).toMatchObject({
+      "thread-2": "turn:turn-2"
+    }));
   });
 
   it("treats historical completions as seen when migrating an existing installation", async () => {
@@ -1051,6 +1514,19 @@ describe("Pixice app shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument();
     await waitFor(() => expect(window.pixice.usage.summary).toHaveBeenCalledWith({ days: 30 }));
+    await waitFor(() => expect(window.pixice.usage.limits).toHaveBeenCalled());
+    const usageOverview = screen.getByRole("region", { name: "Usage overview" });
+    const usageLimits = screen.getByRole("region", { name: "Codex usage limits" });
+    expect(usageOverview.compareDocumentPosition(usageLimits) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Codex" })).toHaveClass("selected");
+    expect(screen.getByText("66% left")).toBeInTheDocument();
+    expect(screen.getByText("GPT-5.3-Codex-Spark")).toBeInTheDocument();
+    expect(screen.getByText("1 free full reset available")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Codex Weekly window remaining" })).toHaveAttribute("aria-valuenow", "66");
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    expect(screen.getByRole("region", { name: "Claude usage limits" })).toBeInTheDocument();
+    expect(screen.getByText("79% left")).toBeInTheDocument();
+    expect(screen.queryByText("GPT-5.3-Codex-Spark")).not.toBeInTheDocument();
     expect(screen.getByLabelText("$31.50", { selector: ".usage-hero-heading .number-ticker" })).toBeInTheDocument();
     expect(screen.getByLabelText("$96.42", { selector: ".usage-hero-lifetime .number-ticker" })).toBeInTheDocument();
     expect(screen.getByText("Weekly average")).toBeInTheDocument();
@@ -1063,6 +1539,68 @@ describe("Pixice app shell", () => {
     expect(screen.getByText("Claude Sonnet 5", { selector: ".usage-rate-row strong" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "7d" }));
     await waitFor(() => expect(window.pixice.usage.summary).toHaveBeenLastCalledWith({ days: 7 }));
+  });
+
+  it("shows only Claude limits when Claude is the sole signed-in provider", async () => {
+    const api = createApi();
+    api.usage.limits.mockResolvedValue({
+      status: "available",
+      fetchedAt: "2026-08-25T10:00:00.000Z",
+      providers: [{
+        provider: "claude",
+        label: "Claude",
+        status: "available",
+        planType: "pro",
+        limits: [{
+          id: "claude",
+          name: "Claude",
+          windows: [{ usedPercent: 25, remainingPercent: 75, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 3_600 }]
+        }],
+        resetCredits: { availableCount: 0, credits: [] }
+      }]
+    });
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Usage/ }));
+
+    expect(await screen.findByRole("region", { name: "Claude usage limits" })).toBeInTheDocument();
+    expect(screen.getByText("75% left")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Usage provider")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Codex usage limits" })).not.toBeInTheDocument();
+  });
+
+  it("shows only Codex limits when Codex is the sole signed-in provider", async () => {
+    const api = createApi();
+    api.usage.limits.mockResolvedValue({
+      status: "available",
+      fetchedAt: "2026-08-25T10:00:00.000Z",
+      providers: [{
+        provider: "codex",
+        label: "Codex",
+        status: "available",
+        planType: "plus",
+        limits: [{
+          id: "codex",
+          name: null,
+          windows: [{ usedPercent: 20, remainingPercent: 80, windowDurationMins: 10_080, resetsAt: Math.floor(Date.now() / 1000) + 86_400 }]
+        }],
+        resetCredits: { availableCount: 0, credits: [] }
+      }]
+    });
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Usage/ }));
+
+    expect(await screen.findByRole("region", { name: "Codex usage limits" })).toBeInTheDocument();
+    expect(screen.getByText("80% left")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Usage provider")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Claude usage limits" })).not.toBeInTheDocument();
   });
 
   it("checks GitHub releases from the Updates settings page", async () => {
@@ -1460,6 +1998,7 @@ describe("Pixice app shell", () => {
     expect(document.querySelector(".task-row.active [data-reasoning-orb]")).toBeInTheDocument();
     expect(runningStatus.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
     expect(runningStatus.querySelectorAll(".trace-live-item")).toHaveLength(1);
+    expect(runningStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Running command");
     expect(runningStatus.closest(".working-trace").querySelector(".trace-reasoning-list")).toHaveTextContent("Checking the current flow");
     expect(runningStatus).toHaveTextContent(/Working for 1m [5-6]s/);
 
@@ -1606,6 +2145,42 @@ describe("Pixice app shell", () => {
     expect(traces[1]).toHaveTextContent("Checking the generated result");
   });
 
+  it("applies saved conversation and orchestration disclosure defaults", async () => {
+    const detailedThread = {
+      ...thread,
+      turns: [{
+        id: "turn-detailed",
+        status: "completed",
+        items: [
+          { id: "user-detailed", type: "userMessage", content: [{ type: "text", text: "Update the settings" }] },
+          { id: "file-detailed", type: "fileChange", status: "completed", changes: [{ path: "src/App.jsx" }] },
+          { id: "final-detailed", type: "agentMessage", text: "Settings updated.", phase: "final_answer" }
+        ]
+      }]
+    };
+    localStorage.setItem("pixice.preferences", JSON.stringify({
+      completedWorkDetails: "expanded",
+      expandTaskProgress: false,
+      showMessageTimestamps: false
+    }));
+    window.pixice = createApi(detailedThread);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Ran 1 action" })).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelectorAll("time.message-timestamp")).toHaveLength(0);
+
+    act(() => window.pixice.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "turn/plan/updated",
+        threadId: "thread-1",
+        plan: [{ step: "Check customization", status: "in_progress" }]
+      }
+    }));
+
+    await waitFor(() => expect(document.querySelector(".conversation-column .task-progress")).toHaveAttribute("data-expanded", "false"));
+  });
+
   it("pauses stale plan activity while a task is inactive and resumes it with the next turn", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -1745,6 +2320,7 @@ describe("Pixice app shell", () => {
     const thinkingStatus = await screen.findByRole("status", { name: "Thinking: Getting started" });
     expect(thinkingStatus.querySelector("[data-reasoning-orb]")).toBeInTheDocument();
     expect(thinkingStatus.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
+    expect(thinkingStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Thinking");
 
     act(() => window.pixice.emit({
       type: "RuntimeEvent",
@@ -1865,6 +2441,64 @@ describe("Pixice app shell", () => {
 
     await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledTimes(1));
     expect(window.pixice.threads.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders sent image attachments separately above the user prompt bubble", async () => {
+    const attachmentThread = {
+      ...thread,
+      turns: [{
+        id: "turn-attachments",
+        status: "completed",
+        items: [
+          {
+            id: "user-attachments",
+            type: "userMessage",
+            content: [
+              { type: "text", text: "Compare these references" },
+              { type: "image", url: "data:image/png;base64,AA==" },
+              { type: "image", url: "data:image/png;base64,BB==" }
+            ]
+          },
+          { id: "agent-attachments", type: "agentMessage", text: "I compared them.", phase: "final_answer" }
+        ]
+      }]
+    };
+    window.pixice = createApi(attachmentThread);
+    render(<App />);
+
+    await screen.findByText("I compared them.");
+    const prompt = screen.getByText("Compare these references").closest(".user-message");
+    const attachments = screen.getByLabelText("2 attached images");
+    expect(attachments).toHaveClass("user-message-attachments");
+    expect(prompt).not.toContainElement(attachments);
+    expect(attachments.nextElementSibling).toBe(prompt);
+    expect(within(attachments).getAllByRole("img")).toHaveLength(2);
+    expect(appCss).toMatch(/\.user-message-picture\s*{[^}]*width:\s*80px;[^}]*height:\s*80px;/s);
+    fireEvent.click(within(attachments).getByRole("button", { name: "Inspect Attached image 1" }));
+    expect(screen.getByRole("dialog", { name: "Picture inspector" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Picture revision comments" })).not.toBeInTheDocument();
+  });
+
+  it("renders an attachment-only user message without an empty prompt bubble", async () => {
+    const attachmentThread = {
+      ...thread,
+      turns: [{
+        id: "turn-attachment-only",
+        status: "completed",
+        items: [
+          { id: "user-attachment-only", type: "userMessage", content: [{ type: "image", url: "data:image/png;base64,AA==" }] },
+          { id: "agent-attachment-only", type: "agentMessage", text: "I can see it.", phase: "final_answer" }
+        ]
+      }]
+    };
+    window.pixice = createApi(attachmentThread);
+    render(<App />);
+
+    await screen.findByText("I can see it.");
+    const attachment = screen.getByRole("img", { name: "Attached image 1" });
+    const block = attachment.closest(".user-message-block");
+    expect(block.querySelector(".user-message")).toBeNull();
+    expect(attachment.parentElement).toHaveAttribute("data-prompt-id", "user-attachment-only");
   });
 
   it("pastes image attachments and sends an attachment-only prompt", async () => {

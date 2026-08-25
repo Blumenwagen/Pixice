@@ -1,0 +1,138 @@
+.preview {
+  position: absolute;
+  z-index: 12;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--canvas) 96%, var(--surface));
+}
+
+.preview > header {
+  min-height: 43px;
+  padding: 0 11px 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+}
+.preview > header > span { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 9px; font-weight: 640; letter-spacing: .02em; }
+.preview > header > div { display: flex; align-items: center; gap: 5px; }
+.preview > header button { height: 27px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: rgba(255, 255, 255, .035); border-radius: 7px; cursor: pointer; font-size: 8.5px; }
+.preview > header button:last-child { width: 27px; padding: 0; }
+.preview > header button:hover { color: var(--foreground); background: rgba(255, 255, 255, .07); }
+
+.editorScroll { min-height: 0; flex: 1; overflow-y: auto; }
+.editorScroll > section { width: min(760px, calc(100% - 44px)); margin: 0 auto; padding: 24px 0; border-bottom: 1px solid var(--border); }
+.editorHero { padding-top: 28px !important; }
+.editorHero > label:first-child input { height: auto; padding: 0; color: var(--foreground); background: transparent; border: 0; font-size: 24px; font-weight: 680; letter-spacing: -.035em; }
+.preview label { display: flex; flex-direction: column; gap: 6px; color: var(--quiet); font-size: 8.5px; font-weight: 620; }
+.preview input,
+.preview textarea,
+.preview select { width: 100%; color: var(--foreground); background: rgba(255, 255, 255, .032); border: 1px solid var(--border); border-radius: 8px; outline: 0; font: inherit; }
+.preview input,
+.preview select { height: 34px; padding: 0 9px; font-size: 10px; }
+.preview textarea { padding: 9px; resize: vertical; font-size: 10.5px; line-height: 1.5; }
+.preview input:focus,
+.preview textarea:focus,
+.preview select:focus { border-color: color-mix(in oklab, var(--primary) 56%, var(--border)); }
+.editorHero > label + label { margin-top: 17px; }
+.fieldGrid { margin-top: 18px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.wide { grid-column: 1 / -1; }
+.sectionTitle { display: flex; align-items: flex-start; gap: 9px; }
+.sectionTitle > svg { margin-top: 1px; color: var(--thread-bright); }
+.sectionTitle > div { display: flex; flex-direction: column; gap: 2px; }
+.sectionTitle strong { font-size: 11px; font-weight: 660; }
+.sectionTitle small { color: var(--quiet); font-size: 8.5px; line-height: 1.4; }
+.inlineChecks { margin-top: 14px; display: flex; align-items: center; flex-wrap: wrap; gap: 16px; }
+.inlineChecks label { flex-direction: row; align-items: center; gap: 6px; color: var(--muted); }
+.inlineChecks input,
+.bindings input,
+.dependencyList input { width: 13px; height: 13px; accent-color: var(--thread-bright); }
+
+.dependencyList { margin-top: 15px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.dependencyList label { min-width: 0; min-height: 34px; padding: 0 9px; flex-direction: row; align-items: center; color: var(--muted); background: rgba(255, 255, 255, .025); border: 1px solid rgba(255, 255, 255, .035); border-radius: 8px; }
+.dependencyList label span { min-width: 0; flex: 1; overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.dependencyList label small { color: var(--quiet); font-size: 7.5px; text-transform: capitalize; }
+
+.bindings { margin-top: 15px; display: flex; flex-direction: column; gap: 5px; }
+.bindings article { min-height: 45px; padding: 7px 8px 7px 10px; display: flex; align-items: center; gap: 10px; background: rgba(255, 255, 255, .025); border: 1px solid rgba(255, 255, 255, .04); border-radius: 8px; }
+.bindings article > div { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.bindings strong { overflow: hidden; font-size: 9.5px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.bindings small { color: var(--quiet); font-size: 7.5px; }
+.bindings label { flex-direction: row; align-items: center; gap: 5px; color: var(--muted); white-space: nowrap; }
+.bindings .bindingPolicy { gap: 6px; }
+.bindings .bindingPolicy select { width: 82px; height: 27px; padding: 0 6px; font-size: 8px; }
+.bindings button { width: 26px; height: 26px; display: grid; place-items: center; color: var(--quiet); background: transparent; border-radius: 6px; cursor: pointer; }
+.bindings button:hover { color: #ff8f8f; background: rgba(255, 80, 80, .07); }
+.bindingAdd { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; }
+.bindingAdd button { padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--foreground); background: rgba(255, 255, 255, .06); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 8.5px; }
+.bindingAdd button:disabled { cursor: not-allowed; opacity: .45; }
+
+.activity { margin-top: 14px; }
+.workflowRuns { margin-top: 14px; }
+.workflowRuns article { min-height: 49px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid rgba(255, 255, 255, .035); }
+.workflowRuns article > i { width: 7px; height: 7px; flex: none; background: var(--quiet); border-radius: 50%; }
+.workflowRuns article[data-status="running"] > i,
+.workflowRuns article[data-status="queued"] > i { background: var(--thread-bright); }
+.workflowRuns article[data-status="completed"] > i { background: var(--green); }
+.workflowRuns article[data-status="failed"] > i,
+.workflowRuns article[data-status="cancelled"] > i { background: #ef7777; }
+.workflowRuns article > div { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.workflowRuns strong { font-size: 9px; font-weight: 610; }
+.workflowRuns small,
+.workflowRuns time,
+.workflowRuns p { color: var(--quiet); font-size: 7.5px; }
+.workflowRuns code { overflow: hidden; color: var(--muted); font: 7.5px/1.35 var(--font-mono, monospace); text-overflow: ellipsis; white-space: nowrap; }
+.activity article { min-height: 40px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid rgba(255, 255, 255, .035); }
+.activity article > i { width: 6px; height: 6px; background: var(--thread-bright); border-radius: 50%; }
+.activity article > div { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.activity strong { font-size: 8.5px; font-weight: 570; }
+.activity small,
+.activity time,
+.activity p { color: var(--quiet); font-size: 7.5px; }
+
+.preview > footer { min-height: 49px; padding: 0 13px; display: flex; align-items: center; gap: 8px; flex: none; border-top: 1px solid var(--border); }
+.preview > footer > span { flex: 1; }
+.preview > footer > small { color: var(--quiet); font-size: 8px; }
+.preview > footer button { height: 30px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border-radius: 8px; cursor: pointer; font-size: 8.5px; font-weight: 650; }
+.primary { color: #241115; background: var(--thread-bright); }
+.quiet { color: var(--muted); background: rgba(255, 255, 255, .045); }
+.delete { color: #ff8f8f; background: rgba(255, 80, 80, .07); }
+.preview > footer button:disabled { cursor: not-allowed; opacity: .45; }
+.error,
+.remoteNotice { min-height: 36px; padding: 0 13px; display: flex; align-items: center; gap: 8px; flex: none; color: #ffb0a8; background: rgba(255, 86, 70, .07); border-top: 1px solid rgba(255, 86, 70, .14); font-size: 8.5px; }
+.remoteNotice { color: #efc383; border-top: 0; border-bottom: 1px solid rgba(239, 195, 131, .14); }
+.remoteNotice span { flex: 1; }
+.remoteNotice button { color: inherit; background: transparent; cursor: pointer; text-decoration: underline; }
+.loading,
+.empty { height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--quiet); font-size: 10px; }
+
+.planHero { width: min(820px, calc(100% - 44px)); margin: 0 auto; padding: 28px 0 22px; }
+.planHero > small { color: var(--thread-bright); font-size: 8px; font-weight: 720; letter-spacing: .07em; text-transform: uppercase; }
+.planHero h2 { margin: 5px 0 6px; font-size: 25px; font-weight: 680; letter-spacing: -.035em; }
+.planHero p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.planHero > div { margin-top: 13px; display: flex; gap: 14px; color: var(--quiet); font-size: 8px; }
+.conflicts { width: min(820px, calc(100% - 44px)); margin: 0 auto 12px; padding: 9px 11px; color: #efb765; background: rgba(239, 183, 101, .07); border: 1px solid rgba(239, 183, 101, .16); border-radius: 9px; }
+.conflicts p { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 8.5px; }
+.planList { width: min(820px, calc(100% - 44px)); margin: 0 auto; min-height: 0; flex: 1; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.planList article { min-height: 51px; padding: 0 11px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
+.planList article:last-child { border-bottom: 0; }
+.planList article > span { width: 4px; height: 24px; background: #737984; border-radius: 3px; }
+.planList article > span[data-column="ready"] { background: #efb765; }
+.planList article > span[data-column="active"] { background: var(--thread-bright); }
+.planList article > span[data-column="done"] { background: var(--green); }
+.planList article > div { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 3px; }
+.planList strong { font-size: 9.5px; font-weight: 620; }
+.planList small { color: var(--quiet); font-size: 7.5px; }
+.planList time { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; color: var(--muted); font-size: 8px; }
+.planList time b { color: var(--quiet); font-size: 7px; font-weight: 500; }
+
+@media (max-width: 760px) {
+  .fieldGrid,
+  .dependencyList { grid-template-columns: 1fr; }
+  .bindingAdd { grid-template-columns: 1fr; }
+}

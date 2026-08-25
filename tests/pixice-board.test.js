@@ -71,13 +71,48 @@ describe("Pixice board agent capability", () => {
     database.db.close();
   });
 
-  it("advertises a dedicated kanban namespace to Codex", () => {
+  it("advertises a dedicated Board namespace to Codex", () => {
     expect(pixiceBoardDynamicTools[0]).toMatchObject({
       type: "namespace",
       name: "pixice_board"
     });
     expect(pixiceBoardDynamicTools[0].tools.map((tool) => tool.name)).toEqual([
-      "list_tasks", "create_task", "update_task", "move_task", "delete_task", "attach_thread"
+      "list_tasks", "read_task", "create_task", "update_task", "move_task", "delete_task", "attach_thread",
+      "propose_plan", "apply_plan", "bind_workflow"
     ]);
+  });
+
+  it("keeps protected deadlines and Workflow execution under user control", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-board-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const now = new Date().toISOString();
+    database.upsertProject({ id: "project-1", canonicalPath: "/workspace", displayName: "Workspace", createdAt: now, updatedAt: now });
+    database.createBoardTask({
+      id: "task-1", projectId: "project-1", title: "Release",
+      schedule: { hardDeadline: "2026-08-31T16:00:00.000Z", timezone: "UTC", lockedFields: ["hardDeadline"] }
+    });
+    const resolveWorkflow = vi.fn(async () => ({ id: "workflow-1" }));
+    const board = new PixiceBoard({ database, threadContext: () => ({ projectId: "project-1", cwd: "/workspace" }), resolveWorkflow });
+
+    const deadlineChange = resultValue(await board.handleToolCall({
+      threadId: "thread-agent", tool: "update_task",
+      arguments: { taskId: "task-1", schedule: { hardDeadline: "2026-09-01T16:00:00.000Z" } }
+    }));
+    expect(deadlineChange.error).toMatch(/protected/i);
+
+    const enabledBinding = resultValue(await board.handleToolCall({
+      threadId: "thread-agent", tool: "bind_workflow",
+      arguments: { taskId: "task-1", workflowId: "workflow-1", triggerType: "entered-ready", enabled: true }
+    }));
+    expect(enabledBinding.error).toMatch(/user must enable/i);
+
+    const prepared = resultValue(await board.handleToolCall({
+      threadId: "thread-agent", tool: "bind_workflow",
+      arguments: { taskId: "task-1", workflowId: "workflow-1", triggerType: "entered-ready" }
+    }));
+    expect(prepared.binding.enabled).toBe(false);
+    expect(resolveWorkflow).toHaveBeenCalledWith("project-1", "workflow-1");
+    database.db.close();
   });
 });

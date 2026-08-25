@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { WorkflowCredentialStore } from "./workflow-credential-store.mjs";
+import { WorkflowGenerator } from "./workflow-generator.mjs";
 import { workflowGraphSchema } from "./workflow-model.mjs";
 import { WorkflowStore } from "./workflow-store.mjs";
 import { WorkflowTriggerHost } from "./workflow-trigger-host.mjs";
@@ -43,10 +44,14 @@ export function installWorkflowIntegration({
   onCredentialsChange,
   assertProject,
   credentialCrypto,
-  notify
+  notify,
+  onAttention
 }) {
   const store = new WorkflowStore(userDataPath);
   const credentialStore = new WorkflowCredentialStore(userDataPath, { crypto: credentialCrypto });
+  const workflowGenerator = new WorkflowGenerator(runtime, {
+    selection: () => database.getAppSettings().workflowGenerationModel ?? "auto"
+  });
   let triggerHost = null;
   const workflows = new PixiceWorkflows({
     runtime,
@@ -70,7 +75,10 @@ export function installWorkflowIntegration({
   triggerHost = new WorkflowTriggerHost({
     store,
     workflows,
+    database,
     credentialStore,
+    notify,
+    onAttention,
     onChange: (payload) => onTriggersChange?.(payload)
   });
   const ready = triggerHost.start();
@@ -85,6 +93,24 @@ export function installWorkflowIntegration({
     const { projectId, workflowId } = workflowPayload.parse(payload);
     assertProject(projectId);
     return workflows.read(projectId, workflowId);
+  });
+
+  ipcMain.handle("workflows:task-runs", (_event, payload) => {
+    const value = projectPayload.extend({ taskId: z.string().trim().min(1).max(160) }).parse(payload);
+    assertProject(value.projectId);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== value.projectId) throw new Error("Work item not found in this project");
+    const seen = new Set();
+    const data = database.listBoardTaskActivity(task.id, 100).flatMap((activity) => {
+      const runId = activity.metadata?.runId;
+      if (!runId || seen.has(runId)) return [];
+      seen.add(runId);
+      const run = store.getRun(runId);
+      if (!run || run.projectId !== value.projectId) return [];
+      const workflow = store.getWorkflow(run.workflowId);
+      return [{ ...run, workflowName: workflow?.name ?? run.workflowId, eventType: activity.metadata?.eventType ?? null }];
+    });
+    return { data };
   });
 
   ipcMain.handle("workflows:create", (_event, payload) => {
@@ -107,6 +133,15 @@ export function installWorkflowIntegration({
     }).parse(payload);
     assertProject(value.projectId);
     return workflows.save(value);
+  });
+
+  ipcMain.handle("workflows:generate", async (_event, payload) => {
+    const { projectId, workflowId } = workflowPayload.parse(payload);
+    assertProject(projectId);
+    const { workflow } = workflows.read(projectId, workflowId);
+    const context = projectContext(projectId, null);
+    if (!context?.cwd) throw new Error("The workflow project is unavailable");
+    return workflowGenerator.generate({ workflow, cwd: context.cwd });
   });
 
   ipcMain.handle("workflows:delete", (_event, payload) => {
@@ -140,6 +175,15 @@ export function installWorkflowIntegration({
     const { projectId } = projectPayload.parse(payload);
     assertProject(projectId);
     return { data: triggerHost.list(projectId) };
+  });
+
+  ipcMain.handle("workflows:resolve-missed-trigger", async (_event, payload) => {
+    const value = projectPayload.extend({
+      requestId: z.string().trim().min(1).max(500),
+      decision: z.enum(["accept", "decline"])
+    }).parse(payload);
+    assertProject(value.projectId);
+    return triggerHost.resolveMissed(value.requestId, value.decision);
   });
 
   ipcMain.handle("workflow-credentials:list", (_event, payload) => {

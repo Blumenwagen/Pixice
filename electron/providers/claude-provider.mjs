@@ -345,6 +345,34 @@ export class ClaudeProvider extends EventEmitter {
     }
   }
 
+  async usageLimits() {
+    if (!this.started) throw new Error("Claude provider is not available");
+    let query;
+    const queue = new AsyncPromptQueue();
+    try {
+      query = this.queryFactory({
+        prompt: queue,
+        options: this.#probeOptions()
+      });
+      const account = await Promise.race([
+        query.accountInfo(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Claude account discovery timed out")), 8_000))
+      ]);
+      const authenticated = claudeAccountIsAuthenticated(account);
+      if (!authenticated) return { account: null, authenticated: false, usage: null };
+      const usageMethod = query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+      if (typeof usageMethod !== "function") throw new Error("This Claude runtime does not expose live plan limits yet.");
+      const usage = await Promise.race([
+        usageMethod.call(query),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Claude limits discovery timed out")), 8_000))
+      ]);
+      return { account: { type: "claude", ...account }, authenticated: true, usage };
+    } finally {
+      queue.close();
+      query?.close?.();
+    }
+  }
+
   async login() {
     if (!this.started) throw new Error("Claude provider is not available");
     this.#closeAuthSession();
@@ -480,6 +508,7 @@ export class ClaudeProvider extends EventEmitter {
       id: threadId,
       providerThreadId,
       cwd: params.cwd,
+      ephemeral: params.ephemeral === true,
       name: null,
       preview: "",
       source: "appServer",
@@ -498,6 +527,7 @@ export class ClaudeProvider extends EventEmitter {
       model: params.model || null,
       effort: null,
       permissionMode: params.permissionMode || "workspace-write",
+      internalNoTools: params.internalNoTools === true,
       runtimeWorkspaceRoots: params.runtimeWorkspaceRoots || [params.cwd],
       developerInstructions: usesGlobalDeveloperInstructions ? null : params.developerInstructions,
       usesGlobalDeveloperInstructions,
@@ -809,6 +839,7 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   #canUseTool(context, toolName, input, details) {
+    if (context.internalNoTools) return Promise.resolve({ behavior: "deny", message: "This internal helper cannot use tools" });
     if (toolName === PIXICE_QUESTION_MCP_TOOL || PIXICE_BRIDGE_MCP_TOOLS.has(toolName) || PIXICE_INSTRUMENTS_MCP_TOOLS.has(toolName)) {
       return Promise.resolve({ behavior: "allow", updatedInput: input });
     }
@@ -995,6 +1026,7 @@ export class ClaudeProvider extends EventEmitter {
       model: null,
       effort: null,
       permissionMode: "workspace-write",
+      internalNoTools: false,
       runtimeWorkspaceRoots: [thread.cwd],
       developerInstructions: null,
       usesGlobalDeveloperInstructions: true,
@@ -1011,6 +1043,7 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   #persist(context) {
+    if (context.thread.ephemeral) return;
     this.database.saveThreadProviderBinding({
       threadId: context.thread.id,
       provider: this.id,

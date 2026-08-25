@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 function localDayKey(value) {
@@ -70,10 +71,51 @@ function mapBoardTask(row) {
     projectId: row.project_id,
     title: row.title,
     description: row.description,
+    kind: row.kind ?? "task",
+    priority: row.priority ?? "normal",
+    estimateMinutes: row.estimate_minutes ?? null,
+    owner: row.owner ?? "",
+    revision: row.revision ?? 1,
     column: row.column_id,
     position: row.position,
     threadId: row.thread_id,
     createdByThreadId: row.created_by_thread_id,
+    latestActivity: row.activity_id ? {
+      id: row.activity_id,
+      kind: row.activity_kind,
+      summary: row.activity_summary,
+      threadId: row.activity_thread_id,
+      turnId: row.activity_turn_id,
+      actorKind: row.activity_actor_kind ?? null,
+      actorId: row.activity_actor_id ?? null,
+      metadata: parsedJson(row.activity_metadata, {}),
+      createdAt: row.activity_created_at
+    } : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function parsedJson(value, fallback) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function mapProactiveSuggestion(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    threadId: row.thread_id,
+    type: row.type,
+    status: row.status,
+    dedupeKey: row.dedupe_key,
+    title: row.title,
+    message: row.message,
+    payload: parsedJson(row.payload, {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -81,8 +123,10 @@ function mapBoardTask(row) {
 
 export class PixiceDatabase {
   constructor(userDataPath) {
+    this.boardListeners = new Set();
     this.db = new DatabaseSync(path.join(userDataPath, "pixice.sqlite"));
     this.db.exec("PRAGMA journal_mode = WAL;");
+    this.db.exec("PRAGMA foreign_keys = ON;");
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.exec(`
@@ -132,11 +176,81 @@ export class PixiceDatabase {
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '', column_id TEXT NOT NULL,
         position INTEGER NOT NULL, thread_id TEXT, created_by_thread_id TEXT,
+        kind TEXT NOT NULL DEFAULT 'task', priority TEXT NOT NULL DEFAULT 'normal',
+        estimate_minutes INTEGER, owner TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         FOREIGN KEY(project_id) REFERENCES projects(id)
       );
       CREATE INDEX IF NOT EXISTS board_tasks_project ON board_tasks(project_id, column_id, position);
       CREATE UNIQUE INDEX IF NOT EXISTS board_tasks_thread ON board_tasks(thread_id) WHERE thread_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS board_task_activity (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        thread_id TEXT, turn_id TEXT, kind TEXT NOT NULL, summary TEXT NOT NULL,
+        dedupe_key TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}',
+        actor_kind TEXT, actor_id TEXT, created_at TEXT NOT NULL,
+        UNIQUE(task_id, dedupe_key),
+        FOREIGN KEY(task_id) REFERENCES board_tasks(id),
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS board_task_activity_task ON board_task_activity(task_id, created_at);
+      CREATE TABLE IF NOT EXISTS board_task_schedules (
+        task_id TEXT PRIMARY KEY, planned_start TEXT, planned_end TEXT, hard_deadline TEXT,
+        all_day INTEGER NOT NULL DEFAULT 0, timezone TEXT NOT NULL DEFAULT 'UTC',
+        constraint_type TEXT NOT NULL DEFAULT 'flexible', locked_fields TEXT NOT NULL DEFAULT '[]',
+        auto_schedule INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1,
+        updated_by_kind TEXT, updated_by_id TEXT, explanation TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES board_tasks(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS board_task_dependencies (
+        task_id TEXT NOT NULL, depends_on_task_id TEXT NOT NULL,
+        dependency_type TEXT NOT NULL DEFAULT 'finish-to-start', lag_minutes INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(task_id, depends_on_task_id),
+        FOREIGN KEY(task_id) REFERENCES board_tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY(depends_on_task_id) REFERENCES board_tasks(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS board_task_dependencies_target ON board_task_dependencies(depends_on_task_id);
+      CREATE TABLE IF NOT EXISTS board_task_workflow_bindings (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL, workflow_id TEXT NOT NULL, trigger_node_id TEXT,
+        trigger_type TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
+        missed_trigger_policy TEXT NOT NULL DEFAULT 'ask', expected_task_revision INTEGER,
+        expected_schedule_revision INTEGER, created_by_thread_id TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES board_tasks(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS board_task_workflow_bindings_task ON board_task_workflow_bindings(task_id, enabled);
+      CREATE TABLE IF NOT EXISTS board_task_trigger_receipts (
+        idempotency_key TEXT PRIMARY KEY, binding_id TEXT NOT NULL, task_id TEXT NOT NULL,
+        workflow_id TEXT NOT NULL, event_type TEXT NOT NULL, effective_at TEXT NOT NULL,
+        run_id TEXT, created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS board_plan_proposals (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, thread_id TEXT, title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'proposed', proposal TEXT NOT NULL,
+        base_revisions TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS board_plan_proposals_project ON board_plan_proposals(project_id, status, updated_at);
+      CREATE TABLE IF NOT EXISTS work_pattern_occurrences (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL, signature TEXT NOT NULL, steps TEXT NOT NULL,
+        prompt TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+        UNIQUE(project_id, thread_id, turn_id, signature),
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS work_pattern_occurrences_pattern
+        ON work_pattern_occurrences(project_id, signature, created_at);
+      CREATE TABLE IF NOT EXISTS proactive_suggestions (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, thread_id TEXT,
+        type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
+        dedupe_key TEXT NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(project_id, dedupe_key),
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS proactive_suggestions_project
+        ON proactive_suggestions(project_id, status, updated_at);
       CREATE TABLE IF NOT EXISTS thread_provider_bindings (
         thread_id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_thread_id TEXT,
         resume_cursor TEXT, cwd TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
@@ -173,6 +287,15 @@ export class PixiceDatabase {
       if (!projectColumns.has("icon")) this.db.exec("ALTER TABLE projects ADD COLUMN icon TEXT NOT NULL DEFAULT 'folder'");
       if (!projectColumns.has("color")) this.db.exec("ALTER TABLE projects ADD COLUMN color TEXT NOT NULL DEFAULT 'blue'");
       if (!projectColumns.has("last_used_at")) this.db.exec("ALTER TABLE projects ADD COLUMN last_used_at TEXT");
+      const boardColumns = new Set(this.db.prepare("PRAGMA table_info(board_tasks)").all().map((column) => column.name));
+      if (!boardColumns.has("kind")) this.db.exec("ALTER TABLE board_tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
+      if (!boardColumns.has("priority")) this.db.exec("ALTER TABLE board_tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'");
+      if (!boardColumns.has("estimate_minutes")) this.db.exec("ALTER TABLE board_tasks ADD COLUMN estimate_minutes INTEGER");
+      if (!boardColumns.has("owner")) this.db.exec("ALTER TABLE board_tasks ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+      if (!boardColumns.has("revision")) this.db.exec("ALTER TABLE board_tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
+      const activityColumns = new Set(this.db.prepare("PRAGMA table_info(board_task_activity)").all().map((column) => column.name));
+      if (!activityColumns.has("actor_kind")) this.db.exec("ALTER TABLE board_task_activity ADD COLUMN actor_kind TEXT");
+      if (!activityColumns.has("actor_id")) this.db.exec("ALTER TABLE board_task_activity ADD COLUMN actor_id TEXT");
       this.db.exec(`
         INSERT OR IGNORE INTO project_folders (project_id, canonical_path, position, created_at)
         SELECT id, canonical_path, 0, created_at FROM projects
@@ -407,49 +530,114 @@ export class PixiceDatabase {
 
   listBoardTasks(projectId) {
     return this.db.prepare(`
-      SELECT * FROM board_tasks
-      WHERE project_id = ?
-      ORDER BY CASE column_id
+      SELECT b.*,
+        activity.id AS activity_id, activity.kind AS activity_kind,
+        activity.summary AS activity_summary, activity.thread_id AS activity_thread_id,
+        activity.turn_id AS activity_turn_id, activity.actor_kind AS activity_actor_kind,
+        activity.actor_id AS activity_actor_id, activity.metadata AS activity_metadata,
+        activity.created_at AS activity_created_at
+      FROM board_tasks b
+      LEFT JOIN board_task_activity activity ON activity.id = (
+        SELECT candidate.id FROM board_task_activity candidate
+        WHERE candidate.task_id = b.id ORDER BY candidate.created_at DESC LIMIT 1
+      )
+      WHERE b.project_id = ?
+      ORDER BY CASE b.column_id
         WHEN 'backlog' THEN 0
         WHEN 'ready' THEN 1
         WHEN 'active' THEN 2
         WHEN 'done' THEN 3
         ELSE 4
-      END, position ASC, created_at ASC
-    `).all(projectId).map(mapBoardTask);
+      END, b.position ASC, b.created_at ASC
+    `).all(projectId).map(mapBoardTask).map((task) => this.#enrichBoardTask(task));
   }
 
   getBoardTask(taskId) {
-    return mapBoardTask(this.db.prepare("SELECT * FROM board_tasks WHERE id = ?").get(taskId));
+    const task = mapBoardTask(this.db.prepare(`
+      SELECT b.*,
+        activity.id AS activity_id, activity.kind AS activity_kind,
+        activity.summary AS activity_summary, activity.thread_id AS activity_thread_id,
+        activity.turn_id AS activity_turn_id, activity.actor_kind AS activity_actor_kind,
+        activity.actor_id AS activity_actor_id, activity.metadata AS activity_metadata,
+        activity.created_at AS activity_created_at
+      FROM board_tasks b
+      LEFT JOIN board_task_activity activity ON activity.id = (
+        SELECT candidate.id FROM board_task_activity candidate
+        WHERE candidate.task_id = b.id ORDER BY candidate.created_at DESC LIMIT 1
+      )
+      WHERE b.id = ?
+    `).get(taskId));
+    return this.#enrichBoardTask(task);
   }
 
-  createBoardTask({ id, projectId, title, description = "", column = "backlog", threadId = null, createdByThreadId = null }) {
+  createBoardTask({
+    id, projectId, title, description = "", column = "backlog", threadId = null,
+    createdByThreadId = null, kind = "task", priority = "normal", estimateMinutes = null,
+    owner = "", schedule = null, dependencies = [], actorKind = "user", actorId = null
+  }) {
     const now = new Date().toISOString();
     const position = (this.db.prepare(`
       SELECT COALESCE(MAX(position), 0) + 1024 AS position
       FROM board_tasks WHERE project_id = ? AND column_id = ?
     `).get(projectId, column)?.position) ?? 1024;
-    this.db.prepare(`
-      INSERT INTO board_tasks (
-        id, project_id, title, description, column_id, position,
-        thread_id, created_by_thread_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, projectId, title, description, column, position, threadId, createdByThreadId, now, now);
-    return this.getBoardTask(id);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(`
+        INSERT INTO board_tasks (
+          id, project_id, title, description, column_id, position,
+          thread_id, created_by_thread_id, kind, priority, estimate_minutes, owner,
+          revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      `).run(id, projectId, title, description, column, position, threadId, createdByThreadId, kind, priority, estimateMinutes, owner, now, now);
+      if (schedule) this.#writeBoardTaskSchedule(id, schedule, { actorKind, actorId, now });
+      if (dependencies.length) this.#replaceBoardTaskDependencies(id, projectId, dependencies, now);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    this.recordBoardTaskActivity({ id: randomUUID(), taskId: id, projectId, threadId: actorKind === "agent" ? actorId : null, kind: "created", summary: schedule ? "Created and scheduled this work item." : "Created this work item.", dedupeKey: `created:${id}`, actorKind, actorId });
+    const task = this.getBoardTask(id);
+    this.#emitBoardEvent({ action: "created", projectId, task, sourceActor: { kind: actorKind, id: actorId } });
+    return task;
   }
 
   updateBoardTask(taskId, patch) {
     const current = this.getBoardTask(taskId);
     if (!current) return null;
+    if (patch.expectedRevision !== undefined && patch.expectedRevision !== current.revision) {
+      throw Object.assign(new Error("This work item changed after it was opened. Reload or merge the newer revision."), { code: "STALE_BOARD_TASK", current });
+    }
     const title = patch.title ?? current.title;
     const description = patch.description ?? current.description;
     const threadId = Object.hasOwn(patch, "threadId") ? patch.threadId : current.threadId;
-    this.db.prepare(`
+    const kind = patch.kind ?? current.kind;
+    const priority = patch.priority ?? current.priority;
+    const estimateMinutes = Object.hasOwn(patch, "estimateMinutes") ? patch.estimateMinutes : current.estimateMinutes;
+    const owner = patch.owner ?? current.owner;
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(`
       UPDATE board_tasks
-      SET title = ?, description = ?, thread_id = ?, updated_at = ?
+      SET title = ?, description = ?, thread_id = ?, kind = ?, priority = ?,
+          estimate_minutes = ?, owner = ?, revision = revision + 1, updated_at = ?
       WHERE id = ?
-    `).run(title, description, threadId, new Date().toISOString(), taskId);
-    return this.getBoardTask(taskId);
+      `).run(title, description, threadId, kind, priority, estimateMinutes, owner, now, taskId);
+      if (Object.hasOwn(patch, "schedule")) {
+        if (patch.schedule === null) this.db.prepare("DELETE FROM board_task_schedules WHERE task_id = ?").run(taskId);
+        else this.#writeBoardTaskSchedule(taskId, patch.schedule, { actorKind: patch.actorKind, actorId: patch.actorId, now, expectedRevision: patch.expectedScheduleRevision });
+      }
+      if (Object.hasOwn(patch, "dependencies")) this.#replaceBoardTaskDependencies(taskId, current.projectId, patch.dependencies ?? [], now);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    this.recordBoardTaskActivity({ id: randomUUID(), taskId, projectId: current.projectId, threadId: patch.actorKind === "agent" ? patch.actorId : null, kind: Object.hasOwn(patch, "schedule") ? "schedule-changed" : "updated", summary: Object.hasOwn(patch, "schedule") ? "Updated the schedule." : "Updated the work item.", dedupeKey: `updated:${taskId}:${now}`, actorKind: patch.actorKind ?? "user", actorId: patch.actorId ?? null });
+    const updated = this.getBoardTask(taskId);
+    this.#emitBoardEvent({ action: "updated", projectId: updated.projectId, task: updated, previous: current, sourceActor: { kind: patch.actorKind ?? "user", id: patch.actorId ?? null } });
+    return updated;
   }
 
   moveBoardTask(taskId, column, beforeTaskId = null) {
@@ -462,25 +650,42 @@ export class PixiceDatabase {
     destination.splice(index, 0, { ...task, column });
     const now = new Date().toISOString();
     const statement = this.db.prepare(`
-      UPDATE board_tasks SET column_id = ?, position = ?, updated_at = ? WHERE id = ?
+      UPDATE board_tasks
+      SET column_id = ?, position = ?,
+          revision = CASE WHEN id = ? THEN revision + 1 ELSE revision END,
+          updated_at = CASE WHEN id = ? THEN ? ELSE updated_at END
+      WHERE id = ?
     `);
     this.db.exec("BEGIN");
     try {
       destination.forEach((candidate, candidateIndex) => {
-        statement.run(column, (candidateIndex + 1) * 1024, candidate.id === taskId ? now : candidate.updatedAt, candidate.id);
+        statement.run(column, (candidateIndex + 1) * 1024, taskId, taskId, now, candidate.id);
       });
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
-    return this.getBoardTask(taskId);
+    this.recordBoardTaskActivity({ id: randomUUID(), taskId, projectId: task.projectId, kind: "moved", summary: `Moved from ${task.column} to ${column}.`, dedupeKey: `moved:${taskId}:${now}`, actorKind: "user" });
+    const moved = this.getBoardTask(taskId);
+    this.#emitBoardEvent({ action: "moved", projectId: moved.projectId, task: moved, previous: task, sourceActor: { kind: "user", id: null } });
+    return moved;
   }
 
   deleteBoardTask(taskId) {
     const task = this.getBoardTask(taskId);
     if (!task) return null;
-    this.db.prepare("DELETE FROM board_tasks WHERE id = ?").run(taskId);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM board_task_trigger_receipts WHERE task_id = ?").run(taskId);
+      this.db.prepare("DELETE FROM board_task_activity WHERE task_id = ?").run(taskId);
+      this.db.prepare("DELETE FROM board_tasks WHERE id = ?").run(taskId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    this.#emitBoardEvent({ action: "deleted", projectId: task.projectId, task, sourceActor: { kind: "user", id: null } });
     return task;
   }
 
@@ -488,6 +693,314 @@ export class PixiceDatabase {
     this.db.prepare(`
       UPDATE board_tasks SET thread_id = NULL, updated_at = ? WHERE thread_id = ?
     `).run(new Date().toISOString(), threadId);
+  }
+
+  recordBoardTaskActivity({ id, taskId, projectId, threadId = null, turnId = null, kind, summary, dedupeKey, metadata = {}, actorKind = null, actorId = null }) {
+    const createdAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT OR IGNORE INTO board_task_activity (
+        id, task_id, project_id, thread_id, turn_id, kind,
+        summary, dedupe_key, metadata, actor_kind, actor_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, taskId, projectId, threadId, turnId, kind, summary, dedupeKey, JSON.stringify(metadata), actorKind, actorId, createdAt);
+    return this.getBoardTask(taskId)?.latestActivity ?? null;
+  }
+
+  subscribeBoardEvents(listener) {
+    this.boardListeners.add(listener);
+    return () => this.boardListeners.delete(listener);
+  }
+
+  listBoardTaskActivity(taskId, limit = 50) {
+    return this.db.prepare(`
+      SELECT * FROM board_task_activity WHERE task_id = ? ORDER BY created_at DESC LIMIT ?
+    `).all(taskId, Math.max(1, Math.min(200, limit))).map((row) => ({
+      id: row.id, taskId: row.task_id, projectId: row.project_id, threadId: row.thread_id,
+      turnId: row.turn_id, kind: row.kind, summary: row.summary,
+      metadata: parsedJson(row.metadata, {}), actorKind: row.actor_kind, actorId: row.actor_id,
+      createdAt: row.created_at
+    }));
+  }
+
+  upsertBoardTaskWorkflowBinding({ id, taskId, workflowId, triggerNodeId = null, triggerType, enabled = false, missedTriggerPolicy = "ask", createdByThreadId = null }) {
+    const task = this.getBoardTask(taskId);
+    if (!task) throw new Error("Board task not found");
+    const existing = this.db.prepare("SELECT task_id FROM board_task_workflow_bindings WHERE id = ?").get(id);
+    if (existing && existing.task_id !== taskId) throw new Error("Workflow binding belongs to another work item");
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO board_task_workflow_bindings (
+        id, task_id, workflow_id, trigger_node_id, trigger_type, enabled, missed_trigger_policy,
+        expected_task_revision, expected_schedule_revision, created_by_thread_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET workflow_id=excluded.workflow_id, trigger_node_id=excluded.trigger_node_id,
+        trigger_type=excluded.trigger_type, enabled=excluded.enabled, missed_trigger_policy=excluded.missed_trigger_policy,
+        expected_task_revision=excluded.expected_task_revision, expected_schedule_revision=excluded.expected_schedule_revision,
+        updated_at=excluded.updated_at
+    `).run(id, taskId, workflowId, triggerNodeId, triggerType, enabled ? 1 : 0, missedTriggerPolicy, task.revision, task.schedule?.revision ?? null, createdByThreadId, now, now);
+    const binding = this.listBoardTaskWorkflowBindings(taskId).find((candidate) => candidate.id === id);
+    this.recordBoardTaskActivity({ id: randomUUID(), taskId, projectId: task.projectId, threadId: createdByThreadId, kind: "workflow-binding", summary: `${enabled ? "Enabled" : "Added"} a ${triggerType} Workflow binding.`, dedupeKey: `binding:${id}:${now}`, actorKind: createdByThreadId ? "agent" : "user", actorId: createdByThreadId });
+    this.#emitBoardEvent({ action: "binding-updated", projectId: task.projectId, task: this.getBoardTask(taskId), binding, sourceActor: { kind: createdByThreadId ? "agent" : "user", id: createdByThreadId } });
+    return binding;
+  }
+
+  deleteBoardTaskWorkflowBinding(taskId, bindingId) {
+    const task = this.getBoardTask(taskId);
+    const binding = this.listBoardTaskWorkflowBindings(taskId).find((candidate) => candidate.id === bindingId) ?? null;
+    if (!task || !binding) return null;
+    this.db.prepare("DELETE FROM board_task_workflow_bindings WHERE id = ? AND task_id = ?").run(bindingId, taskId);
+    this.recordBoardTaskActivity({ id: randomUUID(), taskId, projectId: task.projectId, kind: "workflow-binding", summary: "Removed a Workflow binding.", dedupeKey: `binding-deleted:${bindingId}:${new Date().toISOString()}`, actorKind: "user" });
+    this.#emitBoardEvent({ action: "binding-deleted", projectId: task.projectId, task: this.getBoardTask(taskId), binding, sourceActor: { kind: "user", id: null } });
+    return binding;
+  }
+
+  listBoardTaskWorkflowBindings(taskId = null, projectId = null) {
+    const rows = taskId
+      ? this.db.prepare("SELECT * FROM board_task_workflow_bindings WHERE task_id = ? ORDER BY created_at ASC").all(taskId)
+      : this.db.prepare(`SELECT bindings.* FROM board_task_workflow_bindings bindings JOIN board_tasks tasks ON tasks.id = bindings.task_id WHERE tasks.project_id = ? ORDER BY bindings.created_at ASC`).all(projectId);
+    return rows.map((row) => ({
+      id: row.id, taskId: row.task_id, workflowId: row.workflow_id, triggerNodeId: row.trigger_node_id,
+      triggerType: row.trigger_type, enabled: Boolean(row.enabled), missedTriggerPolicy: row.missed_trigger_policy,
+      expectedTaskRevision: row.expected_task_revision, expectedScheduleRevision: row.expected_schedule_revision,
+      createdByThreadId: row.created_by_thread_id, createdAt: row.created_at, updatedAt: row.updated_at
+    }));
+  }
+
+  claimBoardTaskTrigger({ idempotencyKey, bindingId, taskId, workflowId, eventType, effectiveAt }) {
+    return this.db.prepare(`INSERT OR IGNORE INTO board_task_trigger_receipts (
+      idempotency_key, binding_id, task_id, workflow_id, event_type, effective_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(idempotencyKey, bindingId, taskId, workflowId, eventType, effectiveAt, new Date().toISOString()).changes > 0;
+  }
+
+  completeBoardTaskTrigger(idempotencyKey, runId) {
+    this.db.prepare("UPDATE board_task_trigger_receipts SET run_id = ? WHERE idempotency_key = ?").run(runId, idempotencyKey);
+  }
+
+  createBoardPlanProposal({ id, projectId, threadId = null, title, proposal, baseRevisions = {} }) {
+    const now = new Date().toISOString();
+    this.db.prepare(`INSERT INTO board_plan_proposals (
+      id, project_id, thread_id, title, status, proposal, base_revisions, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'proposed', ?, ?, ?, ?)`).run(id, projectId, threadId, title, JSON.stringify(proposal), JSON.stringify(baseRevisions), now, now);
+    return this.getBoardPlanProposal(id);
+  }
+
+  getBoardPlanProposal(id) {
+    const row = this.db.prepare("SELECT * FROM board_plan_proposals WHERE id = ?").get(id);
+    return row ? { id: row.id, projectId: row.project_id, threadId: row.thread_id, title: row.title, status: row.status, proposal: parsedJson(row.proposal, {}), baseRevisions: parsedJson(row.base_revisions, {}), createdAt: row.created_at, updatedAt: row.updated_at } : null;
+  }
+
+  setBoardPlanProposalStatus(id, status) {
+    this.db.prepare("UPDATE board_plan_proposals SET status = ?, updated_at = ? WHERE id = ?").run(status, new Date().toISOString(), id);
+    return this.getBoardPlanProposal(id);
+  }
+
+  applyBoardPlanProposal(id, { actorKind = "user", actorId = null } = {}) {
+    const proposal = this.getBoardPlanProposal(id);
+    if (!proposal || proposal.status !== "proposed") throw new Error("Plan proposal is no longer available");
+    for (const [taskId, revision] of Object.entries(proposal.baseRevisions)) {
+      const task = this.getBoardTask(taskId);
+      if (!task || task.revision !== revision) throw new Error(`Task ${taskId} changed after this plan was proposed`);
+    }
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const item of proposal.proposal.items ?? []) {
+        const existing = this.getBoardTask(item.id);
+        if (!existing) {
+          const position = this.db.prepare("SELECT COALESCE(MAX(position), 0) + 1024 AS position FROM board_tasks WHERE project_id = ? AND column_id = ?").get(proposal.projectId, item.column ?? "backlog")?.position ?? 1024;
+          this.db.prepare(`INSERT INTO board_tasks (
+            id, project_id, title, description, column_id, position, thread_id, created_by_thread_id,
+            kind, priority, estimate_minutes, owner, revision, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 1, ?, ?)`).run(
+            item.id, proposal.projectId, item.title, item.description ?? "", item.column ?? "backlog", position,
+            proposal.threadId, item.kind ?? "task", item.priority ?? "normal", item.estimateMinutes ?? null,
+            item.owner ?? "", now, now
+          );
+        } else {
+          this.db.prepare(`UPDATE board_tasks SET title = ?, description = ?, column_id = ?, kind = ?, priority = ?,
+            estimate_minutes = ?, owner = ?, revision = revision + 1, updated_at = ? WHERE id = ?`).run(
+            item.title, item.description ?? existing.description, item.column ?? existing.column, item.kind ?? existing.kind,
+            item.priority ?? existing.priority, item.estimateMinutes ?? existing.estimateMinutes, item.owner ?? existing.owner, now, item.id
+          );
+        }
+        if (item.schedule) this.#writeBoardTaskSchedule(item.id, item.schedule, { actorKind, actorId, now });
+      }
+      for (const item of proposal.proposal.items ?? []) this.#replaceBoardTaskDependencies(item.id, proposal.projectId, item.dependencies ?? [], now);
+      this.db.prepare("UPDATE board_plan_proposals SET status = 'applied', updated_at = ? WHERE id = ?").run(now, id);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    const tasks = (proposal.proposal.items ?? []).map((item) => this.getBoardTask(item.id));
+    tasks.forEach((task) => this.recordBoardTaskActivity({ id: randomUUID(), taskId: task.id, projectId: proposal.projectId, threadId: actorKind === "agent" ? actorId : null, kind: "plan-applied", summary: `Applied plan “${proposal.title}”.`, dedupeKey: `plan:${id}:${task.id}`, actorKind, actorId }));
+    const refreshedTasks = tasks.map((task) => this.getBoardTask(task.id));
+    refreshedTasks.forEach((task) => this.#emitBoardEvent({ action: "plan-applied", projectId: proposal.projectId, task, proposalId: id, sourceActor: { kind: actorKind, id: actorId } }));
+    return { proposal: this.getBoardPlanProposal(id), tasks: refreshedTasks };
+  }
+
+  #enrichBoardTask(task) {
+    if (!task) return null;
+    const scheduleRow = this.db.prepare("SELECT * FROM board_task_schedules WHERE task_id = ?").get(task.id);
+    const schedule = scheduleRow ? {
+      taskId: scheduleRow.task_id, plannedStart: scheduleRow.planned_start, plannedEnd: scheduleRow.planned_end,
+      hardDeadline: scheduleRow.hard_deadline, allDay: Boolean(scheduleRow.all_day), timezone: scheduleRow.timezone,
+      constraintType: scheduleRow.constraint_type, lockedFields: parsedJson(scheduleRow.locked_fields, []),
+      autoSchedule: Boolean(scheduleRow.auto_schedule), revision: scheduleRow.revision,
+      updatedByKind: scheduleRow.updated_by_kind, updatedById: scheduleRow.updated_by_id,
+      explanation: scheduleRow.explanation, createdAt: scheduleRow.created_at, updatedAt: scheduleRow.updated_at
+    } : null;
+    const dependencies = this.db.prepare("SELECT * FROM board_task_dependencies WHERE task_id = ? ORDER BY created_at ASC").all(task.id).map((row) => ({
+      taskId: row.task_id, dependsOnTaskId: row.depends_on_task_id, type: row.dependency_type,
+      lagMinutes: row.lag_minutes, createdAt: row.created_at
+    }));
+    const dependents = this.db.prepare("SELECT task_id FROM board_task_dependencies WHERE depends_on_task_id = ? ORDER BY created_at ASC").all(task.id).map((row) => row.task_id);
+    return { ...task, schedule, dependencies, dependents, workflowBindings: this.listBoardTaskWorkflowBindings(task.id) };
+  }
+
+  #writeBoardTaskSchedule(taskId, patch, { actorKind = "user", actorId = null, now = new Date().toISOString(), expectedRevision } = {}) {
+    const current = this.db.prepare("SELECT * FROM board_task_schedules WHERE task_id = ?").get(taskId);
+    if (expectedRevision !== undefined && (current?.revision ?? 0) !== expectedRevision) throw new Error("The schedule changed after it was opened");
+    const value = {
+      plannedStart: Object.hasOwn(patch, "plannedStart") ? patch.plannedStart : current?.planned_start ?? null,
+      plannedEnd: Object.hasOwn(patch, "plannedEnd") ? patch.plannedEnd : current?.planned_end ?? null,
+      hardDeadline: Object.hasOwn(patch, "hardDeadline") ? patch.hardDeadline : current?.hard_deadline ?? null,
+      allDay: patch.allDay ?? Boolean(current?.all_day), timezone: patch.timezone ?? current?.timezone ?? "UTC",
+      constraintType: patch.constraintType ?? current?.constraint_type ?? "flexible",
+      lockedFields: patch.lockedFields ?? parsedJson(current?.locked_fields, []),
+      autoSchedule: patch.autoSchedule ?? Boolean(current?.auto_schedule),
+      explanation: patch.explanation ?? current?.explanation ?? ""
+    };
+    this.db.prepare(`INSERT INTO board_task_schedules (
+      task_id, planned_start, planned_end, hard_deadline, all_day, timezone, constraint_type,
+      locked_fields, auto_schedule, revision, updated_by_kind, updated_by_id, explanation, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+    ON CONFLICT(task_id) DO UPDATE SET planned_start=excluded.planned_start, planned_end=excluded.planned_end,
+      hard_deadline=excluded.hard_deadline, all_day=excluded.all_day, timezone=excluded.timezone,
+      constraint_type=excluded.constraint_type, locked_fields=excluded.locked_fields,
+      auto_schedule=excluded.auto_schedule, revision=board_task_schedules.revision + 1,
+      updated_by_kind=excluded.updated_by_kind, updated_by_id=excluded.updated_by_id,
+      explanation=excluded.explanation, updated_at=excluded.updated_at`).run(
+      taskId, value.plannedStart, value.plannedEnd, value.hardDeadline, value.allDay ? 1 : 0,
+      value.timezone, value.constraintType, JSON.stringify(value.lockedFields), value.autoSchedule ? 1 : 0,
+      actorKind, actorId, value.explanation, current?.created_at ?? now, now
+    );
+  }
+
+  #replaceBoardTaskDependencies(taskId, projectId, dependencies, now) {
+    const normalized = [...new Set((dependencies ?? []).map((entry) => typeof entry === "string" ? entry : entry.dependsOnTaskId).filter(Boolean))];
+    if (normalized.includes(taskId)) throw new Error("A task cannot depend on itself");
+    for (const dependencyId of normalized) {
+      const dependency = this.getBoardTask(dependencyId);
+      if (!dependency || dependency.projectId !== projectId) throw new Error("A dependency is outside this project");
+    }
+    const edges = this.db.prepare(`SELECT task_id, depends_on_task_id FROM board_task_dependencies
+      WHERE task_id IN (SELECT id FROM board_tasks WHERE project_id = ?)`).all(projectId)
+      .filter((edge) => edge.task_id !== taskId);
+    normalized.forEach((dependencyId) => edges.push({ task_id: taskId, depends_on_task_id: dependencyId }));
+    const outgoing = new Map();
+    for (const edge of edges) {
+      const values = outgoing.get(edge.task_id) ?? [];
+      values.push(edge.depends_on_task_id);
+      outgoing.set(edge.task_id, values);
+    }
+    const visit = (node, visiting = new Set(), visited = new Set()) => {
+      if (visiting.has(node)) throw new Error("Task dependencies contain a cycle");
+      if (visited.has(node)) return;
+      visiting.add(node);
+      for (const next of outgoing.get(node) ?? []) visit(next, visiting, visited);
+      visiting.delete(node);
+      visited.add(node);
+    };
+    for (const node of outgoing.keys()) visit(node);
+    this.db.prepare("DELETE FROM board_task_dependencies WHERE task_id = ?").run(taskId);
+    const insert = this.db.prepare(`INSERT INTO board_task_dependencies (
+      task_id, depends_on_task_id, dependency_type, lag_minutes, created_at
+    ) VALUES (?, ?, ?, ?, ?)`);
+    for (const entry of dependencies ?? []) {
+      const dependencyId = typeof entry === "string" ? entry : entry.dependsOnTaskId;
+      if (!dependencyId || !normalized.includes(dependencyId)) continue;
+      insert.run(taskId, dependencyId, typeof entry === "string" ? "finish-to-start" : entry.type ?? "finish-to-start", typeof entry === "string" ? 0 : entry.lagMinutes ?? 0, now);
+    }
+  }
+
+  #emitBoardEvent(payload) {
+    for (const listener of this.boardListeners) {
+      try { listener(payload); } catch {}
+    }
+  }
+
+  recordWorkPatternOccurrence({ id, projectId, threadId, turnId, signature, steps, prompt = "" }) {
+    const createdAt = new Date().toISOString();
+    const inserted = this.db.prepare(`
+      INSERT OR IGNORE INTO work_pattern_occurrences (
+        id, project_id, thread_id, turn_id, signature, steps, prompt, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, projectId, threadId, turnId, signature, JSON.stringify(steps), prompt, createdAt).changes > 0;
+    const count = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM work_pattern_occurrences
+      WHERE project_id = ? AND signature = ?
+    `).get(projectId, signature)?.count ?? 0;
+    return { inserted, count, signature, createdAt };
+  }
+
+  listWorkPatternOccurrences(projectId, signature = null) {
+    const rows = signature
+      ? this.db.prepare(`SELECT * FROM work_pattern_occurrences WHERE project_id = ? AND signature = ? ORDER BY created_at ASC`).all(projectId, signature)
+      : this.db.prepare(`SELECT * FROM work_pattern_occurrences WHERE project_id = ? ORDER BY created_at ASC`).all(projectId);
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+      signature: row.signature,
+      steps: parsedJson(row.steps, []),
+      prompt: row.prompt,
+      createdAt: row.created_at
+    }));
+  }
+
+  createProactiveSuggestion({ id, projectId, threadId = null, type, dedupeKey, title, message, payload = {} }) {
+    const now = new Date().toISOString();
+    const inserted = this.db.prepare(`
+      INSERT OR IGNORE INTO proactive_suggestions (
+        id, project_id, thread_id, type, status, dedupe_key,
+        title, message, payload, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)
+    `).run(id, projectId, threadId, type, dedupeKey, title, message, JSON.stringify(payload), now, now).changes > 0;
+    const value = inserted
+      ? this.getProactiveSuggestion(id)
+      : mapProactiveSuggestion(this.db.prepare(`SELECT * FROM proactive_suggestions WHERE project_id = ? AND dedupe_key = ?`).get(projectId, dedupeKey));
+    return { created: inserted, value };
+  }
+
+  getProactiveSuggestion(suggestionId) {
+    return mapProactiveSuggestion(this.db.prepare("SELECT * FROM proactive_suggestions WHERE id = ?").get(suggestionId));
+  }
+
+  listProactiveSuggestions(projectId, threadId = null) {
+    const rows = threadId
+      ? this.db.prepare(`
+          SELECT * FROM proactive_suggestions
+          WHERE project_id = ? AND status = 'open' AND (thread_id = ? OR thread_id IS NULL)
+          ORDER BY created_at ASC
+        `).all(projectId, threadId)
+      : this.db.prepare(`
+          SELECT * FROM proactive_suggestions
+          WHERE project_id = ? AND status = 'open'
+          ORDER BY created_at ASC
+        `).all(projectId);
+    return rows.map(mapProactiveSuggestion);
+  }
+
+  resolveProactiveSuggestion(suggestionId, status, payloadPatch = {}) {
+    const current = this.getProactiveSuggestion(suggestionId);
+    if (!current) return null;
+    const payload = { ...current.payload, ...payloadPatch };
+    this.db.prepare(`
+      UPDATE proactive_suggestions SET status = ?, payload = ?, updated_at = ? WHERE id = ?
+    `).run(status, JSON.stringify(payload), new Date().toISOString(), suggestionId);
+    return this.getProactiveSuggestion(suggestionId);
   }
 
   deleteThreadRuntimeState(threadId) {

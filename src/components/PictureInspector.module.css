@@ -1,0 +1,176 @@
+.piBackdrop {
+  position: fixed;
+  z-index: 2400;
+  inset: 0;
+  padding: 44px;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 8, 9, .76);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  animation: piFade 160ms ease-out;
+}
+
+.piDialog {
+  width: min(1320px, 100%);
+  height: min(860px, 100%);
+  min-height: 0;
+  display: grid;
+  grid-template: 52px minmax(0, 1fr) / minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--canvas) 94%, black);
+  border: 1px solid rgba(255, 255, 255, .11);
+  border-radius: 18px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .55);
+  animation: piEnter 220ms var(--ease);
+}
+
+.piDialog[data-has-comments="true"] {
+  grid-template-columns: minmax(0, 1fr) 320px;
+}
+
+.piToolbar {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 0 10px 0 17px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: rgba(255, 255, 255, .025);
+  border-bottom: 1px solid var(--border);
+}
+
+.piToolbar > span {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.piToolbar strong { font-size: 12px; font-weight: 630; }
+.piToolbar small { color: var(--quiet); font-size: 9px; }
+.piToolbarActions { display: flex; align-items: center; gap: 4px; }
+.piToolbarActions button {
+  height: 30px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 560;
+}
+.piToolbarActions button:hover { color: var(--foreground); background: rgba(255, 255, 255, .06); }
+.piToolbarActions .piClose { width: 30px; padding: 0; }
+
+.piStage {
+  min-width: 0;
+  min-height: 0;
+  padding: 28px;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  background-color: #111214;
+  background-image: radial-gradient(circle, rgba(255, 255, 255, .10) .6px, transparent .8px);
+  background-size: 12px 12px;
+}
+
+.piStage > button {
+  max-width: 100%;
+  max-height: 100%;
+  padding: 0;
+  display: block;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.piStage img {
+  max-width: 100%;
+  max-height: calc(100vh - 152px);
+  display: block;
+  object-fit: contain;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .42);
+  user-select: none;
+}
+
+.piStage[data-zoomed="true"] { place-items: start; }
+.piStage[data-zoomed="true"] > button { max-width: none; max-height: none; cursor: zoom-out; }
+.piStage[data-zoomed="true"] img { max-width: none; max-height: none; }
+
+.piComments {
+  min-width: 0;
+  min-height: 0;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  background: color-mix(in oklab, var(--surface) 82%, black);
+  border-left: 1px solid var(--border);
+}
+
+.piCommentsHead { display: flex; align-items: flex-start; gap: 10px; }
+.piCommentsIcon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--thread-bright);
+  background: color-mix(in oklab, var(--primary) 12%, transparent);
+  border-radius: 9px;
+}
+.piCommentsHead > span:last-child { min-width: 0; display: grid; gap: 3px; }
+.piCommentsHead strong { font-size: 12px; font-weight: 630; }
+.piCommentsHead small { color: var(--quiet); font-size: 10px; line-height: 1.45; }
+.piComments form { min-height: 0; display: flex; flex: 1; flex-direction: column; gap: 10px; }
+.piComments textarea {
+  width: 100%;
+  min-height: 156px;
+  padding: 11px 12px;
+  resize: vertical;
+  color: var(--foreground);
+  background: rgba(255, 255, 255, .035);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.piComments textarea::placeholder { color: color-mix(in oklab, var(--quiet) 74%, transparent); }
+.piComments form > button {
+  height: 36px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: white;
+  background: color-mix(in oklab, var(--primary) 76%, #3a3940);
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+.piComments form > button:hover:not(:disabled) { background: color-mix(in oklab, var(--primary) 86%, #3a3940); }
+
+@keyframes piFade { from { opacity: 0; } }
+@keyframes piEnter { from { opacity: 0; transform: translateY(10px); } }
+
+@media (max-width: 800px) {
+  .piBackdrop { padding: 20px; }
+  .piDialog[data-has-comments="true"] { grid-template: 52px minmax(0, 1fr) auto / minmax(0, 1fr); }
+  .piComments { padding: 14px; border-top: 1px solid var(--border); border-left: 0; }
+  .piCommentsHead { display: none; }
+  .piComments form { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .piComments textarea { min-height: 58px; resize: none; }
+  .piComments form > button { align-self: end; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .piBackdrop,
+  .piDialog { animation: none; }
+}

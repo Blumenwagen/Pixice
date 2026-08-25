@@ -1,4 +1,5 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { normalizeWorkflowNodeConfig } from "./workflow-node-catalog.mjs";
 import { workflowNextScheduleDate } from "./workflow-cron.mjs";
 import { workflowCredentialAuthorizesRequest } from "./workflow-credential-store.mjs";
@@ -68,31 +69,41 @@ export class WorkflowTriggerHost {
   constructor({
     store,
     workflows,
+    database,
     credentialStore,
     onChange,
+    notify,
     createServer = http.createServer,
     now = () => new Date(),
     setTimer = setTimeout,
-    clearTimer = clearTimeout
+    clearTimer = clearTimeout,
+    onAttention
   }) {
     this.store = store;
     this.workflows = workflows;
+    this.database = database;
     this.credentialStore = credentialStore;
     this.onChange = onChange;
+    this.notify = notify;
+    this.onAttention = onAttention;
     this.createServer = createServer;
     this.now = now;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
     this.scheduleTimers = new Map();
+    this.taskTimers = new Map();
     this.servers = new Map();
     this.statuses = new Map();
+    this.pendingMissed = new Map();
     this.startupFired = new Set();
     this.generation = 0;
     this.refreshPromise = Promise.resolve();
     this.closed = false;
+    this.unsubscribeBoardEvents = null;
   }
 
   start() {
+    this.unsubscribeBoardEvents = this.database?.subscribeBoardEvents?.((event) => void this.handleBoardEvent(event));
     return this.refresh();
   }
 
@@ -114,8 +125,13 @@ export class WorkflowTriggerHost {
     this.generation += 1;
     for (const timer of this.scheduleTimers.values()) this.clearTimer(timer);
     this.scheduleTimers.clear();
+    for (const timer of this.taskTimers.values()) this.clearTimer(timer);
+    this.taskTimers.clear();
+    this.unsubscribeBoardEvents?.();
+    this.unsubscribeBoardEvents = null;
     await this.#closeServers();
     this.statuses.clear();
+    this.pendingMissed.clear();
   }
 
   async #refresh() {
@@ -123,6 +139,8 @@ export class WorkflowTriggerHost {
     const generation = ++this.generation;
     for (const timer of this.scheduleTimers.values()) this.clearTimer(timer);
     this.scheduleTimers.clear();
+    for (const timer of this.taskTimers.values()) this.clearTimer(timer);
+    this.taskTimers.clear();
     await this.#closeServers();
     this.statuses.clear();
 
@@ -139,8 +157,194 @@ export class WorkflowTriggerHost {
         }
       }
     }
+    this.#installTaskBindings(enabled, generation);
     await Promise.all([...webhookGroups].map(([port, routes]) => this.#installWebhookServer(port, routes, generation)));
     this.#publish();
+  }
+
+  async handleBoardEvent(event) {
+    if (this.closed || !event?.task) return;
+    if (["binding-updated", "binding-deleted", "deleted", "plan-applied"].includes(event.action)) void this.refresh();
+    if (event.action === "deleted") return;
+    const task = event.task;
+    const eventTypes = [];
+    if (event.action === "moved" && event.previous?.column !== "ready" && task.column === "ready") eventTypes.push("entered-ready");
+    if (["created", "updated", "plan-applied"].includes(event.action)
+      && JSON.stringify(event.previous?.schedule ?? null) !== JSON.stringify(task.schedule ?? null)) eventTypes.push("schedule-changed");
+    if (task.column === "done") {
+      for (const candidate of this.database.listBoardTasks(task.projectId)) {
+        if (!candidate.dependencies?.some((dependency) => dependency.dependsOnTaskId === task.id)) continue;
+        const dependenciesDone = candidate.dependencies.every((dependency) => this.database.getBoardTask(dependency.dependsOnTaskId)?.column === "done");
+        if (dependenciesDone) await this.#fireBindings(candidate, "dependencies-completed", new Date().toISOString(), false);
+      }
+    }
+    for (const eventType of eventTypes) await this.#fireBindings(task, eventType, new Date().toISOString(), false);
+  }
+
+  #installTaskBindings(enabledWorkflows, generation) {
+    if (!this.database) return;
+    const enabledById = new Map(enabledWorkflows.map((workflow) => [workflow.id, workflow]));
+    const projects = [...new Set(enabledWorkflows.map((workflow) => workflow.projectId))];
+    for (const projectId of projects) {
+      for (const binding of this.database.listBoardTaskWorkflowBindings(null, projectId).filter((candidate) => candidate.enabled)) {
+        const workflow = enabledById.get(binding.workflowId);
+        const task = this.database.getBoardTask(binding.taskId);
+        if (!workflow || !task) continue;
+        const node = this.#taskTriggerNode(workflow, binding);
+        const key = `task:${binding.id}`;
+        const status = this.#baseStatus(workflow, node ?? { id: binding.triggerNodeId ?? binding.id, name: "Task event" }, "task");
+        status.taskId = task.id;
+        status.bindingId = binding.id;
+        this.statuses.set(key, status);
+        const config = node ? normalizeWorkflowNodeConfig(node) : { eventType: binding.triggerType, leadMinutes: 1_440 };
+        let dueAt = null;
+        if (binding.triggerType === "planned-start-reached") dueAt = task.schedule?.plannedStart;
+        if (binding.triggerType === "deadline-approaching" && task.schedule?.hardDeadline) {
+          dueAt = new Date(new Date(task.schedule.hardDeadline).getTime() - config.leadMinutes * 60_000).toISOString();
+        }
+        if (binding.triggerType === "became-overdue") dueAt = task.schedule?.hardDeadline;
+        if (!dueAt || task.column === "done") continue;
+        status.nextRunAt = dueAt;
+        const delay = new Date(dueAt).getTime() - this.now().getTime();
+        if (delay <= 0) {
+          const timer = this.setTimer(() => void this.#fireTaskBinding(task, binding, binding.triggerType, dueAt, true, generation), 0);
+          timer.unref?.();
+          this.taskTimers.set(key, timer);
+        } else {
+          const timer = this.setTimer(() => {
+            this.taskTimers.delete(key);
+            if (delay > MAX_TIMER_DELAY) void this.refresh();
+            else void this.#fireTaskBinding(task, binding, binding.triggerType, dueAt, false, generation);
+          }, Math.min(MAX_TIMER_DELAY, delay));
+          timer.unref?.();
+          this.taskTimers.set(key, timer);
+        }
+      }
+    }
+  }
+
+  #taskTriggerNode(workflow, binding) {
+    return workflow.graph.nodes.find((node) => node.type === "taskEventTrigger"
+      && (!binding.triggerNodeId || node.id === binding.triggerNodeId)
+      && normalizeWorkflowNodeConfig(node).eventType === binding.triggerType) ?? null;
+  }
+
+  async #fireBindings(task, eventType, effectiveAt, missed) {
+    const bindings = this.database.listBoardTaskWorkflowBindings(task.id).filter((binding) => binding.enabled && binding.triggerType === eventType);
+    for (const binding of bindings) await this.#fireTaskBinding(task, binding, eventType, effectiveAt, missed, this.generation);
+  }
+
+  async #fireTaskBinding(task, binding, eventType, effectiveAt, missed, generation) {
+    if (this.closed || generation !== this.generation) return;
+    const workflow = this.store.getWorkflow(binding.workflowId);
+    const node = workflow && this.#taskTriggerNode(workflow, binding);
+    const status = this.statuses.get(`task:${binding.id}`);
+    if (!workflow?.enabled || !node) {
+      if (status) Object.assign(status, { status: "error", error: "The enabled binding has no matching enabled Task Event Trigger." });
+      this.#publish();
+      return;
+    }
+    if (missed && binding.missedTriggerPolicy === "ask") {
+      const requestId = `workflow-missed:${binding.id}:${task.revision}:${eventType}`;
+      if (!this.pendingMissed.has(requestId)) {
+        this.pendingMissed.set(requestId, { taskId: task.id, bindingId: binding.id, eventType, effectiveAt, generation });
+        this.onAttention?.({
+          id: requestId,
+          method: "workflow/taskEvent/requestApproval",
+          projectId: task.projectId,
+          params: {
+            threadId: task.threadId ?? binding.createdByThreadId ?? null,
+            taskId: task.id,
+            workflowId: workflow.id,
+            bindingId: binding.id,
+            allowForSession: false,
+            reason: `Run missed ${eventType} event for “${task.title}” in Workflow “${workflow.name}”?`
+          }
+        });
+        this.database.recordBoardTaskActivity({
+          id: randomUUID(), taskId: task.id, projectId: task.projectId, kind: "workflow-awaiting-approval",
+          summary: `Waiting for approval to run missed ${eventType} Workflow event.`,
+          dedupeKey: requestId,
+          metadata: { workflowId: workflow.id, bindingId: binding.id, eventType, effectiveAt, requestId },
+          actorKind: "workflow", actorId: workflow.id
+        });
+      }
+      if (status) Object.assign(status, { lastTriggeredAt: effectiveAt, lastResult: "awaiting-approval", nextRunAt: null });
+      this.#publish();
+      return;
+    }
+    if (missed && binding.missedTriggerPolicy !== "run") {
+      if (binding.missedTriggerPolicy === "notify") {
+        await this.notify?.({
+          title: `Missed Workflow event · ${task.title}`,
+          body: `${workflow.name} did not run because the ${eventType} event was already due.`,
+          urgency: "normal",
+          silent: false
+        });
+      }
+      this.database.recordBoardTaskActivity({
+        id: randomUUID(), taskId: task.id, projectId: task.projectId, kind: "workflow-missed",
+        summary: `Held missed ${eventType} Workflow event for policy “${binding.missedTriggerPolicy}”.`,
+        dedupeKey: `workflow-missed:${binding.id}:${task.revision}:${eventType}`,
+        metadata: { workflowId: workflow.id, bindingId: binding.id, eventType, effectiveAt, policy: binding.missedTriggerPolicy },
+        actorKind: "workflow", actorId: workflow.id
+      });
+      if (status) Object.assign(status, { lastTriggeredAt: effectiveAt, lastResult: `missed-${binding.missedTriggerPolicy}`, nextRunAt: null });
+      this.#publish();
+      return;
+    }
+    const idempotencyKey = `${binding.id}:${task.id}:${task.revision}:${eventType}`;
+    if (!this.database.claimBoardTaskTrigger({ idempotencyKey, bindingId: binding.id, taskId: task.id, workflowId: workflow.id, eventType, effectiveAt })) return;
+    try {
+      const run = this.workflows.startRun({
+        projectId: task.projectId,
+        workflowId: workflow.id,
+        triggerNodeId: node.id,
+        input: { trigger: { type: "task-event", eventType, effectiveAt, missed, bindingId: binding.id }, task }
+      });
+      this.database.completeBoardTaskTrigger(idempotencyKey, run.id);
+      this.database.recordBoardTaskActivity({
+        id: randomUUID(), taskId: task.id, projectId: task.projectId, kind: "workflow-run",
+        summary: `Started Workflow “${workflow.name}” for ${eventType}.`,
+        dedupeKey: `workflow-run:${idempotencyKey}`,
+        metadata: { workflowId: workflow.id, bindingId: binding.id, eventType, effectiveAt, runId: run.id },
+        actorKind: "workflow", actorId: workflow.id
+      });
+      if (status) Object.assign(status, { lastTriggeredAt: effectiveAt, lastRunId: run.id, lastResult: "started", nextRunAt: null, error: null });
+    } catch (error) {
+      this.database.recordBoardTaskActivity({
+        id: randomUUID(), taskId: task.id, projectId: task.projectId, kind: "workflow-error",
+        summary: `Workflow “${workflow.name}” could not start for ${eventType}: ${error.message}`,
+        dedupeKey: `workflow-error:${idempotencyKey}`,
+        metadata: { workflowId: workflow.id, bindingId: binding.id, eventType, effectiveAt },
+        actorKind: "workflow", actorId: workflow.id
+      });
+      if (status) Object.assign(status, { lastTriggeredAt: effectiveAt, lastResult: "failed-to-start", error: error.message });
+    }
+    this.#publish();
+  }
+
+  async resolveMissed(requestId, decision) {
+    const pending = this.pendingMissed.get(requestId);
+    if (!pending) throw new Error("Missed Workflow event is no longer pending");
+    this.pendingMissed.delete(requestId);
+    const task = this.database.getBoardTask(pending.taskId);
+    const binding = task && this.database.listBoardTaskWorkflowBindings(task.id).find((candidate) => candidate.id === pending.bindingId);
+    if (!task || !binding?.enabled) throw new Error("The Workflow binding is no longer enabled");
+    if (decision === "accept") {
+      return this.#fireTaskBinding(task, { ...binding, missedTriggerPolicy: "run" }, pending.eventType, pending.effectiveAt, true, this.generation);
+    }
+    this.database.recordBoardTaskActivity({
+      id: randomUUID(), taskId: task.id, projectId: task.projectId, kind: "workflow-missed",
+      summary: `Declined missed ${pending.eventType} Workflow event.`,
+      dedupeKey: `workflow-declined:${requestId}`,
+      metadata: { workflowId: binding.workflowId, bindingId: binding.id, eventType: pending.eventType, effectiveAt: pending.effectiveAt, policy: "ask" },
+      actorKind: "user", actorId: null
+    });
+    const status = this.statuses.get(`task:${binding.id}`);
+    if (status) Object.assign(status, { lastTriggeredAt: pending.effectiveAt, lastResult: "missed-declined", nextRunAt: null });
+    this.#publish();
+    return { declined: true };
   }
 
   #baseStatus(workflow, node, type) {
@@ -191,8 +395,12 @@ export class WorkflowTriggerHost {
     try {
       const next = workflowNextScheduleDate(config, this.now());
       status.nextRunAt = next.toISOString();
-      const delay = Math.max(1, Math.min(MAX_TIMER_DELAY, next.getTime() - this.now().getTime()));
-      const timer = this.setTimer(() => void this.#fireSchedule(workflow, node, config, generation, false), delay);
+      const fullDelay = Math.max(1, next.getTime() - this.now().getTime());
+      const timer = this.setTimer(() => {
+        this.scheduleTimers.delete(key);
+        if (fullDelay > MAX_TIMER_DELAY) this.#scheduleNext(workflow, node, config, generation);
+        else void this.#fireSchedule(workflow, node, config, generation, false);
+      }, Math.min(MAX_TIMER_DELAY, fullDelay));
       timer.unref?.();
       this.scheduleTimers.set(key, timer);
       this.#publish();

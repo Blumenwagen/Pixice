@@ -54,12 +54,14 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
   const [run, setRun] = useState(null);
   const [loading, setLoading] = useState(Boolean(workflowId));
   const [savingState, setSavingState] = useState("saved");
+  const [generation, setGeneration] = useState({ state: "idle" });
   const [error, setError] = useState(null);
   const persistedRef = useRef(null);
   const draftRef = useRef(null);
   const saveTimerRef = useRef(null);
   const generationRef = useRef(0);
   const savingPromiseRef = useRef(null);
+  const generationTimerRef = useRef(null);
 
   const load = useCallback(async () => {
     if (!api?.workflows || !projectId || !workflowId) {
@@ -69,6 +71,7 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
       return null;
     }
     setLoading(true);
+    setGeneration({ state: "idle" });
     try {
       const result = await callWithBridgeRetry(() => api.workflows.read({ projectId, workflowId }));
       const next = cloneWorkflow(result.workflow);
@@ -91,9 +94,13 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
 
   useEffect(() => {
     window.clearTimeout(saveTimerRef.current);
+    window.clearTimeout(generationTimerRef.current);
     generationRef.current += 1;
     void load();
-    return () => window.clearTimeout(saveTimerRef.current);
+    return () => {
+      window.clearTimeout(saveTimerRef.current);
+      window.clearTimeout(generationTimerRef.current);
+    };
   }, [load]);
 
   const saveNow = useCallback(async (candidate = draftRef.current) => {
@@ -183,6 +190,53 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
     }
   }, [api, projectId]);
 
+  const generateWorkflow = useCallback(async () => {
+    if (!api?.workflows?.generate || !projectId || !workflowId || !draftRef.current) return null;
+    if (!String(draftRef.current.description ?? "").trim()) {
+      const message = "Add a workflow description before generating.";
+      setGeneration({ state: "error", message });
+      setError(message);
+      return null;
+    }
+    window.clearTimeout(saveTimerRef.current);
+    window.clearTimeout(generationTimerRef.current);
+    const startedAt = Date.now();
+    setGeneration({ state: "saving", startedAt, message: "Saving your workflow brief" });
+    setError(null);
+    try {
+      await saveNow(draftRef.current);
+      const sourceRevision = workflowRevision(draftRef.current);
+      setGeneration({ state: "generating", startedAt, message: "Choosing nodes, settings, and connections" });
+      const result = await callWithBridgeRetry(() => api.workflows.generate({ projectId, workflowId }));
+      if (workflowRevision(draftRef.current) !== sourceRevision) {
+        throw new Error("The workflow changed while the agent was working. Generate again to use the latest description.");
+      }
+      setGeneration({ state: "applying", startedAt, model: result.model, message: "Validating and placing the generated graph" });
+      const next = cloneWorkflow({ ...draftRef.current, graph: result.graph });
+      const saved = await saveNow(next);
+      generationRef.current += 1;
+      persistedRef.current = saved;
+      draftRef.current = saved;
+      setWorkflow(saved);
+      setSavingState("saved");
+      setGeneration({
+        state: "complete",
+        startedAt,
+        model: result.model,
+        nodes: saved.graph.nodes.length,
+        edges: saved.graph.edges.length,
+        message: "Workflow generated"
+      });
+      generationTimerRef.current = window.setTimeout(() => setGeneration({ state: "idle" }), 1600);
+      return saved;
+    } catch (cause) {
+      const message = cause?.message || "Workflow generation failed. Your existing canvas was not changed.";
+      setGeneration({ state: "error", startedAt, message });
+      setError(message);
+      return null;
+    }
+  }, [api, projectId, saveNow, workflowId]);
+
   useEffect(() => {
     if (!api?.events?.subscribe || !projectId || !workflowId) return undefined;
     return api.events.subscribe((event) => {
@@ -221,7 +275,9 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
     loading,
     savingState,
     error,
+    generation,
     change,
+    generateWorkflow,
     runWorkflow,
     cancelRun,
     reload: load,
@@ -266,8 +322,10 @@ function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, co
         models={models}
         run={editor.run}
         savingState={editor.savingState}
+        generation={editor.generation}
         compact={compact}
         onChange={editor.change}
+        onGenerate={editor.generateWorkflow}
         onRun={editor.runWorkflow}
         onCancel={editor.cancelRun}
         onDelete={onDelete}

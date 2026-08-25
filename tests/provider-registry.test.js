@@ -42,7 +42,7 @@ class FakeProvider extends EventEmitter {
     this.calls.push({ method, params });
     if (method === "model/list") return { data: this.models.map((model) => ({ model, displayName: model })) };
     if (method === "thread/list") return { data: this.threads ?? [] };
-    if (method === "thread/start") return { thread: { id: `${this.id}-thread`, cwd: params.cwd, turns: [] } };
+    if (method === "thread/start") return { thread: { id: `${this.id}-thread`, cwd: params.cwd, ephemeral: params.ephemeral === true, turns: [] } };
     if (method === "turn/start") return { turn: { id: `${this.id}-turn` } };
     return {};
   }
@@ -92,6 +92,29 @@ describe("ProviderRegistry", () => {
     claude.emit("server-request", { id: "claude-request:1", method: "item/tool/requestApproval", params: {} });
     registry.respond("claude-request:1", { decision: "accept" });
     expect(claude.response).toEqual({ id: "claude-request:1", result: { decision: "accept" } });
+  });
+
+  it("does not persist ephemeral helper threads", async () => {
+    const database = new MemoryDatabase();
+    const registry = new ProviderRegistry({ database });
+    const codex = registry.register(new FakeProvider("codex", ["gpt-5.6-luna"]));
+    const claude = registry.register(new FakeProvider("claude", ["haiku"]));
+
+    const response = await registry.request("thread/start", {
+      cwd: "/workspace",
+      model: "claude:haiku",
+      ephemeral: true
+    });
+
+    expect(response.thread).toMatchObject({ id: "claude-thread", ephemeral: true, provider: "claude" });
+    expect(database.getThreadProviderBinding("claude-thread")).toBeNull();
+
+    await registry.request("turn/start", { threadId: "claude-thread", model: "claude:haiku" });
+    expect(claude.calls.at(-1)).toMatchObject({ method: "turn/start", params: { threadId: "claude-thread", model: "haiku" } });
+    expect(codex.calls.some((call) => call.method === "turn/start")).toBe(false);
+
+    await registry.request("thread/archive", { threadId: "claude-thread" });
+    expect(database.getThreadProviderBinding("claude-thread")).toBeNull();
   });
 
   it("reports provider accounts and starts sign in with the selected provider", async () => {

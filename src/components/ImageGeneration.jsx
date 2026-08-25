@@ -1,4 +1,5 @@
 import styles from "./ImageGeneration.module.css";
+import { InspectablePicture } from "./PictureInspector.jsx";
 
 function normalizedStatus(status) {
   return String(status ?? "inProgress").toLowerCase();
@@ -45,7 +46,9 @@ export function ImageGeneration({
   savedPath = null,
   revisedPrompt = null,
   status = "inProgress",
-  failure = null
+  failure = null,
+  onRequestRevision = null,
+  revisionDisabled = false
 }) {
   const source = imageGenerationSource(result, savedPath);
   const state = normalizedStatus(status);
@@ -53,15 +56,25 @@ export function ImageGeneration({
   const complete = Boolean(source) || state === "completed" || state === "complete";
   const displayPrompt = revisedPrompt || prompt;
   const label = failed ? failureMessage(failure) : complete ? "Generated image" : "Generating image";
+  const dimensions = String(resolution ?? "").match(/(\d+)\s*[x×]\s*(\d+)/i);
+  const aspectRatio = dimensions ? `${dimensions[1]} / ${dimensions[2]}` : undefined;
 
   return (
     <figure className={styles.igWrap} data-state={failed ? "failed" : complete ? "complete" : "generating"}>
       {source ? (
-        <a className={styles.igResultLink} href={source} target="_blank" rel="noreferrer" aria-label="Open generated image">
-          <img className={styles.igResult} src={source} alt={displayPrompt || "Generated image"} />
-        </a>
+        <InspectablePicture
+          source={source}
+          alt={displayPrompt || "Generated image"}
+          generated
+          prompt={displayPrompt}
+          onRequestRevision={onRequestRevision}
+          revisionDisabled={revisionDisabled}
+          buttonClassName={styles.igResultLink}
+          imageClassName={styles.igResult}
+          buttonStyle={aspectRatio ? { aspectRatio } : undefined}
+        />
       ) : (
-        <div className={styles.igCanvas} role="img" aria-label={label}>
+        <div className={styles.igCanvas} role="img" aria-label={label} style={aspectRatio ? { aspectRatio } : undefined}>
           <span className={styles.igDots} aria-hidden="true" />
           <span className={styles.igGlow} aria-hidden="true" />
           <span className={styles.igRes}>{resolution}</span>

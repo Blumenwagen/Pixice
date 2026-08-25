@@ -274,8 +274,58 @@ function NodePicker({ query, onQueryChange, onAdd, onClose }) {
   );
 }
 
-function WorkflowInspector({ workflow, onChange, onClose }) {
-  const automaticTriggerCount = workflow.graph.nodes.filter((node) => node.type === "scheduleTrigger" || node.type === "webhookTrigger").length;
+function WorkflowGenerationProgress({ generation, reducedMotion = false }) {
+  const busy = ["saving", "generating", "applying"].includes(generation.state);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!busy) return undefined;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [busy, generation.startedAt]);
+
+  const elapsed = generation.startedAt ? Math.max(0, Math.floor((now - generation.startedAt) / 1000)) : 0;
+  return (
+    <motion.div
+      className={styles.generationOverlay}
+      data-state={generation.state}
+      role="status"
+      aria-live="polite"
+      initial={reducedMotion ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.16 }}
+    >
+      <motion.div
+        className={styles.generationCard}
+        initial={reducedMotion ? false : { opacity: 0, y: 8, filter: "blur(2px)" }}
+        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+        exit={{ opacity: 0, y: -4, filter: "blur(2px)" }}
+        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <span className={styles.generationGlyph}>{busy ? <SpinnerGap className={styles.spin} size={18} /> : <Check size={18} />}</span>
+        <span className={styles.generationCopy}>
+          <strong>{busy ? "Agent is building this workflow" : "Workflow ready"}</strong>
+          <small>{generation.message}</small>
+        </span>
+        {busy ? (
+          <>
+            <span className={styles.generationTrack}><i /></span>
+            <small className={styles.generationElapsed}>{elapsed}s elapsed · The current canvas stays in place until the graph is valid.</small>
+          </>
+        ) : (
+          <small className={styles.generationElapsed}>{generation.nodes} nodes · {generation.edges} connections{generation.model ? ` · ${generation.model}` : ""}</small>
+        )}
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function WorkflowInspector({ workflow, generation, onChange, onGenerate, onClose }) {
+  const automaticTriggerCount = workflow.graph.nodes.filter((node) => ["scheduleTrigger", "taskEventTrigger", "webhookTrigger"].includes(node.type)).length;
+  const generationBusy = ["saving", "generating", "applying"].includes(generation?.state);
+  const hasDescription = Boolean(String(workflow.description ?? "").trim());
   return (
     <aside className={styles.inspector} aria-label="Workflow inspector">
       <header className={styles.inspectorHeader}>
@@ -286,17 +336,31 @@ function WorkflowInspector({ workflow, onChange, onClose }) {
       <div className={styles.inspectorBody}>
         <label className={styles.field}>
           <span>Name</span>
-          <input value={workflow.name} maxLength={240} onChange={(event) => onChange({ ...workflow, name: event.target.value })} />
+          <input disabled={generationBusy} value={workflow.name} maxLength={240} onChange={(event) => onChange({ ...workflow, name: event.target.value })} />
         </label>
         <label className={styles.field}>
           <span>Description</span>
-          <textarea value={workflow.description ?? ""} maxLength={10000} rows={6} onChange={(event) => onChange({ ...workflow, description: event.target.value })} />
+          <textarea autoFocus={!hasDescription} disabled={generationBusy} value={workflow.description ?? ""} maxLength={10000} rows={6} placeholder="Describe what should trigger the workflow, what it should do, and what result it should return." onChange={(event) => onChange({ ...workflow, description: event.target.value })} />
         </label>
+        <section className={styles.generationAction} data-state={generation?.state ?? "idle"}>
+          <span>
+            <strong>{generationBusy ? "Generating workflow" : "Build from this description"}</strong>
+            <small>{generation?.state === "error"
+              ? generation.message
+              : hasDescription
+                ? "A background agent replaces the canvas only after Pixice validates the new graph."
+                : "Write a description first. Include the trigger, the work to perform, and the desired output."}</small>
+          </span>
+          <button type="button" className={styles.generateButton} disabled={!onGenerate || generationBusy || !hasDescription} onClick={() => void onGenerate()}>
+            {generationBusy ? <SpinnerGap className={styles.spin} size={14} /> : <Sparkle size={14} />}
+            {generationBusy ? "Generating workflow…" : generation?.state === "error" ? "Try generation again" : "Generate workflow from description"}
+          </button>
+        </section>
         <label className={styles.toggleField}>
-          <input type="checkbox" checked={Boolean(workflow.enabled)} onChange={(event) => onChange({ ...workflow, enabled: event.target.checked })} />
+          <input disabled={generationBusy} type="checkbox" checked={Boolean(workflow.enabled)} onChange={(event) => onChange({ ...workflow, enabled: event.target.checked })} />
           <span>
             <strong>Enable automatic triggers</strong>
-            <small>{automaticTriggerCount ? `${automaticTriggerCount} Schedule or Webhook trigger${automaticTriggerCount === 1 ? "" : "s"} will be hosted while Pixice is running.` : "Add a Schedule or Local Webhook node before enabling this workflow."}</small>
+            <small>{automaticTriggerCount ? `${automaticTriggerCount} automatic trigger${automaticTriggerCount === 1 ? "" : "s"} will be hosted while Pixice is running.` : "Add a Schedule, Task Event, or Local Webhook node before enabling this workflow."}</small>
           </span>
         </label>
         <div className={styles.workflowFacts}>
@@ -326,8 +390,10 @@ export function WorkflowCanvas({
   api = globalThis.pixice ?? null,
   run = null,
   savingState = "saved",
+  generation = { state: "idle" },
   compact = false,
   onChange,
+  onGenerate,
   onRun,
   onCancel,
   onDelete
@@ -377,6 +443,7 @@ export function WorkflowCanvas({
     setSelectedEdgeId(null);
     setConnectingFrom(null);
     setConnectionError("");
+    setInspectorOpen(!String(workflow.description ?? "").trim());
     liveViewportRef.current = viewport;
     flowRef.current?.setViewport(viewport, { duration: 0 });
   }, [workflow.id]);
@@ -558,6 +625,22 @@ export function WorkflowCanvas({
   ), [nodesById]);
 
   const runOutput = typeof run?.output === "string" ? run.output : stringifyWorkflowValue(run?.output);
+  const runProposal = run?.output?.proposal ?? null;
+  const openRunProposal = useCallback(() => {
+    const workspaceId = document.querySelector(".pixice-app")?.dataset.activeThreadId;
+    if (!workspaceId || !runProposal?.id) return;
+    window.dispatchEvent(new CustomEvent("pixice:task-preview-requested", {
+      detail: {
+        projectId: workflow.projectId,
+        proposalId: runProposal.id,
+        workspaceId,
+        threadId: workspaceId,
+        reason: "workflow-plan",
+        actorKind: "workflow",
+        actorId: workflow.id
+      }
+    }));
+  }, [runProposal?.id, workflow.id, workflow.projectId]);
 
   return (
     <section className={`${styles.editor} ${compact ? styles.compactEditor : ""}`}>
@@ -715,6 +798,7 @@ export function WorkflowCanvas({
             </div>
           )}
           {(connectingFrom || connectionError) && <div className={styles.connectionHint}><Circle size={11} />{connectionError || "Drag to a compatible input · Esc to cancel"}</div>}
+          <AnimatePresence>{generation.state !== "idle" && generation.state !== "error" && <WorkflowGenerationProgress generation={generation} reducedMotion={systemReducedMotion} />}</AnimatePresence>
         </div>
 
         {inspectorOpen && selectedNode?.type === "useSkill" && (
@@ -740,7 +824,7 @@ export function WorkflowCanvas({
             onClose={() => setInspectorOpen(false)}
           />
         )}
-        {inspectorOpen && !selectedNode && <WorkflowInspector workflow={workflow} onChange={onChange} onClose={() => setInspectorOpen(false)} />}
+        {inspectorOpen && !selectedNode && <WorkflowInspector workflow={workflow} generation={generation} onChange={onChange} onGenerate={onGenerate} onClose={() => setInspectorOpen(false)} />}
       </div>
 
       <RunTimeline graph={graph} run={run} />
@@ -748,6 +832,7 @@ export function WorkflowCanvas({
         <details className={styles.runResult} data-status={run.status}>
           <summary>{run.status === "completed" ? <CheckCircle size={14} /> : <Warning size={14} />}View run output</summary>
           <pre>{run.error || runOutput || "Workflow completed without an output value."}</pre>
+          {runProposal?.id && <button type="button" onClick={openRunProposal}>Open plan proposal</button>}
         </details>
       )}
     </section>

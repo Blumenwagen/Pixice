@@ -73,6 +73,8 @@ describe("agent behavior packs", () => {
     expect(instructions).toContain("Do not invoke an installed visualization Skill");
     expect(instructions).toContain("Treat `Pixice visualization`, `in-chat visualization`, `inline visualization`, and `native visualization` as explicit format requirements");
     expect(instructions).toContain("takes precedence over Skills or other instructions that would create an HTML file");
+    expect(instructions).toContain("Timelines use `timeline.items`");
+    expect(instructions).toContain("Calendars use `calendar.events`");
   });
 
   it("asks agents to choose useful native visualizations without an explicit user request", () => {

@@ -1,10 +1,10 @@
 .igWrap {
-  width: min(100%, 208px);
+  width: min(100%, 560px);
   margin: 4px 0 8px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 14px;
+  align-items: stretch;
+  gap: 12px;
   user-select: text;
 }
 
@@ -17,6 +17,7 @@
   overflow: hidden;
   background: #fafafa;
   border-radius: 12px;
+  border: 0;
 }
 
 .igCanvas {
@@ -101,15 +102,19 @@
 }
 
 .igResultLink {
+  padding: 0;
   cursor: zoom-in;
   box-shadow: inset 0 0 0 .5px rgba(255, 255, 255, .12), 0 10px 26px rgba(0, 0, 0, .16);
 }
+
+.igResultLink:hover .igResult { transform: scale(1.008); }
 
 .igResult {
   width: 100%;
   height: 100%;
   display: block;
   object-fit: cover;
+  transition: transform 180ms var(--ease);
 }
 
 .igMeta {

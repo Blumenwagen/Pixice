@@ -272,7 +272,10 @@ describe("thread runtime persistence", () => {
       defaultModel: "gpt-5.6-sol",
       defaultEffort: "xhigh",
       defaultPermissionMode: "workspace-write",
+      workflowGenerationModel: "claude:claude-sonnet-5",
+      keepSystemAwake: true,
       checkCodexUpdates: false,
+      threadCompletionsSeen: { __baselineAt: 1_776_000_000_000, "thread-2": "turn:turn-2" },
       agentBehaviors: { structuredPlanning: true, parallelDelegation: false, verification: true }
     });
     database.db.close();
@@ -282,7 +285,10 @@ describe("thread runtime persistence", () => {
       defaultModel: "gpt-5.6-sol",
       defaultEffort: "xhigh",
       defaultPermissionMode: "workspace-write",
+      workflowGenerationModel: "claude:claude-sonnet-5",
+      keepSystemAwake: true,
       checkCodexUpdates: false,
+      threadCompletionsSeen: { __baselineAt: 1_776_000_000_000, "thread-2": "turn:turn-2" },
       agentBehaviors: { structuredPlanning: true, parallelDelegation: false, verification: true }
     });
     reopenedAfterUpdate.db.close();

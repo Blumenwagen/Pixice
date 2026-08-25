@@ -20,6 +20,21 @@ const plan = [
 ];
 
 const previewStartedAt = new Date(Date.now() - 108_000).toISOString();
+const previewGeneratedImage = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900">
+    <defs>
+      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#c4b9bc"/><stop offset=".54" stop-color="#d9b99d"/><stop offset="1" stop-color="#707377"/></linearGradient>
+      <linearGradient id="water" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#777b7f"/><stop offset="1" stop-color="#25292d"/></linearGradient>
+    </defs>
+    <rect width="1440" height="900" fill="url(#sky)"/>
+    <circle cx="1050" cy="210" r="72" fill="#f1d2b4" opacity=".76"/>
+    <path d="M0 550 260 318 420 474 690 204 980 510 1200 344 1440 558V900H0Z" fill="#34383c"/>
+    <path d="M0 584 305 424 488 544 730 362 1040 574 1275 468 1440 586V900H0Z" fill="#505457"/>
+    <path d="M0 586H1440V900H0Z" fill="url(#water)"/>
+    <path d="M0 660C260 620 380 700 620 662S1060 614 1440 680" fill="none" stroke="#c4b9b4" stroke-width="4" opacity=".22"/>
+    <path d="M1020 650h132l-22 26h-90z" fill="#b54f49"/><path d="m1086 650 2-61" stroke="#ddd0c5" stroke-width="5"/>
+  </svg>
+`)}`;
 
 const rootThread = {
   id: "preview-task",
@@ -28,6 +43,7 @@ const rootThread = {
   cwd: "/work/pixice",
   parentThreadId: null,
   status: { type: "active" },
+  planProgress: { completed: 3, total: 6 },
   updatedAt: Math.floor(Date.now() / 1000),
   turns: [{
     id: "preview-turn",
@@ -35,7 +51,9 @@ const rootThread = {
     startedAt: previewStartedAt,
     items: [
       { id: "preview-user", type: "userMessage", createdAt: previewStartedAt, content: [{ type: "text", text: "Refactor the authentication flow and keep the session migration safe." }] },
-      { id: "preview-reasoning", type: "reasoning", summary: ["Coordinating the backend migration and client-session work in parallel."] }
+      { id: "preview-reasoning", type: "reasoning", summary: ["Coordinating the backend migration and client-session work in parallel."] },
+      { id: "preview-image-tool", type: "dynamicToolCall", tool: "image_gen__imagegen", status: "completed", arguments: { prompt: "a quiet mountain lake at dawn with a small red canoe", size: "1440x900" } },
+      { id: "preview-generated-image", type: "imageGeneration", status: "completed", result: previewGeneratedImage, revisedPrompt: "a quiet mountain lake at dawn with a small red canoe" }
     ]
   }]
 };
@@ -46,15 +64,55 @@ const secondaryThread = {
   preview: "Build Pixice Codex harness",
   cwd: "/work/pixice",
   parentThreadId: null,
-  status: { type: "idle" },
+  status: "completed",
+  planProgress: { completed: 5, total: 5 },
   updatedAt: Math.floor(Date.now() / 1000) - 180,
-  turns: []
+  turns: [{ id: "preview-harness-turn", status: "completed", items: [] }]
 };
 
 const agents = [
   { id: "api-agent", parentThreadId: rootThread.id, name: "API migration", preview: "Update client sessions", status: "running", startedAt: new Date(Date.now() - 82_000).toISOString(), agentRole: "API migration", agentStatusMessage: "Updating client sessions" },
   { id: "test-agent", parentThreadId: rootThread.id, name: "Session tests", preview: "Add fingerprinting", status: "running", startedAt: new Date(Date.now() - 49_000).toISOString(), agentRole: "Session tests", agentStatusMessage: "Adding fingerprint coverage" },
   { id: "model-agent", parentThreadId: rootThread.id, name: "Cookie model", preview: "Design cookie model", status: "completed", agentRole: "Cookie model", agentStatusMessage: "Completed" }
+];
+
+const previewScheduleTasks = [
+  {
+    id: "scheduled-temporal-model", projectId: project.id, title: "Temporal model", description: "Unify Board and Timeline around one work item.",
+    column: "done", kind: "task", priority: "high", estimateMinutes: 480, owner: "Lead agent", revision: 3, threadId: rootThread.id,
+    schedule: { taskId: "scheduled-temporal-model", plannedStart: "2026-08-03T08:00:00.000Z", plannedEnd: "2026-08-07T16:00:00.000Z", hardDeadline: null, allDay: false, timezone: "Europe/Zurich", constraintType: "fixed-window", lockedFields: ["plannedStart"], autoSchedule: false, revision: 2, explanation: "Architecture baseline.", updatedAt: "2026-08-07T16:00:00.000Z" },
+    dependencies: [], dependents: [{ taskId: "scheduled-interaction-pass", dependsOnTaskId: "scheduled-temporal-model" }], workflowBindings: [], createdAt: "2026-08-01T08:00:00.000Z", updatedAt: "2026-08-07T16:00:00.000Z"
+  },
+  {
+    id: "scheduled-interaction-pass", projectId: project.id, title: "Interaction pass", description: "Polish task editing and cross-view selection.",
+    column: "done", kind: "task", priority: "normal", estimateMinutes: 720, owner: "Product agent", revision: 4, threadId: null,
+    schedule: { taskId: "scheduled-interaction-pass", plannedStart: "2026-08-08T08:00:00.000Z", plannedEnd: "2026-08-14T16:00:00.000Z", hardDeadline: null, allDay: false, timezone: "Europe/Zurich", constraintType: "flexible", lockedFields: [], autoSchedule: true, revision: 3, explanation: "Starts after the model is complete.", updatedAt: "2026-08-14T16:00:00.000Z" },
+    dependencies: [{ taskId: "scheduled-interaction-pass", dependsOnTaskId: "scheduled-temporal-model", type: "finish-to-start", lagMinutes: 0 }], dependents: [], workflowBindings: [], createdAt: "2026-08-01T08:00:00.000Z", updatedAt: "2026-08-14T16:00:00.000Z"
+  },
+  {
+    id: "scheduled-timeline-renderer", projectId: project.id, title: "Timeline renderer", description: "Ship scalable bars, automatic range fitting, and drag rescheduling.",
+    column: "active", kind: "task", priority: "high", estimateMinutes: 1_440, owner: "UI agent", revision: 7, threadId: rootThread.id,
+    schedule: { taskId: "scheduled-timeline-renderer", plannedStart: "2026-08-11T08:00:00.000Z", plannedEnd: "2026-08-25T16:00:00.000Z", hardDeadline: "2026-08-26T16:00:00.000Z", allDay: false, timezone: "Europe/Zurich", constraintType: "flexible", lockedFields: ["hardDeadline"], autoSchedule: true, revision: 5, explanation: "Deadline protected by the release plan.", updatedAt: "2026-08-24T10:00:00.000Z" },
+    dependencies: [], dependents: [{ taskId: "scheduled-schedule-editor", dependsOnTaskId: "scheduled-timeline-renderer" }], workflowBindings: [], createdAt: "2026-08-02T08:00:00.000Z", updatedAt: "2026-08-24T10:00:00.000Z"
+  },
+  {
+    id: "scheduled-schedule-editor", projectId: project.id, title: "Schedule editor", description: "Add shared date and deadline editing for Board and Timeline.",
+    column: "active", kind: "task", priority: "high", estimateMinutes: 1_200, owner: "UI agent", revision: 5, threadId: null,
+    schedule: { taskId: "scheduled-schedule-editor", plannedStart: "2026-08-17T08:00:00.000Z", plannedEnd: "2026-08-28T16:00:00.000Z", hardDeadline: "2026-08-28T16:00:00.000Z", allDay: false, timezone: "Europe/Zurich", constraintType: "fixed-window", lockedFields: ["hardDeadline"], autoSchedule: true, revision: 4, explanation: "Runs alongside Timeline once its interaction contract is stable.", updatedAt: "2026-08-24T12:00:00.000Z" },
+    dependencies: [{ taskId: "scheduled-schedule-editor", dependsOnTaskId: "scheduled-timeline-renderer", type: "finish-to-start", lagMinutes: 0 }], dependents: [{ taskId: "scheduled-qa", dependsOnTaskId: "scheduled-schedule-editor" }], workflowBindings: [{ id: "preview-binding", taskId: "scheduled-schedule-editor", workflowId: "preview-release-workflow", triggerNodeId: "task-ready", triggerType: "entered-ready", enabled: false, missedTriggerPolicy: "ask" }], createdAt: "2026-08-02T08:00:00.000Z", updatedAt: "2026-08-24T12:00:00.000Z"
+  },
+  {
+    id: "scheduled-qa", projectId: project.id, title: "Keyboard and screen reader QA", description: "Verify Board and Timeline interactions before release.",
+    column: "ready", kind: "task", priority: "urgent", estimateMinutes: 480, owner: "QA agent", revision: 2, threadId: null,
+    schedule: { taskId: "scheduled-qa", plannedStart: "2026-08-26T08:00:00.000Z", plannedEnd: "2026-08-31T16:00:00.000Z", hardDeadline: "2026-08-31T16:00:00.000Z", allDay: false, timezone: "Europe/Zurich", constraintType: "fixed-window", lockedFields: ["hardDeadline"], autoSchedule: true, revision: 2, explanation: "Final validation window.", updatedAt: "2026-08-24T13:00:00.000Z" },
+    dependencies: [{ taskId: "scheduled-qa", dependsOnTaskId: "scheduled-schedule-editor", type: "finish-to-start", lagMinutes: 0 }], dependents: [], workflowBindings: [], createdAt: "2026-08-02T08:00:00.000Z", updatedAt: "2026-08-24T13:00:00.000Z"
+  },
+  {
+    id: "scheduled-release", projectId: project.id, title: "Release candidate", description: "Scheduled-work milestone.",
+    column: "backlog", kind: "milestone", priority: "urgent", estimateMinutes: 0, owner: "Lead agent", revision: 1, threadId: null,
+    schedule: { taskId: "scheduled-release", plannedStart: "2026-09-03T09:00:00.000Z", plannedEnd: "2026-09-03T09:00:00.000Z", hardDeadline: "2026-09-03T09:00:00.000Z", allDay: false, timezone: "Europe/Zurich", constraintType: "fixed-start", lockedFields: ["plannedStart", "plannedEnd", "hardDeadline"], autoSchedule: false, revision: 1, explanation: "Release milestone.", updatedAt: "2026-08-24T14:00:00.000Z" },
+    dependencies: [{ taskId: "scheduled-release", dependsOnTaskId: "scheduled-qa", type: "finish-to-start", lagMinutes: 0 }], dependents: [], workflowBindings: [], createdAt: "2026-08-02T08:00:00.000Z", updatedAt: "2026-08-24T14:00:00.000Z"
+  }
 ];
 
 const models = [
@@ -159,6 +217,18 @@ const releaseTool = {
 
 export function createTaskProgressPreviewApi() {
   let previewTools = [releaseTool];
+  let boardTasks = structuredClone(previewScheduleTasks);
+  const boardActivity = new Map(boardTasks.map((task) => [task.id, [{ id: `${task.id}:activity`, taskId: task.id, projectId: project.id, kind: "schedule-changed", summary: task.schedule.explanation, actorKind: "agent", actorId: task.owner, createdAt: task.updatedAt }]]));
+  const listeners = new Set();
+  const emit = (type, payload) => listeners.forEach((listener) => listener({ type, payload }));
+  const findBoardTask = (taskId) => boardTasks.find((task) => task.id === taskId);
+  const touchBoardTask = (task, patch = {}) => {
+    const updatedAt = new Date().toISOString();
+    const next = { ...task, ...patch, revision: task.revision + 1, updatedAt };
+    boardTasks = boardTasks.map((candidate) => candidate.id === task.id ? next : candidate);
+    emit("BoardUpdated", { action: "updated", projectId: project.id, task: next });
+    return next;
+  };
   const threads = [rootThread, secondaryThread, ...agents];
   const browserState = {
     native: false,
@@ -234,9 +304,41 @@ export function createTaskProgressPreviewApi() {
     approvals: { resolve: async () => ({ ok: true }) },
     requests: { respond: async () => ({ ok: true }) },
     review: { read: async () => ({ repository: project.repository, diff: "" }) },
+    board: {
+      list: async () => ({ data: boardTasks }),
+      read: async ({ taskId }) => ({ task: findBoardTask(taskId), activity: boardActivity.get(taskId) ?? [] }),
+      create: async ({ title, description = "", column = "backlog", ...details }) => {
+        const now = new Date().toISOString();
+        const task = { id: `preview-task-${boardTasks.length + 1}`, projectId: project.id, title, description, column, kind: details.kind ?? "task", priority: details.priority ?? "normal", estimateMinutes: details.estimateMinutes ?? null, owner: details.owner ?? "", revision: 1, threadId: null, schedule: details.schedule ?? null, dependencies: details.dependencies ?? [], dependents: [], workflowBindings: [], createdAt: now, updatedAt: now };
+        boardTasks = [...boardTasks, task];
+        emit("BoardUpdated", { action: "created", projectId: project.id, task });
+        return task;
+      },
+      update: async ({ taskId, projectId: _projectId, expectedRevision: _expectedRevision, expectedScheduleRevision: _expectedScheduleRevision, ...patch }) => {
+        const task = findBoardTask(taskId);
+        const schedule = Object.hasOwn(patch, "schedule") ? (patch.schedule ? { ...task.schedule, ...patch.schedule, taskId, revision: (task.schedule?.revision ?? 0) + 1, updatedAt: new Date().toISOString() } : null) : task.schedule;
+        return touchBoardTask(task, { ...patch, schedule });
+      },
+      move: async ({ taskId, column }) => touchBoardTask(findBoardTask(taskId), { column }),
+      delete: async ({ taskId }) => { const task = findBoardTask(taskId); boardTasks = boardTasks.filter((candidate) => candidate.id !== taskId); emit("BoardUpdated", { action: "deleted", projectId: project.id, task }); return task; },
+      attach: async ({ taskId, threadId }) => touchBoardTask(findBoardTask(taskId), { threadId }),
+      saveBinding: async ({ taskId, bindingId, workflowId, triggerNodeId = null, triggerType, enabled = false, missedTriggerPolicy = "ask" }) => {
+        const task = findBoardTask(taskId);
+        const id = bindingId ?? `preview-binding-${Date.now()}`;
+        const binding = { id, taskId, workflowId, triggerNodeId, triggerType, enabled, missedTriggerPolicy };
+        const workflowBindings = [...(task.workflowBindings ?? []).filter((candidate) => candidate.id !== id), binding];
+        touchBoardTask(task, { workflowBindings });
+        return binding;
+      },
+      deleteBinding: async ({ taskId, bindingId }) => touchBoardTask(findBoardTask(taskId), { workflowBindings: findBoardTask(taskId).workflowBindings.filter((binding) => binding.id !== bindingId) }),
+      readProposal: async () => null,
+      applyProposal: async () => null,
+      discardProposal: async () => null
+    },
+    workflows: { list: async () => ({ data: [{ id: "preview-release-workflow", projectId: project.id, name: "Release readiness", description: "Run checks when a bound task enters Ready.", enabled: true, updatedAt: "2026-08-24T12:00:00.000Z" }] }) },
     models: { list: async () => models },
     extensions: { list: async () => extensions },
     external: { openEditor: async () => {}, openTerminal: async () => {}, reveal: async () => {} },
-    events: { subscribe: () => () => {} }
+    events: { subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); } }
   };
 }

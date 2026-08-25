@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
   runtime: Object.freeze({ status: invoke("runtime:status") }),
   providers: Object.freeze({ list: invoke("providers:list"), login: invoke("providers:login") }),
   github: Object.freeze({ status: invoke("github:status"), login: invoke("github:login"), logout: invoke("github:logout") }),
-  usage: Object.freeze({ summary: invoke("usage:summary") }),
+  usage: Object.freeze({ summary: invoke("usage:summary"), limits: invoke("usage:limits") }),
   updates: Object.freeze({ status: invoke("updates:status"), check: invoke("updates:check"), download: invoke("updates:download"), install: invoke("updates:install") }),
   codexUpdates: Object.freeze({ status: invoke("codex-updates:status"), check: invoke("codex-updates:check"), install: invoke("codex-updates:install") }),
   browser: Object.freeze({
@@ -36,11 +36,22 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
   }),
   board: Object.freeze({
     list: invoke("board:list"),
+    read: invoke("board:read"),
     create: invoke("board:create"),
     update: invoke("board:update"),
     move: invoke("board:move"),
     delete: invoke("board:delete"),
-    attach: invoke("board:attach")
+    attach: invoke("board:attach"),
+    activity: invoke("board:activity"),
+    readProposal: invoke("board:proposal:read"),
+    applyProposal: invoke("board:proposal:apply"),
+    discardProposal: invoke("board:proposal:discard"),
+    saveBinding: invoke("board:binding:save"),
+    deleteBinding: invoke("board:binding:delete")
+  }),
+  proactivity: Object.freeze({
+    list: invoke("proactivity:list"),
+    resolve: invoke("proactivity:resolve")
   }),
   instruments: Object.freeze({
     list: invoke("instruments:list"),
@@ -65,12 +76,15 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
   workflows: Object.freeze({
     list: invoke("workflows:list"),
     read: invoke("workflows:read"),
+    taskRuns: invoke("workflows:task-runs"),
     create: invoke("workflows:create"),
     save: invoke("workflows:save"),
+    generate: invoke("workflows:generate"),
     delete: invoke("workflows:delete"),
     run: invoke("workflows:run"),
     cancel: invoke("workflows:cancel"),
-    triggers: invoke("workflows:triggers")
+    triggers: invoke("workflows:triggers"),
+    resolveMissedTrigger: invoke("workflows:resolve-missed-trigger")
   }),
   workflowCredentials: Object.freeze({
     list: (projectId) => ipcRenderer.invoke("workflow-credentials:list", { projectId }),

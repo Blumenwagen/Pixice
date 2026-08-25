@@ -150,6 +150,12 @@ export function WorkflowHost({ children }) {
     return () => document.removeEventListener("click", handleSidebarClick, true);
   }, []);
 
+  useEffect(() => {
+    const closeForTaskPreview = () => setPreview(null);
+    window.addEventListener("pixice:task-preview-activated", closeForTaskPreview);
+    return () => window.removeEventListener("pixice:task-preview-activated", closeForTaskPreview);
+  }, []);
+
   const ensurePreviewOpen = useCallback(async (workspaceId) => {
     if (!workspaceId) return null;
     setActive(false);

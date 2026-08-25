@@ -14,6 +14,15 @@ export const WORKFLOW_NODE_GUIDE = [
     }
   },
   {
+    type: "taskEventTrigger",
+    purpose: "Run an enabled workflow only for work items with an explicit enabled binding to this workflow and event.",
+    inputPorts: [], outputPorts: ["output"],
+    config: {
+      eventType: "planned-start-reached | deadline-approaching | entered-ready | dependencies-completed | became-overdue | schedule-changed",
+      leadMinutes: "Minutes before a hard deadline for deadline-approaching"
+    }
+  },
+  {
     type: "webhookTrigger",
     purpose: "Expose an enabled workflow through a loopback-only HTTP webhook on 127.0.0.1.",
     inputPorts: [], outputPorts: ["output"],
@@ -142,10 +151,16 @@ export const WORKFLOW_NODE_GUIDE = [
     config: { title: "Template", body: "Template", urgency: "low | normal | critical", silent: "Boolean" }
   },
   {
+    type: "planWork",
+    purpose: "Build a deterministic, dependency-checked schedule and optionally save it as a reviewable Pixice plan proposal. This node never applies the proposal.",
+    inputPorts: ["input"], outputPorts: ["output"],
+    config: { plan: "Plan object or exact typed template", createProposal: "Boolean" }
+  },
+  {
     type: "board",
     purpose: "List, create, edit, move, or delete durable tasks on the current Pixice board.",
     inputPorts: ["input"], outputPorts: ["output"],
-    config: { operation: "list | create | update | move | delete", taskId: "Task id template", title: "Title template", description: "Description template", column: "backlog | ready | active | done", beforeTaskId: "Optional", attachSourceThread: "Boolean" }
+    config: { operation: "list | create | update | move | delete", taskId: "Task id template", title: "Title template", description: "Description template", column: "backlog | ready | active | done", kind: "task | milestone | event", priority: "low | normal | high | urgent", estimateMinutes: "Value template", owner: "String template", schedule: "Object template or null", dependencies: "Array template", beforeTaskId: "Optional", attachSourceThread: "Boolean" }
   },
   {
     type: "output",

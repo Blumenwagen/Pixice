@@ -3,6 +3,7 @@ import { WORKFLOW_CONDITION_OPERATORS } from "./workflow-values.mjs";
 export const WORKFLOW_NODE_TYPES = [
   "manualTrigger",
   "scheduleTrigger",
+  "taskEventTrigger",
   "webhookTrigger",
   "useSkill",
   "pixiceAgent",
@@ -21,10 +22,11 @@ export const WORKFLOW_NODE_TYPES = [
   "database",
   "executeWorkflow",
   "notification",
+  "planWork",
   "board"
 ];
 
-export const WORKFLOW_TRIGGER_NODE_TYPES = ["manualTrigger", "scheduleTrigger", "webhookTrigger"];
+export const WORKFLOW_TRIGGER_NODE_TYPES = ["manualTrigger", "scheduleTrigger", "taskEventTrigger", "webhookTrigger"];
 export const WORKFLOW_ATTACHMENT_NODE_TYPES = ["useSkill"];
 export const WORKFLOW_PERMISSION_MODES = ["read-only", "workspace-write", "auto-approve", "full-access"];
 export const WORKFLOW_AGENT_EXECUTION_MODES = ["background", "foreground"];
@@ -39,6 +41,10 @@ const DEFAULT_CONFIGS = {
     cron: "0 * * * *",
     runOnStartup: false,
     overlapPolicy: "skip"
+  },
+  taskEventTrigger: {
+    eventType: "entered-ready",
+    leadMinutes: 1_440
   },
   webhookTrigger: {
     method: "POST",
@@ -163,6 +169,10 @@ const DEFAULT_CONFIGS = {
     urgency: "normal",
     silent: false
   },
+  planWork: {
+    plan: "{{input}}",
+    createProposal: true
+  },
   board: {
     operation: "list",
     taskId: "",
@@ -170,7 +180,13 @@ const DEFAULT_CONFIGS = {
     description: "{{input.description ?? ''}}",
     column: "backlog",
     beforeTaskId: "",
-    attachSourceThread: false
+    attachSourceThread: false,
+    kind: "task",
+    priority: "normal",
+    estimateMinutes: "{{input.estimateMinutes ?? null}}",
+    owner: "{{input.owner ?? ''}}",
+    schedule: "{{input.schedule ?? null}}",
+    dependencies: "{{input.dependencies ?? []}}"
   }
 };
 
@@ -252,6 +268,13 @@ export function normalizeWorkflowNodeConfig(node) {
       cron: stringValue(source.cron, "0 * * * *").trim().slice(0, 200) || "0 * * * *",
       runOnStartup: Boolean(source.runOnStartup),
       overlapPolicy: enumValue(source.overlapPolicy, ["skip", "allow"], "skip")
+    };
+  }
+  if (node.type === "taskEventTrigger") {
+    return {
+      ...source,
+      eventType: enumValue(source.eventType, ["planned-start-reached", "deadline-approaching", "entered-ready", "dependencies-completed", "became-overdue", "schedule-changed"], "entered-ready"),
+      leadMinutes: integerValue(source.leadMinutes, 1_440, 1, 525_600)
     };
   }
   if (node.type === "webhookTrigger") {
@@ -422,6 +445,13 @@ export function normalizeWorkflowNodeConfig(node) {
       silent: Boolean(source.silent)
     };
   }
+  if (node.type === "planWork") {
+    return {
+      ...source,
+      plan: stringValue(source.plan, "{{input}}"),
+      createProposal: source.createProposal !== false
+    };
+  }
   if (node.type === "board") {
     return {
       ...source,
@@ -431,7 +461,13 @@ export function normalizeWorkflowNodeConfig(node) {
       description: stringValue(source.description, DEFAULT_CONFIGS.board.description),
       column: enumValue(source.column, ["backlog", "ready", "active", "done"], "backlog"),
       beforeTaskId: stringValue(source.beforeTaskId, ""),
-      attachSourceThread: Boolean(source.attachSourceThread)
+      attachSourceThread: Boolean(source.attachSourceThread),
+      kind: enumValue(source.kind, ["task", "milestone", "event"], "task"),
+      priority: enumValue(source.priority, ["low", "normal", "high", "urgent"], "normal"),
+      estimateMinutes: stringValue(source.estimateMinutes, DEFAULT_CONFIGS.board.estimateMinutes),
+      owner: stringValue(source.owner, DEFAULT_CONFIGS.board.owner),
+      schedule: stringValue(source.schedule, DEFAULT_CONFIGS.board.schedule),
+      dependencies: stringValue(source.dependencies, DEFAULT_CONFIGS.board.dependencies)
     };
   }
   return source;

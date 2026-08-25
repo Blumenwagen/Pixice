@@ -202,11 +202,11 @@ describe("workflow node executors", () => {
         tasks.set(task.id, task);
         return task;
       },
-      updateBoardTask: (id, patch) => {
+      updateBoardTask: vi.fn((id, patch) => {
         const task = { ...tasks.get(id), ...patch };
         tasks.set(id, task);
         return task;
-      },
+      }),
       moveBoardTask: (id, column) => {
         const task = { ...tasks.get(id), column };
         tasks.set(id, task);
@@ -234,5 +234,49 @@ describe("workflow node executors", () => {
       column: "active"
     }, { database }));
     expect(moved.output.task.column).toBe("active");
+
+    tasks.set(created.output.task.id, { ...tasks.get(created.output.task.id), revision: 5, schedule: { revision: 4 } });
+    await execute("board", {
+      operation: "update",
+      taskId: created.output.task.id,
+      title: "Updated after trigger"
+    }, { database, runInput: { task: { id: created.output.task.id, revision: 3, schedule: { revision: 2 } } } });
+    expect(database.updateBoardTask).toHaveBeenLastCalledWith(created.output.task.id, expect.objectContaining({
+      expectedRevision: 3,
+      expectedScheduleRevision: 2
+    }));
+  });
+
+  it("builds a deterministic work plan and saves a review proposal without applying it", async () => {
+    const createBoardPlanProposal = vi.fn((value) => ({ ...value, status: "pending" }));
+    const database = {
+      listBoardTasks: vi.fn(() => []),
+      getBoardTask: vi.fn(() => null),
+      createBoardPlanProposal
+    };
+    const input = {
+      title: "Release plan",
+      startAt: "2026-08-26T08:00:00.000Z",
+      timezone: "UTC",
+      items: [
+        { id: "design", title: "Design", estimateMinutes: 60 },
+        { id: "build", title: "Build", estimateMinutes: 120, dependsOn: ["design"] }
+      ]
+    };
+
+    const result = normalizeWorkflowNodeResult(await execute("planWork", {
+      plan: "{{input}}",
+      createProposal: true
+    }, { database, input }));
+
+    expect(result.output.plan.items[1].schedule.plannedStart).toBe(result.output.plan.items[0].schedule.plannedEnd);
+    expect(createBoardPlanProposal).toHaveBeenCalledOnce();
+    expect(createBoardPlanProposal).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      threadId: "thread-1",
+      title: "Release plan",
+      proposal: result.output.plan
+    }));
+    expect(result.output.proposal).toMatchObject({ status: "pending", title: "Release plan" });
   });
 });

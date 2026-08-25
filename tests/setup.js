@@ -16,6 +16,17 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   };
 }
 
+if (typeof globalThis.DOMMatrixReadOnly === "undefined") {
+  globalThis.DOMMatrixReadOnly = class DOMMatrixReadOnly {
+    constructor() {
+      this.m11 = 1;
+      this.m22 = 1;
+      this.m41 = 0;
+      this.m42 = 0;
+    }
+  };
+}
+
 const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
 HTMLElement.prototype.getBoundingClientRect = function getBoundingClientRect() {
   if (this.classList?.contains("react-flow")) {

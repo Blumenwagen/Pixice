@@ -1,15 +1,19 @@
 import { useMemo, useState } from "react";
 import { DitherAreaChart, DitherBarChart } from "./dither-kit/DitherChart.jsx";
+import { CalendarVisualization, TimelineVisualization } from "./TemporalVisualization.jsx";
 
 const VISUALIZATION_LANGUAGES = new Set(["pixice-visual", "pixice-visualization"]);
 const CONTROL_TYPES = new Set(["range", "select", "segmented", "toggle"]);
 const CHART_TYPES = new Set(["area", "bar"]);
 const SERIES_COLORS = new Set(["blue", "green", "purple", "pink", "orange", "red", "grey"]);
 const SERIES_VARIANTS = new Set(["gradient", "dotted", "hatched", "solid"]);
+const TEMPORAL_STATUSES = new Set(["planned", "active", "done", "blocked", "cancelled"]);
+const TEMPORAL_VIEWS = new Set(["month", "agenda"]);
 const MAX_CONTROLS = 6;
 const MAX_METRICS = 6;
 const MAX_POINTS = 120;
 const MAX_SERIES = 6;
+const MAX_TEMPORAL_ITEMS = 160;
 
 function finiteNumber(value, fallback = 0) {
   const number = Number(value);
@@ -18,6 +22,99 @@ function finiteNumber(value, fallback = 0) {
 
 function boundedText(value, maximum = 160) {
   return typeof value === "string" || typeof value === "number" ? String(value).trim().slice(0, maximum) : "";
+}
+
+function safeId(value, fallback = "") {
+  return boundedText(value, 64).replace(/[^a-zA-Z0-9_-]/g, "") || fallback;
+}
+
+function validDate(value) {
+  const text = boundedText(value, 40);
+  if (!text) return "";
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (dateOnly) {
+    const date = new Date(Date.UTC(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3])));
+    return date.getUTCFullYear() === Number(dateOnly[1]) && date.getUTCMonth() === Number(dateOnly[2]) - 1 && date.getUTCDate() === Number(dateOnly[3]) ? text : "";
+  }
+  return Number.isFinite(Date.parse(text)) ? text : "";
+}
+
+function normalizeWhen(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const entries = Object.entries(input).slice(0, MAX_CONTROLS).map(([controlId, accepted]) => {
+    const id = safeId(controlId);
+    const values = (Array.isArray(accepted) ? accepted : [accepted])
+      .slice(0, 12)
+      .filter((value) => ["string", "number", "boolean"].includes(typeof value));
+    return id && values.length ? [id, values] : null;
+  }).filter(Boolean);
+  return entries.length ? Object.fromEntries(entries) : null;
+}
+
+function normalizeTemporalBase(item, index, labelKey) {
+  const start = validDate(item?.start);
+  if (!start) return null;
+  const id = safeId(item?.id, `${labelKey}-${index + 1}`);
+  return {
+    id,
+    [labelKey]: boundedText(item?.[labelKey], 100) || `${labelKey === "title" ? "Event" : "Item"} ${index + 1}`,
+    start,
+    end: validDate(item?.end),
+    color: SERIES_COLORS.has(item?.color) ? item.color : ["blue", "purple", "green", "orange", "pink", "red"][index % 6],
+    status: TEMPORAL_STATUSES.has(item?.status) ? item.status : "planned",
+    owner: boundedText(item?.owner, 80),
+    location: boundedText(item?.location, 100),
+    detail: boundedText(item?.detail, 320),
+    when: normalizeWhen(item?.when)
+  };
+}
+
+function normalizeTimeline(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const groups = (Array.isArray(input.groups) ? input.groups : []).slice(0, 16).map((group, index) => ({
+    id: safeId(group?.id, `group-${index + 1}`),
+    label: boundedText(group?.label, 60) || `Group ${index + 1}`
+  }));
+  const items = (Array.isArray(input.items) ? input.items : []).slice(0, MAX_TEMPORAL_ITEMS).map((item, index) => {
+    const base = normalizeTemporalBase(item, index, "label");
+    if (!base) return null;
+    return {
+      ...base,
+      group: safeId(item?.group),
+      type: item?.type === "milestone" ? "milestone" : "range",
+      progress: Math.min(100, Math.max(0, finiteNumber(item?.progress, 0))),
+      dependsOn: (Array.isArray(item?.dependsOn) ? item.dependsOn : []).slice(0, 12).map((id) => safeId(id)).filter(Boolean)
+    };
+  }).filter(Boolean);
+  if (!items.length) return null;
+  return {
+    title: boundedText(input.title, 100),
+    start: validDate(input.start),
+    end: validDate(input.end),
+    today: validDate(input.today),
+    groups,
+    items
+  };
+}
+
+function normalizeCalendar(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const events = (Array.isArray(input.events) ? input.events : []).slice(0, MAX_TEMPORAL_ITEMS).map((event, index) => normalizeTemporalBase(event, index, "title")).filter(Boolean);
+  if (!events.length) return null;
+  const requestedViews = (Array.isArray(input.views) ? input.views : ["month", "agenda"])
+    .map((view) => boundedText(view, 20).toLowerCase())
+    .filter((view, index, views) => TEMPORAL_VIEWS.has(view) && views.indexOf(view) === index);
+  const views = requestedViews.length ? requestedViews : ["month"];
+  const defaultView = TEMPORAL_VIEWS.has(input.defaultView) && views.includes(input.defaultView) ? input.defaultView : views[0];
+  return {
+    title: boundedText(input.title, 100),
+    date: validDate(input.date) || events[0].start,
+    today: validDate(input.today),
+    weekStartsOn: Number(input.weekStartsOn) === 0 ? 0 : 1,
+    views,
+    defaultView,
+    events
+  };
 }
 
 function normalizeOptions(options) {
@@ -120,7 +217,9 @@ export function parseVisualizationSpec(source, language = "pixice-visualization"
     value: segment?.value,
     color: SERIES_COLORS.has(segment?.color) ? segment.color : ["blue", "purple", "green", "orange", "pink", "red"][index % 6]
   })).filter((segment) => segment.label);
-  if (!metrics.length && !chart && !segments.length) return null;
+  const timeline = normalizeTimeline(input.timeline);
+  const calendar = normalizeCalendar(input.calendar);
+  if (!metrics.length && !chart && !segments.length && !timeline && !calendar) return null;
   return {
     version: 1,
     title,
@@ -129,6 +228,8 @@ export function parseVisualizationSpec(source, language = "pixice-visualization"
     metrics,
     chart,
     segments,
+    timeline,
+    calendar,
     note: boundedText(input.note, 180)
   };
 }
@@ -330,6 +431,8 @@ export function InlineVisualization({ spec }) {
           </div>
         </div>
       )}
+      {spec.timeline && <TimelineVisualization timeline={spec.timeline} state={state} />}
+      {spec.calendar && <CalendarVisualization calendar={spec.calendar} state={state} />}
       {spec.note && <p className="inline-viz-note">{spec.note}</p>}
     </section>
   );

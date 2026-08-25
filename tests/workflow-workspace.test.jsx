@@ -35,6 +35,17 @@ function createApi() {
         return saved;
       }),
       create: vi.fn(async () => workflow),
+      generate: vi.fn(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+        return {
+          graph: {
+            ...workflow.graph,
+            nodes: workflow.graph.nodes.map((node) => node.id === "output" ? { ...node, name: "Generated result" } : node)
+          },
+          model: "GPT-5.6 Terra",
+          generatedAt: "2026-08-20T06:02:00.000Z"
+        };
+      }),
       delete: vi.fn(async () => workflow),
       run: vi.fn(),
       cancel: vi.fn()
@@ -80,5 +91,46 @@ describe("WorkflowWorkspace", () => {
     expect(api.workflows.read).toHaveBeenCalledTimes(1);
     expect(screen.getByDisplayValue("Release workflow 2")).toBeInTheDocument();
     expect(screen.queryByText(/changed by another agent/i)).not.toBeInTheDocument();
+  });
+
+  it("generates the current workflow from its description with visible progress", async () => {
+    const api = createApi();
+    render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Pixice" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Workflow settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate workflow from description" }));
+
+    expect(await screen.findByText("Agent is building this workflow")).toBeInTheDocument();
+    await waitFor(() => expect(api.workflows.generate).toHaveBeenCalledWith({ projectId: "project-1", workflowId: "workflow-1" }));
+    await waitFor(() => expect(api.workflows.save).toHaveBeenLastCalledWith(expect.objectContaining({
+      graph: expect.objectContaining({ nodes: expect.arrayContaining([expect.objectContaining({ name: "Generated result" })]) })
+    })), { timeout: 1500 });
+    expect(await screen.findByText("Workflow ready")).toBeInTheDocument();
+  });
+
+  it("keeps the current canvas when generation fails", async () => {
+    const api = createApi();
+    api.workflows.generate.mockRejectedValueOnce(new Error("The workflow agent is unavailable"));
+    render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Pixice" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Workflow settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate workflow from description" }));
+
+    expect((await screen.findAllByText("The workflow agent is unavailable")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("group", { name: "Output: Result" })).toBeInTheDocument();
+  });
+
+  it("offers Plan Work as a native node with review-only proposal controls", async () => {
+    const api = createApi();
+    render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Pixice" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add node" }));
+    fireEvent.click(screen.getByRole("button", { name: /Plan Work/ }));
+
+    expect(await screen.findByText("Plan input")).toBeInTheDocument();
+    expect(screen.getByText("Create review proposal")).toBeInTheDocument();
+    await waitFor(() => expect(api.workflows.save).toHaveBeenCalledWith(expect.objectContaining({
+      graph: expect.objectContaining({ nodes: expect.arrayContaining([expect.objectContaining({ type: "planWork" })]) })
+    })), { timeout: 1500 });
   });
 });

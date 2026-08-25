@@ -17,6 +17,7 @@ implementation-*.png
 AGENTS.md
 
 # Package-manager and editor noise
+.pnpm-store/
 package-lock.json
 .DS_Store
 *.log

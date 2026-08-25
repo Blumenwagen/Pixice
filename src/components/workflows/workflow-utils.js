@@ -37,6 +37,18 @@ export const WORKFLOW_NODE_META = {
     inputPorts: [],
     outputPorts: [{ id: "output", label: "Schedule" }]
   },
+  taskEventTrigger: {
+    label: "Task Event Trigger",
+    action: "React to scheduled work",
+    category: "Triggers",
+    icon: "gauge",
+    tone: "violet",
+    defaultName: "Task event",
+    defaultDescription: "Start when an explicitly bound work item reaches the selected state or time.",
+    defaultConfig: { eventType: "entered-ready", leadMinutes: 1440 },
+    inputPorts: [],
+    outputPorts: [{ id: "output", label: "Task event" }]
+  },
   webhookTrigger: {
     label: "Local Webhook",
     action: "Receive request",
@@ -322,6 +334,21 @@ export const WORKFLOW_NODE_META = {
     },
     inputPorts: commonInput,
     outputPorts: [{ id: "output", label: "Results" }]
+  },
+  planWork: {
+    label: "Plan Work",
+    action: "Build schedule proposal",
+    category: "Pixice",
+    icon: "gauge",
+    tone: "orange",
+    defaultName: "Plan work",
+    defaultDescription: "Build a deterministic schedule and save it for review without applying it.",
+    defaultConfig: {
+      plan: "{{input}}",
+      createProposal: true
+    },
+    inputPorts: commonInput,
+    outputPorts: [{ id: "output", label: "Plan proposal" }]
   },
   board: {
     label: "Pixice Board",

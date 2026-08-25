@@ -58,6 +58,28 @@ describe("workflow preload bridge", () => {
     });
   });
 
+  it("exposes description-driven workflow generation", async () => {
+    const { api, invoke } = loadPreload();
+
+    await api.workflows.generate({ projectId: "project-1", workflowId: "workflow-1" });
+
+    expect(invoke).toHaveBeenCalledWith("workflows:generate", { projectId: "project-1", workflowId: "workflow-1" });
+  });
+
+  it("exposes task-linked runs and missed-trigger decisions", async () => {
+    const { api, invoke } = loadPreload();
+
+    await api.workflows.taskRuns({ projectId: "project-1", taskId: "task-1" });
+    await api.workflows.resolveMissedTrigger({ projectId: "project-1", requestId: "request-1", decision: "accept" });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "workflows:task-runs", { projectId: "project-1", taskId: "task-1" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "workflows:resolve-missed-trigger", {
+      projectId: "project-1",
+      requestId: "request-1",
+      decision: "accept"
+    });
+  });
+
   it("exposes GitHub account actions", async () => {
     const { api, invoke } = loadPreload();
 

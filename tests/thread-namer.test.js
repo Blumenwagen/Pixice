@@ -6,6 +6,7 @@ import {
   THREAD_NAMING_EFFORT,
   THREAD_NAMING_MODEL
 } from "../electron/runtime/thread-namer.mjs";
+import { resolveThreadNamingModel, THREAD_NAMING_AUTO, THREAD_NAMING_OFF } from "../electron/runtime/thread-naming-models.mjs";
 
 class FakeRuntime extends EventEmitter {
   constructor(output = "Authentication session repair") {
@@ -85,6 +86,48 @@ describe("ThreadNamer", () => {
 
     expect(runtime.request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(1);
     expect(runtime.request.mock.calls.filter(([method]) => method === "thread/name/set")).toHaveLength(1);
+  });
+
+  it("prefers Luna automatically and falls back to Haiku", () => {
+    const models = [
+      { id: "claude:haiku", model: "haiku", provider: "claude", displayName: "Claude Haiku" },
+      { id: "codex:gpt-5.6-luna", model: "gpt-5.6-luna", provider: "codex", displayName: "GPT 5.6 Luna" }
+    ];
+
+    expect(resolveThreadNamingModel(THREAD_NAMING_AUTO, models)).toMatchObject({
+      id: "codex:gpt-5.6-luna",
+      provider: "codex",
+      effort: "low"
+    });
+    expect(resolveThreadNamingModel(THREAD_NAMING_AUTO, models.slice(0, 1))).toMatchObject({
+      id: "claude:haiku",
+      provider: "claude",
+      effort: null
+    });
+  });
+
+  it("uses Haiku through the provider-neutral runtime when it is the automatic choice", async () => {
+    const runtime = new FakeRuntime();
+    const namer = new ThreadNamer(runtime, {
+      timeoutMs: 1_000,
+      models: async () => [{ id: "claude:haiku", model: "haiku", provider: "claude", displayName: "Claude Haiku" }]
+    });
+
+    await namer.nameThread({ threadId: "task-1", cwd: "/work/aurora", source: "Fix the sign-in flow", kind: "task" });
+
+    expect(runtime.request).toHaveBeenNthCalledWith(1, "thread/start", expect.objectContaining({ model: "claude:haiku", ephemeral: true }));
+    expect(runtime.request).toHaveBeenNthCalledWith(2, "turn/start", expect.not.objectContaining({ effort: expect.anything() }));
+  });
+
+  it("skips the helper turn when automatic naming is disabled", async () => {
+    const runtime = new FakeRuntime();
+    const namer = new ThreadNamer(runtime, {
+      selection: () => THREAD_NAMING_OFF,
+      models: async () => [{ id: "codex:gpt-5.6-luna", model: "gpt-5.6-luna", provider: "codex" }]
+    });
+
+    await expect(namer.nameThread({ threadId: "task-1", cwd: "/work/aurora", source: "Fix the sign-in flow" })).resolves.toBeNull();
+    expect(runtime.request).not.toHaveBeenCalled();
   });
 
   it("normalizes model formatting and bounds long names", () => {

@@ -516,6 +516,16 @@ function NotificationFields({ config, updateConfig }) {
   );
 }
 
+function PlanWorkFields({ config, updateConfig }) {
+  return (
+    <>
+      <label className={styles.field}><span>Plan input</span><textarea rows={10} value={config.plan ?? "{{input}}"} onChange={(event) => updateConfig({ plan: event.target.value })} spellCheck="false" /><small>Pass an object with title, outcome, optional start and deadline, timezone, and dependency-linked items.</small></label>
+      <Toggle label="Create review proposal" detail="Stores the result for user review. The node never applies tasks automatically." checked={config.createProposal !== false} onChange={(value) => updateConfig({ createProposal: value })} />
+      <ExpressionHint />
+    </>
+  );
+}
+
 function BoardFields({ config, updateConfig }) {
   const operation = config.operation ?? "list";
   const needsTask = new Set(["update", "move", "delete"]).has(operation);
@@ -527,6 +537,12 @@ function BoardFields({ config, updateConfig }) {
         <>
           <label className={styles.field}><span>Title</span><input value={config.title ?? ""} onChange={(event) => updateConfig({ title: event.target.value })} /></label>
           <label className={styles.field}><span>Description</span><textarea rows={6} value={config.description ?? ""} onChange={(event) => updateConfig({ description: event.target.value })} /></label>
+          <label className={styles.field}><span>Kind</span><select value={config.kind ?? "task"} onChange={(event) => updateConfig({ kind: event.target.value })}><option value="task">Task</option><option value="milestone">Milestone</option><option value="event">Event</option></select></label>
+          <label className={styles.field}><span>Priority</span><select value={config.priority ?? "normal"} onChange={(event) => updateConfig({ priority: event.target.value })}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
+          <label className={styles.field}><span>Estimate · minutes</span><input value={config.estimateMinutes ?? ""} onChange={(event) => updateConfig({ estimateMinutes: event.target.value })} /></label>
+          <label className={styles.field}><span>Owner</span><input value={config.owner ?? ""} onChange={(event) => updateConfig({ owner: event.target.value })} /></label>
+          <label className={styles.field}><span>Schedule · object or null</span><textarea rows={5} value={config.schedule ?? ""} onChange={(event) => updateConfig({ schedule: event.target.value })} /></label>
+          <label className={styles.field}><span>Dependencies · array</span><textarea rows={4} value={config.dependencies ?? ""} onChange={(event) => updateConfig({ dependencies: event.target.value })} /></label>
         </>
       )}
       {(operation === "create" || operation === "move") && <label className={styles.field}><span>Column</span><select value={config.column ?? "backlog"} onChange={(event) => updateConfig({ column: event.target.value })}><option value="backlog">Backlog</option><option value="ready">Ready</option><option value="active">Active</option><option value="done">Done</option></select></label>}
@@ -537,9 +553,20 @@ function BoardFields({ config, updateConfig }) {
   );
 }
 
+function TaskEventFields({ config, updateConfig }) {
+  return (
+    <>
+      <label className={styles.field}><span>Task event</span><select value={config.eventType ?? "entered-ready"} onChange={(event) => updateConfig({ eventType: event.target.value })}><option value="planned-start-reached">Planned start reached</option><option value="deadline-approaching">Deadline approaching</option><option value="entered-ready">Entered Ready</option><option value="dependencies-completed">Dependencies completed</option><option value="became-overdue">Became overdue</option><option value="schedule-changed">Schedule changed</option></select></label>
+      {config.eventType === "deadline-approaching" && <label className={styles.field}><span>Lead time · minutes</span><input type="number" min="1" max="525600" value={config.leadMinutes ?? 1440} onChange={(event) => updateConfig({ leadMinutes: Number(event.target.value) })} /></label>}
+      <small className={styles.safetyNote}>This trigger runs only after a user enables a matching Workflow binding on a work item.</small>
+    </>
+  );
+}
+
 function ConfigFields({ node, models, api, projectId, workflows, currentWorkflowId, updateConfig }) {
   const config = node.config ?? {};
   if (node.type === "scheduleTrigger") return <ScheduleFields config={config} updateConfig={updateConfig} />;
+  if (node.type === "taskEventTrigger") return <TaskEventFields config={config} updateConfig={updateConfig} />;
   if (node.type === "webhookTrigger") return <WebhookFields config={config} updateConfig={updateConfig} api={api} projectId={projectId} />;
   if (node.type === "pixiceAgent") return <AgentFields node={node} models={models} updateConfig={updateConfig} />;
   if (node.type === "httpRequest") return <HttpFields config={config} updateConfig={updateConfig} api={api} projectId={projectId} />;
@@ -556,6 +583,7 @@ function ConfigFields({ node, models, api, projectId, workflows, currentWorkflow
   if (node.type === "database") return <DatabaseFields config={config} updateConfig={updateConfig} />;
   if (node.type === "executeWorkflow") return <ExecuteWorkflowFields config={config} updateConfig={updateConfig} workflows={workflows} currentWorkflowId={currentWorkflowId} />;
   if (node.type === "notification") return <NotificationFields config={config} updateConfig={updateConfig} />;
+  if (node.type === "planWork") return <PlanWorkFields config={config} updateConfig={updateConfig} />;
   if (node.type === "board") return <BoardFields config={config} updateConfig={updateConfig} />;
   return <small className={styles.safetyNote}>This node has no additional configuration.</small>;
 }

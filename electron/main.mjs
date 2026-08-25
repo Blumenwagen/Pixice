@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, Tray, WebContentsView } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, shell, Tray, WebContentsView } from "electron";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -50,7 +50,11 @@ import {
 import { inspectRepository, readDiff } from "./git/worktrees.mjs";
 import { GitHubCli, prependGitHubCliToPath } from "./github/github-cli.mjs";
 import { calculateUsageCost, listPricingCatalog, PRICING_VERIFIED_AT } from "./usage/pricing.mjs";
-import { reconcileThreadActivity } from "./runtime/thread-activity.mjs";
+import { readProviderRateLimits } from "./usage/provider-limits.mjs";
+import { reconcileThreadActivity, withStableCompletionRevision } from "./runtime/thread-activity.mjs";
+import { createSystemAwakeController } from "./runtime/system-awake.mjs";
+import { ProactiveStewardship } from "./runtime/proactive-stewardship.mjs";
+import { createDefaultWorkflow } from "./workflows/workflow-model.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -64,6 +68,8 @@ let mainWindow;
 let tray;
 let runtime;
 let codexRuntime;
+let codexProvider;
+let claudeProvider;
 let threadNamer;
 let browserWorkspace;
 let appUpdater;
@@ -72,6 +78,8 @@ let githubCli;
 let pixiceBridge;
 let pixiceBoard;
 let pixiceInstruments;
+let proactiveStewardship;
+let systemAwakeController;
 let database;
 let quitting = false;
 let runtimeStatus = { state: "starting" };
@@ -114,13 +122,39 @@ const boardColumnSchema = z.enum(["backlog", "ready", "active", "done"]);
 const boardTaskPayload = idPayload.extend({ taskId: z.string().min(1) });
 const boardTaskTitleSchema = z.string().trim().min(1).max(240);
 const boardTaskDescriptionSchema = z.string().trim().max(10_000);
+const boardTaskKindSchema = z.enum(["task", "milestone", "event"]);
+const boardTaskPrioritySchema = z.enum(["low", "normal", "high", "urgent"]);
+const boardTaskScheduleSchema = z.object({
+  plannedStart: z.string().datetime().nullable().optional(), plannedEnd: z.string().datetime().nullable().optional(),
+  hardDeadline: z.string().datetime().nullable().optional(), allDay: z.boolean().optional(),
+  timezone: z.string().trim().min(1).max(120).optional(),
+  constraintType: z.enum(["flexible", "as-soon-as-possible", "fixed-start", "fixed-window"]).optional(),
+  lockedFields: z.array(z.enum(["plannedStart", "plannedEnd", "hardDeadline"])).max(3).optional(),
+  autoSchedule: z.boolean().optional(), explanation: z.string().max(2_000).optional()
+}).strict();
+const boardTaskDependencySchema = z.object({
+  dependsOnTaskId: z.string().min(1), type: z.literal("finish-to-start").default("finish-to-start"),
+  lagMinutes: z.number().int().min(0).max(525_600).default(0)
+}).strict();
 const permissionModeSchema = z.enum(["read-only", "workspace-write", "auto-approve", "full-access"]);
 const agentBehaviorsSchema = z.object(Object.fromEntries(AGENT_BEHAVIOR_IDS.map((id) => [id, z.boolean().optional()]))).strict();
+const threadCompletionsSeenSchema = z.record(z.union([
+  z.string().min(1).max(256),
+  z.number().finite().nonnegative()
+])).refine((value) => Object.keys(value).length <= 10_000, "Too many completion read records");
 const appDefaultsSchema = z.object({
   defaultModel: z.string().trim().min(1).max(128).optional(),
   defaultEffort: z.string().trim().regex(/^[a-z][a-z0-9_-]*$/i).max(32).optional(),
   defaultPermissionMode: permissionModeSchema.optional(),
+  defaultFastMode: z.boolean().optional(),
+  threadNamingModel: z.string().trim().regex(/^(?:auto|off|(?:codex|claude):[a-z0-9._-]+)$/i).max(160).optional(),
+  workflowGenerationModel: z.string().trim().regex(/^(?:auto|(?:codex|claude):[a-z0-9._-]+)$/i).max(160).optional(),
+  attentionNotifications: z.boolean().optional(),
+  completionNotifications: z.boolean().optional(),
+  notificationSound: z.boolean().optional(),
+  keepSystemAwake: z.boolean().optional(),
   checkCodexUpdates: z.boolean().optional(),
+  threadCompletionsSeen: threadCompletionsSeenSchema.optional(),
   agentBehaviors: agentBehaviorsSchema.optional()
 }).strict().refine((value) => Object.keys(value).length > 0, "At least one default must be provided");
 const imageDataUrlSchema = z.string().max(30 * 1024 * 1024).refine(
@@ -358,11 +392,13 @@ function withPersistedThreadName(thread) {
     name = runtimeName;
   }
   const namedThread = name && name !== thread.name ? { ...thread, name } : thread;
-  const timings = new Map(database.listThreadTurnTimings(thread.id).map((timing) => [timing.turnId, timing]));
-  if (!namedThread.turns?.length || !timings.size) return namedThread;
+  const turnTimings = database.listThreadTurnTimings(thread.id);
+  const stableThread = withStableCompletionRevision(namedThread, turnTimings);
+  const timings = new Map(turnTimings.map((timing) => [timing.turnId, timing]));
+  if (!stableThread.turns?.length || !timings.size) return stableThread;
   return {
-    ...namedThread,
-    turns: namedThread.turns.map((turn) => {
+    ...stableThread,
+    turns: stableThread.turns.map((turn) => {
       const timing = timings.get(turn.id);
       if (!timing) return turn;
       const startedAt = turn.startedAt ?? turn.createdAt ?? timing.startedAt;
@@ -433,6 +469,14 @@ async function listProjectThreads(project, parameters = {}) {
   return {
     data: [...byId.values()].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))),
     nextCursor: null
+  };
+}
+
+function summarizeThreadPlan(plan) {
+  if (!Array.isArray(plan) || plan.length === 0) return null;
+  return {
+    completed: plan.filter((step) => step?.status === "completed").length,
+    total: plan.length
   };
 }
 
@@ -806,7 +850,7 @@ async function resolveInstrumentCapability({ projectId, capability, arguments: r
       description: boardTaskDescriptionSchema.optional()
     }).strict().refine((entry) => entry.title !== undefined || entry.description !== undefined, "A board task change is required").parse(rawArguments);
     const task = database.getBoardTask(value.taskId);
-    if (!task || task.projectId !== projectId) throw new Error("Kanban task not found in this project");
+    if (!task || task.projectId !== projectId) throw new Error("Work item not found in this project");
     const changes = [value.title !== undefined ? `rename it to “${value.title}”` : null, value.description !== undefined ? "replace its description" : null].filter(Boolean).join(" and ");
     return { arguments: value, targetVersion: instrumentTargetVersion(task), summary: `Update “${task.title}”: ${changes}.` };
   }
@@ -817,7 +861,7 @@ async function resolveInstrumentCapability({ projectId, capability, arguments: r
       beforeTaskId: z.string().min(1).optional()
     }).strict().parse(rawArguments);
     const task = database.getBoardTask(value.taskId);
-    if (!task || task.projectId !== projectId) throw new Error("Kanban task not found in this project");
+    if (!task || task.projectId !== projectId) throw new Error("Work item not found in this project");
     let before = null;
     if (value.beforeTaskId) {
       before = database.getBoardTask(value.beforeTaskId);
@@ -856,14 +900,14 @@ async function invokeInstrumentCapability({ projectId, threadId, capability, arg
   }
   if (capability === "board.update") {
     const task = database.getBoardTask(value.taskId);
-    if (!task || task.projectId !== projectId) throw new Error("Kanban task not found in this project");
+    if (!task || task.projectId !== projectId) throw new Error("Work item not found in this project");
     const updated = database.updateBoardTask(value.taskId, value);
     send("BoardUpdated", { action: "updated", projectId, task: updated });
     return updated;
   }
   if (capability === "board.move") {
     const task = database.getBoardTask(value.taskId);
-    if (!task || task.projectId !== projectId) throw new Error("Kanban task not found in this project");
+    if (!task || task.projectId !== projectId) throw new Error("Work item not found in this project");
     if (value.beforeTaskId) {
       const before = database.getBoardTask(value.beforeTaskId);
       if (!before || before.projectId !== projectId || before.column !== value.column) throw new Error("The target task is invalid for this move");
@@ -952,6 +996,7 @@ function registerIpc() {
     const value = appDefaultsSchema.parse(payload);
     const settings = database.saveAppSettings(value);
     if (value.checkCodexUpdates !== undefined) codexUpdater.setEnabled(value.checkCodexUpdates);
+    if (value.keepSystemAwake !== undefined) systemAwakeController.setEnabled(value.keepSystemAwake);
     if (value.agentBehaviors !== undefined) runtime.refreshDeveloperInstructions();
     return settings;
   });
@@ -965,6 +1010,7 @@ function registerIpc() {
       pricing: listPricingCatalog()
     };
   });
+  ipcMain.handle("usage:limits", () => readProviderRateLimits({ codexProvider, claudeProvider }));
   ipcMain.handle("providers:login", (_event, payload) => {
     const { provider } = z.object({ provider: z.string().trim().min(1).max(64) }).parse(payload);
     return startProviderLogin(provider);
@@ -1070,11 +1116,37 @@ function registerIpc() {
     getProject(projectId);
     return { data: database.listBoardTasks(projectId) };
   });
+  ipcMain.handle("board:read", (_event, payload) => {
+    const value = boardTaskPayload.parse(payload);
+    getProject(value.projectId);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== value.projectId) throw new Error("Work item not found in this project");
+    return { task, activity: database.listBoardTaskActivity(task.id) };
+  });
+  ipcMain.handle("proactivity:list", (_event, payload) => {
+    const value = idPayload.extend({ threadId: z.string().min(1).optional() }).parse(payload);
+    getProject(value.projectId);
+    return { data: proactiveStewardship.list(value.projectId, value.threadId ?? null) };
+  });
+  ipcMain.handle("proactivity:resolve", async (_event, payload) => {
+    const value = idPayload.extend({
+      suggestionId: z.string().min(1),
+      decision: z.enum(["accept", "dismiss"])
+    }).parse(payload);
+    getProject(value.projectId);
+    return proactiveStewardship.resolve(value);
+  });
   ipcMain.handle("board:create", (_event, payload) => {
     const value = idPayload.extend({
       title: boardTaskTitleSchema,
       description: boardTaskDescriptionSchema.default(""),
-      column: boardColumnSchema.default("backlog")
+      column: boardColumnSchema.default("backlog"),
+      kind: boardTaskKindSchema.default("task"),
+      priority: boardTaskPrioritySchema.default("normal"),
+      estimateMinutes: z.number().int().min(0).max(525_600).nullable().optional(),
+      owner: z.string().trim().max(160).default(""),
+      schedule: boardTaskScheduleSchema.optional(),
+      dependencies: z.array(boardTaskDependencySchema).max(100).default([])
     }).parse(payload);
     getProject(value.projectId);
     const task = database.createBoardTask({ id: randomUUID(), ...value });
@@ -1084,14 +1156,77 @@ function registerIpc() {
   ipcMain.handle("board:update", (_event, payload) => {
     const value = boardTaskPayload.extend({
       title: boardTaskTitleSchema.optional(),
-      description: boardTaskDescriptionSchema.optional()
-    }).refine((candidate) => candidate.title !== undefined || candidate.description !== undefined, "A board task change is required").parse(payload);
+      description: boardTaskDescriptionSchema.optional(),
+      kind: boardTaskKindSchema.optional(),
+      priority: boardTaskPrioritySchema.optional(),
+      estimateMinutes: z.number().int().min(0).max(525_600).nullable().optional(),
+      owner: z.string().trim().max(160).optional(),
+      schedule: boardTaskScheduleSchema.nullable().optional(),
+      dependencies: z.array(boardTaskDependencySchema).max(100).optional(),
+      expectedRevision: z.number().int().positive().optional(),
+      expectedScheduleRevision: z.number().int().nonnegative().optional()
+    }).refine((candidate) => Object.keys(candidate).some((key) => !["projectId", "taskId", "expectedRevision", "expectedScheduleRevision"].includes(key)), "A board task change is required").parse(payload);
     getProject(value.projectId);
     const task = database.getBoardTask(value.taskId);
-    if (!task || task.projectId !== value.projectId) throw new Error("Kanban task not found in this project");
+    if (!task || task.projectId !== value.projectId) throw new Error("Work item not found in this project");
     const updated = database.updateBoardTask(value.taskId, value);
     send("BoardUpdated", { action: "updated", projectId: value.projectId, task: updated });
     return updated;
+  });
+  ipcMain.handle("board:activity", (_event, payload) => {
+    const value = boardTaskPayload.parse(payload);
+    getProject(value.projectId);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== value.projectId) throw new Error("Work item not found in this project");
+    return { data: database.listBoardTaskActivity(value.taskId) };
+  });
+  ipcMain.handle("board:proposal:read", (_event, payload) => {
+    const value = idPayload.extend({ proposalId: z.string().min(1) }).parse(payload);
+    getProject(value.projectId);
+    const proposal = database.getBoardPlanProposal(value.proposalId);
+    if (!proposal || proposal.projectId !== value.projectId) throw new Error("Plan proposal not found in this project");
+    return proposal;
+  });
+  ipcMain.handle("board:proposal:apply", (_event, payload) => {
+    const value = idPayload.extend({ proposalId: z.string().min(1) }).parse(payload);
+    getProject(value.projectId);
+    const proposal = database.getBoardPlanProposal(value.proposalId);
+    if (!proposal || proposal.projectId !== value.projectId) throw new Error("Plan proposal not found in this project");
+    const result = database.applyBoardPlanProposal(value.proposalId, { actorKind: "user" });
+    send("BoardUpdated", { action: "plan-applied", projectId: value.projectId, proposalId: value.proposalId });
+    return result;
+  });
+  ipcMain.handle("board:proposal:discard", (_event, payload) => {
+    const value = idPayload.extend({ proposalId: z.string().min(1) }).parse(payload);
+    getProject(value.projectId);
+    const proposal = database.getBoardPlanProposal(value.proposalId);
+    if (!proposal || proposal.projectId !== value.projectId) throw new Error("Plan proposal not found in this project");
+    return database.setBoardPlanProposalStatus(value.proposalId, "discarded");
+  });
+  ipcMain.handle("board:binding:save", async (_event, payload) => {
+    const value = boardTaskPayload.extend({
+      bindingId: z.string().min(1).optional(), workflowId: z.string().min(1), triggerNodeId: z.string().min(1).nullable().optional(),
+      triggerType: z.enum(["planned-start-reached", "deadline-approaching", "entered-ready", "dependencies-completed", "became-overdue", "schedule-changed"]),
+      enabled: z.boolean().default(false), missedTriggerPolicy: z.enum(["skip", "ask", "notify", "run"]).default("ask")
+    }).parse(payload);
+    getProject(value.projectId);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== value.projectId) throw new Error("Work item not found in this project");
+    const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
+    if (!integration) throw pixiceBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+    integration.workflows.read(value.projectId, value.workflowId);
+    const binding = database.upsertBoardTaskWorkflowBinding({ id: value.bindingId ?? randomUUID(), ...value });
+    send("BoardUpdated", { action: "binding-updated", projectId: value.projectId, task: database.getBoardTask(value.taskId) });
+    return binding;
+  });
+  ipcMain.handle("board:binding:delete", (_event, payload) => {
+    const value = boardTaskPayload.extend({ bindingId: z.string().min(1) }).parse(payload);
+    getProject(value.projectId);
+    const task = database.getBoardTask(value.taskId);
+    if (!task || task.projectId !== value.projectId) throw new Error("Work item not found in this project");
+    const binding = database.deleteBoardTaskWorkflowBinding(value.taskId, value.bindingId);
+    send("BoardUpdated", { action: "binding-deleted", projectId: value.projectId, task: database.getBoardTask(value.taskId) });
+    return binding;
   });
   ipcMain.handle("board:move", (_event, payload) => {
     const value = boardTaskPayload.extend({
@@ -1100,7 +1235,7 @@ function registerIpc() {
     }).parse(payload);
     getProject(value.projectId);
     const task = database.getBoardTask(value.taskId);
-    if (!task || task.projectId !== value.projectId) throw new Error("Kanban task not found in this project");
+    if (!task || task.projectId !== value.projectId) throw new Error("Work item not found in this project");
     if (value.beforeTaskId) {
       const beforeTask = database.getBoardTask(value.beforeTaskId);
       if (!beforeTask || beforeTask.projectId !== value.projectId) throw new Error("The target task is outside this project");
@@ -1114,7 +1249,7 @@ function registerIpc() {
     const value = boardTaskPayload.parse(payload);
     getProject(value.projectId);
     const task = database.getBoardTask(value.taskId);
-    if (!task || task.projectId !== value.projectId) throw new Error("Kanban task not found in this project");
+    if (!task || task.projectId !== value.projectId) throw new Error("Work item not found in this project");
     const deleted = database.deleteBoardTask(value.taskId);
     send("BoardUpdated", { action: "deleted", projectId: value.projectId, task: deleted });
     return deleted;
@@ -1123,7 +1258,7 @@ function registerIpc() {
     const value = boardTaskPayload.extend({ threadId: z.string().min(1) }).parse(payload);
     const project = getProject(value.projectId);
     const task = database.getBoardTask(value.taskId);
-    if (!task || task.projectId !== value.projectId) throw new Error("Kanban task not found in this project");
+    if (!task || task.projectId !== value.projectId) throw new Error("Work item not found in this project");
     const knownProjectId = threadProjects.get(value.threadId);
     const binding = database.getThreadProviderBinding(value.threadId);
     if ((knownProjectId && knownProjectId !== value.projectId) || (binding?.cwd && !isWithinProject(project, binding.cwd))) {
@@ -1250,7 +1385,11 @@ function registerIpc() {
     const response = await listProjectThreads(project);
     const data = (response.data ?? []).map((thread) => {
       rememberThread(project, thread);
-      return reconcileThreadActivity(withPersistedThreadName(thread), activeTurns.get(thread.id));
+      const plan = threadPlans.get(thread.id) ?? database.getThreadPlan(thread.id);
+      return {
+        ...reconcileThreadActivity(withPersistedThreadName(thread), activeTurns.get(thread.id)),
+        planProgress: summarizeThreadPlan(plan)
+      };
     });
     return { ...response, data };
   });
@@ -1365,6 +1504,17 @@ function registerIpc() {
     if (pendingTaskNames.delete(value.threadId)) {
       const attachmentCount = value.images.length + value.attachments.length;
       scheduleThreadName({ project, threadId: value.threadId, source: value.text || `${attachmentCount} attached file${attachmentCount === 1 ? "" : "s"}`, kind: "task" });
+    }
+    try {
+      proactiveStewardship.startTurn({
+        projectId: value.projectId,
+        threadId: value.threadId,
+        turnId: response.turn.id,
+        prompt: value.text,
+        threadName: database.getThreadName(value.threadId) ?? ""
+      });
+    } catch (error) {
+      codexRuntime.emit("diagnostic", `Task stewardship failed: ${error.message}`);
     }
     return response;
   });
@@ -1533,6 +1683,8 @@ app.whenReady().then(async () => {
   if (recordedDataVersion && recordedDataVersion !== app.getVersion()) recoverUpdateDataFromBackup({ userDataPath });
   await ensureVersionUpdateDataBackup({ userDataPath, currentVersion: app.getVersion() });
   database = new PixiceDatabase(userDataPath);
+  systemAwakeController = createSystemAwakeController(powerSaveBlocker);
+  systemAwakeController.setEnabled(database.getAppSettings().keepSystemAwake === true);
   codexUpdater = new CodexUpdater({
     bundledResourcesPath,
     userDataPath,
@@ -1555,7 +1707,7 @@ app.whenReady().then(async () => {
     developerInstructionsPath
   });
   runtime = new ProviderRegistry({ database });
-  runtime.register(new CodexProvider(codexRuntime));
+  codexProvider = runtime.register(new CodexProvider(codexRuntime));
   const boardThreadContext = (threadId) => {
     const binding = database.getThreadProviderBinding(threadId);
     const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
@@ -1564,7 +1716,13 @@ app.whenReady().then(async () => {
   pixiceBoard = new PixiceBoard({
     database,
     threadContext: boardThreadContext,
-    onChange: (payload) => send("BoardUpdated", payload)
+    resolveWorkflow: async (projectId, workflowId) => {
+      const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
+      if (!integration) throw pixiceBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+      return integration.workflows.read(projectId, workflowId).workflow;
+    },
+    onChange: (payload) => send("BoardUpdated", payload),
+    onOpen: (payload) => send("TaskPreviewOpenRequested", payload)
   });
   pixiceInstruments = new InstrumentService({
     userDataPath: app.getPath("userData"),
@@ -1616,7 +1774,52 @@ app.whenReady().then(async () => {
       projectId: threadProjects.get(payload.threadId)
     })
   });
-  runtime.register(new ClaudeProvider({
+  proactiveStewardship = new ProactiveStewardship({
+    database,
+    onBoardChange: (payload) => send("BoardUpdated", payload),
+    onSuggestionChange: (payload) => send("ProactivityUpdated", payload),
+    createWorkflowDraft: async ({ projectId, threadId, suggestedName, count, steps }) => {
+      const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
+      if (!integration) throw pixiceBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+      const description = `Suggested by Pixice after this sequence completed ${count} times. Review the draft before running it.`;
+      const prompt = [
+        "Pixice detected this repeated project routine. Review the current project state, then perform these steps in order:",
+        ...steps.map((step, index) => `${index + 1}. ${step.label}`),
+        "Stop on failure and report the failed step. Do not add automatic triggers until the user explicitly enables them."
+      ].join("\n");
+      const draft = createDefaultWorkflow({
+        projectId,
+        name: suggestedName,
+        description,
+        enabled: false,
+        createdByThreadId: threadId
+      });
+      const graph = {
+        ...draft.graph,
+        nodes: draft.graph.nodes.map((node) => node.type === "pixiceAgent"
+          ? { ...node, name: "Run detected routine", description: "Execute the reviewed steps from the repeated task pattern.", config: { ...node.config, prompt } }
+          : node)
+      };
+      const workflow = integration.workflows.create({
+        projectId,
+        name: suggestedName,
+        description,
+        enabled: false,
+        graph,
+        createdByThreadId: threadId
+      });
+      send("WorkflowOpenRequested", {
+        projectId,
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        threadId,
+        workspaceId: threadId,
+        reason: "edit"
+      });
+      return { id: workflow.id, name: workflow.name, enabled: workflow.enabled };
+    }
+  });
+  claudeProvider = runtime.register(new ClaudeProvider({
     database,
     clientVersion: app.getVersion(),
     developerInstructions: currentAgentInstructions,
@@ -1627,7 +1830,10 @@ app.whenReady().then(async () => {
       ?? (app.isPackaged ? resolvePackagedClaudeCodeExecutable({ resourcesPath: process.resourcesPath }) : undefined),
     requireExternalExecutable: app.isPackaged
   }));
-  threadNamer = new ThreadNamer(codexRuntime, { targetRuntime: runtime });
+  threadNamer = new ThreadNamer(runtime, {
+    models: () => listModels(),
+    selection: () => database.getAppSettings().threadNamingModel ?? "auto"
+  });
   threadNamer.on("failure", (error) => codexRuntime.emit("diagnostic", `Automatic thread naming failed: ${error.message}`));
   threadNamer.on("named", ({ threadId, name }) => {
     database.saveThreadName(threadId, name);
@@ -1658,7 +1864,9 @@ app.whenReady().then(async () => {
     const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
     event.payload = { ...event.payload, receivedAt };
     const { method, threadId, turn } = event.payload ?? {};
+    if (method === "account/rateLimits/updated") send("CodexLimitsUpdated", { receivedAt });
     if (threadNamer.rememberInternalThread(event.payload?.thread) || threadNamer.isInternalThread(threadId)) return;
+    proactiveStewardship.observeActivity(event.payload ?? {});
     const collabItem = event.payload?.item;
     if ((collabItem?.type === "collabAgentToolCall" || collabItem?.type === "collabToolCall") && collabItem.receiverThreadIds?.length) {
       const parentUsage = turnUsageMetadata.get(collabItem.senderThreadId ?? threadId) ?? {};
@@ -1691,6 +1899,34 @@ app.whenReady().then(async () => {
         : existingTiming?.completedAt ?? null;
       database.saveThreadTurnTiming({ threadId, turnId: turn.id, startedAt, completedAt });
       event.payload.turn = { ...turn, startedAt, ...(completedAt ? { completedAt } : {}) };
+    }
+    if (method === "turn/started" && threadId) {
+      const projectId = threadProjects.get(threadId) ?? boardThreadContext(threadId)?.projectId;
+      if (projectId) {
+        try {
+          proactiveStewardship.startTurn({ projectId, threadId, turnId: turn?.id ?? null, threadName: database.getThreadName(threadId) ?? "" });
+        } catch (error) {
+          codexRuntime.emit("diagnostic", `Task stewardship failed: ${error.message}`);
+        }
+      }
+    }
+    if (method === "turn/completed" && threadId && event.payload.turn && !database.getThreadLink(threadId)) {
+      const projectId = threadProjects.get(threadId) ?? boardThreadContext(threadId)?.projectId;
+      if (projectId) {
+        try {
+          proactiveStewardship.completeTurn({ projectId, threadId, turn: event.payload.turn });
+        } catch (error) {
+          codexRuntime.emit("diagnostic", `Work pattern detection failed: ${error.message}`);
+        }
+      }
+      const settings = database.getAppSettings();
+      if (settings.completionNotifications === true && Notification.isSupported()) {
+        new Notification({
+          title: "Task finished",
+          body: database.getThreadName(threadId) ?? "A Pixice task finished its active turn.",
+          silent: settings.notificationSound === false
+        }).show();
+      }
     }
     if (method === "turn/plan/updated" && threadId) {
       const plan = event.payload.plan ?? [];
@@ -1769,8 +2005,13 @@ app.whenReady().then(async () => {
     } else if (request.method === PIXICE_QUESTION_METHOD) kind = "pixice-question";
     pendingRequests.set(requestKey(request.id), { request, kind, generation: runtimeGeneration });
     send("AttentionRequired", { ...displayRequest, projectId: threadProjects.get(request.params?.threadId) });
-    if (Notification.isSupported()) {
-      new Notification({ title: kind.startsWith("pixice-question") ? "A task has a question" : "Pixice needs your attention", body: displayRequest.method }).show();
+    const settings = database.getAppSettings();
+    if (settings.attentionNotifications !== false && Notification.isSupported()) {
+      new Notification({
+        title: kind.startsWith("pixice-question") ? "A task has a question" : "Pixice needs your attention",
+        body: displayRequest.method,
+        silent: settings.notificationSound === false
+      }).show();
     }
   });
   runtime.on("recoverable-error", (error) => send("RuntimeError", error));
@@ -1823,6 +2064,7 @@ app.on("before-quit", async (event) => {
   quitting = true;
   appUpdater?.stop();
   codexUpdater?.stop();
+  systemAwakeController?.stop();
   browserWorkspace?.destroy();
   await runtime?.stop();
   pixiceInstruments?.close();

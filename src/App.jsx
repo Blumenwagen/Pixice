@@ -1,7 +1,7 @@
 import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useContext } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import {
-  ArrowClockwise, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
+  ArrowClockwise, Bell, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
   Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
   Globe, Info, LockKey, MagnifyingGlass, PaperPlaneTilt, Pause,
   PencilSimple, PlugsConnected, Plus, ShieldCheck, Sparkle, SpinnerGap, Stack,
@@ -10,6 +10,7 @@ import {
 import { APP_ICONS } from "./components/icons/app-iconography.jsx";
 import pixiceIcon from "./assets/pixice-icon.png";
 import { ReasoningOrb } from "./components/ReasoningOrb.jsx";
+import { ThinkingState } from "./components/ThinkingState.jsx";
 import { StreamingText } from "./components/StreamingText.jsx";
 import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
 import { InlineVisualization, parseVisualizationSpec } from "./components/InlineVisualization.jsx";
@@ -19,11 +20,14 @@ import { DitherAreaChart, DitherBarChart } from "./components/dither-kit/DitherC
 import { UsageHeatMap } from "./components/dither-kit/UsageHeatMap.jsx";
 import { NumberTicker } from "./components/NumberTicker.jsx";
 import { ImageGeneration } from "./components/ImageGeneration.jsx";
+import { InspectablePicture } from "./components/PictureInspector.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
 import { KanbanBoard } from "./components/KanbanBoard.jsx";
 import { ProjectCreationDialog, ProjectSwitcher } from "./components/sidebar/ProjectSwitcher.jsx";
 import { ThreadCleanupPopover } from "./components/sidebar/ThreadCleanupPopover.jsx";
 import { normalizeThreadCleanupAgeDays, THREAD_CLEANUP_MAX_DAYS, THREAD_CLEANUP_MIN_DAYS } from "./components/sidebar/thread-cleanup.js";
+import { resolveThreadNamingModel, threadNamingModels, THREAD_NAMING_AUTO, THREAD_NAMING_OFF } from "../electron/runtime/thread-naming-models.mjs";
+import { resolveWorkflowGenerationModel, workflowGenerationModels, WORKFLOW_GENERATION_AUTO } from "../electron/runtime/workflow-generation-models.mjs";
 import {
   applyRuntimePayload,
   descendantsOf,
@@ -64,7 +68,14 @@ const COMPOSER_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "
 const DEFAULT_PREFERENCES = {
   confirmBeforeDelete: true,
   preserveDrafts: true,
+  sendShortcut: "enter",
+  spellCheckComposer: true,
+  autoFocusComposer: true,
+  showSlashCommands: true,
+  showMessageTimestamps: true,
+  completedWorkDetails: "auto",
   showTaskProgress: true,
+  expandTaskProgress: true,
   autoOpenTaskMap: false,
   bringApprovalsForward: false,
   density: "compact",
@@ -72,7 +83,22 @@ const DEFAULT_PREFERENCES = {
   legacySidebar: false,
   showThirdProjectRow: false,
   showShortcutHints: true,
+  conversationWidth: "balanced",
+  conversationTextSize: "standard",
+  accentColor: "coral",
+  reduceTransparency: false,
   reduceMotion: false
+};
+
+const APPEARANCE_PREFERENCE_OPTIONS = {
+  conversationWidth: new Set(["focused", "balanced", "wide"]),
+  conversationTextSize: new Set(["small", "standard", "large"]),
+  accentColor: new Set(["coral", "rose", "amber", "green", "teal", "blue", "violet", "graphite"])
+};
+
+const BEHAVIOR_PREFERENCE_OPTIONS = {
+  sendShortcut: new Set(["enter", "mod-enter"]),
+  completedWorkDetails: new Set(["auto", "expanded", "collapsed"])
 };
 
 const MOTION_EASE = [0.22, 1, 0.36, 1];
@@ -149,6 +175,9 @@ function loadPreferences() {
     const saved = JSON.parse(localStorage.getItem("pixice.preferences") ?? "{}");
     const preferences = { ...DEFAULT_PREFERENCES, ...saved };
     preferences.threadCleanupAgeDays = normalizeThreadCleanupAgeDays(preferences.threadCleanupAgeDays);
+    Object.entries({ ...APPEARANCE_PREFERENCE_OPTIONS, ...BEHAVIOR_PREFERENCE_OPTIONS }).forEach(([key, options]) => {
+      if (!options.has(preferences[key])) preferences[key] = DEFAULT_PREFERENCES[key];
+    });
     return preferences;
   } catch {
     return DEFAULT_PREFERENCES;
@@ -311,8 +340,8 @@ function threadCompletionRevision(candidate) {
 function loadSeenThreadCompletions() {
   let value = {};
   try {
-    const stored = JSON.parse(localStorage.getItem(THREAD_COMPLETIONS_SEEN_KEY) ?? "{}");
-    if (stored && typeof stored === "object" && !Array.isArray(stored)) value = stored;
+    const stored = persistedSeenThreadCompletions(JSON.parse(localStorage.getItem(THREAD_COMPLETIONS_SEEN_KEY) ?? "{}"));
+    if (stored) value = stored;
   } catch {
     // Replace malformed legacy state with a clean migration baseline below.
   }
@@ -328,10 +357,24 @@ function loadSeenThreadCompletions() {
 }
 
 function threadCompletionWasSeen(candidate, completionRevision, seenThreadCompletions) {
-  if (seenThreadCompletions?.[candidate?.id] === completionRevision) return true;
-  if (candidate?.completionRevision !== undefined && candidate?.completionRevision !== null) return false;
+  const seenRevision = seenThreadCompletions?.[candidate?.id];
+  if (seenRevision === completionRevision) return true;
+  if (seenRevision !== undefined && seenRevision !== null && String(candidate?.updatedAt ?? "") === String(seenRevision)) return true;
+  if (seenRevision !== undefined && seenRevision !== null) return false;
   const baselineAt = seenThreadCompletions?.[THREAD_COMPLETIONS_SEEN_BASELINE_KEY];
   return Number.isFinite(baselineAt) && timestampMillis(candidate?.updatedAt) <= baselineAt;
+}
+
+function persistedSeenThreadCompletions(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value).filter(([key, revision]) => (
+    key.length <= 256
+    && (
+      (typeof revision === "string" && revision.length > 0 && revision.length <= 256)
+      || (Number.isFinite(revision) && revision >= 0)
+    )
+  ));
+  return entries.length ? Object.fromEntries(entries.slice(0, 10_000)) : null;
 }
 
 function loadThreadMessageRecency() {
@@ -424,6 +467,23 @@ function relativeTime(timestamp) {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
+function summarizePlanProgress(plan) {
+  if (!Array.isArray(plan) || plan.length === 0) return null;
+  return {
+    completed: plan.filter((step) => step?.status === "completed").length,
+    total: plan.length
+  };
+}
+
+function normalizePlanProgress(value) {
+  const total = Number.isFinite(value?.total) ? Math.max(0, Math.floor(value.total)) : 0;
+  if (!total) return null;
+  const completed = Number.isFinite(value?.completed)
+    ? Math.min(total, Math.max(0, Math.floor(value.completed)))
+    : 0;
+  return { completed, total };
+}
+
 function SidebarNavItem({ icon: Icon, label, active, badge, badgeVisible = true, badgeTone = "neutral", shortcut, tone = "", disabled, onClick }) {
   const systemReducedMotion = useReducedMotion();
   return (
@@ -472,6 +532,12 @@ function SidebarThreadList({ tasks, seenThreadCompletions, selectedThreadId, act
         const finished = Boolean(completionRevision)
           && !active
           && !threadCompletionWasSeen(task, completionRevision, seenThreadCompletions);
+        const savedPlanProgress = normalizePlanProgress(task.planProgress);
+        const finishedPlanComplete = Boolean(savedPlanProgress)
+          && savedPlanProgress.completed === savedPlanProgress.total
+          && Boolean(completionRevision);
+        const planProgress = finishedPlanComplete ? null : savedPlanProgress;
+        const planProgressPercent = planProgress ? (planProgress.completed / planProgress.total) * 100 : 0;
         return (
           <motion.div
             className={`task-row ${active ? "active" : ""} ${running ? "running" : ""} ${finished ? "finished" : ""}`}
@@ -499,9 +565,54 @@ function SidebarThreadList({ tasks, seenThreadCompletions, selectedThreadId, act
             <IconButton className="task-delete" label={`Delete ${title}`} onClick={() => onDeleteThread(task.id)}>
               <Trash size={13} />
             </IconButton>
+            {planProgress && (
+              <div
+                className="task-row-progress"
+                role="progressbar"
+                aria-label={`${planProgress.completed} of ${planProgress.total} complete`}
+                aria-valuemin="0"
+                aria-valuemax={planProgress.total}
+                aria-valuenow={planProgress.completed}
+              >
+                <span style={{ width: `${planProgressPercent}%` }} />
+              </div>
+            )}
           </motion.div>
         );
       })}
+    </div>
+  );
+}
+
+function SidebarThreadScroll({ children, heading, className = "" }) {
+  const scrollRef = useRef(null);
+  const [hasMoreBelow, setHasMoreBelow] = useState(false);
+  const updateOverflow = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    setHasMoreBelow(element.scrollHeight - element.scrollTop - element.clientHeight > 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return undefined;
+
+    updateOverflow();
+    if (typeof ResizeObserver === "undefined") return undefined;
+
+    const observer = new ResizeObserver(updateOverflow);
+    observer.observe(element);
+    if (element.firstElementChild) observer.observe(element.firstElementChild);
+    return () => observer.disconnect();
+  }, [children, updateOverflow]);
+
+  return (
+    <div className={`thread-scroll-region${className ? ` ${className}` : ""}`}>
+      {heading}
+      <div className="thread-list-scroll" ref={scrollRef} onScroll={updateOverflow}>
+        <div className="thread-list-content">{children}</div>
+      </div>
+      <div className="thread-overflow-fade" data-visible={hasMoreBelow} aria-hidden="true" />
     </div>
   );
 }
@@ -690,49 +801,51 @@ export function Sidebar({
         </div>
 
         {legacySidebar ? (
-          <>
-            <div className="rail-divider" />
-            <div className="rail-section-heading">
-              <span className="rail-group-label"><i />Projects</span>
-              <IconButton label="New project" onClick={onOpenProject}><Plus size={15} /></IconButton>
-            </div>
-            <div className="project-list">
-              {projects.length === 0 && <p className="rail-empty">Create a project to begin.</p>}
-              {projects.map((project) => {
-                const selected = project.id === selectedProjectId;
-                return (
-                  <div className={`project-node ${selected ? "selected" : ""}`} key={project.id}>
-                    <button
-                      className="project-row"
-                      onClick={() => onSelectProject(project.id)}
-                      aria-current={selected ? "true" : undefined}
-                      aria-expanded={selected}
-                      title={project.displayName}
-                    >
-                      <span className="rail-icon project-icon"><Folder size={16} /></span>
-                      <span className="project-copy"><strong>{project.displayName}</strong></span>
-                    </button>
-                    {selected && (
-                      <SidebarThreadList
-                        tasks={tasks}
-                        seenThreadCompletions={seenThreadCompletions}
-                        selectedThreadId={selectedThreadId}
-                        activeView={activeView}
-                        onSelectThread={onSelectThread}
-                        onDeleteThread={onDeleteThread}
-                        ariaLabel={`${project.displayName} tasks`}
-                        emptyMessage="No Codex threads yet"
-                        reduceMotion={reduceMotion}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </>
+          <SidebarThreadScroll className="legacy-thread-scroll">
+            <>
+              <div className="rail-divider" />
+              <div className="rail-section-heading">
+                <span className="rail-group-label"><i />Projects</span>
+                <IconButton label="New project" onClick={onOpenProject}><Plus size={15} /></IconButton>
+              </div>
+              <div className="project-list">
+                {projects.length === 0 && <p className="rail-empty">Create a project to begin.</p>}
+                {projects.map((project) => {
+                  const selected = project.id === selectedProjectId;
+                  return (
+                    <div className={`project-node ${selected ? "selected" : ""}`} key={project.id}>
+                      <button
+                        className="project-row"
+                        onClick={() => onSelectProject(project.id)}
+                        aria-current={selected ? "true" : undefined}
+                        aria-expanded={selected}
+                        title={project.displayName}
+                      >
+                        <span className="rail-icon project-icon"><Folder size={16} /></span>
+                        <span className="project-copy"><strong>{project.displayName}</strong></span>
+                      </button>
+                      {selected && (
+                        <SidebarThreadList
+                          tasks={tasks}
+                          seenThreadCompletions={seenThreadCompletions}
+                          selectedThreadId={selectedThreadId}
+                          activeView={activeView}
+                          onSelectThread={onSelectThread}
+                          onDeleteThread={onDeleteThread}
+                          ariaLabel={`${project.displayName} tasks`}
+                          emptyMessage="No Codex threads yet"
+                          reduceMotion={reduceMotion}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          </SidebarThreadScroll>
         ) : (
-          <>
-            <div className="rail-section-heading thread-section-heading">
+          <SidebarThreadScroll
+            heading={<div className="rail-section-heading thread-section-heading">
               <span className="rail-group-label"><i />Threads</span>
               <span className="rail-section-rule" aria-hidden="true" />
               <ThreadCleanupPopover
@@ -745,7 +858,8 @@ export function Sidebar({
                 ageDays={threadCleanupAgeDays}
                 reduceMotion={reduceMotion}
               />
-            </div>
+            </div>}
+          >
             <SidebarThreadList
               tasks={tasks}
               seenThreadCompletions={seenThreadCompletions}
@@ -757,7 +871,7 @@ export function Sidebar({
               emptyMessage={selectedProjectId ? "No Codex threads yet" : "Choose a project above"}
               reduceMotion={reduceMotion}
             />
-          </>
+          </SidebarThreadScroll>
         )}
       </nav>
 
@@ -889,7 +1003,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
     }
     const updateBounds = () => {
       const previewHost = viewportRef.current?.closest(".browser-panel");
-      if (previewHost?.dataset.workflowPreviewHost === "true") {
+      if (previewHost?.dataset.workflowPreviewHost === "true" || previewHost?.dataset.previewOverlayHost === "true") {
         void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
         return;
       }
@@ -908,7 +1022,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
     const previewObserver = typeof MutationObserver === "function" && previewHost
       ? new MutationObserver(updateBounds)
       : null;
-    previewObserver?.observe(previewHost, { attributes: true, attributeFilter: ["data-workflow-preview-host"] });
+    previewObserver?.observe(previewHost, { attributes: true, attributeFilter: ["data-workflow-preview-host", "data-preview-overlay-host"] });
     window.addEventListener("resize", updateBounds);
     return () => {
       observer?.disconnect();
@@ -1070,9 +1184,10 @@ function planStepDetail(step, index, workingAgents, running) {
   return step.status === "inProgress" ? "Lead" : "Queued";
 }
 
-function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, running, inspectorOpen, onInspectorToggle }) {
-  const [expanded, setExpanded] = useState(true);
+function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, running, inspectorOpen, onInspectorToggle, defaultExpanded = true }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const systemReducedMotion = useReducedMotion();
+  useEffect(() => setExpanded(defaultExpanded), [defaultExpanded]);
   if (!plan?.length && !fallbackText) return null;
   const complete = plan?.filter((step) => step.status === "completed").length ?? 0;
   const total = plan?.length ?? 0;
@@ -1217,6 +1332,22 @@ function imageGenerationResolution(items, index, item) {
   const tool = precedingImageGenerationTool(items, index);
   const resolution = item.resolution || item.size || item.arguments?.size || item.input?.size || tool?.arguments?.size || tool?.input?.size;
   return resolution ? String(resolution).replace(/\s*[x×]\s*/i, " × ") : "1024 × 1024";
+}
+
+export function generatedImageRevisionPrompt(comment, originalPrompt = null, attached = true) {
+  const changes = String(comment ?? "").trim();
+  const context = originalPrompt ? `\n\nOriginal direction:\n${String(originalPrompt).trim()}` : "";
+  const imageReference = attached ? "the attached image" : "the most recent generated image in this conversation";
+  return `Generate a new version of ${imageReference}. Apply these requested changes:\n\n${changes}${context}\n\nKeep details that were not mentioned unchanged.`;
+}
+
+export function generatedImageAttachment(source) {
+  const match = /^data:(image\/(?:png|jpeg|webp|gif|avif));base64,([a-z\d+/=]+)$/i.exec(String(source ?? ""));
+  if (!match) return [];
+  const padding = match[2].endsWith("==") ? 2 : match[2].endsWith("=") ? 1 : 0;
+  const size = Math.max(0, Math.floor(match[2].length * 3 / 4) - padding);
+  const extension = { "image/jpeg": "jpg" }[match[1].toLowerCase()] ?? match[1].split("/")[1].toLowerCase();
+  return [{ name: `generated-image.${extension}`, type: match[1].toLowerCase(), size, dataUrl: source }];
 }
 
 function MessageReference({ label, target }) {
@@ -1455,7 +1586,7 @@ function sameThreadSummary(left, right) {
     && left.bridge?.effort === right.bridge?.effort;
 }
 
-function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false, timestamp = null }) {
+function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false, timestamp = null, showTimestamp = true }) {
   const [animate] = useState(() => !seenResponseIds.has(responseKey));
   useEffect(() => {
     seenResponseIds.add(responseKey);
@@ -1471,12 +1602,12 @@ function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sen
         ) : <MarkdownMessage text={item.text} />}
         {sentToMain && <div className="bridge-answer-status"><CheckCircle size={11} weight="fill" />Sent answer to main agent</div>}
       </article>
-      {forceFinal && <MessageTimestamp value={timestamp} />}
+      {forceFinal && showTimestamp && <MessageTimestamp value={timestamp} />}
     </div>
   );
 }
 
-function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds, imagePrompt = null, imageResolution = null, promptAnchorId = null, openedByAgent = false, sentToMain = false, timestamp = null }) {
+function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds, imagePrompt = null, imageResolution = null, promptAnchorId = null, openedByAgent = false, sentToMain = false, timestamp = null, showTimestamp = true, onImageRevision = null, imageRevisionDisabled = false }) {
   if (item.type === "userMessage") {
     const text = item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n");
     const images = item.content?.filter((part) => part.type === "image" && part.url) ?? [];
@@ -1484,21 +1615,35 @@ function ConversationItem({ item, forceFinal = false, responseKey, seenResponseI
     return (
       <div className={`user-message-block${openedByAgent ? " bridge-origin" : ""}`}>
         {openedByAgent && <div className="bridge-prompt-status"><GitBranch size={11} />Task opened by another Pixice agent</div>}
-        <div className="message user-message" id={promptAnchorId ?? undefined} data-prompt-id={item.id ?? undefined}>
-          {images.length > 0 && (
-            <div className="user-message-images" aria-label={`${images.length} attached image${images.length === 1 ? "" : "s"}`}>
-              {images.map((image, index) => <img src={image.url} alt={`Attached image ${index + 1}`} key={`${image.url.slice(0, 48)}-${index}`} />)}
-            </div>
-          )}
-          {text && <span>{text}</span>}
-        </div>
-        <MessageTimestamp value={timestamp} align="end" />
+        {images.length > 0 && (
+          <div
+            className="user-message-attachments"
+            aria-label={`${images.length} attached image${images.length === 1 ? "" : "s"}`}
+            {...(!text ? { id: promptAnchorId ?? undefined, "data-prompt-id": item.id ?? undefined } : {})}
+          >
+            {images.map((image, index) => (
+              <InspectablePicture
+                source={image.url}
+                alt={`Attached image ${index + 1}`}
+                buttonClassName="user-message-picture"
+                dataPromptId={!text ? item.id ?? undefined : undefined}
+                key={`${image.url.slice(0, 48)}-${index}`}
+              />
+            ))}
+          </div>
+        )}
+        {text && (
+          <div className="message user-message" id={promptAnchorId ?? undefined} data-prompt-id={item.id ?? undefined}>
+            <span>{text}</span>
+          </div>
+        )}
+        {showTimestamp && <MessageTimestamp value={timestamp} align="end" />}
       </div>
     );
   }
   if (item.type === "agentMessage") {
     if (!item.text) return null;
-    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} sentToMain={sentToMain} timestamp={timestamp} />;
+    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} sentToMain={sentToMain} timestamp={timestamp} showTimestamp={showTimestamp} />;
   }
   if (item.type === "imageGeneration") {
     return (
@@ -1510,6 +1655,8 @@ function ConversationItem({ item, forceFinal = false, responseKey, seenResponseI
         revisedPrompt={item.revisedPrompt}
         status={item.status}
         failure={item.failure}
+        onRequestRevision={onImageRevision}
+        revisionDisabled={imageRevisionDisabled}
       />
     );
   }
@@ -1837,7 +1984,7 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
   );
 }
 
-export function WorkingTrace({ items, running, settled, startedAt = null, completedAt = null }) {
+export function WorkingTrace({ items, running, settled, startedAt = null, completedAt = null, defaultDisclosure = "auto" }) {
   const disclosureId = useId();
   const [manualExpanded, setManualExpanded] = useState(null);
   const wasSettled = useRef(settled);
@@ -1881,7 +2028,8 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
       ? `Ran ${toolCount} action${toolCount === 1 ? "" : "s"}`
       : "Thought through the task";
   const label = settled ? doneLabel : "Work details";
-  const expanded = manualExpanded ?? !settled;
+  const automaticExpanded = defaultDisclosure === "expanded" || (defaultDisclosure === "auto" && !settled);
+  const expanded = manualExpanded ?? automaticExpanded;
 
   useEffect(() => {
     if (!wasSettled.current && settled) setManualExpanded(null);
@@ -1913,7 +2061,7 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
                   exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -5 }}
                   transition={{ duration: systemReducedMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] }}
                 >
-                  <strong>{latestActivity.label}</strong>
+                  <ThinkingState>{latestActivity.label}</ThinkingState>
                   {latestActivity.detail && <span>{latestActivity.detail}</span>}
                 </motion.span>
               </AnimatePresence>
@@ -1928,7 +2076,7 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
             className="trace-toggle"
             aria-expanded={expanded}
             aria-controls={disclosureId}
-            onClick={() => setManualExpanded((current) => !(current ?? !settled))}
+            onClick={() => setManualExpanded((current) => !(current ?? automaticExpanded))}
           >
             <Sparkle className="trace-status-icon" size={15} weight="regular" />
             <span className="trace-toggle-label">{label}</span>
@@ -1956,7 +2104,7 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
   );
 }
 
-const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds }) {
+const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds, showTimestamps = true, completedWorkDetails = "auto", onImageRevision = null, imageRevisionDisabled = false }) {
   const items = turn.items ?? [];
   const threadId = thread.id;
   const running = turnIsRunning(turn.status);
@@ -1979,7 +2127,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     if (!traceItems.length) return;
     const key = traceItems[0].renderId ?? traceItems[0].id ?? `trace-${rendered.length}`;
     workingTraceIndexes.push(rendered.length);
-    rendered.push(<WorkingTrace items={traceItems} running={false} settled={settled} startedAt={startedAt} completedAt={completedAt} key={key} />);
+    rendered.push(<WorkingTrace items={traceItems} running={false} settled={settled} startedAt={startedAt} completedAt={completedAt} defaultDisclosure={completedWorkDetails} key={key} />);
     renderedWorkingTrace = true;
     traceItems = [];
   };
@@ -2010,6 +2158,9 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
         openedByAgent={bridgeTurn && index === firstUserIndex}
         sentToMain={bridgeTurn && isFinal && turn.status === "completed"}
         timestamp={timestamp}
+        showTimestamp={showTimestamps}
+        onImageRevision={onImageRevision}
+        imageRevisionDisabled={imageRevisionDisabled}
         key={item.renderId ?? item.id ?? `${item.type}-${index}`}
       />
     );
@@ -2020,7 +2171,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     rendered[activeTraceIndex] = cloneElement(rendered[activeTraceIndex], { running: true });
   }
   if (running && !renderedWorkingTrace && finalIndex === -1) {
-    rendered.push(<WorkingTrace items={[]} running settled={false} startedAt={startedAt} key={`pending-${turn.renderId ?? turn.id}`} />);
+    rendered.push(<WorkingTrace items={[]} running settled={false} startedAt={startedAt} defaultDisclosure={completedWorkDetails} key={`pending-${turn.renderId ?? turn.id}`} />);
   }
 
   return rendered;
@@ -2029,6 +2180,10 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
   && previous.thread?.id === next.thread?.id
   && previous.thread?.bridge === next.thread?.bridge
   && previous.thread?.bridgeModel === next.thread?.bridgeModel
+  && previous.showTimestamps === next.showTimestamps
+  && previous.completedWorkDetails === next.completedWorkDetails
+  && previous.onImageRevision === next.onImageRevision
+  && previous.imageRevisionDisabled === next.imageRevisionDisabled
   && previous.seenResponseIds === next.seenResponseIds);
 
 function isQuestionRequest(request) {
@@ -2157,7 +2312,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt }) {
+function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -2193,6 +2348,12 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
   useLayoutEffect(() => {
     resizeComposerTextarea(textareaRef.current);
   }, [text]);
+
+  useEffect(() => {
+    if (!autoFocusComposer || disabled || questionRequest) return undefined;
+    const frame = window.requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [autoFocusComposer, disabled, draftKey, questionRequest]);
 
   const addAttachmentFiles = useCallback(async (files) => {
     if (disabled) return;
@@ -2247,7 +2408,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
       window.removeEventListener("drop", onDrop);
     };
   }, [addAttachmentFiles, disabled, questionRequest]);
-  const slashMatch = text.match(/^\/([^\s]*)$/);
+  const slashMatch = showSlashCommands ? text.match(/^\/([^\s]*)$/) : null;
   const slashQuery = slashMatch?.[1].toLowerCase() ?? null;
   const matchingCommands = slashQuery === null ? [] : SLASH_COMMANDS.filter((command) => {
     return command.name.includes(slashQuery) || command.description.toLowerCase().includes(slashQuery);
@@ -2360,6 +2521,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
         aria-controls={commandMenuOpen ? commandListId : undefined}
         aria-activedescendant={commandMenuOpen && activeCommand ? `${commandListId}-${activeCommand.name}` : undefined}
         placeholder={disabled ? "Connect a provider and select a project to begin" : running ? "Steer the active task" : "Describe the task you want to work on"}
+        spellCheck={spellCheckComposer}
         value={text}
         disabled={disabled}
         onPaste={(event) => {
@@ -2392,7 +2554,9 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
             setCommandsDismissed(true);
             return;
           }
-          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+          const sendWithEnter = sendShortcut === "enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey;
+          const sendWithModifier = sendShortcut === "mod-enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey;
+          if (event.key === "Enter" && (sendWithEnter || sendWithModifier) && !event.nativeEvent.isComposing) {
             event.preventDefault();
             submit();
           }
@@ -2492,6 +2656,44 @@ function EmptyConversation({ project, runtime, onOpenProject }) {
   );
 }
 
+function ProactiveSuggestionCard({ suggestion, onResolve }) {
+  const [busy, setBusy] = useState(false);
+  const isWorkflow = suggestion.type === "workflow-pattern";
+  const isTaskStatus = suggestion.type === "task-status";
+  const steps = isWorkflow ? suggestion.payload?.steps ?? [] : [];
+  const acceptLabel = isWorkflow ? "Create draft" : isTaskStatus ? "Mark done" : null;
+  const dismissLabel = isTaskStatus ? "Keep active" : isWorkflow ? "Not now" : "Dismiss";
+  const Icon = isWorkflow ? TreeStructure : isTaskStatus ? CheckCircle : Sparkle;
+  const resolve = async (decision) => {
+    setBusy(true);
+    try {
+      await onResolve(suggestion, decision);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="proactive-suggestion" aria-label={suggestion.title} data-kind={suggestion.type}>
+      <span className="proactive-suggestion-icon"><Icon size={15} weight={isWorkflow ? "regular" : "fill"} /></span>
+      <div className="proactive-suggestion-copy">
+        <span className="proactive-suggestion-eyebrow">Pixice noticed</span>
+        <strong>{suggestion.title}</strong>
+        <p>{suggestion.message}</p>
+        {steps.length > 0 && (
+          <ol>
+            {steps.slice(0, 4).map((step) => <li key={step.action}>{step.label}</li>)}
+            {steps.length > 4 && <li>And {steps.length - 4} more step{steps.length - 4 === 1 ? "" : "s"}</li>}
+          </ol>
+        )}
+      </div>
+      <div className="proactive-suggestion-actions">
+        <button type="button" onClick={() => void resolve("dismiss")} disabled={busy}>{dismissLabel}</button>
+        {acceptLabel && <button type="button" className="primary" onClick={() => void resolve("accept")} disabled={busy}>{busy ? "Working…" : acceptLabel}</button>}
+      </div>
+    </section>
+  );
+}
+
 function ConversationWorkspace({
   project,
   thread,
@@ -2505,6 +2707,9 @@ function ConversationWorkspace({
   onInspectorToggle,
   onOpenProject,
   showTaskProgress,
+  expandTaskProgress,
+  showMessageTimestamps,
+  completedWorkDetails,
   previewOpen,
   onPreviewToggle,
   previewWorkspaceId,
@@ -2522,6 +2727,8 @@ function ConversationWorkspace({
   onPreviewInstrumentInvoke,
   onPreviewInstrumentPin,
   onOpenWorkspaceReference,
+  proactiveSuggestions,
+  onProactiveSuggestionResolve,
   composerProps
 }) {
   const [previewPresent, setPreviewPresent] = useState(previewOpen);
@@ -2694,8 +2901,25 @@ function ConversationWorkspace({
             <div className="conversation-column">
               <div className="message-stream">
                 {items.length === 0 && <p className="quiet-empty">This task has no messages yet.</p>}
-                {(thread.turns ?? []).map((turn, turnIndex) => <TurnConversation thread={thread} turn={turn} turnIndex={turnIndex} seenResponseIds={seenResponseIds} key={turn.renderId ?? turn.id} />)}
+                {(thread.turns ?? []).map((turn, turnIndex) => (
+                  <TurnConversation
+                    thread={thread}
+                    turn={turn}
+                    turnIndex={turnIndex}
+                    seenResponseIds={seenResponseIds}
+                    showTimestamps={showMessageTimestamps}
+                    completedWorkDetails={completedWorkDetails}
+                    onImageRevision={composerProps.onImageRevision}
+                    imageRevisionDisabled={composerProps.busy}
+                    key={turn.renderId ?? turn.id}
+                  />
+                ))}
               </div>
+              {proactiveSuggestions.length > 0 && (
+                <div className="proactive-suggestions" aria-label="Pixice suggestions">
+                  {proactiveSuggestions.map((suggestion) => <ProactiveSuggestionCard suggestion={suggestion} onResolve={onProactiveSuggestionResolve} key={suggestion.id} />)}
+                </div>
+              )}
               {showTaskProgress && (
                 <PlanPanel
                   plan={plan}
@@ -2706,6 +2930,7 @@ function ConversationWorkspace({
                   running={composerProps.running}
                   inspectorOpen={inspectorOpen}
                   onInspectorToggle={onInspectorToggle}
+                  defaultExpanded={expandTaskProgress}
                 />
               )}
             </div>
@@ -2817,7 +3042,7 @@ function ApprovalCard({ request, onResolve }) {
         <div className="approval-actions">
           <button className="approve" onClick={() => onResolve(request, "accept")}><Check size={15} />Approve</button>
           <button onClick={() => onResolve(request, "decline")}><X size={15} />Decline</button>
-          <button onClick={() => onResolve(request, "acceptForSession")}>Allow for session</button>
+          {params.allowForSession !== false && <button onClick={() => onResolve(request, "acceptForSession")}>Allow for session</button>}
         </div>
       ) : isElicitation ? (
         <div className="approval-questions elicitation-form">
@@ -3061,6 +3286,41 @@ function SettingsToggle({ label, checked, onChange }) {
       <input type="checkbox" aria-label={label} checked={checked} onChange={(event) => onChange(event.target.checked)} />
       <span aria-hidden="true"><i /></span>
     </label>
+  );
+}
+
+const ACCENT_COLOR_OPTIONS = [
+  { value: "coral", label: "Coral" },
+  { value: "rose", label: "Rose" },
+  { value: "amber", label: "Amber" },
+  { value: "green", label: "Green" },
+  { value: "teal", label: "Teal" },
+  { value: "blue", label: "Blue" },
+  { value: "violet", label: "Violet" },
+  { value: "graphite", label: "Graphite" }
+];
+
+function AccentColorPicker({ value, onChange }) {
+  return (
+    <div className="accent-color-picker" role="radiogroup" aria-label="Accent color">
+      {ACCENT_COLOR_OPTIONS.map((option) => {
+        const selected = value === option.value;
+        return (
+          <button
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            aria-label={`${option.label} accent`}
+            title={option.label}
+            data-color={option.value}
+            onClick={() => onChange(option.value)}
+            key={option.value}
+          >
+            {selected && <Check size={11} weight="bold" />}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -3355,15 +3615,116 @@ function usageModelLabel(model) {
     .replace(/\b(opus|sonnet|haiku|fable|mythos)\b/g, (value) => value[0].toUpperCase() + value.slice(1));
 }
 
+function usagePlanLabel(planType, provider) {
+  if (!planType) return provider === "claude" ? "Claude account" : "ChatGPT account";
+  const labels = { prolite: "Pro Lite", plus: "Plus", pro: "Pro", max: "Max", team: "Team", enterprise: "Enterprise" };
+  return labels[planType.toLowerCase()] ?? planType.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function usageLimitName(limit) {
+  if (limit.name) return limit.name;
+  if (limit.id === "codex") return "Codex";
+  return limit.id.replace(/^codex[_-]?/i, "Codex ").replace(/[_-]+/g, " ").trim();
+}
+
+function usageLimitWindowLabel(minutes) {
+  if (minutes === 10_080) return "Weekly window";
+  if (minutes === 1_440) return "Daily window";
+  if (minutes === 60) return "Hourly window";
+  if (minutes && minutes % 60 === 0) return `${minutes / 60}-hour window`;
+  return minutes ? `${minutes}-minute window` : "Usage window";
+}
+
+function usageLimitCountdown(resetsAt, now) {
+  const remainingSeconds = Math.max(0, Math.floor(Number(resetsAt) - now / 1000));
+  const days = Math.floor(remainingSeconds / 86_400);
+  const hours = Math.floor((remainingSeconds % 86_400) / 3_600);
+  const minutes = Math.max(1, Math.floor((remainingSeconds % 3_600) / 60));
+  if (days) return `${days}d ${hours}h`;
+  if (hours) return `${hours}h ${minutes}m`;
+  return remainingSeconds ? `${minutes}m` : "now";
+}
+
+function UsageLimitResetTime({ resetsAt }) {
+  const now = useLiveNow(Boolean(resetsAt));
+  if (!resetsAt) return <span>Reset time unavailable</span>;
+  const date = new Date(Number(resetsAt) * 1000);
+  return <time dateTime={date.toISOString()} title={date.toLocaleString()}>Resets in {usageLimitCountdown(resetsAt, now)}</time>;
+}
+
+function ProviderUsageLimits({ data, loading, error, onRefresh }) {
+  const providers = data?.providers ?? [];
+  const [selectedProvider, setSelectedProvider] = useState(providers[0]?.provider ?? "codex");
+  useEffect(() => {
+    if (providers.length && !providers.some((provider) => provider.provider === selectedProvider)) {
+      setSelectedProvider(providers[0].provider);
+    }
+  }, [providers, selectedProvider]);
+
+  if (loading && !data) {
+    return <section className="usage-limits-card"><LoadingSkeleton label="Checking provider limits" rows={2} /></section>;
+  }
+
+  const active = providers.find((provider) => provider.provider === selectedProvider) ?? providers[0] ?? null;
+  const unavailable = Boolean(error) || !active || active.status === "unavailable";
+  const limits = active?.limits ?? [];
+  const availableResetCredits = active?.resetCredits?.availableCount ?? 0;
+  const providerLabel = active?.label ?? "Provider";
+  return (
+    <section className="usage-limits-card" aria-label={`${providerLabel} usage limits`}>
+      <header>
+        <span><h2>Usage limits</h2><p>Live allowance from signed-in provider accounts</p></span>
+        <span className="usage-limits-actions">
+          {providers.length > 1 && <SlidingSegmented value={active?.provider} options={providers.map((provider) => ({ value: provider.provider, label: provider.label }))} onChange={setSelectedProvider} label="Usage provider" className="usage-provider-switch" />}
+          {active && <strong><i />{usagePlanLabel(active.planType, active.provider)}</strong>}
+          <button className="settings-action" onClick={onRefresh} disabled={loading} aria-label="Refresh usage limits">
+            <ArrowClockwise size={14} className={loading ? "spin-icon" : ""} />Refresh
+          </button>
+        </span>
+      </header>
+
+      {unavailable ? (
+        <div className="usage-limits-unavailable"><Warning size={16} /><span><strong>Live limits are unavailable</strong><small>{error || active?.message || data?.message || "Sign in through Providers to see your remaining allowance."}</small></span></div>
+      ) : limits.length ? (
+        <div className="usage-limit-grid">
+          {limits.map((limit) => (
+            <article key={limit.id} className={limit.rateLimitReachedType || limit.spendControlReached ? "reached" : ""}>
+              <header><span><strong>{usageLimitName(limit)}</strong><small>{limit.windows.length === 1 ? usageLimitWindowLabel(limit.windows[0].windowDurationMins) : `${limit.windows.length} limit windows`}</small></span>{(limit.rateLimitReachedType || limit.spendControlReached) && <em>Limit reached</em>}</header>
+              <div className="usage-limit-windows">
+                {limit.windows.map((window, index) => {
+                  const remaining = window.remainingPercent == null ? null : Math.round(window.remainingPercent);
+                  const used = window.usedPercent == null ? null : Math.round(window.usedPercent);
+                  const windowLabel = window.label || usageLimitWindowLabel(window.windowDurationMins);
+                  return (
+                    <div className="usage-limit-window" data-state={remaining !== null && remaining <= 10 ? "critical" : remaining !== null && remaining <= 25 ? "low" : "normal"} key={`${limit.id}:${index}`}>
+                      <div><span>{windowLabel}</span><strong>{remaining === null ? "Not reported" : `${remaining}% left`}</strong></div>
+                      <div className="usage-limit-track" role="progressbar" aria-label={`${usageLimitName(limit)} ${windowLabel} remaining`} aria-valuemin={0} aria-valuemax={100} {...(remaining === null ? {} : { "aria-valuenow": remaining })}><i style={{ width: `${remaining ?? 0}%` }} /></div>
+                      <footer><span>{window.detail ? `${formatUsd(window.detail.used)} of ${formatUsd(window.detail.limit)} used` : used === null ? "Usage not reported" : `${used}% used`}</span>{window.resetsAt ? <UsageLimitResetTime resetsAt={window.resetsAt} /> : <span>Reset time unavailable</span>}</footer>
+                    </div>
+                  );
+                })}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="usage-limits-unavailable"><Info size={16} /><span><strong>No limit buckets reported</strong><small>The connected {providerLabel} account did not return an allowance.</small></span></div>
+      )}
+
+      {!unavailable && availableResetCredits > 0 && <footer className="usage-reset-credit"><Sparkle size={14} /><span><strong>{availableResetCredits} free full reset{availableResetCredits === 1 ? "" : "s"} available</strong><small>Reported by {providerLabel} for this account.</small></span></footer>}
+    </section>
+  );
+}
+
 function chartDateLabel(value) {
   if (!value) return "";
   return new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRefresh }) {
+function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsError, rangeDays, onRangeChange, onRefresh }) {
   const [rateProvider, setRateProvider] = useState("codex");
-  if (loading && !summary) return <LoadingSkeleton label="Calculating usage" rows={5} />;
-  if (error && !summary) return <div className="usage-error"><Warning size={18} /><span><strong>Usage could not be loaded</strong><small>{error}</small></span><button className="settings-action" onClick={onRefresh}>Try again</button></div>;
+  if (loading && !summary) return <div className="usage-pane"><ProviderUsageLimits data={limits} loading={limitsLoading} error={limitsError} onRefresh={onRefresh} /><LoadingSkeleton label="Calculating usage" rows={5} /></div>;
+  if (error && !summary) return <div className="usage-pane"><ProviderUsageLimits data={limits} loading={limitsLoading} error={limitsError} onRefresh={onRefresh} /><div className="usage-error"><Warning size={18} /><span><strong>Usage history could not be loaded</strong><small>{error}</small></span><button className="settings-action" onClick={onRefresh}>Try again</button></div></div>;
 
   const data = summary ?? {
     stats: {}, selected: {}, daily: [], heatmapDaily: [], models: [], pricing: [], pricingVerifiedAt: null, recordingStartedAt: null
@@ -3414,6 +3775,8 @@ function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRe
           <article><span>Tokens tracked</span><strong><UsageTokenTicker value={stats.allTimeTokens} /></strong><small>{data.recordingStartedAt ? `since ${new Date(data.recordingStartedAt).toLocaleDateString()}` : "starts with the next turn"}</small></article>
         </div>
       </section>
+
+      <ProviderUsageLimits data={limits} loading={limitsLoading} error={limitsError} onRefresh={onRefresh} />
 
       <section className="usage-heatmap-card">
         <header>
@@ -3497,10 +3860,12 @@ function UsageSettings({ summary, loading, error, rangeDays, onRangeChange, onRe
 }
 
 const SETTINGS_PAGES = [
-  { id: "general", label: "General", description: "Task defaults and safety", icon: Gear, keywords: "permissions model reasoning delete drafts cleanup age days custom" },
+  { id: "general", label: "General", description: "Task defaults and safety", icon: Gear, keywords: "permissions model reasoning thread names workflow generation title luna terra claude automatic delete drafts cleanup age days custom awake sleep system" },
+  { id: "conversation", label: "Conversation", description: "Writing, reading, and live output", icon: PencilSimple, keywords: "composer enter send shortcut drafts autofocus spellcheck slash commands timestamps work details expanded collapsed" },
   { id: "agent-behavior", label: "Agent Behavior", description: "Guidance loaded for every agent", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration tools instruments interactive" },
   { id: "orchestration", label: "Orchestration", description: "How delegated work surfaces", icon: TreeStructure, keywords: "agents progress task map approvals" },
-  { id: "appearance", label: "Appearance", description: "Density, projects, hints, and motion", icon: Eye, keywords: "compact comfortable projects sidebar recent third row nine legacy old nested shortcuts animation" },
+  { id: "notifications", label: "Notifications", description: "Attention, completion, and sound", icon: Bell, keywords: "desktop native system alerts approvals questions finished complete sound silent" },
+  { id: "appearance", label: "Appearance", description: "Layout, text, color, and motion", icon: Eye, keywords: "compact comfortable conversation width focused balanced wide text size small large accent coral rose amber green teal blue violet graphite transparency projects sidebar recent third row nine legacy old nested shortcuts animation" },
   { id: "updates", label: "Updates", description: "Version and GitHub releases", icon: ArrowClockwise, keywords: "version release download install github update" },
   { id: "github", label: "GitHub", description: "Account and agent access", icon: GitBranch, keywords: "github gh cli login sign in account pull request issues push fetch workflow" },
   { id: "providers", label: "Providers", description: "Accounts, models, and sessions", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions" },
@@ -3543,8 +3908,22 @@ function SettingsWorkspace({
   onEffortChange,
   permissionMode,
   onPermissionModeChange,
+  defaultFastMode,
+  onDefaultFastModeChange,
+  threadNamingModel,
+  onThreadNamingModelChange,
+  workflowGenerationModel,
+  onWorkflowGenerationModelChange,
   preferences,
   onPreferenceChange,
+  attentionNotifications,
+  onAttentionNotificationsChange,
+  completionNotifications,
+  onCompletionNotificationsChange,
+  notificationSound,
+  onNotificationSoundChange,
+  keepSystemAwake,
+  onKeepSystemAwakeChange,
   agentBehaviorCatalog,
   agentBehaviors,
   onAgentBehaviorChange,
@@ -3563,6 +3942,9 @@ function SettingsWorkspace({
   usageSummary,
   usageLoading,
   usageError,
+  usageLimits,
+  usageLimitsLoading,
+  usageLimitsError,
   usageRangeDays,
   onUsageRangeChange,
   onRefreshUsage,
@@ -3585,6 +3967,11 @@ function SettingsWorkspace({
   const previousPageIndexRef = useRef(selectedPageIndex);
   const pageDirection = selectedPageIndex >= previousPageIndexRef.current ? 1 : -1;
   const selectedModelInfo = models.find((model) => model.model === selectedModel);
+  const namingModels = threadNamingModels(models);
+  const automaticNamingModel = resolveThreadNamingModel(THREAD_NAMING_AUTO, models);
+  const generationModels = workflowGenerationModels(models);
+  const automaticGenerationModel = resolveWorkflowGenerationModel(WORKFLOW_GENERATION_AUTO, models);
+  const generationModelValue = (model) => String(model.id ?? "").includes(":") ? model.id : `${model.provider}:${model.model}`;
   const effortOptions = selectedModelInfo?.supportedReasoningEfforts?.map((option) => option.reasoningEffort ?? option.effort ?? option) ?? ["medium", "high"];
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   const capabilityCount = extensions.apps.length + extensions.mcp.length + extensions.skills.reduce((count, entry) => count + (entry.skills?.length ?? 0), 0);
@@ -3615,13 +4002,46 @@ function SettingsWorkspace({
               {effortOptions.map((value) => <option value={value} key={value}>{String(value).replace(/^./, (letter) => letter.toUpperCase())}</option>)}
             </select>
           </SettingsRow>
+          <SettingsRow title="Fast mode" description="Start new tasks on the provider's faster service tier when the selected model supports it.">
+            <SettingsToggle label="Use Fast mode for new tasks" checked={defaultFastMode} onChange={onDefaultFastModeChange} />
+          </SettingsRow>
+          <SettingsRow title="Thread names" description="Generate concise names in a separate read-only turn. Automatic prefers Luna, then Haiku.">
+            <select className="settings-select" aria-label="Thread name model" value={threadNamingModel} onChange={(event) => onThreadNamingModelChange(event.target.value)}>
+              <option value={THREAD_NAMING_AUTO}>Automatic{automaticNamingModel ? ` (${automaticNamingModel.displayName})` : " (no model available)"}</option>
+              {namingModels.map((model) => {
+                const value = `${model.provider}:${model.model}`;
+                return <option value={value} key={value}>{model.displayName ?? model.model}</option>;
+              })}
+              {threadNamingModel !== THREAD_NAMING_AUTO && threadNamingModel !== THREAD_NAMING_OFF && !namingModels.some((model) => `${model.provider}:${model.model}` === threadNamingModel) && (
+                <option value={threadNamingModel}>Selected model (unavailable)</option>
+              )}
+              <option value={THREAD_NAMING_OFF}>Off</option>
+            </select>
+          </SettingsRow>
+          <SettingsRow title="Workflow generation model" description="Used by the hidden read-only agent that builds a canvas from its description. Automatic prefers Terra and falls back to Claude.">
+            <select className="settings-select" aria-label="Workflow generation model" value={workflowGenerationModel} onChange={(event) => onWorkflowGenerationModelChange(event.target.value)}>
+              <option value={WORKFLOW_GENERATION_AUTO}>Automatic{automaticGenerationModel ? ` (${automaticGenerationModel.displayName})` : " (no model available)"}</option>
+              {["codex", "claude"].map((provider) => {
+                const providerModels = generationModels.filter((model) => model.provider === provider);
+                if (!providerModels.length) return null;
+                return (
+                  <optgroup label={provider === "codex" ? "Codex" : "Claude"} key={provider}>
+                    {providerModels.map((model) => <option value={generationModelValue(model)} key={generationModelValue(model)}>{model.displayName ?? model.model}</option>)}
+                  </optgroup>
+                );
+              })}
+              {workflowGenerationModel !== WORKFLOW_GENERATION_AUTO && !generationModels.some((model) => generationModelValue(model) === workflowGenerationModel) && (
+                <option value={workflowGenerationModel}>Selected model (unavailable)</option>
+              )}
+            </select>
+          </SettingsRow>
         </SettingsGroup>
         <SettingsGroup title="Safety and continuity">
+          <SettingsRow title="Keep System awake" description="Prevent idle sleep while Pixice is running. The display may still turn off.">
+            <SettingsToggle label="Keep System awake" checked={keepSystemAwake} onChange={onKeepSystemAwakeChange} />
+          </SettingsRow>
           <SettingsRow title="Confirm before deleting tasks" description="Ask before removing a conversation from the task list.">
             <SettingsToggle label="Confirm before deleting tasks" checked={preferences.confirmBeforeDelete} onChange={(value) => onPreferenceChange("confirmBeforeDelete", value)} />
-          </SettingsRow>
-          <SettingsRow title="Keep message drafts" description="Restore unsent text when you move between tasks.">
-            <SettingsToggle label="Keep message drafts" checked={preferences.preserveDrafts} onChange={(value) => onPreferenceChange("preserveDrafts", value)} />
           </SettingsRow>
           <SettingsRow title="Thread cleanup age" description="Suggest inactive chats after this many days without use.">
             <div className="settings-inline-controls">
@@ -3654,6 +4074,43 @@ function SettingsWorkspace({
         </SettingsGroup>
       </>
     );
+  } else if (page === "conversation") {
+    pageContent = (
+      <>
+        <SettingsGroup title="Composer" description="Choose how Pixice behaves while you write and send prompts.">
+          <SettingsRow title="Send shortcut" description="Choose whether Enter sends immediately or inserts a new line.">
+            <select className="settings-select" aria-label="Send shortcut" value={preferences.sendShortcut} onChange={(event) => onPreferenceChange("sendShortcut", event.target.value)}>
+              <option value="enter">Enter sends</option>
+              <option value="mod-enter">⌘/Ctrl + Enter sends</option>
+            </select>
+          </SettingsRow>
+          <SettingsRow title="Keep message drafts" description="Restore unsent text when you move between tasks.">
+            <SettingsToggle label="Keep message drafts" checked={preferences.preserveDrafts} onChange={(value) => onPreferenceChange("preserveDrafts", value)} />
+          </SettingsRow>
+          <SettingsRow title="Focus the composer" description="Put the cursor in the prompt field when you open or switch tasks.">
+            <SettingsToggle label="Focus the composer automatically" checked={preferences.autoFocusComposer} onChange={(value) => onPreferenceChange("autoFocusComposer", value)} />
+          </SettingsRow>
+          <SettingsRow title="Check spelling" description="Use the operating system's spelling suggestions in prompts.">
+            <SettingsToggle label="Check spelling in prompts" checked={preferences.spellCheckComposer} onChange={(value) => onPreferenceChange("spellCheckComposer", value)} />
+          </SettingsRow>
+          <SettingsRow title="Slash command suggestions" description="Open Codex's command menu when a prompt begins with a slash.">
+            <SettingsToggle label="Show slash command suggestions" checked={preferences.showSlashCommands} onChange={(value) => onPreferenceChange("showSlashCommands", value)} />
+          </SettingsRow>
+        </SettingsGroup>
+        <SettingsGroup title="Reading" description="Control the detail Pixice keeps visible around the answer.">
+          <SettingsRow title="Message timestamps" description="Show the send time below user prompts and final answers.">
+            <SettingsToggle label="Show message timestamps" checked={preferences.showMessageTimestamps} onChange={(value) => onPreferenceChange("showMessageTimestamps", value)} />
+          </SettingsRow>
+          <SettingsRow title="Completed work details" description="Choose the initial disclosure state for commands, file edits, and tool activity.">
+            <select className="settings-select" aria-label="Completed work details" value={preferences.completedWorkDetails} onChange={(event) => onPreferenceChange("completedWorkDetails", event.target.value)}>
+              <option value="auto">Auto</option>
+              <option value="expanded">Expanded</option>
+              <option value="collapsed">Collapsed</option>
+            </select>
+          </SettingsRow>
+        </SettingsGroup>
+      </>
+    );
   } else if (page === "agent-behavior") {
     const coreBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category !== "pixice-native");
     const pixiceNativeBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category === "pixice-native");
@@ -3681,6 +4138,9 @@ function SettingsWorkspace({
         <SettingsRow title="Show task progress" description="Keep live plans, completion, agents, and touched files in the conversation.">
           <SettingsToggle label="Show task progress" checked={preferences.showTaskProgress} onChange={(value) => onPreferenceChange("showTaskProgress", value)} />
         </SettingsRow>
+        <SettingsRow title="Expand task progress by default" description="Open the plan steps when a task progress card first appears.">
+          <SettingsToggle label="Expand task progress by default" checked={preferences.expandTaskProgress} onChange={(value) => onPreferenceChange("expandTaskProgress", value)} />
+        </SettingsRow>
         <SettingsRow title="Open task map when agents join" description="Reveal the inspector when a task delegates work to another agent.">
           <SettingsToggle label="Open task map when agents join" checked={preferences.autoOpenTaskMap} onChange={(value) => onPreferenceChange("autoOpenTaskMap", value)} />
         </SettingsRow>
@@ -3689,28 +4149,68 @@ function SettingsWorkspace({
         </SettingsRow>
       </SettingsGroup>
     );
-  } else if (page === "appearance") {
+  } else if (page === "notifications") {
     pageContent = (
-      <SettingsGroup title="Interface" description="Tune the shell without changing Pixice's native character.">
-        <SettingsRow title="Interface density" description="Choose tighter or roomier navigation and setting rows.">
-          <select className="settings-select" aria-label="Interface density" value={preferences.density} onChange={(event) => onPreferenceChange("density", event.target.value)}>
-            <option value="compact">Compact</option>
-            <option value="comfortable">Comfortable</option>
-          </select>
+      <SettingsGroup title="Desktop notifications" description="These alerts are sent by the Pixice desktop process and work while the window is in the background.">
+        <SettingsRow title="Questions and approvals" description="Notify when an agent needs a decision before it can continue.">
+          <SettingsToggle label="Notify for questions and approvals" checked={attentionNotifications} onChange={onAttentionNotificationsChange} />
         </SettingsRow>
-        <SettingsRow title="Show shortcut hints" description="Display available keyboard shortcuts beside navigation actions.">
-          <SettingsToggle label="Show shortcut hints" checked={preferences.showShortcutHints} onChange={(value) => onPreferenceChange("showShortcutHints", value)} />
+        <SettingsRow title="Task completion" description="Notify when a lead task finishes its active turn.">
+          <SettingsToggle label="Notify when tasks finish" checked={completionNotifications} onChange={onCompletionNotificationsChange} />
         </SettingsRow>
-        <SettingsRow title="Show third project row" description="Show up to nine recent projects in the sidebar instead of six.">
-          <SettingsToggle label="Show third project row" checked={preferences.showThirdProjectRow} onChange={(value) => onPreferenceChange("showThirdProjectRow", value)} />
-        </SettingsRow>
-        <SettingsRow title="Legacy sidebar" description="Restore the original project list with threads nested under the active project.">
-          <SettingsToggle label="Legacy sidebar" checked={preferences.legacySidebar} onChange={(value) => onPreferenceChange("legacySidebar", value)} />
-        </SettingsRow>
-        <SettingsRow title="Reduce motion" description="Minimize panel, progress, and loading animations.">
-          <SettingsToggle label="Reduce motion" checked={preferences.reduceMotion} onChange={(value) => onPreferenceChange("reduceMotion", value)} />
+        <SettingsRow title="Notification sound" description="Allow task notifications to play the operating system's alert sound.">
+          <SettingsToggle label="Play notification sounds" checked={notificationSound} onChange={onNotificationSoundChange} />
         </SettingsRow>
       </SettingsGroup>
+    );
+  } else if (page === "appearance") {
+    pageContent = (
+      <>
+        <SettingsGroup title="Conversation" description="Adjust the reading surface without changing the rest of the shell.">
+          <SettingsRow title="Conversation width" description="Choose how much horizontal room messages and the composer use.">
+            <select className="settings-select" aria-label="Conversation width" value={preferences.conversationWidth} onChange={(event) => onPreferenceChange("conversationWidth", event.target.value)}>
+              <option value="focused">Focused</option>
+              <option value="balanced">Balanced</option>
+              <option value="wide">Wide</option>
+            </select>
+          </SettingsRow>
+          <SettingsRow title="Conversation text size" description="Change message and composer text while leaving application chrome compact.">
+            <select className="settings-select" aria-label="Conversation text size" value={preferences.conversationTextSize} onChange={(event) => onPreferenceChange("conversationTextSize", event.target.value)}>
+              <option value="small">Small</option>
+              <option value="standard">Standard</option>
+              <option value="large">Large</option>
+            </select>
+          </SettingsRow>
+        </SettingsGroup>
+        <SettingsGroup title="Shell" description="Tune Pixice's color and material while keeping its restrained desktop character.">
+          <SettingsRow title="Accent color" description="Used for focus, active controls, and live task state.">
+            <AccentColorPicker value={preferences.accentColor} onChange={(value) => onPreferenceChange("accentColor", value)} />
+          </SettingsRow>
+          <SettingsRow title="Interface density" description="Choose tighter or roomier navigation and setting rows.">
+            <select className="settings-select" aria-label="Interface density" value={preferences.density} onChange={(event) => onPreferenceChange("density", event.target.value)}>
+              <option value="compact">Compact</option>
+              <option value="comfortable">Comfortable</option>
+            </select>
+          </SettingsRow>
+          <SettingsRow title="Reduce transparency" description="Use an opaque charcoal window material for stronger separation.">
+            <SettingsToggle label="Reduce transparency" checked={preferences.reduceTransparency} onChange={(value) => onPreferenceChange("reduceTransparency", value)} />
+          </SettingsRow>
+          <SettingsRow title="Reduce motion" description="Minimize panel, progress, and loading animations.">
+            <SettingsToggle label="Reduce motion" checked={preferences.reduceMotion} onChange={(value) => onPreferenceChange("reduceMotion", value)} />
+          </SettingsRow>
+        </SettingsGroup>
+        <SettingsGroup title="Navigation">
+          <SettingsRow title="Show shortcut hints" description="Display available keyboard shortcuts beside navigation actions.">
+            <SettingsToggle label="Show shortcut hints" checked={preferences.showShortcutHints} onChange={(value) => onPreferenceChange("showShortcutHints", value)} />
+          </SettingsRow>
+          <SettingsRow title="Show third project row" description="Show up to nine recent projects in the sidebar instead of six.">
+            <SettingsToggle label="Show third project row" checked={preferences.showThirdProjectRow} onChange={(value) => onPreferenceChange("showThirdProjectRow", value)} />
+          </SettingsRow>
+          <SettingsRow title="Legacy sidebar" description="Restore the original project list with threads nested under the active project.">
+            <SettingsToggle label="Legacy sidebar" checked={preferences.legacySidebar} onChange={(value) => onPreferenceChange("legacySidebar", value)} />
+          </SettingsRow>
+        </SettingsGroup>
+      </>
     );
   } else if (page === "updates") {
     const updateBusy = ["checking", "downloading", "protecting-data"].includes(updateStatus.state);
@@ -3780,7 +4280,7 @@ function SettingsWorkspace({
   } else if (page === "github") {
     pageContent = <GitHubSettings status={githubStatus} loading={githubLoading} progress={githubProgress} onRefresh={onRefreshGitHub} onLogin={onGitHubLogin} onLogout={onGitHubLogout} />;
   } else if (page === "usage") {
-    pageContent = <UsageSettings summary={usageSummary} loading={usageLoading} error={usageError} rangeDays={usageRangeDays} onRangeChange={onUsageRangeChange} onRefresh={onRefreshUsage} />;
+    pageContent = <UsageSettings summary={usageSummary} loading={usageLoading} error={usageError} limits={usageLimits} limitsLoading={usageLimitsLoading} limitsError={usageLimitsError} rangeDays={usageRangeDays} onRangeChange={onUsageRangeChange} onRefresh={onRefreshUsage} />;
   } else if (page === "capabilities") {
     pageContent = <CapabilitiesSettings extensions={extensions} loading={extensionsLoading} onRefresh={onRefreshCapabilities} />;
   } else {
@@ -3794,7 +4294,7 @@ function SettingsWorkspace({
 
   return (
     <main className="main-canvas workspace settings-workspace">
-      <div className="settings-content-scroll" ref={settingsScrollRef}>
+      <div className={`settings-content-scroll${page === "usage" ? " usage-scrollbar-hidden" : ""}`} ref={settingsScrollRef}>
         <motion.div
           className={`settings-content${page === "usage" ? " usage-settings-content" : ""}`}
           key={page}
@@ -3822,7 +4322,7 @@ function AttentionWorkspace({ attention, onResolve }) {
   );
 }
 
-function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate, onUpdate, onMove, onDelete, onOpenThread, onStartTask }) {
+function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate, onUpdate, onMove, onDelete, onOpenThread, onOpenTask, onScheduleMove, onStartTask }) {
   return (
     <main className="main-canvas workspace">
       <AppToolbar icon={BoardIcon} title="Board" subtitle={project?.displayName} />
@@ -3837,6 +4337,8 @@ function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate,
         onMove={onMove}
         onDelete={onDelete}
         onOpenThread={onOpenThread}
+        onOpenTask={onOpenTask}
+        onScheduleMove={onScheduleMove}
         onStartTask={onStartTask}
       />
     </main>
@@ -3849,6 +4351,7 @@ export function App() {
   const [projects, setProjects] = useState([]);
   const [projectActivity, setProjectActivity] = useState({});
   const [seenThreadCompletions, setSeenThreadCompletions] = useState(loadSeenThreadCompletions);
+  const [seenThreadCompletionsHydrated, setSeenThreadCompletionsHydrated] = useState(false);
   const [threadMessageRecency, setThreadMessageRecency] = useState(loadThreadMessageRecency);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectCreateBusy, setProjectCreateBusy] = useState(false);
@@ -3862,9 +4365,11 @@ export function App() {
   const threadsLoadRequestRef = useRef(0);
   const reviewLoadRequestRef = useRef(0);
   const boardLoadRequestRef = useRef(0);
+  const proactivityLoadRequestRef = useRef(0);
   const toolsLoadRequestRef = useRef(0);
   const extensionsLoadRequestRef = useRef(0);
   const usageLoadRequestRef = useRef(0);
+  const usageLimitsLoadRequestRef = useRef(0);
   const submittingRef = useRef(false);
   const seenResponseIdsRef = useRef(new Set());
   const pendingRuntimeDeltasRef = useRef([]);
@@ -3875,6 +4380,7 @@ export function App() {
   const [attention, setAttention] = useState([]);
   const [review, setReview] = useState({ repository: null, diff: "" });
   const [boardTasks, setBoardTasks] = useState([]);
+  const [proactiveSuggestions, setProactiveSuggestions] = useState([]);
   const [projectTools, setProjectTools] = useState([]);
   const [selectedProjectToolId, setSelectedProjectToolId] = useState(null);
   const [extensions, setExtensions] = useState(EMPTY_EXTENSIONS);
@@ -3883,8 +4389,11 @@ export function App() {
   const [githubProgress, setGithubProgress] = useState(null);
   const [usageSummary, setUsageSummary] = useState(null);
   const [usageError, setUsageError] = useState(null);
+  const [usageLimits, setUsageLimits] = useState(null);
+  const [usageLimitsError, setUsageLimitsError] = useState(null);
   const [usageRangeDays, setUsageRangeDays] = useState(30);
   const [usageRefreshKey, setUsageRefreshKey] = useState(0);
+  const [usageLimitsRefreshKey, setUsageLimitsRefreshKey] = useState(0);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
@@ -3892,6 +4401,9 @@ export function App() {
   const [defaultsHydrated, setDefaultsHydrated] = useState(false);
   const [effort, setEffort] = useState("");
   const [fastMode, setFastMode] = useState(false);
+  const [defaultFastMode, setDefaultFastMode] = useState(false);
+  const [threadNamingModel, setThreadNamingModel] = useState(THREAD_NAMING_AUTO);
+  const [workflowGenerationModel, setWorkflowGenerationModel] = useState(WORKFLOW_GENERATION_AUTO);
   const [defaultPermissionMode, setDefaultPermissionMode] = useState(() => {
     const saved = localStorage.getItem("pixice.permissionMode");
     return PERMISSION_OPTIONS.some((option) => option.value === saved) ? saved : "workspace-write";
@@ -3910,6 +4422,10 @@ export function App() {
   const [updateStatus, setUpdateStatus] = useState(EMPTY_UPDATE_STATUS);
   const [codexUpdateStatus, setCodexUpdateStatus] = useState(EMPTY_CODEX_UPDATE_STATUS);
   const [checkCodexUpdates, setCheckCodexUpdates] = useState(true);
+  const [attentionNotifications, setAttentionNotifications] = useState(true);
+  const [completionNotifications, setCompletionNotifications] = useState(false);
+  const [notificationSound, setNotificationSound] = useState(true);
+  const [keepSystemAwake, setKeepSystemAwake] = useState(false);
   const [codexUpdateToastOpen, setCodexUpdateToastOpen] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -3928,7 +4444,7 @@ export function App() {
   }, []);
   const [draftMode, setDraftMode] = useState(false);
   const draftModeRef = useRef(false);
-  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, board: false, tools: false, extensions: false, providers: false, github: false, usage: false });
+  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, board: false, tools: false, extensions: false, providers: false, github: false, usage: false, usageLimits: false });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -3988,6 +4504,31 @@ export function App() {
   }, [previewWorkspaceId, updatePreviewWorkspace]);
 
   useEffect(() => {
+    const openPreview = (event) => {
+      const detail = event.detail ?? {};
+      const activeWorkspaceId = selectedThreadIdRef.current ?? (selectedProjectIdRef.current ? `draft:${selectedProjectIdRef.current}` : null);
+      if (!detail.workspaceId || detail.workspaceId !== activeWorkspaceId) return;
+      if (detail.projectId && detail.projectId !== selectedProjectIdRef.current) return;
+      setInspectorOpen(false);
+      setActiveView("task");
+      updatePreviewWorkspace(detail.workspaceId, (workspace) => ({ ...workspace, open: true }));
+    };
+    const openBoard = (event) => {
+      const detail = event.detail ?? {};
+      if (detail.projectId && detail.projectId !== selectedProjectIdRef.current) return;
+      if (detail.taskId) localStorage.setItem(`pixice.boardSelection.${detail.projectId}`, detail.taskId);
+      setPreviewOpen(false);
+      setActiveView("board");
+    };
+    window.addEventListener("pixice:request-task-preview", openPreview);
+    window.addEventListener("pixice:open-board-workspace", openBoard);
+    return () => {
+      window.removeEventListener("pixice:request-task-preview", openPreview);
+      window.removeEventListener("pixice:open-board-workspace", openBoard);
+    };
+  }, [setPreviewOpen, updatePreviewWorkspace]);
+
+  useEffect(() => {
     const entries = Object.entries(previewWorkspaces);
     const excess = entries.length - MAX_RETAINED_PREVIEW_WORKSPACES;
     if (excess <= 0) return;
@@ -4016,9 +4557,18 @@ export function App() {
   const activeTurn = [...(thread?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
   const sidebarThreads = threads
     .filter(isSidebarThread)
-    .map((candidate) => candidate.id === thread?.id
-      ? { ...candidate, status: { type: activeTurn ? "active" : "idle", activeFlags: [] } }
-      : candidate)
+    .map((candidate) => {
+      const selected = candidate.id === thread?.id;
+      const running = selected ? Boolean(activeTurn) : threadIsRunning(candidate);
+      const sidebarCompleted = !running && (
+        candidate.completionRevision !== undefined
+        || candidate.turns?.at(-1)?.status === "completed"
+        || threadStatus(candidate) === "completed"
+      );
+      return selected
+        ? { ...candidate, sidebarCompleted, status: { type: activeTurn ? "active" : "idle", activeFlags: [] } }
+        : { ...candidate, sidebarCompleted };
+    })
     .map((candidate, originalIndex) => ({ candidate, originalIndex }))
     .sort((left, right) => {
       const leftRecency = threadMessageRecency[left.candidate.id];
@@ -4039,11 +4589,16 @@ export function App() {
     if (!selectedThreadId || !selectedThreadCompletionRevision) return;
     setSeenThreadCompletions((current) => {
       if (current[selectedThreadId] === selectedThreadCompletionRevision) return current;
-      const next = { ...current, [selectedThreadId]: selectedThreadCompletionRevision };
-      localStorage.setItem(THREAD_COMPLETIONS_SEEN_KEY, JSON.stringify(next));
-      return next;
+      return { ...current, [selectedThreadId]: selectedThreadCompletionRevision };
     });
   }, [selectedThreadCompletionRevision, selectedThreadId]);
+
+  useEffect(() => {
+    if (!seenThreadCompletionsHydrated) return;
+    localStorage.setItem(THREAD_COMPLETIONS_SEEN_KEY, JSON.stringify(seenThreadCompletions));
+    if (!api?.app?.saveSettings) return;
+    void api.app.saveSettings({ threadCompletionsSeen: seenThreadCompletions }).catch((cause) => setError(cause.message));
+  }, [api, seenThreadCompletions, seenThreadCompletionsHydrated]);
 
   const normalizePlan = useCallback((steps) => (steps ?? []).map((step) => ({
     ...step,
@@ -4174,6 +4729,10 @@ export function App() {
           setThreads((current) => current.map((candidate) => candidate.id === threadId ? { ...candidate, name: response.thread.name } : candidate));
         }
         if (Array.isArray(response.plan)) setPlan(normalizePlan(response.plan));
+        if (Array.isArray(response.plan)) {
+          const planProgress = summarizePlanProgress(response.plan);
+          setThreads((current) => current.map((candidate) => candidate.id === threadId ? { ...candidate, planProgress } : candidate));
+        }
       }
     } catch (cause) {
       if (requestId === threadLoadRequestRef.current && selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === threadId) {
@@ -4195,6 +4754,8 @@ export function App() {
         if (Array.isArray(response.plan)) {
           const nextPlan = normalizePlan(response.plan);
           setPlan((current) => samePlan(current, nextPlan) ? current : nextPlan);
+          const planProgress = summarizePlanProgress(response.plan);
+          setThreads((current) => current.map((candidate) => candidate.id === threadId ? { ...candidate, planProgress } : candidate));
         }
         if (response.thread?.name) {
           setThreads((current) => {
@@ -4276,6 +4837,23 @@ export function App() {
       setBoardTasks([]);
     } finally {
       if (requestId === boardLoadRequestRef.current) setLoading((state) => ({ ...state, board: false }));
+    }
+  }, [api]);
+
+  const loadProactivity = useCallback(async (projectId, threadId) => {
+    if (!api?.proactivity || !projectId || !threadId) {
+      setProactiveSuggestions([]);
+      return;
+    }
+    const requestId = ++proactivityLoadRequestRef.current;
+    try {
+      const result = await api.proactivity.list({ projectId, threadId });
+      if (requestId !== proactivityLoadRequestRef.current || selectedProjectIdRef.current !== projectId || selectedThreadIdRef.current !== threadId) return;
+      setProactiveSuggestions(result.data ?? []);
+    } catch (cause) {
+      if (requestId !== proactivityLoadRequestRef.current) return;
+      setError(cause.message);
+      setProactiveSuggestions([]);
     }
   }, [api]);
 
@@ -4393,6 +4971,23 @@ export function App() {
     }
   }, [api, usageRangeDays]);
 
+  const loadUsageLimits = useCallback(async () => {
+    if (!api?.usage?.limits) return;
+    const requestId = ++usageLimitsLoadRequestRef.current;
+    setLoading((state) => ({ ...state, usageLimits: true }));
+    setUsageLimitsError(null);
+    try {
+      const result = await api.usage.limits();
+      if (requestId !== usageLimitsLoadRequestRef.current) return;
+      setUsageLimits(result);
+    } catch (cause) {
+      if (requestId !== usageLimitsLoadRequestRef.current) return;
+      setUsageLimitsError(cause.message);
+    } finally {
+      if (requestId === usageLimitsLoadRequestRef.current) setLoading((state) => ({ ...state, usageLimits: false }));
+    }
+  }, [api]);
+
   useEffect(() => {
     if (!api) {
       setRuntime({ state: "unavailable", connected: false });
@@ -4405,6 +5000,16 @@ export function App() {
       if (cancelled) return;
       const nextModels = result.models ?? [];
       const persisted = result.settings ?? {};
+      const durableSeenThreadCompletions = persistedSeenThreadCompletions(persisted.threadCompletionsSeen);
+      setSeenThreadCompletions((current) => {
+        if (!durableSeenThreadCompletions) return current;
+        const next = { ...durableSeenThreadCompletions, ...current };
+        if (Number.isFinite(durableSeenThreadCompletions[THREAD_COMPLETIONS_SEEN_BASELINE_KEY])) {
+          next[THREAD_COMPLETIONS_SEEN_BASELINE_KEY] = durableSeenThreadCompletions[THREAD_COMPLETIONS_SEEN_BASELINE_KEY];
+        }
+        return next;
+      });
+      setSeenThreadCompletionsHydrated(true);
       const legacyModel = localStorage.getItem("pixice.model") || "";
       const legacyEffort = localStorage.getItem("pixice.effort") || "";
       const legacyPermission = localStorage.getItem("pixice.permissionMode") || "";
@@ -4435,11 +5040,18 @@ export function App() {
       setModels(nextModels);
       setDefaultModel(resolvedModel?.model ?? requestedModel);
       setDefaultEffort(resolvedEffort);
+      setDefaultFastMode(persisted.defaultFastMode === true);
+      setThreadNamingModel(persisted.threadNamingModel ?? THREAD_NAMING_AUTO);
+      setWorkflowGenerationModel(persisted.workflowGenerationModel ?? WORKFLOW_GENERATION_AUTO);
       setDefaultPermissionMode(resolvedPermission);
       setPermissionMode(resolvedPermission);
       setAgentBehaviorCatalog(behaviorCatalog);
       setAgentBehaviors(resolvedBehaviors);
       setCheckCodexUpdates(persisted.checkCodexUpdates !== false);
+      setAttentionNotifications(persisted.attentionNotifications !== false);
+      setCompletionNotifications(persisted.completionNotifications === true);
+      setNotificationSound(persisted.notificationSound !== false);
+      setKeepSystemAwake(persisted.keepSystemAwake === true);
       setDefaultsHydrated(true);
       setRuntime(result.runtime ?? { state: "unavailable", connected: false });
       if (Object.entries(resolvedDefaults).some(([key, value]) => persisted[key] !== value)) {
@@ -4595,6 +5207,7 @@ export function App() {
     if (!selectedProjectId) {
       setThreads([]);
       setBoardTasks([]);
+      setProactiveSuggestions([]);
       selectedThreadIdRef.current = null;
       setSelectedThreadId(null);
       setThread(null);
@@ -4617,7 +5230,9 @@ export function App() {
     setPlan([]);
     if (!selectedProjectId || !selectedThreadId) {
       threadLoadRequestRef.current += 1;
+      proactivityLoadRequestRef.current += 1;
       setThread(null);
+      setProactiveSuggestions([]);
       setLoading((state) => ({ ...state, thread: false }));
       return;
     }
@@ -4628,7 +5243,8 @@ export function App() {
       return;
     }
     loadThread(selectedProjectId, selectedThreadId);
-  }, [selectedProjectId, selectedThreadId, loadThread]);
+    loadProactivity(selectedProjectId, selectedThreadId);
+  }, [selectedProjectId, selectedThreadId, loadProactivity, loadThread]);
 
   useEffect(() => {
     if (!api || !selectedProjectId || !selectedThreadId || !activeTurn) return undefined;
@@ -4669,9 +5285,10 @@ export function App() {
     if (activeView === "settings" && settingsPage === "providers") loadProviders();
     if (activeView === "settings" && settingsPage === "github") loadGitHubStatus();
     if (activeView === "settings" && settingsPage === "usage") loadUsage(usageRangeDays);
+    if (activeView === "settings" && settingsPage === "usage") loadUsageLimits();
     if (activeView === "review" && selectedProjectId) loadReview(selectedProjectId);
     if (activeView === "tools" && selectedProjectId) loadProjectTools(selectedProjectId);
-  }, [activeView, loadExtensions, loadGitHubStatus, loadProjectTools, loadProviders, loadReview, loadUsage, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey]);
+  }, [activeView, loadExtensions, loadGitHubStatus, loadProjectTools, loadProviders, loadReview, loadUsage, loadUsageLimits, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey, usageLimitsRefreshKey]);
 
   const refreshEventInstrumentSources = useCallback((capabilities, eventProjectId) => {
     if (!api?.instruments || !selectedProjectId || !selectedThreadId || eventProjectId && eventProjectId !== selectedProjectId) return;
@@ -4803,6 +5420,13 @@ export function App() {
         refreshEventInstrumentSources(["board.list"], event.payload?.projectId);
         return;
       }
+      if (event.type === "ProactivityUpdated") {
+        const projectId = event.payload?.projectId;
+        if (!projectId || projectId === selectedProjectIdRef.current) {
+          loadProactivity(selectedProjectIdRef.current, selectedThreadIdRef.current);
+        }
+        return;
+      }
       if (event.type === "WorkflowRunUpdated" || event.type === "WorkflowUpdated") {
         refreshEventInstrumentSources(["workflows.list", "workflow.output"], event.payload?.projectId);
       }
@@ -4818,6 +5442,10 @@ export function App() {
       }
       if (event.type === "UsageUpdated") {
         setUsageRefreshKey((value) => value + 1);
+        return;
+      }
+      if (event.type === "CodexLimitsUpdated") {
+        setUsageLimitsRefreshKey((value) => value + 1);
         return;
       }
 
@@ -4856,7 +5484,7 @@ export function App() {
       if (payload.projectId && payload.projectId !== selectedProjectId) return;
       if (payload.method === "turn/started" && payload.threadId) {
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId
-          ? { ...candidate, status: { type: "active", activeFlags: [] } }
+          ? { ...candidate, status: { type: "active", activeFlags: [] }, planProgress: null }
           : candidate));
       }
       if (payload.method === "turn/completed" && payload.threadId) {
@@ -4880,7 +5508,12 @@ export function App() {
           setThread((current) => current?.id === payload.threadId ? { ...current, name: payload.name } : current);
         }
       }
-      if (payload.method === "turn/plan/updated") refreshEventInstrumentSources(["tasks.plan"], payload.projectId);
+      if (payload.method === "turn/plan/updated") {
+        refreshEventInstrumentSources(["tasks.plan"], payload.projectId);
+        setThreads((current) => current.map((candidate) => candidate.id === payload.threadId
+          ? { ...candidate, planProgress: summarizePlanProgress(payload.plan) }
+          : candidate));
+      }
       if (payload.method === "thread/started" && payload.thread && (!payload.projectId || payload.projectId === selectedProjectId)) {
         setThreads((current) => {
           const existing = current.find((candidate) => candidate.id === payload.thread.id);
@@ -4907,7 +5540,7 @@ export function App() {
         }
       }
     });
-  }, [api, commitRuntimePayload, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadReview, loadThreads, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, updatePreviewWorkspace]);
+  }, [api, commitRuntimePayload, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadProactivity, loadReview, loadThreads, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, updatePreviewWorkspace]);
 
   const openProject = () => {
     if (!api?.projects) return;
@@ -4966,10 +5599,11 @@ export function App() {
 
   const newTask = () => {
     if (!selectedProjectId) return;
+    const model = models.find((candidate) => candidate.model === defaultModel);
     setDraftMode(true);
     setSelectedModel(defaultModel);
     setEffort(defaultEffort);
-    setFastMode(false);
+    setFastMode(Boolean(defaultFastMode && fastServiceTier(model)));
     setPermissionMode(defaultPermissionMode);
     selectedThreadIdRef.current = null;
     setSelectedThreadId(null);
@@ -4987,6 +5621,12 @@ export function App() {
     try {
       await api.threads.archive({ projectId, threadId });
       localStorage.removeItem(threadConfigurationKey(threadId));
+      setSeenThreadCompletions((current) => {
+        if (!(threadId in current)) return current;
+        const next = { ...current };
+        delete next[threadId];
+        return next;
+      });
       setPreviewWorkspaces((current) => {
         if (!current[threadId]) return current;
         const next = { ...current };
@@ -5022,11 +5662,11 @@ export function App() {
     return results.filter(Boolean).length;
   };
 
-  const createBoardTask = async ({ title, description, column }) => {
+  const createBoardTask = async ({ title, description, column, ...details }) => {
     if (!api?.board || !selectedProjectId) return;
     const projectId = selectedProjectId;
     try {
-      const task = await api.board.create({ projectId, title, description, column });
+      const task = await api.board.create({ projectId, title, description, column, ...details });
       if (selectedProjectIdRef.current !== projectId) return;
       setBoardTasks((current) => current.some((candidate) => candidate.id === task.id) ? current : [...current, task]);
       setError(null);
@@ -5037,21 +5677,48 @@ export function App() {
     }
   };
 
-  const updateBoardTask = async (taskId, patch) => {
-    if (!api?.board || !selectedProjectId) return;
-    const projectId = selectedProjectId;
-    try {
-      let task = await api.board.update({ projectId, taskId, title: patch.title, description: patch.description });
-      if (patch.column && patch.column !== task.column) task = await api.board.move({ projectId, taskId, column: patch.column });
-      if (selectedProjectIdRef.current !== projectId) return;
-      setBoardTasks((current) => current.map((candidate) => candidate.id === taskId ? task : candidate));
-      setError(null);
-      return task;
-    } catch (cause) {
-      setError(cause.message);
-      throw cause;
+  const openBoardTaskPreview = useCallback((task) => {
+    if (!task || !selectedProjectId || !previewWorkspaceId) return;
+    window.dispatchEvent(new CustomEvent("pixice:task-preview-requested", {
+      detail: {
+        projectId: selectedProjectId,
+        taskId: task.id,
+        threadId: selectedThreadId,
+        workspaceId: previewWorkspaceId,
+        reason: "edit",
+        actorKind: "user"
+      }
+    }));
+  }, [previewWorkspaceId, selectedProjectId, selectedThreadId]);
+
+  const rescheduleBoardTask = useCallback(async (task, schedule) => {
+    if (!api?.board || !selectedProjectId || !previewWorkspaceId) return;
+    const downstreamIds = new Set();
+    const queue = [...(task.dependents ?? [])];
+    while (queue.length) {
+      const candidateId = queue.shift();
+      if (!candidateId || downstreamIds.has(candidateId)) continue;
+      downstreamIds.add(candidateId);
+      const candidate = boardTasks.find((entry) => entry.id === candidateId);
+      queue.push(...(candidate?.dependents ?? []));
     }
-  };
+    window.dispatchEvent(new CustomEvent("pixice:task-preview-requested", {
+      detail: {
+        projectId: selectedProjectId,
+        taskId: task.id,
+        threadId: selectedThreadId,
+        workspaceId: previewWorkspaceId,
+        reason: "reschedule",
+        actorKind: "user",
+        scheduleProposal: schedule,
+        scheduleImpact: {
+          dependents: boardTasks.filter((candidate) => downstreamIds.has(candidate.id)).map((candidate) => ({ id: candidate.id, title: candidate.title })),
+          enabledBindings: task.workflowBindings?.filter((binding) => binding.enabled).length ?? 0,
+          lockedFields: task.schedule?.lockedFields ?? []
+        }
+      }
+    }));
+  }, [api, boardTasks, previewWorkspaceId, selectedProjectId, selectedThreadId]);
 
   const moveBoardTask = async (taskId, column, beforeTaskId) => {
     if (!api?.board || !selectedProjectId) return;
@@ -5066,13 +5733,14 @@ export function App() {
     }
   };
 
-  const deleteBoardTask = async (taskId) => {
-    if (!api?.board || !selectedProjectId) return;
+  const resolveProactiveSuggestion = async (suggestion, decision) => {
+    if (!api?.proactivity || !selectedProjectId) return;
     const projectId = selectedProjectId;
     try {
-      await api.board.delete({ projectId, taskId });
+      await api.proactivity.resolve({ projectId, suggestionId: suggestion.id, decision });
       if (selectedProjectIdRef.current !== projectId) return;
-      setBoardTasks((current) => current.filter((candidate) => candidate.id !== taskId));
+      setProactiveSuggestions((current) => current.filter((candidate) => candidate.id !== suggestion.id));
+      if (suggestion.type === "task-status" && decision === "accept") await loadBoard(projectId);
       setError(null);
     } catch (cause) {
       setError(cause.message);
@@ -5090,7 +5758,9 @@ export function App() {
         permissionMode: defaultPermissionMode
       });
       const threadId = created.thread.id;
-      saveThreadConfiguration(threadId, { model: defaultModel, effort: defaultEffort, fastMode: false, permissionMode: defaultPermissionMode });
+      const model = models.find((candidate) => candidate.model === defaultModel);
+      const defaultFastTier = defaultFastMode ? fastServiceTier(model) : null;
+      saveThreadConfiguration(threadId, { model: defaultModel, effort: defaultEffort, fastMode: Boolean(defaultFastTier), permissionMode: defaultPermissionMode });
       await api.board.attach({ projectId, taskId: task.id, threadId });
       await api.board.move({ projectId, taskId: task.id, column: "active" });
       const prompt = task.description ? `${task.title}\n\n${task.description}` : task.title;
@@ -5101,6 +5771,7 @@ export function App() {
         images: [],
         model: defaultModel || undefined,
         effort: defaultEffort,
+        ...(defaultFastTier ? { serviceTier: defaultFastTier } : {}),
         permissionMode: defaultPermissionMode
       });
       markThreadMessaged(threadId);
@@ -5141,6 +5812,21 @@ export function App() {
     savePersistentDefaults({ defaultEffort: nextEffort });
   };
 
+  const changeDefaultFastMode = (enabled) => {
+    setDefaultFastMode(enabled);
+    savePersistentDefaults({ defaultFastMode: enabled });
+  };
+
+  const changeThreadNamingModel = (modelName) => {
+    setThreadNamingModel(modelName);
+    savePersistentDefaults({ threadNamingModel: modelName });
+  };
+
+  const changeWorkflowGenerationModel = (modelName) => {
+    setWorkflowGenerationModel(modelName);
+    savePersistentDefaults({ workflowGenerationModel: modelName });
+  };
+
   const changeThreadEffort = (nextEffort) => {
     setEffort(nextEffort);
     saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort: nextEffort, fastMode, permissionMode });
@@ -5159,6 +5845,26 @@ export function App() {
   const changeThreadPermissionMode = (mode) => {
     setPermissionMode(mode);
     saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort, fastMode, permissionMode: mode });
+  };
+
+  const changeAttentionNotifications = (enabled) => {
+    setAttentionNotifications(enabled);
+    savePersistentDefaults({ attentionNotifications: enabled });
+  };
+
+  const changeCompletionNotifications = (enabled) => {
+    setCompletionNotifications(enabled);
+    savePersistentDefaults({ completionNotifications: enabled });
+  };
+
+  const changeNotificationSound = (enabled) => {
+    setNotificationSound(enabled);
+    savePersistentDefaults({ notificationSound: enabled });
+  };
+
+  const changeKeepSystemAwake = (enabled) => {
+    setKeepSystemAwake(enabled);
+    savePersistentDefaults({ keepSystemAwake: enabled });
   };
 
   const togglePreview = useCallback(async () => {
@@ -5447,7 +6153,8 @@ export function App() {
 
   const resolveAttention = async (request, decision) => {
     try {
-      if (request.method?.includes("requestUserInput")) await api.requests.respond({ requestId: request.id, answers: decision });
+      if (request.method === "workflow/taskEvent/requestApproval") await api.workflows.resolveMissedTrigger({ projectId: request.projectId, requestId: request.id, decision: decision === "accept" ? "accept" : "decline" });
+      else if (request.method?.includes("requestUserInput")) await api.requests.respond({ requestId: request.id, answers: decision });
       else if (request.method?.toLowerCase().includes("elicitation")) await api.elicitations.respond({ requestId: request.id, ...decision });
       else await api.approvals.resolve({ requestId: request.id, decision });
       setAttention((current) => current.filter((candidate) => candidate.id !== request.id));
@@ -5495,6 +6202,10 @@ export function App() {
     busy: submitting,
     draftKey: `${selectedProjectId ?? "none"}:${selectedThreadId ?? "new"}`,
     preserveDrafts: preferences.preserveDrafts,
+    sendShortcut: preferences.sendShortcut,
+    spellCheckComposer: preferences.spellCheckComposer,
+    autoFocusComposer: preferences.autoFocusComposer,
+    showSlashCommands: preferences.showSlashCommands,
     running: Boolean(activeTurn),
     questionRequest,
     onQuestionResolve: resolveQuestion,
@@ -5511,6 +6222,10 @@ export function App() {
     onProviderLogin: loginProvider,
     onProvidersRefresh: refreshProviders,
     onSubmit: submit,
+    onImageRevision: ({ comment, source, prompt }) => {
+      const attachments = generatedImageAttachment(source);
+      return submit(generatedImageRevisionPrompt(comment, prompt, attachments.length > 0), attachments);
+    },
     onInterrupt: interrupt
   };
   const activeProjectToolId = projectTools.some((tool) => tool.id === selectedProjectToolId)
@@ -5527,10 +6242,10 @@ export function App() {
         attention={attention}
         loading={loading.threads || loading.board}
         onCreate={createBoardTask}
-        onUpdate={updateBoardTask}
         onMove={moveBoardTask}
-        onDelete={deleteBoardTask}
         onOpenThread={selectThread}
+        onOpenTask={openBoardTaskPreview}
+        onScheduleMove={rescheduleBoardTask}
         onStartTask={startBoardTask}
       />
     );
@@ -5568,8 +6283,22 @@ export function App() {
         onEffortChange={changeDefaultEffort}
         permissionMode={defaultPermissionMode}
         onPermissionModeChange={changeDefaultPermissionMode}
+        defaultFastMode={defaultFastMode}
+        onDefaultFastModeChange={changeDefaultFastMode}
+        threadNamingModel={threadNamingModel}
+        onThreadNamingModelChange={changeThreadNamingModel}
+        workflowGenerationModel={workflowGenerationModel}
+        onWorkflowGenerationModelChange={changeWorkflowGenerationModel}
         preferences={preferences}
         onPreferenceChange={changePreference}
+        attentionNotifications={attentionNotifications}
+        onAttentionNotificationsChange={changeAttentionNotifications}
+        completionNotifications={completionNotifications}
+        onCompletionNotificationsChange={changeCompletionNotifications}
+        notificationSound={notificationSound}
+        onNotificationSoundChange={changeNotificationSound}
+        keepSystemAwake={keepSystemAwake}
+        onKeepSystemAwakeChange={changeKeepSystemAwake}
         agentBehaviorCatalog={agentBehaviorCatalog}
         agentBehaviors={agentBehaviors}
         onAgentBehaviorChange={changeAgentBehavior}
@@ -5588,9 +6317,12 @@ export function App() {
         usageSummary={usageSummary}
         usageLoading={loading.usage}
         usageError={usageError}
+        usageLimits={usageLimits}
+        usageLimitsLoading={loading.usageLimits}
+        usageLimitsError={usageLimitsError}
         usageRangeDays={usageRangeDays}
         onUsageRangeChange={setUsageRangeDays}
-        onRefreshUsage={() => loadUsage(usageRangeDays)}
+        onRefreshUsage={() => { loadUsage(usageRangeDays); loadUsageLimits(); }}
         onRefreshCapabilities={loadExtensions}
         onRefreshModels={() => loadModels().catch((cause) => setError(cause.message))}
         updateStatus={updateStatus}
@@ -5621,6 +6353,9 @@ export function App() {
         onInspectorToggle={() => setInspectorOpen((open) => !open)}
         onOpenProject={openProject}
         showTaskProgress={preferences.showTaskProgress}
+        expandTaskProgress={preferences.expandTaskProgress}
+        showMessageTimestamps={preferences.showMessageTimestamps}
+        completedWorkDetails={preferences.completedWorkDetails}
         previewOpen={previewOpen}
         onPreviewToggle={togglePreview}
         previewWorkspaceId={previewWorkspaceId}
@@ -5638,6 +6373,8 @@ export function App() {
         onPreviewInstrumentInvoke={invokePreviewInstrumentCapability}
         onPreviewInstrumentPin={pinPreviewInstrument}
         onOpenWorkspaceReference={openWorkspaceReference}
+        proactiveSuggestions={proactiveSuggestions}
+        onProactiveSuggestionResolve={resolveProactiveSuggestion}
         composerProps={composerProps}
       />
     );
@@ -5650,6 +6387,10 @@ export function App() {
         data-sidebar-expanded={sidebarExpanded}
         data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread)}
         data-density={preferences.density}
+        data-conversation-width={preferences.conversationWidth}
+        data-conversation-text-size={preferences.conversationTextSize}
+        data-accent-color={preferences.accentColor}
+        data-reduce-transparency={preferences.reduceTransparency}
         data-reduce-motion={preferences.reduceMotion}
         data-show-shortcuts={preferences.showShortcutHints}
         data-preview-open={activeView === "task" && previewOpen}

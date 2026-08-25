@@ -22,6 +22,7 @@ import {
 export const WORKFLOW_ICONS = Object.freeze({
   manualTrigger: CaretRight,
   scheduleTrigger: Gauge,
+  taskEventTrigger: Gauge,
   webhookTrigger: PlugsConnected,
   useSkill: Sparkle,
   pixiceAgent: Brain,
@@ -39,6 +40,7 @@ export const WORKFLOW_ICONS = Object.freeze({
   database: Stack,
   executeWorkflow: TreeStructure,
   notification: Bell,
+  planWork: Gauge,
   board: List,
   output: PaperPlaneTilt
 });

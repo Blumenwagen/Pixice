@@ -11,3 +11,10 @@ export function reconcileThreadActivity(thread, activeTurnId) {
   if (!thread || activeTurnId || !ACTIVE_THREAD_STATUSES.has(activityStatus(thread))) return thread;
   return { ...thread, status: { type: "idle", activeFlags: [] } };
 }
+
+export function withStableCompletionRevision(thread, turnTimings = []) {
+  if (!thread || (thread.completionRevision !== undefined && thread.completionRevision !== null)) return thread;
+  const latestCompletedTurn = [...turnTimings].reverse().find((timing) => timing?.turnId && timing.completedAt);
+  if (!latestCompletedTurn) return thread;
+  return { ...thread, completionRevision: `turn:${latestCompletedTurn.turnId}` };
+}

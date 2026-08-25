@@ -153,7 +153,7 @@ export const pixiceWorkflowTools = [
       properties: {
         name: { type: "string", minLength: 1, maxLength: 240 },
         description: { type: "string", maxLength: 10000 },
-        enabled: { type: "boolean", description: "Enable automatic Schedule and Webhook triggers. Defaults to false." }
+        enabled: { type: "boolean", description: "Enable automatic Schedule, Task Event, and Webhook triggers. Defaults to false." }
       },
       required: ["name"], additionalProperties: false
     }

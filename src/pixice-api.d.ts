@@ -23,7 +23,8 @@ type PixiceEvent = {
     | "WorkflowCredentialsUpdated"
     | "UpdateState"
     | "CodexUpdateState"
-    | "UsageUpdated";
+    | "UsageUpdated"
+    | "CodexLimitsUpdated";
   payload: any;
   at: string;
 };
@@ -76,6 +77,7 @@ type InstrumentDocument = {
 type WorkflowNodeType =
   | "manualTrigger"
   | "scheduleTrigger"
+  | "taskEventTrigger"
   | "webhookTrigger"
   | "useSkill"
   | "pixiceAgent"
@@ -89,10 +91,12 @@ type WorkflowNodeType =
   | "delay"
   | "loop"
   | "file"
+  | "command"
   | "git"
   | "database"
   | "executeWorkflow"
   | "notification"
+  | "planWork"
   | "board";
 type WorkflowAgentExecutionMode = "background" | "foreground";
 type WorkflowSkillAttachment = {
@@ -186,7 +190,7 @@ type WorkflowTriggerStatus = {
   projectId: string;
   nodeId: string;
   nodeName: string;
-  type: "schedule" | "webhook";
+  type: "schedule" | "task" | "webhook";
   status: "active" | "error" | string;
   error: string | null;
   nextRunAt: string | null;
@@ -201,7 +205,7 @@ declare global {
     pixice?: {
       app: {
         bootstrap(): Promise<{ projects: PixiceProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; category: "core" | "pixice-native"; defaultEnabled: boolean }> }>;
-        saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; checkCodexUpdates?: boolean; agentBehaviors?: Record<string, boolean> }): Promise<any>;
+        saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; defaultFastMode?: boolean; threadNamingModel?: "auto" | "off" | `codex:${string}` | `claude:${string}`; workflowGenerationModel?: "auto" | `codex:${string}` | `claude:${string}`; attentionNotifications?: boolean; completionNotifications?: boolean; notificationSound?: boolean; checkCodexUpdates?: boolean; threadCompletionsSeen?: Record<string, string | number>; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };
       providers: {
@@ -213,7 +217,33 @@ declare global {
         login(): Promise<any>;
         logout(): Promise<any>;
       };
-      usage: { summary(payload: { days: number }): Promise<any> };
+      usage: {
+        summary(payload: { days: number }): Promise<any>;
+        limits(): Promise<{
+          status: "available" | "unavailable";
+          fetchedAt: string;
+          message?: string;
+          providers: Array<{
+            provider: "codex" | "claude";
+            label: string;
+            status: "available" | "unavailable";
+            fetchedAt: string;
+            planType?: string | null;
+            message?: string;
+            limits?: Array<{
+              id: string;
+              name: string | null;
+              planType: string | null;
+              windows: Array<{ usedPercent: number | null; remainingPercent: number | null; windowDurationMins: number | null; resetsAt: number | null; label?: string | null; detail?: { used: number; limit: number; currency: string } | null }>;
+              credits: { hasCredits: boolean; unlimited: boolean; balance: string | null } | null;
+              individualLimit: number | null;
+              spendControlReached: boolean;
+              rateLimitReachedType: string | null;
+            }>;
+            resetCredits?: { availableCount: number; credits: Array<{ id: string; title: string | null; description: string | null; expiresAt: number | null }> };
+          }>;
+        }>;
+      };
       updates: {
         status(): Promise<any>;
         check(): Promise<any>;
@@ -248,12 +278,34 @@ declare global {
         open(): Promise<PixiceProject | null>;
       };
       board: {
-        list(payload: ProjectScope): Promise<{ data: Array<{ id: string; projectId: string; title: string; description: string; column: "backlog" | "ready" | "active" | "done"; position: number; threadId: string | null; createdByThreadId: string | null; createdAt: string; updatedAt: string }> }>;
-        create(payload: ProjectScope & { title: string; description?: string; column?: "backlog" | "ready" | "active" | "done" }): Promise<any>;
-        update(payload: ProjectScope & { taskId: string; title?: string; description?: string }): Promise<any>;
+        list(payload: ProjectScope): Promise<{ data: Array<any> }>;
+        read(payload: ProjectScope & { taskId: string }): Promise<{ task: any; activity: Array<any> }>;
+        create(payload: ProjectScope & { title: string; description?: string; column?: "backlog" | "ready" | "active" | "done"; kind?: "task" | "milestone" | "event"; priority?: "low" | "normal" | "high" | "urgent"; estimateMinutes?: number | null; owner?: string; schedule?: Record<string, unknown>; dependencies?: Array<Record<string, unknown>> }): Promise<any>;
+        update(payload: ProjectScope & { taskId: string; title?: string; description?: string; kind?: "task" | "milestone" | "event"; priority?: "low" | "normal" | "high" | "urgent"; estimateMinutes?: number | null; owner?: string; schedule?: Record<string, unknown> | null; dependencies?: Array<Record<string, unknown>>; expectedRevision?: number; expectedScheduleRevision?: number }): Promise<any>;
         move(payload: ProjectScope & { taskId: string; column: "backlog" | "ready" | "active" | "done"; beforeTaskId?: string }): Promise<any>;
         delete(payload: ProjectScope & { taskId: string }): Promise<any>;
         attach(payload: ProjectScope & { taskId: string; threadId: string }): Promise<any>;
+        activity(payload: ProjectScope & { taskId: string }): Promise<{ data: Array<any> }>;
+        readProposal(payload: ProjectScope & { proposalId: string }): Promise<any>;
+        applyProposal(payload: ProjectScope & { proposalId: string }): Promise<any>;
+        discardProposal(payload: ProjectScope & { proposalId: string }): Promise<any>;
+        saveBinding(payload: ProjectScope & { taskId: string; bindingId?: string; workflowId: string; triggerNodeId?: string | null; triggerType: string; enabled?: boolean; missedTriggerPolicy?: "skip" | "ask" | "notify" | "run" }): Promise<any>;
+        deleteBinding(payload: ProjectScope & { taskId: string; bindingId: string }): Promise<any>;
+      };
+      proactivity: {
+        list(payload: ProjectScope & { threadId?: string }): Promise<{ data: Array<{
+          id: string;
+          projectId: string;
+          threadId: string | null;
+          type: "task-stewarded" | "task-status" | "workflow-pattern";
+          status: "open" | "accepted" | "dismissed";
+          title: string;
+          message: string;
+          payload: Record<string, any>;
+          createdAt: string;
+          updatedAt: string;
+        }> }>;
+        resolve(payload: ProjectScope & { suggestionId: string; decision: "accept" | "dismiss" }): Promise<any>;
       };
       instruments: {
         list(payload: ProjectScope & { threadId?: string }): Promise<{ data: InstrumentDocument[] }>;
@@ -278,12 +330,15 @@ declare global {
       workflows: {
         list(payload: ProjectScope): Promise<{ data: WorkflowDocument[] }>;
         read(payload: ProjectScope & { workflowId: string }): Promise<{ workflow: WorkflowDocument; runs: WorkflowRun[] }>;
+        taskRuns(payload: ProjectScope & { taskId: string }): Promise<{ data: Array<WorkflowRun & { workflowName: string; eventType: string | null }> }>;
         create(payload: ProjectScope & { name: string; description?: string; enabled?: boolean }): Promise<WorkflowDocument>;
         save(payload: ProjectScope & { workflowId: string; name: string; description: string; enabled: boolean; graph: WorkflowGraph; expectedUpdatedAt?: string }): Promise<WorkflowDocument>;
+        generate(payload: ProjectScope & { workflowId: string }): Promise<{ graph: WorkflowGraph; model: string; generatedAt: string }>;
         delete(payload: ProjectScope & { workflowId: string }): Promise<WorkflowDocument>;
         run(payload: ProjectScope & { workflowId: string; input?: unknown; triggerNodeId?: string }): Promise<WorkflowRun>;
         cancel(payload: ProjectScope & { runId: string }): Promise<WorkflowRun>;
         triggers(payload: ProjectScope): Promise<{ data: WorkflowTriggerStatus[] }>;
+        resolveMissedTrigger(payload: ProjectScope & { requestId: string; decision: "accept" | "decline" }): Promise<unknown>;
       };
       workflowCredentials: {
         list(projectId: string): Promise<{ data: WorkflowCredential[] }>;
@@ -293,7 +348,7 @@ declare global {
       };
       threads: {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
-        read(payload: ThreadScope): Promise<{ thread: any }>;
+        read(payload: ThreadScope): Promise<{ thread: any; plan?: any[] | null }>;
         children(payload: ThreadScope): Promise<{ data: any[]; nextCursor: string | null }>;
         create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ thread: any }>;
         archive(payload: ThreadScope): Promise<unknown>;

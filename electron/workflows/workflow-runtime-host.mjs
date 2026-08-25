@@ -142,6 +142,7 @@ export async function installWorkflowRuntimeHost({
     },
     onChange: (payload) => send("WorkflowUpdated", payload),
     onTriggersChange: (payload) => send("WorkflowTriggersUpdated", payload),
+    onAttention: (payload) => send("AttentionRequired", payload),
     onCredentialsChange: (payload) => send("WorkflowCredentialsUpdated", payload),
     onOpen: (payload) => send("WorkflowOpenRequested", {
       ...payload,

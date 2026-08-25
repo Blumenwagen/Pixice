@@ -174,6 +174,31 @@ describe("Claude provider", () => {
     database.db.close();
   });
 
+  it("reads authenticated Claude plan limits through the SDK usage command", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-usage-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const usage = { subscription_type: "max", rate_limits_available: true, rate_limits: { five_hour: { utilization: 22, resets_at: null } } };
+    const usageMethod = vi.fn().mockResolvedValue(usage);
+    const close = vi.fn();
+    const provider = new ClaudeProvider({
+      database,
+      queryFactory: () => ({
+        accountInfo: vi.fn().mockResolvedValue({ email: "dev@example.com", apiProvider: "firstParty" }),
+        usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: usageMethod,
+        close
+      })
+    });
+    await provider.start();
+
+    await expect(provider.usageLimits()).resolves.toMatchObject({ authenticated: true, usage });
+    expect(usageMethod).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalled();
+
+    await provider.stop();
+    database.db.close();
+  });
+
   it("keeps one streaming query open and translates SDK output to canonical Pixice events", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-provider-"));
     temporaryDirectories.push(directory);
@@ -252,6 +277,49 @@ describe("Claude provider", () => {
     expect(database.getThreadProviderBinding(thread.id)).toMatchObject({ provider: "claude", resumeCursor: thread.providerThreadId });
     expect((await provider.request("thread/read", { threadId: thread.id })).thread.turns[0].items)
       .toEqual(expect.arrayContaining([expect.objectContaining({ type: "agentMessage", text: "Done", phase: "final_answer" })]));
+
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("keeps internal workflow helpers ephemeral and denies their tool calls", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-workflow-helper-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    let queryArguments;
+    const provider = new ClaudeProvider({
+      database,
+      queryFactory: (args) => {
+        queryArguments = args;
+        return {
+          [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
+          close: vi.fn()
+        };
+      }
+    });
+    await provider.start();
+
+    const { thread } = await provider.request("thread/start", {
+      cwd: directory,
+      model: "sonnet",
+      permissionMode: "read-only",
+      ephemeral: true,
+      internalNoTools: true
+    });
+    await provider.request("turn/start", {
+      threadId: thread.id,
+      input: [{ type: "text", text: "Return a workflow graph" }],
+      model: "sonnet",
+      permissionMode: "read-only"
+    });
+
+    await expect(queryArguments.options.canUseTool("Read", { file_path: "AGENTS.md" }, {})).resolves.toMatchObject({
+      behavior: "deny",
+      message: "This internal helper cannot use tools"
+    });
+    await expect(queryArguments.options.canUseTool("mcp__pixice_bridge__spawn_thread", {}, {})).resolves.toMatchObject({ behavior: "deny" });
+    expect(database.getThreadProviderBinding(thread.id)).toBeNull();
 
     await provider.stop();
     database.db.close();

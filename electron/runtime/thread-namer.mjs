@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
+import { resolveThreadNamingModel, THREAD_NAMING_AUTO } from "./thread-naming-models.mjs";
 
-export const THREAD_NAMING_MODEL = "gpt-5.6-luna";
+export const THREAD_NAMING_MODEL = "codex:gpt-5.6-luna";
 export const THREAD_NAMING_EFFORT = "low";
 
 const MAX_SOURCE_LENGTH = 6_000;
@@ -41,11 +42,18 @@ function namingPrompt(source, kind) {
 }
 
 export class ThreadNamer extends EventEmitter {
-  constructor(runtime, { timeoutMs = 45_000, targetRuntime = runtime } = {}) {
+  constructor(runtime, {
+    timeoutMs = 45_000,
+    targetRuntime = runtime,
+    models = async () => [{ id: THREAD_NAMING_MODEL, model: "gpt-5.6-luna", provider: "codex", displayName: "GPT 5.6 Luna" }],
+    selection = () => THREAD_NAMING_AUTO
+  } = {}) {
     super();
     this.runtime = runtime;
     this.targetRuntime = targetRuntime;
     this.timeoutMs = timeoutMs;
+    this.models = models;
+    this.selection = selection;
     this.internalThreadIds = new Set();
     this.inFlight = new Map();
   }
@@ -75,9 +83,11 @@ export class ThreadNamer extends EventEmitter {
   }
 
   async #generateAndApply({ threadId, cwd, source, kind }) {
+    const namingModel = resolveThreadNamingModel(this.selection(), await this.models());
+    if (!namingModel) return null;
     const started = await this.runtime.request("thread/start", {
       cwd,
-      model: THREAD_NAMING_MODEL,
+      model: namingModel.id,
       approvalPolicy: "never",
       sandbox: "read-only",
       ephemeral: true,
@@ -87,15 +97,19 @@ export class ThreadNamer extends EventEmitter {
     if (!helperId) throw new Error("The naming helper did not return a thread id");
     this.internalThreadIds.add(helperId);
 
-    const generated = await this.#runNamingTurn(helperId, namingPrompt(source, kind));
-    const name = sanitizeThreadName(generated);
-    if (!name) return null;
-    await this.targetRuntime.request("thread/name/set", { threadId, name });
-    this.emit("named", { threadId, name, kind });
-    return name;
+    try {
+      const generated = await this.#runNamingTurn(helperId, namingPrompt(source, kind), namingModel);
+      const name = sanitizeThreadName(generated);
+      if (!name) return null;
+      await this.targetRuntime.request("thread/name/set", { threadId, name });
+      this.emit("named", { threadId, name, kind });
+      return name;
+    } finally {
+      await this.runtime.request("thread/archive", { threadId: helperId }).catch(() => {});
+    }
   }
 
-  #runNamingTurn(threadId, prompt) {
+  #runNamingTurn(threadId, prompt, namingModel) {
     return new Promise((resolve, reject) => {
       let completedText = "";
       let streamedText = "";
@@ -133,8 +147,8 @@ export class ThreadNamer extends EventEmitter {
       this.runtime.request("turn/start", {
         threadId,
         input: [{ type: "text", text: prompt, text_elements: [] }],
-        model: THREAD_NAMING_MODEL,
-        effort: THREAD_NAMING_EFFORT,
+        model: namingModel.id,
+        ...(namingModel.effort ? { effort: namingModel.effort } : {}),
         approvalPolicy: "never",
         sandboxPolicy: { type: "readOnly" }
       }).then((response) => {
