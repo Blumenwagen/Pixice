@@ -38,7 +38,7 @@ export const AGENT_BEHAVIORS = Object.freeze([
     id: "workflowAutomation",
     label: "Workflow-first automation",
     description: "Proactively use Pixice workflows for repeatable, scheduled, or reusable processes.",
-    category: "loom-native",
+    category: "pixice-native",
     filename: "workflow-first-automation.md",
     defaultEnabled: false
   }),
@@ -46,7 +46,7 @@ export const AGENT_BEHAVIORS = Object.freeze([
     id: "boardStewardship",
     label: "Board stewardship",
     description: "Proactively inspect the board, attach tracked work, and capture durable follow-ups.",
-    category: "loom-native",
+    category: "pixice-native",
     filename: "board-stewardship.md",
     defaultEnabled: false
   }),
@@ -54,7 +54,7 @@ export const AGENT_BEHAVIORS = Object.freeze([
     id: "threadOrchestration",
     label: "Thread orchestration",
     description: "Spawn focused Pixice threads for substantial parallel work, second opinions, and cross-model review.",
-    category: "loom-native",
+    category: "pixice-native",
     filename: "thread-orchestration.md",
     defaultEnabled: false
   }),
@@ -62,7 +62,7 @@ export const AGENT_BEHAVIORS = Object.freeze([
     id: "tools",
     label: "Tools",
     description: "Extend Pixice with project-specific controls and views without building a separate app.",
-    category: "loom-native",
+    category: "pixice-native",
     filename: "tools.md",
     defaultEnabled: false
   })

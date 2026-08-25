@@ -42,7 +42,7 @@ import { WorkflowIcon } from "./workflow";
 import { XIcon } from "./x";
 import { ZapIcon } from "./zap";
 
-function loomIcon(Icon, displayName) {
+function pixiceIcon(Icon, displayName) {
   const PixiceIcon = forwardRef(({ weight: _weight, mirrored: _mirrored, className = "", "aria-label": ariaLabel, onMouseEnter, onMouseLeave, ...props }, ref) => {
     const animationRef = useRef(null);
     const iconId = useId();
@@ -53,7 +53,7 @@ function loomIcon(Icon, displayName) {
     }));
 
     useEffect(() => {
-      const root = document.querySelector(`[data-loom-icon="${iconId}"]`);
+      const root = document.querySelector(`[data-pixice-icon="${iconId}"]`);
       if (!root) return undefined;
       const target = root.closest("button, a, label, [role='button'], [role='tab']") ?? root;
       const reduceMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
@@ -78,7 +78,7 @@ function loomIcon(Icon, displayName) {
       <Icon
         ref={animationRef}
         className={`animated-icon ${className}`.trim()}
-        data-loom-icon={iconId}
+        data-pixice-icon={iconId}
         aria-hidden={ariaLabel ? undefined : true}
         aria-label={ariaLabel}
         {...props}
@@ -89,45 +89,45 @@ function loomIcon(Icon, displayName) {
   return PixiceIcon;
 }
 
-export const ArrowClockwise = loomIcon(RefreshCWIcon, "ArrowClockwise");
-export const Bell = loomIcon(BellIcon, "Bell");
-export const Brain = loomIcon(BrainIcon, "Brain");
-export const CaretDown = loomIcon(ChevronDownIcon, "CaretDown");
-export const CaretLeft = loomIcon(ChevronLeftIcon, "CaretLeft");
-export const CaretRight = loomIcon(ChevronRightIcon, "CaretRight");
-export const ChartLineUp = loomIcon(ChartLineIcon, "ChartLineUp");
-export const Check = loomIcon(CheckIcon, "Check");
-export const CheckCircle = loomIcon(CircleCheckIcon, "CheckCircle");
-export const Circle = loomIcon(CircleDashedIcon, "Circle");
-export const Code = loomIcon(FolderCodeIcon, "Code");
-export const Desktop = loomIcon(MonitorCogIcon, "Desktop");
-export const Eye = loomIcon(EyeIcon, "Eye");
-export const File = loomIcon(FileTextIcon, "File");
-export const Files = loomIcon(FileStackIcon, "Files");
-export const Folder = loomIcon(FolderDotIcon, "Folder");
-export const FolderOpen = loomIcon(FolderOpenIcon, "FolderOpen");
-export const Gauge = loomIcon(GaugeIcon, "Gauge");
-export const Gear = loomIcon(SettingsIcon, "Gear");
-export const GitBranch = loomIcon(GitBranchIcon, "GitBranch");
-export const GitDiff = loomIcon(GitCompareArrowsIcon, "GitDiff");
-export const Globe = loomIcon(EarthIcon, "Globe");
-export const ImageSquare = loomIcon(GalleryThumbnailsIcon, "ImageSquare");
-export const Info = loomIcon(CircleHelpIcon, "Info");
-export const Lightning = loomIcon(ZapIcon, "Lightning");
-export const List = loomIcon(MenuIcon, "List");
-export const LockKey = loomIcon(LockKeyholeIcon, "LockKey");
-export const MagnifyingGlass = loomIcon(SearchIcon, "MagnifyingGlass");
-export const PaperPlaneTilt = loomIcon(SendIcon, "PaperPlaneTilt");
-export const Pause = loomIcon(PauseIcon, "Pause");
-export const PencilSimple = loomIcon(SquarePenIcon, "PencilSimple");
-export const PlugsConnected = loomIcon(ConnectIcon, "PlugsConnected");
-export const Plus = loomIcon(PlusIcon, "Plus");
-export const ShieldCheck = loomIcon(ShieldCheckIcon, "ShieldCheck");
-export const Sparkle = loomIcon(SparklesIcon, "Sparkle");
-export const SpinnerGap = loomIcon(LoaderCircleIcon, "SpinnerGap");
-export const Stack = loomIcon(LayersIcon, "Stack");
-export const TerminalWindow = loomIcon(TerminalIcon, "TerminalWindow");
-export const Trash = loomIcon(DeleteIcon, "Trash");
-export const TreeStructure = loomIcon(WorkflowIcon, "TreeStructure");
-export const Warning = loomIcon(BadgeAlertIcon, "Warning");
-export const X = loomIcon(XIcon, "X");
+export const ArrowClockwise = pixiceIcon(RefreshCWIcon, "ArrowClockwise");
+export const Bell = pixiceIcon(BellIcon, "Bell");
+export const Brain = pixiceIcon(BrainIcon, "Brain");
+export const CaretDown = pixiceIcon(ChevronDownIcon, "CaretDown");
+export const CaretLeft = pixiceIcon(ChevronLeftIcon, "CaretLeft");
+export const CaretRight = pixiceIcon(ChevronRightIcon, "CaretRight");
+export const ChartLineUp = pixiceIcon(ChartLineIcon, "ChartLineUp");
+export const Check = pixiceIcon(CheckIcon, "Check");
+export const CheckCircle = pixiceIcon(CircleCheckIcon, "CheckCircle");
+export const Circle = pixiceIcon(CircleDashedIcon, "Circle");
+export const Code = pixiceIcon(FolderCodeIcon, "Code");
+export const Desktop = pixiceIcon(MonitorCogIcon, "Desktop");
+export const Eye = pixiceIcon(EyeIcon, "Eye");
+export const File = pixiceIcon(FileTextIcon, "File");
+export const Files = pixiceIcon(FileStackIcon, "Files");
+export const Folder = pixiceIcon(FolderDotIcon, "Folder");
+export const FolderOpen = pixiceIcon(FolderOpenIcon, "FolderOpen");
+export const Gauge = pixiceIcon(GaugeIcon, "Gauge");
+export const Gear = pixiceIcon(SettingsIcon, "Gear");
+export const GitBranch = pixiceIcon(GitBranchIcon, "GitBranch");
+export const GitDiff = pixiceIcon(GitCompareArrowsIcon, "GitDiff");
+export const Globe = pixiceIcon(EarthIcon, "Globe");
+export const ImageSquare = pixiceIcon(GalleryThumbnailsIcon, "ImageSquare");
+export const Info = pixiceIcon(CircleHelpIcon, "Info");
+export const Lightning = pixiceIcon(ZapIcon, "Lightning");
+export const List = pixiceIcon(MenuIcon, "List");
+export const LockKey = pixiceIcon(LockKeyholeIcon, "LockKey");
+export const MagnifyingGlass = pixiceIcon(SearchIcon, "MagnifyingGlass");
+export const PaperPlaneTilt = pixiceIcon(SendIcon, "PaperPlaneTilt");
+export const Pause = pixiceIcon(PauseIcon, "Pause");
+export const PencilSimple = pixiceIcon(SquarePenIcon, "PencilSimple");
+export const PlugsConnected = pixiceIcon(ConnectIcon, "PlugsConnected");
+export const Plus = pixiceIcon(PlusIcon, "Plus");
+export const ShieldCheck = pixiceIcon(ShieldCheckIcon, "ShieldCheck");
+export const Sparkle = pixiceIcon(SparklesIcon, "Sparkle");
+export const SpinnerGap = pixiceIcon(LoaderCircleIcon, "SpinnerGap");
+export const Stack = pixiceIcon(LayersIcon, "Stack");
+export const TerminalWindow = pixiceIcon(TerminalIcon, "TerminalWindow");
+export const Trash = pixiceIcon(DeleteIcon, "Trash");
+export const TreeStructure = pixiceIcon(WorkflowIcon, "TreeStructure");
+export const Warning = pixiceIcon(BadgeAlertIcon, "Warning");
+export const X = pixiceIcon(XIcon, "X");

@@ -9,7 +9,7 @@ The lead conversation is the source of truth. Delegated agents appear as a hiera
 ## Architecture contract
 
 - **Renderer:** React presents projects, tasks, conversation history, plans, activity, approvals, agents, and Git review state. It never receives Node.js access.
-- **Preload bridge:** `window.loom` is the only renderer-to-main boundary. Every privileged call is named and validated.
+- **Preload bridge:** `window.pixice` is the only renderer-to-main boundary. Every privileged call is named and validated.
 - **Electron main:** owns dialogs, local persistence, Git access, external app actions, and the Codex runtime lifecycle.
 - **Codex runtime:** one `codex app-server` JSONL session is initialized at app startup. The installed Codex binary is used in development; signed, checksum-pinned `codex` and `codex-code-mode-host` binaries are bundled together for releases.
 - **Persistence:** SQLite stores Pixice-owned project metadata and view state. Codex remains authoritative for thread and turn history.

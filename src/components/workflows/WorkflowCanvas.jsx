@@ -113,7 +113,7 @@ function Port({ node, port, side, connecting, onActivate }) {
 function WorkflowNode({ data, selected }) {
   const { node, connecting, runState, onStartConnection, onFinishConnection } = data;
   const meta = WORKFLOW_NODE_META[node.type];
-  const executionMode = node.type === "loomAgent" ? node.config?.executionMode ?? "background" : null;
+  const executionMode = node.type === "pixiceAgent" ? node.config?.executionMode ?? "background" : null;
   const inputPorts = workflowInputPorts(node);
   const outputPorts = workflowOutputPorts(node);
   return (
@@ -323,7 +323,7 @@ export function WorkflowCanvas({
   workflow,
   models = [],
   workflows = [],
-  api = globalThis.loom ?? null,
+  api = globalThis.pixice ?? null,
   run = null,
   savingState = "saved",
   compact = false,

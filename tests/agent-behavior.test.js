@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { agentBehaviorCatalog, composeAgentInstructions, resolveAgentBehaviors } from "../electron/runtime/agent-behavior.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const baseInstructionsPath = path.join(root, "resources/runtime/loom-developer-instructions.md");
+const baseInstructionsPath = path.join(root, "resources/runtime/pixice-developer-instructions.md");
 const behaviorsDirectory = path.join(root, "resources/runtime/agent-behaviors");
 
 describe("agent behavior packs", () => {
@@ -21,7 +21,7 @@ describe("agent behavior packs", () => {
       "tools"
     ]);
     expect(catalog.every((behavior) => !("filename" in behavior))).toBe(true);
-    expect(catalog.filter((behavior) => behavior.category === "loom-native")).toHaveLength(4);
+    expect(catalog.filter((behavior) => behavior.category === "pixice-native")).toHaveLength(4);
   });
 
   it("uses safe defaults and honors persisted overrides", () => {

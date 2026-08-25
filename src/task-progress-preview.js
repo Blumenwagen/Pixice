@@ -1,10 +1,10 @@
 const project = {
   id: "preview-project",
   displayName: "Pixice",
-  canonicalPath: "/work/loom",
+  canonicalPath: "/work/pixice",
   repository: {
     kind: "git",
-    root: "/work/loom",
+    root: "/work/pixice",
     baseCommit: "preview",
     dirtyPaths: Array.from({ length: 31 }, (_, index) => `src/auth/file-${index + 1}.js`)
   }
@@ -25,7 +25,7 @@ const rootThread = {
   id: "preview-task",
   name: "Refactor authentication flow",
   preview: "Refactor authentication flow",
-  cwd: "/work/loom",
+  cwd: "/work/pixice",
   parentThreadId: null,
   status: { type: "active" },
   updatedAt: Math.floor(Date.now() / 1000),
@@ -44,7 +44,7 @@ const secondaryThread = {
   id: "preview-harness-task",
   name: "Build Pixice Codex harness",
   preview: "Build Pixice Codex harness",
-  cwd: "/work/loom",
+  cwd: "/work/pixice",
   parentThreadId: null,
   status: { type: "idle" },
   updatedAt: Math.floor(Date.now() / 1000) - 180,
@@ -184,8 +184,8 @@ export function createTaskProgressPreviewApi() {
       setViewport: async () => browserState
     },
     files: {
-      read: async ({ path }) => ({ path: `/work/loom/${path}`, relativePath: path, name: path.split("/").at(-1), extension: `.${path.split(".").at(-1)}`, kind: path.endsWith(".md") ? "markdown" : "text", content: "# Pixice\n", editable: true, size: 7, mtimeMs: 1 }),
-      write: async ({ path, content }) => ({ path, relativePath: path.replace("/work/loom/", ""), name: path.split("/").at(-1), extension: `.${path.split(".").at(-1)}`, kind: path.endsWith(".md") ? "markdown" : "text", content, editable: true, size: content.length, mtimeMs: 2 })
+      read: async ({ path }) => ({ path: `/work/pixice/${path}`, relativePath: path, name: path.split("/").at(-1), extension: `.${path.split(".").at(-1)}`, kind: path.endsWith(".md") ? "markdown" : "text", content: "# Pixice\n", editable: true, size: 7, mtimeMs: 1 }),
+      write: async ({ path, content }) => ({ path, relativePath: path.replace("/work/pixice/", ""), name: path.split("/").at(-1), extension: `.${path.split(".").at(-1)}`, kind: path.endsWith(".md") ? "markdown" : "text", content, editable: true, size: content.length, mtimeMs: 2 })
     },
     instruments: {
       list: async () => ({ data: previewTools }),

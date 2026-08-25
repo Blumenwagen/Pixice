@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   isPixiceQuestionToolCall,
-  loomQuestionRequest,
-  loomQuestionToolResult,
+  pixiceQuestionRequest,
+  pixiceQuestionToolResult,
   questionDynamicTools
 } from "../electron/runtime/question-tool.mjs";
 
@@ -10,7 +10,7 @@ const request = {
   id: 42,
   method: "item/tool/call",
   params: {
-    namespace: "loom",
+    namespace: "pixice",
     tool: "request_user_input",
     threadId: "thread-1",
     turnId: "turn-1",
@@ -32,7 +32,7 @@ describe("Pixice question tool", () => {
   it("is advertised as an always-available dynamic tool", () => {
     expect(questionDynamicTools).toEqual([
       expect.objectContaining({
-        name: "loom",
+        name: "pixice",
         tools: [expect.objectContaining({ name: "request_user_input" })]
       })
     ]);
@@ -40,9 +40,9 @@ describe("Pixice question tool", () => {
 
   it("normalizes a tool call into a thread-scoped composer request", () => {
     expect(isPixiceQuestionToolCall(request)).toBe(true);
-    expect(loomQuestionRequest(request)).toMatchObject({
+    expect(pixiceQuestionRequest(request)).toMatchObject({
       id: 42,
-      method: "loom/requestUserInput",
+      method: "pixice/requestUserInput",
       params: {
         threadId: "thread-1",
         questions: [{
@@ -57,7 +57,7 @@ describe("Pixice question tool", () => {
   });
 
   it("returns the collected answers to the blocked model tool call", () => {
-    expect(loomQuestionToolResult({ answers: { approach: "Build it" } })).toEqual({
+    expect(pixiceQuestionToolResult({ answers: { approach: "Build it" } })).toEqual({
       success: true,
       contentItems: [{ type: "inputText", text: JSON.stringify({ cancelled: false, answers: { approach: "Build it" } }) }]
     });

@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe("release scripts", () => {
   it("checksums only regular artifacts and ignores unpacked output directories", async () => {
-    const release = await mkdtemp(path.join(os.tmpdir(), "loom-release-"));
+    const release = await mkdtemp(path.join(os.tmpdir(), "pixice-release-"));
     temporaryDirectories.push(release);
     await writeFile(path.join(release, "Pixice.zip"), "artifact");
     await mkdir(path.join(release, "mac-arm64"));

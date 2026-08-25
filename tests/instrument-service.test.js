@@ -87,7 +87,7 @@ describe("Instrument agent capability", () => {
   });
 
   it("advertises a dedicated provider-neutral tool namespace", () => {
-    expect(instrumentDynamicTools[0]).toMatchObject({ type: "namespace", name: "loom_instruments" });
+    expect(instrumentDynamicTools[0]).toMatchObject({ type: "namespace", name: "pixice_instruments" });
     expect(instrumentDynamicTools[0].tools.map((tool) => tool.name)).toEqual([
       "describe_contract",
       "create_instrument",

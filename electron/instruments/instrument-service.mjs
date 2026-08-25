@@ -10,7 +10,7 @@ import {
 } from "./instrument-model.mjs";
 import { InstrumentStore } from "./instrument-store.mjs";
 
-export const LOOM_INSTRUMENTS_NAMESPACE = "loom_instruments";
+export const PIXICE_INSTRUMENTS_NAMESPACE = "pixice_instruments";
 
 const identifier = z.string().trim().min(1).max(160);
 const documentShape = z.record(z.unknown());
@@ -26,7 +26,7 @@ export const instrumentToolShapes = {
   delete_instrument: { instrumentId: identifier }
 };
 
-export const LOOM_INSTRUMENTS_MCP_TOOLS = new Set(Object.keys(instrumentToolShapes).map((name) => `mcp__${LOOM_INSTRUMENTS_NAMESPACE}__${name}`));
+export const PIXICE_INSTRUMENTS_MCP_TOOLS = new Set(Object.keys(instrumentToolShapes).map((name) => `mcp__${PIXICE_INSTRUMENTS_NAMESPACE}__${name}`));
 
 const documentJsonSchema = {
   type: "object",
@@ -47,7 +47,7 @@ const toolDefinitions = [
 
 export const instrumentDynamicTools = [{
   type: "namespace",
-  name: LOOM_INSTRUMENTS_NAMESPACE,
+  name: PIXICE_INSTRUMENTS_NAMESPACE,
   description: "Create native, interactive Pixice Instruments for problems that benefit from direct manipulation. Instruments are strict JSON rendered by Pixice, not executable HTML or scripts.",
   tools: toolDefinitions.map((definition) => ({ type: "function", ...definition }))
 }];

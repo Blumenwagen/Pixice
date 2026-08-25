@@ -5,7 +5,7 @@ export const WORKFLOW_NODE_TYPES = [
   "scheduleTrigger",
   "webhookTrigger",
   "useSkill",
-  "loomAgent",
+  "pixiceAgent",
   "output",
   "httpRequest",
   "transform",
@@ -56,7 +56,7 @@ const DEFAULT_CONFIGS = {
     path: "",
     maxBytes: 500_000
   },
-  loomAgent: {
+  pixiceAgent: {
     prompt: "Complete the workflow task using the incoming context.",
     model: null,
     effort: null,
@@ -276,10 +276,10 @@ export function normalizeWorkflowNodeConfig(node) {
       maxBytes: integerValue(source.maxBytes, 500_000, 1_024, 2_000_000)
     };
   }
-  if (node.type === "loomAgent") {
+  if (node.type === "pixiceAgent") {
     return {
       ...source,
-      prompt: stringValue(source.prompt, DEFAULT_CONFIGS.loomAgent.prompt),
+      prompt: stringValue(source.prompt, DEFAULT_CONFIGS.pixiceAgent.prompt),
       model: source.model ? String(source.model) : null,
       effort: source.effort ? String(source.effort) : null,
       permissionMode: strictEnumValue(source.permissionMode, WORKFLOW_PERMISSION_MODES, "workspace-write", "permission mode", node),
@@ -439,7 +439,7 @@ export function normalizeWorkflowNodeConfig(node) {
 
 export function workflowNodeInputPorts(node) {
   if (workflowNodeIsTrigger(node) || workflowNodeIsAttachment(node)) return [];
-  if (node.type === "loomAgent") return ["input", "skill"];
+  if (node.type === "pixiceAgent") return ["input", "skill"];
   return ["input"];
 }
 

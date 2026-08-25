@@ -22,7 +22,7 @@ describe("WorkflowCanvas", () => {
 
   it("lets users promote a Pixice Agent node from background to foreground", () => {
     const workflow = createDefaultWorkflow({ projectId: "project-1", name: "Release review" });
-    const agent = workflow.graph.nodes.find((node) => node.type === "loomAgent");
+    const agent = workflow.graph.nodes.find((node) => node.type === "pixiceAgent");
     const onChange = vi.fn();
 
     render(
@@ -45,7 +45,7 @@ describe("WorkflowCanvas", () => {
 
   it("shows live execution modes and node run state on the canvas", () => {
     const workflow = createDefaultWorkflow({ projectId: "project-1" });
-    const agent = workflow.graph.nodes.find((node) => node.type === "loomAgent");
+    const agent = workflow.graph.nodes.find((node) => node.type === "pixiceAgent");
     const foreground = {
       ...workflow,
       graph: {
@@ -165,7 +165,7 @@ describe("WorkflowCanvas", () => {
         viewport: { x: 0, y: 0, zoom: 1 },
         nodes: [
           { id: "skill", type: "useSkill", name: "Release Rules", description: "", position: { x: 40, y: 180 }, config: { source: "markdown", path: "docs/release.md" } },
-          { id: "agent", type: "loomAgent", name: "Release Agent", description: "", position: { x: 420, y: 140 }, config: {} }
+          { id: "agent", type: "pixiceAgent", name: "Release Agent", description: "", position: { x: 420, y: 140 }, config: {} }
         ],
         edges: []
       }

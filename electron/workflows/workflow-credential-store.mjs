@@ -76,7 +76,7 @@ function decryptValues(crypto, encrypted) {
 export class WorkflowCredentialStore {
   constructor(userDataPath, { crypto } = {}) {
     this.crypto = crypto;
-    this.filePath = path.join(userDataPath, "loom-workflow-credentials.json");
+    this.filePath = path.join(userDataPath, "pixice-workflow-credentials.json");
     this.records = this.#load();
   }
 

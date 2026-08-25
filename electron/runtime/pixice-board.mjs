@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-export const LOOM_BOARD_NAMESPACE = "loom_board";
-export const LOOM_BOARD_MCP_TOOLS = new Set([
-  "mcp__loom_board__list_tasks",
-  "mcp__loom_board__create_task",
-  "mcp__loom_board__update_task",
-  "mcp__loom_board__move_task",
-  "mcp__loom_board__delete_task",
-  "mcp__loom_board__attach_thread"
+export const PIXICE_BOARD_NAMESPACE = "pixice_board";
+export const PIXICE_BOARD_MCP_TOOLS = new Set([
+  "mcp__pixice_board__list_tasks",
+  "mcp__pixice_board__create_task",
+  "mcp__pixice_board__update_task",
+  "mcp__pixice_board__move_task",
+  "mcp__pixice_board__delete_task",
+  "mcp__pixice_board__attach_thread"
 ]);
 
 const column = z.enum(["backlog", "ready", "active", "done"]);
@@ -16,7 +16,7 @@ const taskId = z.string().trim().min(1).max(160);
 const title = z.string().trim().min(1).max(240);
 const description = z.string().trim().max(10_000);
 
-export const loomBoardToolShapes = {
+export const pixiceBoardToolShapes = {
   list_tasks: { column: column.optional() },
   create_task: {
     title,
@@ -41,7 +41,7 @@ export const loomBoardToolShapes = {
   }
 };
 
-const schemas = Object.fromEntries(Object.entries(loomBoardToolShapes).map(([name, shape]) => [name, z.object(shape).strict()]));
+const schemas = Object.fromEntries(Object.entries(pixiceBoardToolShapes).map(([name, shape]) => [name, z.object(shape).strict()]));
 schemas.update_task = schemas.update_task.refine(
   (input) => input.title !== undefined || input.description !== undefined,
   "A task change is required"
@@ -110,9 +110,9 @@ const descriptions = {
   attach_thread: "Attach a Pixice thread to an existing kanban task. Defaults to the active thread."
 };
 
-export const loomBoardDynamicTools = [{
+export const pixiceBoardDynamicTools = [{
   type: "namespace",
-  name: LOOM_BOARD_NAMESPACE,
+  name: PIXICE_BOARD_NAMESPACE,
   description: "Inspect and manage the current Pixice project's kanban board. Tasks exist independently from threads, and may optionally link to a running thread.",
   tools: Object.keys(toolSchemas).map((name) => ({
     type: "function",

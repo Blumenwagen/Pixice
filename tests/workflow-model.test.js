@@ -11,8 +11,8 @@ describe("workflow model", () => {
   it("creates an executable background Pixice Agent workflow", () => {
     const workflow = createDefaultWorkflow({ projectId: "project-1", name: "Ship release" });
     expect(workflow.name).toBe("Ship release");
-    expect(workflow.graph.nodes.map((node) => node.type)).toEqual(["manualTrigger", "loomAgent", "output"]);
-    expect(workflow.graph.nodes.find((node) => node.type === "loomAgent")?.config.executionMode).toBe("background");
+    expect(workflow.graph.nodes.map((node) => node.type)).toEqual(["manualTrigger", "pixiceAgent", "output"]);
+    expect(workflow.graph.nodes.find((node) => node.type === "pixiceAgent")?.config.executionMode).toBe("background");
     expect(workflowExecutionLayers(workflow)).toHaveLength(3);
   });
 
@@ -20,7 +20,7 @@ describe("workflow model", () => {
     const graph = {
       nodes: [
         { id: "start", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
-        { id: "agent", type: "loomAgent", name: "Agent", description: "", position: { x: 1, y: 1 }, config: { prompt: "Work" } }
+        { id: "agent", type: "pixiceAgent", name: "Agent", description: "", position: { x: 1, y: 1 }, config: { prompt: "Work" } }
       ],
       edges: [{ id: "edge", source: "start", target: "agent", sourcePort: "output", targetPort: "input" }],
       viewport: { x: 0, y: 0, zoom: 1 }
@@ -40,7 +40,7 @@ describe("workflow model", () => {
       { id: "start", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
       { id: "skill-one", type: "useSkill", name: "Release Skill", description: "", position: { x: 0, y: 2 }, config: { source: "installed", skillRef: "release", skillName: "Release" } },
       { id: "skill-two", type: "useSkill", name: "Project Guide", description: "", position: { x: 0, y: 4 }, config: { source: "markdown", path: "docs/guide.md" } },
-      { id: "agent", type: "loomAgent", name: "Agent", description: "", position: { x: 2, y: 2 }, config: {} },
+      { id: "agent", type: "pixiceAgent", name: "Agent", description: "", position: { x: 2, y: 2 }, config: {} },
       { id: "transform", type: "transform", name: "Transform", description: "", position: { x: 4, y: 2 }, config: {} }
     ];
     const valid = validateWorkflowGraph({

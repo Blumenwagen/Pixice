@@ -34,12 +34,12 @@ describe("CodexRuntime lifecycle", () => {
   });
 
   it("reports missing Pixice guidance instead of silently dropping it", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "loom-runtime-"));
+    const directory = await mkdtemp(path.join(os.tmpdir(), "pixice-runtime-"));
     temporaryDirectories.push(directory);
     const binary = path.join(directory, process.platform === "win32" ? "codex.exe" : "codex");
     await writeFile(binary, "fake codex", { mode: 0o755 });
-    const previous = process.env.LOOM_CODEX_PATH;
-    process.env.LOOM_CODEX_PATH = binary;
+    const previous = process.env.PIXICE_CODEX_PATH;
+    process.env.PIXICE_CODEX_PATH = binary;
 
     const runtime = new CodexRuntime({
       resourcesPath: directory,
@@ -53,14 +53,14 @@ describe("CodexRuntime lifecycle", () => {
       await expect(runtime.start()).resolves.toBe(false);
       expect(errors).toEqual([expect.objectContaining({ code: "developer_instructions_unavailable" })]);
     } finally {
-      if (previous === undefined) delete process.env.LOOM_CODEX_PATH;
-      else process.env.LOOM_CODEX_PATH = previous;
+      if (previous === undefined) delete process.env.PIXICE_CODEX_PATH;
+      else process.env.PIXICE_CODEX_PATH = previous;
       await runtime.stop();
     }
   });
 
   it("rejects a packaged runtime that is missing the code-mode host", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "loom-runtime-"));
+    const directory = await mkdtemp(path.join(os.tmpdir(), "pixice-runtime-"));
     temporaryDirectories.push(directory);
     const key = `${process.platform}-${process.arch}`;
     const filename = process.platform === "win32" ? "codex-app-server.exe" : "codex-app-server";
@@ -90,12 +90,12 @@ describe("CodexRuntime lifecycle", () => {
   });
 
   it("turns a spawn failure into one recoverable error and can stop cleanly", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "loom-runtime-"));
+    const directory = await mkdtemp(path.join(os.tmpdir(), "pixice-runtime-"));
     temporaryDirectories.push(directory);
     const binary = path.join(directory, process.platform === "win32" ? "codex.exe" : "codex");
     await writeFile(binary, "not executable", { mode: 0o600 });
-    const previous = process.env.LOOM_CODEX_PATH;
-    process.env.LOOM_CODEX_PATH = binary;
+    const previous = process.env.PIXICE_CODEX_PATH;
+    process.env.PIXICE_CODEX_PATH = binary;
 
     const runtime = new CodexRuntime({ resourcesPath: directory, clientVersion: "test", allowDevelopmentRuntime: true });
     const errors = [];
@@ -105,8 +105,8 @@ describe("CodexRuntime lifecycle", () => {
       expect(errors).toEqual([expect.objectContaining({ code: "runtime_spawn_failed" })]);
       await expect(runtime.stop()).resolves.toBeUndefined();
     } finally {
-      if (previous === undefined) delete process.env.LOOM_CODEX_PATH;
-      else process.env.LOOM_CODEX_PATH = previous;
+      if (previous === undefined) delete process.env.PIXICE_CODEX_PATH;
+      else process.env.PIXICE_CODEX_PATH = previous;
       await runtime.stop();
     }
   });

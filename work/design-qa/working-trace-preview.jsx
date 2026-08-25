@@ -38,7 +38,7 @@ function Preview() {
   }, []);
 
   return (
-    <main className="loom-stage" style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--canvas)" }}>
+    <main className="pixice-stage" style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--canvas)" }}>
       <section style={{ width: "min(920px, calc(100vw - 80px))", padding: "44px 54px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 18 }}>
         <p style={{ margin: "0 0 22px", color: "var(--muted)", fontSize: 14, lineHeight: 1.65 }}>
           I’ll compare local <code>main</code> with its remote tracking branch and summarize the changes.

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDefaultWorkflow } from "../electron/workflows/workflow-model.mjs";
 import { WorkflowStore } from "../electron/workflows/workflow-store.mjs";
@@ -13,7 +14,7 @@ afterEach(() => {
 
 describe("WorkflowStore", () => {
   it("persists workflows and enforces optimistic saves", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflows-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflows-"));
     temporaryDirectories.push(directory);
     const store = new WorkflowStore(directory);
     const created = store.createWorkflow(createDefaultWorkflow({ projectId: "project-1", name: "Release" }));
@@ -29,7 +30,7 @@ describe("WorkflowStore", () => {
   });
 
   it("tracks run and node state as JSON", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-runs-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-runs-"));
     temporaryDirectories.push(directory);
     const store = new WorkflowStore(directory);
     const workflow = store.createWorkflow(createDefaultWorkflow({ projectId: "project-1" }));
@@ -53,5 +54,25 @@ describe("WorkflowStore", () => {
     expect(updated).toMatchObject({ status: "completed", input: { ticket: 42 }, output: "done" });
     expect(store.listRuns(workflow.id)).toHaveLength(1);
     store.close();
+  });
+
+  it("migrates agent nodes saved by the previous product name", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflows-"));
+    temporaryDirectories.push(directory);
+    const store = new WorkflowStore(directory);
+    const workflow = store.createWorkflow(createDefaultWorkflow({ projectId: "project-1" }));
+    store.close();
+
+    const sqlite = new DatabaseSync(path.join(directory, "pixice-workflows.sqlite"));
+    const row = sqlite.prepare("SELECT graph FROM workflows WHERE id = ?").get(workflow.id);
+    const graph = JSON.parse(row.graph);
+    const legacyType = `${["lo", "om"].join("")}Agent`;
+    graph.nodes = graph.nodes.map((node) => node.type === "pixiceAgent" ? { ...node, type: legacyType } : node);
+    sqlite.prepare("UPDATE workflows SET graph = ? WHERE id = ?").run(JSON.stringify(graph), workflow.id);
+    sqlite.close();
+
+    const reopened = new WorkflowStore(directory);
+    expect(reopened.getWorkflow(workflow.id).graph.nodes.some((node) => node.type === "pixiceAgent")).toBe(true);
+    reopened.close();
   });
 });

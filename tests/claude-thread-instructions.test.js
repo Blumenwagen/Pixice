@@ -17,7 +17,7 @@ function tick() {
 
 describe("Claude thread instructions", () => {
   it("uses thread-specific developer instructions for workflow-attached Skills", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-thread-instructions-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-thread-instructions-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const output = new AsyncPromptQueue();
@@ -77,7 +77,7 @@ describe("Claude thread instructions", () => {
   });
 
   it("refreshes global behavior instructions before the next turn", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-refresh-instructions-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-refresh-instructions-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const outputs = [new AsyncPromptQueue(), new AsyncPromptQueue()];

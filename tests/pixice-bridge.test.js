@@ -1,11 +1,11 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { PixiceBridge } from "../electron/runtime/loom-bridge.mjs";
+import { PixiceBridge } from "../electron/runtime/pixice-bridge.mjs";
 
 class MemoryDatabase {
   constructor() { this.links = new Map(); }
   saveThreadLink(link) {
-    const saved = { kind: "loomBridge", ...link };
+    const saved = { kind: "pixiceBridge", ...link };
     this.links.set(link.childThreadId, saved);
     return saved;
   }
@@ -40,7 +40,7 @@ function createBridge(models) {
   const bridge = new PixiceBridge({
     runtime,
     database,
-    dynamicTools: () => [{ name: "loom_bridge" }],
+    dynamicTools: () => [{ name: "pixice_bridge" }],
     threadContext: () => ({
       projectId: "project-1",
       cwd: "/workspace",

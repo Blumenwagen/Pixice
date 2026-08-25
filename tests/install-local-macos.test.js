@@ -29,7 +29,7 @@ describe("local macOS installer", () => {
   });
 
   it("launches exactly one detached worker without launchd", () => {
-    const logPath = path.join(tmpdir(), `loom-local-installer-test-${process.pid}.log`);
+    const logPath = path.join(tmpdir(), `pixice-local-installer-test-${process.pid}.log`);
     const unref = vi.fn();
     const spawn = vi.fn(() => ({ pid: 99, unref }));
 

@@ -1,14 +1,14 @@
-.loom-app[data-workflows-active="true"] .rail-nav-item.active:not(.workflow-nav-item) {
+.pixice-app[data-workflows-active="true"] .rail-nav-item.active:not(.workflow-nav-item) {
   color: var(--muted);
   background: transparent;
 }
 
-.loom-app[data-workflows-active="true"] .workflow-nav-item.active {
+.pixice-app[data-workflows-active="true"] .workflow-nav-item.active {
   color: var(--foreground);
   background: rgba(255, 255, 255, .06);
 }
 
-.loom-app[data-workflows-active="true"] > .sidebar {
+.pixice-app[data-workflows-active="true"] > .sidebar {
   visibility: hidden;
 }
 

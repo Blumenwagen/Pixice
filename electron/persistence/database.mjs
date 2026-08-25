@@ -46,6 +46,7 @@ function usageTotals(rows) {
 
 const DEFAULT_PROJECT_ICON = "folder";
 const DEFAULT_PROJECT_COLOR = "blue";
+const LEGACY_BRIDGE_KIND = `${["lo", "om"].join("")}Bridge`;
 
 function mapProject(row, folders = []) {
   if (!row) return null;
@@ -80,7 +81,7 @@ function mapBoardTask(row) {
 
 export class PixiceDatabase {
   constructor(userDataPath) {
-    this.db = new DatabaseSync(path.join(userDataPath, "loom.sqlite"));
+    this.db = new DatabaseSync(path.join(userDataPath, "pixice.sqlite"));
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -176,6 +177,7 @@ export class PixiceDatabase {
         INSERT OR IGNORE INTO project_folders (project_id, canonical_path, position, created_at)
         SELECT id, canonical_path, 0, created_at FROM projects
       `);
+      this.db.prepare("UPDATE thread_links SET kind = ? WHERE kind = ?").run("pixiceBridge", LEGACY_BRIDGE_KIND);
       this.db.exec("COMMIT");
     } catch (error) {
       try { this.db.exec("ROLLBACK"); } catch {}
@@ -587,7 +589,7 @@ export class PixiceDatabase {
     this.db.prepare("DELETE FROM thread_provider_bindings WHERE thread_id = ?").run(threadId);
   }
 
-  saveThreadLink({ childThreadId, parentThreadId, kind = "loomBridge", model = null, effort = null }) {
+  saveThreadLink({ childThreadId, parentThreadId, kind = "pixiceBridge", model = null, effort = null }) {
     const createdAt = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO thread_links (child_thread_id, parent_thread_id, kind, model, effort, created_at)

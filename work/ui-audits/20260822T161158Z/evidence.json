@@ -117,7 +117,7 @@
       },
       {
         "tag": "DIV",
-        "className": "loom-app view-task",
+        "className": "pixice-app view-task",
         "rect": {
           "x": 0,
           "y": 0,
@@ -131,7 +131,7 @@
       },
       {
         "tag": "DIV",
-        "className": "loom-stage",
+        "className": "pixice-stage",
         "rect": {
           "x": 0,
           "y": 0,

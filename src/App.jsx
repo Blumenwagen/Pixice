@@ -8,7 +8,7 @@ import {
   TerminalWindow, Trash, TreeStructure, Warning, X
 } from "./components/icons/index.jsx";
 import { APP_ICONS } from "./components/icons/app-iconography.jsx";
-import loomIcon from "./assets/loom-icon.png";
+import pixiceIcon from "./assets/pixice-icon.png";
 import { ReasoningOrb } from "./components/ReasoningOrb.jsx";
 import { StreamingText } from "./components/StreamingText.jsx";
 import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
@@ -51,15 +51,15 @@ const MIN_PREVIEW_CHAT_WIDTH = 300;
 const MAX_PREVIEW_CHAT_WIDTH = 640;
 const MIN_PREVIEW_PANEL_WIDTH = 360;
 const PREVIEW_SPLIT_GAP = 8;
-const PREVIEW_CHAT_WIDTH_KEY = "loom.previewChatWidth";
+const PREVIEW_CHAT_WIDTH_KEY = "pixice.previewChatWidth";
 const MAX_COMPOSER_ATTACHMENTS = 10;
 const MAX_COMPOSER_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MIN_COMPOSER_TEXTAREA_HEIGHT = 54;
 const MAX_COMPOSER_TEXTAREA_HEIGHT = 240;
 const MAX_RETAINED_PREVIEW_WORKSPACES = 2;
-const THREAD_COMPLETIONS_SEEN_KEY = "loom.threadCompletionsSeen";
+const THREAD_COMPLETIONS_SEEN_KEY = "pixice.threadCompletionsSeen";
 const THREAD_COMPLETIONS_SEEN_BASELINE_KEY = "__baselineAt";
-const THREAD_MESSAGE_RECENCY_KEY = "loom.threadMessageRecency";
+const THREAD_MESSAGE_RECENCY_KEY = "pixice.threadMessageRecency";
 const COMPOSER_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"]);
 const DEFAULT_PREFERENCES = {
   confirmBeforeDelete: true,
@@ -146,7 +146,7 @@ const SLASH_COMMANDS = [
 
 function loadPreferences() {
   try {
-    const saved = JSON.parse(localStorage.getItem("loom.preferences") ?? "{}");
+    const saved = JSON.parse(localStorage.getItem("pixice.preferences") ?? "{}");
     const preferences = { ...DEFAULT_PREFERENCES, ...saved };
     preferences.threadCleanupAgeDays = normalizeThreadCleanupAgeDays(preferences.threadCleanupAgeDays);
     return preferences;
@@ -160,7 +160,7 @@ function supportedReasoningEfforts(model) {
 }
 
 function threadConfigurationKey(threadId) {
-  return `loom.threadConfiguration.${threadId}`;
+  return `pixice.threadConfiguration.${threadId}`;
 }
 
 function loadThreadConfiguration(threadId) {
@@ -535,7 +535,7 @@ export function Sidebar({
   width,
   onWidthChange
 }) {
-  const [pinnedExpanded, setPinnedExpanded] = useState(() => localStorage.getItem("loom.sidebarPinned") !== "false");
+  const [pinnedExpanded, setPinnedExpanded] = useState(() => localStorage.getItem("pixice.sidebarPinned") !== "false");
   const [previewPinnedExpanded, setPreviewPinnedExpanded] = useState(false);
   const sidebarHoveredRef = useRef(false);
   const previewModeRef = useRef(collapseForPreview);
@@ -580,7 +580,7 @@ export function Sidebar({
     }
     const next = !expanded;
     setPinnedExpanded(next);
-    localStorage.setItem("loom.sidebarPinned", String(next));
+    localStorage.setItem("pixice.sidebarPinned", String(next));
   };
 
   const keepExpanded = () => {
@@ -589,7 +589,7 @@ export function Sidebar({
       return;
     }
     setPinnedExpanded(true);
-    localStorage.setItem("loom.sidebarPinned", "true");
+    localStorage.setItem("pixice.sidebarPinned", "true");
   };
 
   const resizeFromPointer = (event) => {
@@ -608,7 +608,7 @@ export function Sidebar({
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
       document.body.classList.remove("sidebar-resizing");
-      localStorage.setItem("loom.sidebarWidth", String(nextWidth));
+      localStorage.setItem("pixice.sidebarWidth", String(nextWidth));
       resizeCleanup.current = null;
     };
 
@@ -631,7 +631,7 @@ export function Sidebar({
     keepExpanded();
     const nextWidth = clampSidebarWidth(adjustments[event.key]);
     onWidthChange(nextWidth);
-    localStorage.setItem("loom.sidebarWidth", String(nextWidth));
+    localStorage.setItem("pixice.sidebarWidth", String(nextWidth));
   };
 
   return (
@@ -650,7 +650,7 @@ export function Sidebar({
     >
       {legacySidebar ? (
         <div className="rail-header">
-          <div className="brand-mark"><img src={loomIcon} alt="" /></div>
+          <div className="brand-mark"><img src={pixiceIcon} alt="" /></div>
           <div className="brand-copy">
             <strong>Pixice</strong>
             <small>{runtime?.connected ? "Codex connected" : "Codex offline"}</small>
@@ -1960,7 +1960,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
   const items = turn.items ?? [];
   const threadId = thread.id;
   const running = turnIsRunning(turn.status);
-  const bridgeTurn = turnIndex === 0 && (thread.bridge?.kind === "loomBridge" || thread.bridgeModel);
+  const bridgeTurn = turnIndex === 0 && (thread.bridge?.kind === "pixiceBridge" || thread.bridgeModel);
   const firstUserIndex = items.findIndex((item) => item.type === "userMessage");
   const explicitFinalIndex = items.findLastIndex((item) => item.type === "agentMessage" && item.phase === "final_answer");
   const fallbackFinalIndex = explicitFinalIndex === -1 && turn.status === "completed"
@@ -2164,7 +2164,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, running, questionR
   const [attachmentNotice, setAttachmentNotice] = useState("");
   const [commandSelection, setCommandSelection] = useState(0);
   const [commandsDismissed, setCommandsDismissed] = useState(false);
-  const storageKey = `loom.draft.${draftKey}`;
+  const storageKey = `pixice.draft.${draftKey}`;
   const commandListId = useId();
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -2652,7 +2652,7 @@ function ConversationWorkspace({
     const target = document.getElementById(item.anchorId);
     if (!node || !target) return;
     const top = node.scrollTop + target.getBoundingClientRect().top - node.getBoundingClientRect().top - 28;
-    const reduceMotion = document.querySelector(".loom-app")?.dataset.reduceMotion === "true"
+    const reduceMotion = document.querySelector(".pixice-app")?.dataset.reduceMotion === "true"
       || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     followLatestRef.current = false;
     setActivePromptId(item.id);
@@ -2732,7 +2732,7 @@ function ConversationWorkspace({
       <AnimatePresence initial={false} onExitComplete={() => setPreviewPresent(false)}>
         {previewOpen && (
           <BrowserPanel
-            api={window.loom}
+            api={window.pixice}
             workspaceId={previewWorkspaceId}
             state={browserState}
             onState={onBrowserState}
@@ -3655,8 +3655,8 @@ function SettingsWorkspace({
       </>
     );
   } else if (page === "agent-behavior") {
-    const coreBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category !== "loom-native");
-    const loomNativeBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category === "loom-native");
+    const coreBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category !== "pixice-native");
+    const pixiceNativeBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category === "pixice-native");
     const renderBehavior = (behavior) => (
       <SettingsRow key={behavior.id} title={behavior.label} description={behavior.description}>
         <SettingsToggle label={behavior.label} checked={agentBehaviors[behavior.id] ?? behavior.defaultEnabled} onChange={(value) => onAgentBehaviorChange(behavior.id, value)} />
@@ -3667,9 +3667,9 @@ function SettingsWorkspace({
         <SettingsGroup title="Behavior packs" description="Bundled Markdown guidance added to every new or resumed Pixice agent.">
           {coreBehaviors.map(renderBehavior)}
         </SettingsGroup>
-        {loomNativeBehaviors.length > 0 && (
+        {pixiceNativeBehaviors.length > 0 && (
           <SettingsGroup title="Pixice-native features" description="Optional guidance that makes agents more proactive with Pixice's own coordination tools.">
-            {loomNativeBehaviors.map(renderBehavior)}
+            {pixiceNativeBehaviors.map(renderBehavior)}
           </SettingsGroup>
         )}
         <p className="settings-footnote">New agents use changes immediately. Existing sessions pick them up when Pixice next resumes them; an active turn keeps its current guidance.</p>
@@ -3845,7 +3845,7 @@ function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate,
 
 export function App() {
   const systemReducedMotion = useReducedMotion();
-  const api = window.loom;
+  const api = window.pixice;
   const [projects, setProjects] = useState([]);
   const [projectActivity, setProjectActivity] = useState({});
   const [seenThreadCompletions, setSeenThreadCompletions] = useState(loadSeenThreadCompletions);
@@ -3893,7 +3893,7 @@ export function App() {
   const [effort, setEffort] = useState("");
   const [fastMode, setFastMode] = useState(false);
   const [defaultPermissionMode, setDefaultPermissionMode] = useState(() => {
-    const saved = localStorage.getItem("loom.permissionMode");
+    const saved = localStorage.getItem("pixice.permissionMode");
     return PERMISSION_OPTIONS.some((option) => option.value === saved) ? saved : "workspace-write";
   });
   const [permissionMode, setPermissionMode] = useState(defaultPermissionMode);
@@ -3913,7 +3913,7 @@ export function App() {
   const [codexUpdateToastOpen, setCodexUpdateToastOpen] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = Number.parseInt(localStorage.getItem("loom.sidebarWidth") ?? "", 10);
+    const saved = Number.parseInt(localStorage.getItem("pixice.sidebarWidth") ?? "", 10);
     return Number.isFinite(saved) && saved !== 296 ? clampSidebarWidth(saved) : DEFAULT_SIDEBAR_WIDTH;
   });
 
@@ -3933,9 +3933,9 @@ export function App() {
   const [error, setError] = useState(null);
 
   const savePersistentDefaults = useCallback((patch) => {
-    if (patch.defaultModel !== undefined) localStorage.setItem("loom.model", patch.defaultModel);
-    if (patch.defaultEffort !== undefined) localStorage.setItem("loom.effort", patch.defaultEffort);
-    if (patch.defaultPermissionMode !== undefined) localStorage.setItem("loom.permissionMode", patch.defaultPermissionMode);
+    if (patch.defaultModel !== undefined) localStorage.setItem("pixice.model", patch.defaultModel);
+    if (patch.defaultEffort !== undefined) localStorage.setItem("pixice.effort", patch.defaultEffort);
+    if (patch.defaultPermissionMode !== undefined) localStorage.setItem("pixice.permissionMode", patch.defaultPermissionMode);
     if (!api?.app?.saveSettings) return;
     void api.app.saveSettings(patch).catch((cause) => setError(cause.message));
   }, [api]);
@@ -4026,8 +4026,8 @@ export function App() {
       if (Number.isFinite(leftRecency) && Number.isFinite(rightRecency)) return rightRecency - leftRecency;
       if (Number.isFinite(leftRecency)) return -1;
       if (Number.isFinite(rightRecency)) return 1;
-      const leftWasAgentSpawned = left.candidate.bridge?.kind === "loomBridge" || Boolean(left.candidate.bridgeModel);
-      const rightWasAgentSpawned = right.candidate.bridge?.kind === "loomBridge" || Boolean(right.candidate.bridgeModel);
+      const leftWasAgentSpawned = left.candidate.bridge?.kind === "pixiceBridge" || Boolean(left.candidate.bridgeModel);
+      const rightWasAgentSpawned = right.candidate.bridge?.kind === "pixiceBridge" || Boolean(right.candidate.bridgeModel);
       if (leftWasAgentSpawned !== rightWasAgentSpawned) return leftWasAgentSpawned ? 1 : -1;
       return left.originalIndex - right.originalIndex;
     })
@@ -4093,7 +4093,7 @@ export function App() {
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
-    window.dispatchEvent(new CustomEvent("loom:active-thread-changed", { detail: selectedThreadId }));
+    window.dispatchEvent(new CustomEvent("pixice:active-thread-changed", { detail: selectedThreadId }));
   }, [selectedThreadId]);
 
   useEffect(() => {
@@ -4102,7 +4102,7 @@ export function App() {
 
   useEffect(() => {
     preferencesRef.current = preferences;
-    localStorage.setItem("loom.preferences", JSON.stringify(preferences));
+    localStorage.setItem("pixice.preferences", JSON.stringify(preferences));
   }, [preferences]);
 
   const changePreference = useCallback((key, value) => {
@@ -4405,9 +4405,9 @@ export function App() {
       if (cancelled) return;
       const nextModels = result.models ?? [];
       const persisted = result.settings ?? {};
-      const legacyModel = localStorage.getItem("loom.model") || "";
-      const legacyEffort = localStorage.getItem("loom.effort") || "";
-      const legacyPermission = localStorage.getItem("loom.permissionMode") || "";
+      const legacyModel = localStorage.getItem("pixice.model") || "";
+      const legacyEffort = localStorage.getItem("pixice.effort") || "";
+      const legacyPermission = localStorage.getItem("pixice.permissionMode") || "";
       const requestedModel = persisted.defaultModel || legacyModel;
       const resolvedModel = nextModels.find((model) => model.model === requestedModel)
         ?? nextModels.find((model) => model.isDefault)
@@ -4445,7 +4445,7 @@ export function App() {
       if (Object.entries(resolvedDefaults).some(([key, value]) => persisted[key] !== value)) {
         savePersistentDefaults(resolvedDefaults);
       }
-      const saved = localStorage.getItem("loom.activeProjectId");
+      const saved = localStorage.getItem("pixice.activeProjectId");
       const selected = result.projects?.find((project) => project.id === saved)?.id ?? result.projects?.[0]?.id ?? null;
       setSelectedProjectId(selected);
     }).catch((cause) => setError(cause.message)).finally(() => {
@@ -4601,8 +4601,8 @@ export function App() {
       setReview({ repository: null, diff: "" });
       return;
     }
-    localStorage.setItem("loom.activeProjectId", selectedProjectId);
-    window.dispatchEvent(new CustomEvent("loom:active-project-changed", { detail: selectedProjectId }));
+    localStorage.setItem("pixice.activeProjectId", selectedProjectId);
+    window.dispatchEvent(new CustomEvent("pixice:active-project-changed", { detail: selectedProjectId }));
     loadThreads(selectedProjectId);
     loadReview(selectedProjectId);
     loadBoard(selectedProjectId);
@@ -4741,7 +4741,7 @@ export function App() {
       if (event.type === "BrowserOpenRequested") {
         const workspaceId = event.payload.workspaceId ?? event.payload.threadId;
         updatePreviewWorkspace(workspaceId, (workspace) => ({ ...workspace, open: true, activeTabId: null }));
-        if (workspaceId === selectedThreadIdRef.current && document.querySelector(".loom-app.view-task")) {
+        if (workspaceId === selectedThreadIdRef.current && document.querySelector(".pixice-app.view-task")) {
           setInspectorOpen(false);
         }
         return;
@@ -4795,7 +4795,7 @@ export function App() {
               : [...current, instrument]
           };
         });
-        if (workspaceId === selectedThreadIdRef.current && document.querySelector(".loom-app.view-task")) setInspectorOpen(false);
+        if (workspaceId === selectedThreadIdRef.current && document.querySelector(".pixice-app.view-task")) setInspectorOpen(false);
         return;
       }
       if (event.type === "BoardUpdated") {
@@ -5644,9 +5644,9 @@ export function App() {
   }
 
   return (
-    <div className="loom-stage">
+    <div className="pixice-stage">
       <div
-        className={`loom-app view-${activeView}`}
+        className={`pixice-app view-${activeView}`}
         data-sidebar-expanded={sidebarExpanded}
         data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread)}
         data-density={preferences.density}

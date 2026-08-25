@@ -24,7 +24,7 @@ describe("Claude provider", () => {
   });
 
   it("uses exactly the models reported by the Claude SDK", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-models-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-models-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const provider = new ClaudeProvider({
@@ -53,7 +53,7 @@ describe("Claude provider", () => {
   });
 
   it("does not cache the minimal fallback when model discovery fails", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-model-retry-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-model-retry-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const supportedModels = vi.fn()
@@ -73,7 +73,7 @@ describe("Claude provider", () => {
   });
 
   it("prefers an installed Claude Code executable like T3's provider", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-bin-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-bin-"));
     temporaryDirectories.push(directory);
     const executable = path.join(directory, process.platform === "win32" ? "claude.exe" : "claude");
     writeFileSync(executable, "test");
@@ -83,7 +83,7 @@ describe("Claude provider", () => {
   });
 
   it("finds electron-builder's unpacked Claude runtime in packaged apps", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-packaged-claude-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-packaged-claude-"));
     temporaryDirectories.push(directory);
     const packageName = `claude-agent-sdk-${process.platform === "win32" ? "win32" : process.platform}-${process.arch}`;
     const executable = path.join(
@@ -108,10 +108,10 @@ describe("Claude provider", () => {
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true
     });
-    expect(claudePermissionSettings("read-only").tools).toContain("mcp__loom__request_user_input");
-    expect(claudePermissionSettings("read-only").tools).toContain("mcp__loom_board__list_tasks");
-    expect(claudePermissionSettings("read-only").tools).toContain("mcp__loom_board__create_task");
-    expect(claudePermissionSettings("read-only").tools).toContain("mcp__loom_instruments__create_instrument");
+    expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice__request_user_input");
+    expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_board__list_tasks");
+    expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_board__create_task");
+    expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_instruments__create_instrument");
   });
 
   it("uses the Claude Code system preset and preserves the host environment", () => {
@@ -133,11 +133,11 @@ describe("Claude provider", () => {
       systemPrompt: { type: "preset", preset: "claude_code", append: "Pixice guidance" },
       appendSubagentSystemPrompt: "Pixice guidance"
     });
-    expect(options.env.CLAUDE_AGENT_SDK_CLIENT_APP).toBe("loom/1.2.3");
+    expect(options.env.CLAUDE_AGENT_SDK_CLIENT_APP).toBe("pixice/1.2.3");
   });
 
   it("reads the Claude account and starts the SDK sign-in flow", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-account-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-account-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const queries = [];
@@ -175,7 +175,7 @@ describe("Claude provider", () => {
   });
 
   it("keeps one streaming query open and translates SDK output to canonical Pixice events", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-claude-provider-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-provider-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const output = new AsyncPromptQueue();
@@ -190,8 +190,8 @@ describe("Claude provider", () => {
     const provider = new ClaudeProvider({
       database,
       clientVersion: "test",
-      loomBridge: { handleToolCall: vi.fn() },
-      loomInstruments: { handleToolCall: vi.fn() },
+      pixiceBridge: { handleToolCall: vi.fn() },
+      pixiceInstruments: { handleToolCall: vi.fn() },
       queryFactory: (args) => { queryArguments = args; return query; }
     });
     const events = [];
@@ -213,12 +213,12 @@ describe("Claude provider", () => {
     const promptMessage = await queryArguments.prompt[Symbol.asyncIterator]().next();
     expect(promptMessage.value.message.content).toEqual([{ type: "text", text: "Implement it" }]);
     expect(queryArguments.options).toMatchObject({ model: "sonnet", effort: "high", permissionMode: "acceptEdits" });
-    expect(queryArguments.options.mcpServers.loom).toMatchObject({ type: "sdk", name: "loom" });
-    expect(queryArguments.options.mcpServers.loom_bridge).toMatchObject({ type: "sdk", name: "loom_bridge" });
-    expect(queryArguments.options.mcpServers.loom_instruments).toMatchObject({ type: "sdk", name: "loom_instruments" });
-    await expect(queryArguments.options.canUseTool("mcp__loom__request_user_input", {}, {})).resolves.toMatchObject({ behavior: "allow" });
-    await expect(queryArguments.options.canUseTool("mcp__loom_bridge__spawn_thread", {}, {})).resolves.toMatchObject({ behavior: "allow" });
-    await expect(queryArguments.options.canUseTool("mcp__loom_instruments__create_instrument", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    expect(queryArguments.options.mcpServers.pixice).toMatchObject({ type: "sdk", name: "pixice" });
+    expect(queryArguments.options.mcpServers.pixice_bridge).toMatchObject({ type: "sdk", name: "pixice_bridge" });
+    expect(queryArguments.options.mcpServers.pixice_instruments).toMatchObject({ type: "sdk", name: "pixice_instruments" });
+    await expect(queryArguments.options.canUseTool("mcp__pixice__request_user_input", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    await expect(queryArguments.options.canUseTool("mcp__pixice_bridge__spawn_thread", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    await expect(queryArguments.options.canUseTool("mcp__pixice_instruments__create_instrument", {}, {})).resolves.toMatchObject({ behavior: "allow" });
 
     output.push({ type: "system", subtype: "init", session_id: thread.providerThreadId, uuid: "init-1" });
     output.push({

@@ -116,7 +116,7 @@
   50% { opacity: 1; transform: scale(1); }
 }
 
-:global(.loom-app[data-reduce-motion="true"]) .runningMark i { animation: none; }
+:global(.pixice-app[data-reduce-motion="true"]) .runningMark i { animation: none; }
 
 .tooltip {
   position: absolute;

@@ -31,14 +31,14 @@ function waitForPreviewPanel(workspaceId, timeoutMs = 1800) {
 }
 
 export function WorkflowHost({ children }) {
-  const api = window.loom;
+  const api = window.pixice;
   const [navTarget, setNavTarget] = useState(null);
   const [appTarget, setAppTarget] = useState(null);
   const [previewTarget, setPreviewTarget] = useState(null);
   const [active, setActive] = useState(false);
   const [projects, setProjects] = useState([]);
   const [models, setModels] = useState([]);
-  const [projectId, setProjectId] = useState(() => localStorage.getItem("loom.activeProjectId"));
+  const [projectId, setProjectId] = useState(() => localStorage.getItem("pixice.activeProjectId"));
   const [requestedWorkflowId, setRequestedWorkflowId] = useState(null);
   const [preview, setPreview] = useState(null);
   const currentThreadIdRef = useRef(null);
@@ -50,7 +50,7 @@ export function WorkflowHost({ children }) {
       const nextNavTarget = document.querySelector("[data-workflow-nav-slot]")
         ?? document.querySelector(".sidebar .rail-group");
       const nextAppTarget = document.querySelector("[data-workflow-workspace-slot]")
-        ?? document.querySelector(".loom-app");
+        ?? document.querySelector(".pixice-app");
       setNavTarget((current) => current === nextNavTarget ? current : nextNavTarget);
       setAppTarget((current) => current === nextAppTarget ? current : nextAppTarget);
     };
@@ -93,14 +93,14 @@ export function WorkflowHost({ children }) {
 
   useEffect(() => {
     const sync = (event) => {
-      const nextProjectId = event?.detail ?? localStorage.getItem("loom.activeProjectId");
+      const nextProjectId = event?.detail ?? localStorage.getItem("pixice.activeProjectId");
       setProjectId((current) => current === nextProjectId ? current : nextProjectId);
     };
     sync();
-    window.addEventListener("loom:active-project-changed", sync);
+    window.addEventListener("pixice:active-project-changed", sync);
     window.addEventListener("storage", sync);
     return () => {
-      window.removeEventListener("loom:active-project-changed", sync);
+      window.removeEventListener("pixice:active-project-changed", sync);
       window.removeEventListener("storage", sync);
     };
   }, []);
@@ -114,7 +114,7 @@ export function WorkflowHost({ children }) {
 
   useEffect(() => {
     if (!appTarget) return undefined;
-    const appRoot = appTarget.closest?.(".loom-app") ?? appTarget;
+    const appRoot = appTarget.closest?.(".pixice-app") ?? appTarget;
     if (active) appRoot.dataset.workflowsActive = "true";
     else delete appRoot.dataset.workflowsActive;
     return () => delete appRoot.dataset.workflowsActive;
@@ -122,7 +122,7 @@ export function WorkflowHost({ children }) {
 
   useEffect(() => {
     if (!appTarget || !active) return undefined;
-    const appRoot = appTarget.closest?.(".loom-app") ?? appTarget;
+    const appRoot = appTarget.closest?.(".pixice-app") ?? appTarget;
     const covered = [...appRoot.children].filter((node) => node !== appTarget && !node.classList?.contains("window-drag-region"));
     const previous = covered.map((node) => ({
       node,
@@ -179,7 +179,7 @@ export function WorkflowHost({ children }) {
   }, [api, preview?.threadId]);
 
   const presentPendingPreview = useCallback(async (workspaceId = null) => {
-    const appRoot = document.querySelector(".loom-app.view-task");
+    const appRoot = document.querySelector(".pixice-app.view-task");
     const activeThreadId = appRoot?.dataset.activeThreadId || currentThreadIdRef.current;
     currentThreadIdRef.current = activeThreadId;
     const targetWorkspaceId = workspaceId ?? activeThreadId;
@@ -200,12 +200,12 @@ export function WorkflowHost({ children }) {
       setPreview((current) => current?.threadId === nextThreadId ? current : null);
       window.setTimeout(() => void presentPendingPreview(), 0);
     };
-    window.addEventListener("loom:active-thread-changed", syncThread);
-    return () => window.removeEventListener("loom:active-thread-changed", syncThread);
+    window.addEventListener("pixice:active-thread-changed", syncThread);
+    return () => window.removeEventListener("pixice:active-thread-changed", syncThread);
   }, [presentPendingPreview]);
 
   useEffect(() => {
-    const appRoot = document.querySelector(".loom-app");
+    const appRoot = document.querySelector(".pixice-app");
     if (!appRoot) return undefined;
     const observer = new MutationObserver(() => void presentPendingPreview());
     observer.observe(appRoot, { attributes: true, attributeFilter: ["class", "data-active-thread-id", "data-workflows-active"] });

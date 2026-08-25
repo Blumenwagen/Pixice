@@ -16,7 +16,7 @@ This preserves the surprising part of the idea without turning every agent respo
 
 ## Implemented beta slice
 
-The core beta is now in the codebase. Codex and Claude share the `loom_instruments` tool namespace and the same versioned document contract. Instruments persist in SQLite, open as thread-isolated Preview tabs, update through optimistic version checks, and disappear when their owning thread is archived or deleted.
+The core beta is now in the codebase. Codex and Claude share the `pixice_instruments` tool namespace and the same versioned document contract. Instruments persist in SQLite, open as thread-isolated Preview tabs, update through optimistic version checks, and disappear when their owning thread is archived or deleted.
 
 The native renderer supports stack, grid, split, card, and tab layouts. It also supports text, metrics, tables, graphs, charts, status lists, code, diffs, inputs, text areas, selects, toggles, ranges, and buttons. Bindings read `$state`, `$data`, and `$event`. Local actions can set or reset state and open a URL or project-relative file through the existing Preview path.
 
@@ -180,7 +180,7 @@ Agents may propose pinning. Only the user pins or widens capabilities.
 
 ## Instrument document
 
-Use a new `loom-instrument` contract. Do not stretch `loom-visualization` until it becomes an application language. The existing visualization contract remains the compact format for in-chat quantitative visuals.
+Use a new `pixice-instrument` contract. Do not stretch `pixice-visualization` until it becomes an application language. The existing visualization contract remains the compact format for in-chat quantitative visuals.
 
 Suggested top-level shape:
 
@@ -254,7 +254,7 @@ Expressions operate on JSON-compatible values and have depth, operation, and col
 
 ```mermaid
 flowchart LR
-  A[Codex or Claude] -->|loom_instruments tools| B[Instrument service]
+  A[Codex or Claude] -->|pixice_instruments tools| B[Instrument service]
   B --> C[Zod validation and normalization]
   C --> D[Instrument store]
   C --> E[Renderer event stream]
@@ -321,7 +321,7 @@ The main process remains the authority for project and thread scope. The rendere
 
 ### Agent tool surface
 
-Add the provider-neutral `loom_instruments` namespace.
+Add the provider-neutral `pixice_instruments` namespace.
 
 Recommended tools:
 
@@ -505,7 +505,7 @@ Work:
 - Add model, normalization, and renderer registry.
 - Add Instrument store and IPC.
 - Add Preview Instrument tabs.
-- Add `loom_instruments.describe_contract`, `create_instrument`, `inspect_instrument`, `update_instrument`, and `open_instrument`.
+- Add `pixice_instruments.describe_contract`, `create_instrument`, `inspect_instrument`, `update_instrument`, and `open_instrument`.
 - Add Codex dynamic tools and Claude SDK MCP tools.
 - Add Instrument renderer events.
 - Update runtime instructions.
@@ -635,9 +635,9 @@ Existing files that should be extended carefully:
 - `src/components/InlineVisualization.jsx` as a normalization and reactive-value precedent, not as the Instrument implementation
 - `src/components/workflows/*` for React Flow and canvas patterns
 - `electron/main.mjs` for service installation, IPC, and tool routing
-- `electron/preload.cjs` and `src/loom-api.d.ts` for the narrow renderer bridge
+- `electron/preload.cjs` and `src/pixice-api.d.ts` for the narrow renderer bridge
 - `electron/providers/claude-provider.mjs` for the Claude SDK MCP server
-- `resources/runtime/loom-developer-instructions.md` for provider-neutral usage guidance
+- `resources/runtime/pixice-developer-instructions.md` for provider-neutral usage guidance
 - `electron/workflows/workflow-values.mjs` for safe expression concepts
 - `electron/persistence/database.mjs` only if project deletion needs to coordinate Instrument cleanup
 

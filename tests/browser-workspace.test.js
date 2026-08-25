@@ -73,7 +73,7 @@ describe("BrowserWorkspace", () => {
 
     const response = await workspace.handleToolCall({
       threadId: "thread-tool",
-      namespace: "loom_browser",
+      namespace: "pixice_browser",
       tool: "navigate",
       arguments: { url: "https://example.com" }
     });

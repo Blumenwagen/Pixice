@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PixiceDatabase } from "../electron/persistence/database.mjs";
-import { PixiceBoard, loomBoardDynamicTools } from "../electron/runtime/loom-board.mjs";
+import { PixiceBoard, pixiceBoardDynamicTools } from "../electron/runtime/pixice-board.mjs";
 
 const temporaryDirectories = [];
 
@@ -17,7 +17,7 @@ function resultValue(result) {
 
 describe("Pixice board agent capability", () => {
   it("lets an active agent inspect, add, edit, order, attach, and remove board tasks", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-board-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-board-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const now = new Date().toISOString();
@@ -72,11 +72,11 @@ describe("Pixice board agent capability", () => {
   });
 
   it("advertises a dedicated kanban namespace to Codex", () => {
-    expect(loomBoardDynamicTools[0]).toMatchObject({
+    expect(pixiceBoardDynamicTools[0]).toMatchObject({
       type: "namespace",
-      name: "loom_board"
+      name: "pixice_board"
     });
-    expect(loomBoardDynamicTools[0].tools.map((tool) => tool.name)).toEqual([
+    expect(pixiceBoardDynamicTools[0].tools.map((tool) => tool.name)).toEqual([
       "list_tasks", "create_task", "update_task", "move_task", "delete_task", "attach_thread"
     ]);
   });

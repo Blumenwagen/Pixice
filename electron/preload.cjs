@@ -3,11 +3,11 @@ const { contextBridge, ipcRenderer } = require("electron");
 const invoke = (channel) => (payload) => ipcRenderer.invoke(channel, payload);
 const onEvent = (listener) => {
   const wrapped = (_event, message) => listener(message);
-  ipcRenderer.on("loom:event", wrapped);
-  return () => ipcRenderer.removeListener("loom:event", wrapped);
+  ipcRenderer.on("pixice:event", wrapped);
+  return () => ipcRenderer.removeListener("pixice:event", wrapped);
 };
 
-contextBridge.exposeInMainWorld("loom", Object.freeze({
+contextBridge.exposeInMainWorld("pixice", Object.freeze({
   app: Object.freeze({ bootstrap: invoke("app:bootstrap"), saveSettings: invoke("app:settings:update") }),
   runtime: Object.freeze({ status: invoke("runtime:status") }),
   providers: Object.freeze({ list: invoke("providers:list"), login: invoke("providers:login") }),

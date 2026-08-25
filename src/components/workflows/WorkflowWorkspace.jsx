@@ -277,7 +277,7 @@ function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, co
   );
 }
 
-export function WorkflowWorkspace({ api = window.loom, projectId, projectName, models = [], requestedWorkflowId = null, onWorkflowSelected, onBack }) {
+export function WorkflowWorkspace({ api = window.pixice, projectId, projectName, models = [], requestedWorkflowId = null, onWorkflowSelected, onBack }) {
   const [workflows, setWorkflows] = useState([]);
   const [selectedId, setSelectedId] = useState(requestedWorkflowId);
   const selectedIdRef = useRef(requestedWorkflowId);
@@ -469,7 +469,7 @@ export function WorkflowWorkspace({ api = window.loom, projectId, projectName, m
   );
 }
 
-export function WorkflowPreview({ api = window.loom, projectId, workflowId, workflowName = "Workflow", models = [], reason = "open", onOpenWorkspace, onClose }) {
+export function WorkflowPreview({ api = window.pixice, projectId, workflowId, workflowName = "Workflow", models = [], reason = "open", onOpenWorkspace, onClose }) {
   const [title, setTitle] = useState(workflowName || "Workflow");
 
   useEffect(() => {

@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 function temporaryDirectory() {
-  const pathname = mkdtempSync(path.join(tmpdir(), "loom-attachments-"));
+  const pathname = mkdtempSync(path.join(tmpdir(), "pixice-attachments-"));
   temporaryPaths.push(pathname);
   return pathname;
 }

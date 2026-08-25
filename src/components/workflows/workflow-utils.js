@@ -75,7 +75,7 @@ export const WORKFLOW_NODE_META = {
     inputPorts: [],
     outputPorts: [{ id: "skill", label: "Skill" }]
   },
-  loomAgent: {
+  pixiceAgent: {
     label: "Pixice Agent",
     action: "Run agent",
     category: "Pixice",
@@ -390,7 +390,7 @@ export function workflowCanConnect(sourceNode, sourcePort, targetNode, targetPor
   if (isSkillConnection) {
     return sourceNode?.type === "useSkill"
       && sourcePort === "skill"
-      && targetNode?.type === "loomAgent"
+      && targetNode?.type === "pixiceAgent"
       && targetPort === "skill";
   }
   return Boolean(sourceNode && targetNode);

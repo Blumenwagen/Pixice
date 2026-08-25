@@ -40,7 +40,7 @@ jobs:
           PRERELEASE_FLAG=""
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then PRERELEASE_FLAG="--prerelease"; fi
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes $PRERELEASE_FLAG --title "Pixice $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --notes "First Pixice beta for macOS." $PRERELEASE_FLAG --title "Pixice $GITHUB_REF_NAME"
           fi
 
   package:

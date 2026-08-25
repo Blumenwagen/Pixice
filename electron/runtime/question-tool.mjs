@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-export const LOOM_QUESTION_METHOD = "loom/requestUserInput";
-export const LOOM_QUESTION_TOOL_NAME = "request_user_input";
+export const PIXICE_QUESTION_METHOD = "pixice/requestUserInput";
+export const PIXICE_QUESTION_TOOL_NAME = "request_user_input";
 
 const optionShape = {
   label: z.string().trim().min(1).max(80),
@@ -16,11 +16,11 @@ const questionShape = {
   options: z.array(z.object(optionShape)).min(2).max(3)
 };
 
-export const loomQuestionToolShape = {
+export const pixiceQuestionToolShape = {
   questions: z.array(z.object(questionShape)).min(1).max(3)
 };
 
-export const loomQuestionInputSchema = z.object(loomQuestionToolShape);
+export const pixiceQuestionInputSchema = z.object(pixiceQuestionToolShape);
 
 const questionInputSchema = {
   type: "object",
@@ -63,18 +63,18 @@ const questionInputSchema = {
 
 export const questionDynamicTools = [{
   type: "namespace",
-  name: "loom",
+  name: "pixice",
   description: "Interact with Pixice's native UI. These tools are available in every mode.",
   tools: [{
     type: "function",
-    name: LOOM_QUESTION_TOOL_NAME,
+    name: PIXICE_QUESTION_TOOL_NAME,
     description: "Ask the user one to three short multiple-choice questions in Pixice's composer and wait for their answers. Use when an answer materially changes the work. Put the recommended choice first and mark exactly one option per question as recommended.",
     inputSchema: questionInputSchema
   }]
 }];
 
 export function normalizePixiceQuestions(input) {
-  const parsed = loomQuestionInputSchema.parse(input);
+  const parsed = pixiceQuestionInputSchema.parse(input);
   return parsed.questions.map((question) => {
     const firstRecommended = question.options.findIndex((option) => option.recommended);
     return {
@@ -89,14 +89,14 @@ export function normalizePixiceQuestions(input) {
 
 export function isPixiceQuestionToolCall(request) {
   return request?.method === "item/tool/call"
-    && request.params?.namespace === "loom"
-    && request.params?.tool === LOOM_QUESTION_TOOL_NAME;
+    && request.params?.namespace === "pixice"
+    && request.params?.tool === PIXICE_QUESTION_TOOL_NAME;
 }
 
-export function loomQuestionRequest(request) {
+export function pixiceQuestionRequest(request) {
   return {
     ...request,
-    method: LOOM_QUESTION_METHOD,
+    method: PIXICE_QUESTION_METHOD,
     params: {
       threadId: request.params?.threadId,
       turnId: request.params?.turnId,
@@ -105,7 +105,7 @@ export function loomQuestionRequest(request) {
   };
 }
 
-export function loomQuestionToolResult({ answers = {}, action = "answer" } = {}) {
+export function pixiceQuestionToolResult({ answers = {}, action = "answer" } = {}) {
   const value = action === "cancel"
     ? { cancelled: true, answers: {} }
     : { cancelled: false, answers };

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { DitherAreaChart, DitherBarChart } from "./dither-kit/DitherChart.jsx";
 
-const VISUALIZATION_LANGUAGES = new Set(["loom-visual", "loom-visualization"]);
+const VISUALIZATION_LANGUAGES = new Set(["pixice-visual", "pixice-visualization"]);
 const CONTROL_TYPES = new Set(["range", "select", "segmented", "toggle"]);
 const CHART_TYPES = new Set(["area", "bar"]);
 const SERIES_COLORS = new Set(["blue", "green", "purple", "pink", "orange", "red", "grey"]);
@@ -62,7 +62,7 @@ function normalizeSeries(series, index) {
   };
 }
 
-export function parseVisualizationSpec(source, language = "loom-visualization") {
+export function parseVisualizationSpec(source, language = "pixice-visualization") {
   if (!VISUALIZATION_LANGUAGES.has(String(language).toLowerCase())) return null;
   if (typeof source !== "string" || source.length > 200_000) return null;
   let input;

@@ -43,7 +43,7 @@ function permissionSettings(mode, project) {
 function eventSender(BrowserWindow) {
   return (type, payload = {}) => {
     const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    window?.webContents.send("loom:event", { type, payload, at: new Date().toISOString() });
+    window?.webContents.send("pixice:event", { type, payload, at: new Date().toISOString() });
   };
 }
 
@@ -84,8 +84,8 @@ export async function installWorkflowRuntimeHost({
   const settings = () => database.getAppSettings?.() ?? {};
   const developerInstructions = () => {
     const baseInstructionsPath = app.isPackaged
-      ? path.join(process.resourcesPath, "runtime/loom-developer-instructions.md")
-      : path.join(__dirname, "../../resources/runtime/loom-developer-instructions.md");
+      ? path.join(process.resourcesPath, "runtime/pixice-developer-instructions.md")
+      : path.join(__dirname, "../../resources/runtime/pixice-developer-instructions.md");
     const behaviorsDirectory = app.isPackaged
       ? path.join(process.resourcesPath, "runtime/agent-behaviors")
       : path.join(__dirname, "../../resources/runtime/agent-behaviors");

@@ -57,10 +57,10 @@ describe("provider-neutral inline visualizations", () => {
   });
 
   it("renders a visualization fence inline instead of exposing its JSON", () => {
-    render(<MarkdownMessage text={`Here is the model.\n\n\`\`\`loom-visualization\n${source}\n\`\`\``} />);
+    render(<MarkdownMessage text={`Here is the model.\n\n\`\`\`pixice-visualization\n${source}\n\`\`\``} />);
     expect(screen.getByText("Here is the model.")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Demand planner" })).toBeInTheDocument();
-    expect(document.querySelector("code[data-language='loom-visualization']")).not.toBeInTheDocument();
+    expect(document.querySelector("code[data-language='pixice-visualization']")).not.toBeInTheDocument();
   });
 
   it("keeps a stable chart scale across the full range of reactive controls", () => {

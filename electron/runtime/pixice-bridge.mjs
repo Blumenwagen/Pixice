@@ -2,16 +2,16 @@ import { z } from "zod";
 import { buildCodexUserInput } from "./user-input.mjs";
 import { bridgeEligibleModels, recommendBridgeModel } from "./model-capabilities.mjs";
 import { installWorkflowRuntimeHost } from "../workflows/workflow-runtime-host.mjs";
-import { loomWorkflowTools } from "../workflows/loom-workflows.mjs";
-import { loomWorkflowToolShapes } from "../workflows/workflow-tool-shapes.mjs";
+import { pixiceWorkflowTools } from "../workflows/pixice-workflows.mjs";
+import { pixiceWorkflowToolShapes } from "../workflows/workflow-tool-shapes.mjs";
 
-export const LOOM_BRIDGE_NAMESPACE = "loom_bridge";
-const WORKFLOW_TOOL_NAMES = new Set(loomWorkflowTools.map((tool) => tool.name));
-export const LOOM_BRIDGE_MCP_TOOLS = new Set([
-  "mcp__loom_bridge__list_models",
-  "mcp__loom_bridge__spawn_thread",
-  "mcp__loom_bridge__send_update",
-  ...[...WORKFLOW_TOOL_NAMES].map((name) => `mcp__loom_bridge__${name}`)
+export const PIXICE_BRIDGE_NAMESPACE = "pixice_bridge";
+const WORKFLOW_TOOL_NAMES = new Set(pixiceWorkflowTools.map((tool) => tool.name));
+export const PIXICE_BRIDGE_MCP_TOOLS = new Set([
+  "mcp__pixice_bridge__list_models",
+  "mcp__pixice_bridge__spawn_thread",
+  "mcp__pixice_bridge__send_update",
+  ...[...WORKFLOW_TOOL_NAMES].map((name) => `mcp__pixice_bridge__${name}`)
 ]);
 
 const listModelsShape = {
@@ -29,11 +29,11 @@ const sendUpdateShape = {
   message: z.string().trim().min(1).max(10_000)
 };
 
-export const loomBridgeToolShapes = {
+export const pixiceBridgeToolShapes = {
   list_models: listModelsShape,
   spawn_thread: spawnThreadShape,
   send_update: sendUpdateShape,
-  ...loomWorkflowToolShapes
+  ...pixiceWorkflowToolShapes
 };
 
 const listModelsInputSchema = {
@@ -90,11 +90,11 @@ const bridgeTools = [
   }
 ];
 
-export const loomBridgeDynamicTools = [{
+export const pixiceBridgeDynamicTools = [{
   type: "namespace",
-  name: LOOM_BRIDGE_NAMESPACE,
+  name: PIXICE_BRIDGE_NAMESPACE,
   description: "Coordinate Pixice-native agents and visual workflows. Spawn deliberately selected GPT or Claude threads, inspect or edit project workflows, and run Pixice Agent nodes either quietly in the background or as normal foreground tasks. Call list_models before spawning a bridge thread so model choice and availability are evidence-based.",
-  tools: [...bridgeTools, ...loomWorkflowTools]
+  tools: [...bridgeTools, ...pixiceWorkflowTools]
 }];
 
 function textResult(value, success = true) {
@@ -225,7 +225,7 @@ export class PixiceBridge {
       sandbox: permissions.sandbox,
       developerInstructions: context.developerInstructions,
       dynamicTools: this.dynamicTools(),
-      threadSource: "loomBridge"
+      threadSource: "pixiceBridge"
     });
     const child = { ...started.thread, parentThreadId: params.threadId, bridgeModel: selected.id };
     this.database.saveThreadLink({
@@ -284,7 +284,7 @@ export class PixiceBridge {
 
   #sendUpdate(params, input) {
     const link = this.database.getThreadLink(params.threadId);
-    if (!link || link.kind !== "loomBridge") throw new Error("This thread was not created by the Pixice bridge");
+    if (!link || link.kind !== "pixiceBridge") throw new Error("This thread was not created by the Pixice bridge");
     this.#publishAgentState({
       parentThreadId: link.parentThreadId,
       childThreadId: params.threadId,
@@ -335,12 +335,12 @@ export class PixiceBridge {
 
   #publishAgentState({ parentThreadId, childThreadId, prompt, model, effort, status, message }) {
     this.onActivity?.({
-      method: "loom/bridge/updated",
+      method: "pixice/bridge/updated",
       threadId: parentThreadId,
       item: {
-        id: `loom-bridge:${childThreadId}`,
+        id: `pixice-bridge:${childThreadId}`,
         type: "collabAgentToolCall",
-        tool: status === "running" && prompt ? "spawnAgent" : "loomBridge",
+        tool: status === "running" && prompt ? "spawnAgent" : "pixiceBridge",
         bridge: true,
         senderThreadId: parentThreadId,
         receiverThreadIds: [childThreadId],

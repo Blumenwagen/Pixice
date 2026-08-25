@@ -23,7 +23,7 @@ import {
 } from "./workflow-values.mjs";
 
 const execFile = promisify(execFileCallback);
-const RESULT_MARKER = "__loomWorkflowNodeResult";
+const RESULT_MARKER = "__pixiceWorkflowNodeResult";
 
 export function workflowNodeResult(output, ports = { output }) {
   return { [RESULT_MARKER]: true, output, ports };

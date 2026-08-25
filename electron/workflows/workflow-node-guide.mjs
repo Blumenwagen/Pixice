@@ -34,7 +34,7 @@ export const WORKFLOW_NODE_GUIDE = [
     }
   },
   {
-    type: "loomAgent",
+    type: "pixiceAgent",
     purpose: "Run a real Pixice Agent and pass its final answer downstream. Its dedicated Skill input accepts any number of Use Skill attachments.",
     inputPorts: ["input", "skill"], outputPorts: ["output"],
     config: {

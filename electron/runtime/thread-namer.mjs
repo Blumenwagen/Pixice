@@ -81,7 +81,7 @@ export class ThreadNamer extends EventEmitter {
       approvalPolicy: "never",
       sandbox: "read-only",
       ephemeral: true,
-      serviceName: "loom_thread_naming"
+      serviceName: "pixice_thread_naming"
     });
     const helperId = started.thread?.id;
     if (!helperId) throw new Error("The naming helper did not return a thread id");

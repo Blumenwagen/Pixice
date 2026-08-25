@@ -541,7 +541,7 @@ function ConfigFields({ node, models, api, projectId, workflows, currentWorkflow
   const config = node.config ?? {};
   if (node.type === "scheduleTrigger") return <ScheduleFields config={config} updateConfig={updateConfig} />;
   if (node.type === "webhookTrigger") return <WebhookFields config={config} updateConfig={updateConfig} api={api} projectId={projectId} />;
-  if (node.type === "loomAgent") return <AgentFields node={node} models={models} updateConfig={updateConfig} />;
+  if (node.type === "pixiceAgent") return <AgentFields node={node} models={models} updateConfig={updateConfig} />;
   if (node.type === "httpRequest") return <HttpFields config={config} updateConfig={updateConfig} api={api} projectId={projectId} />;
   if (node.type === "transform") return <TransformFields config={config} updateConfig={updateConfig} />;
   if (node.type === "aggregate") return <AggregateFields config={config} updateConfig={updateConfig} />;

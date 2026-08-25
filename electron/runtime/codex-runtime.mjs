@@ -40,7 +40,7 @@ export class CodexRuntime extends EventEmitter {
     }
     const resolvedRuntime = this.#resolveRuntime();
     if (!resolvedRuntime) {
-      const error = new Error("Bundled Codex runtime is unavailable. Set LOOM_CODEX_PATH for development.");
+      const error = new Error("Bundled Codex runtime is unavailable. Set PIXICE_CODEX_PATH for development.");
       this.emit("status", { state: "unavailable", message: error.message });
       this.emit("recoverable-error", { code: "runtime_missing", message: error.message });
       return false;
@@ -170,8 +170,8 @@ export class CodexRuntime extends EventEmitter {
     }
     if (!this.allowDevelopmentRuntime) return null;
     const developmentFilename = process.platform === "win32" ? "codex.exe" : "codex";
-    if (process.env.LOOM_CODEX_PATH && existsSync(process.env.LOOM_CODEX_PATH)) {
-      return { binary: process.env.LOOM_CODEX_PATH, directAppServer: false };
+    if (process.env.PIXICE_CODEX_PATH && existsSync(process.env.PIXICE_CODEX_PATH)) {
+      return { binary: process.env.PIXICE_CODEX_PATH, directAppServer: false };
     }
     for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
       if (!directory) continue;

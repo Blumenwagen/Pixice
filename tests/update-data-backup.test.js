@@ -33,9 +33,9 @@ afterEach(() => {
 describe("update data backups", () => {
   it("creates verified snapshots from live WAL databases", async () => {
     const directory = temporaryDirectory();
-    const main = createDatabase(directory, "loom.sqlite", "project-1");
-    const workflows = createDatabase(directory, "loom-workflows.sqlite", "workflow-1");
-    writeFileSync(path.join(directory, "loom-workflow-credentials.json"), JSON.stringify({ version: 1, credentials: [] }));
+    const main = createDatabase(directory, "pixice.sqlite", "project-1");
+    const workflows = createDatabase(directory, "pixice-workflows.sqlite", "workflow-1");
+    writeFileSync(path.join(directory, "pixice-workflow-credentials.json"), JSON.stringify({ version: 1, credentials: [] }));
 
     const result = await createUpdateDataBackup({
       userDataPath: directory,
@@ -44,7 +44,7 @@ describe("update data backups", () => {
       now: new Date("2026-08-24T12:00:00.000Z")
     });
 
-    const restored = new DatabaseSync(path.join(result.path, "loom.sqlite"), { readOnly: true });
+    const restored = new DatabaseSync(path.join(result.path, "pixice.sqlite"), { readOnly: true });
     expect(restored.prepare("SELECT value FROM records").get()).toEqual({ value: "project-1" });
     expect(result.manifest).toMatchObject({
       formatVersion: 1,
@@ -52,9 +52,9 @@ describe("update data backups", () => {
       currentVersion: "0.1.0",
       targetVersion: "0.2.0",
       files: expect.arrayContaining([
-        expect.objectContaining({ name: "loom.sqlite", bytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
-        expect.objectContaining({ name: "loom-workflows.sqlite" }),
-        expect.objectContaining({ name: "loom-workflow-credentials.json" })
+        expect.objectContaining({ name: "pixice.sqlite", bytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+        expect.objectContaining({ name: "pixice-workflows.sqlite" }),
+        expect.objectContaining({ name: "pixice-workflow-credentials.json" })
       ])
     });
     expect(JSON.parse(readFileSync(path.join(result.path, "manifest.json"), "utf8"))).toEqual(result.manifest);
@@ -66,7 +66,7 @@ describe("update data backups", () => {
 
   it("backs up once before a new app version migrates existing data", async () => {
     const directory = temporaryDirectory();
-    const database = createDatabase(directory, "loom.sqlite", "project-1");
+    const database = createDatabase(directory, "pixice.sqlite", "project-1");
     database.close();
     markUpdateDataVersion(directory, "0.1.0");
 
@@ -79,7 +79,7 @@ describe("update data backups", () => {
 
   it("rejects corrupt durable data instead of installing over it", async () => {
     const directory = temporaryDirectory();
-    writeFileSync(path.join(directory, "loom.sqlite"), "not a sqlite database");
+    writeFileSync(path.join(directory, "pixice.sqlite"), "not a sqlite database");
 
     await expect(createUpdateDataBackup({
       userDataPath: directory,
@@ -90,24 +90,24 @@ describe("update data backups", () => {
 
   it("recovers missing or corrupt data from the latest verified update backup", async () => {
     const directory = temporaryDirectory();
-    const database = createDatabase(directory, "loom.sqlite", "project-1");
+    const database = createDatabase(directory, "pixice.sqlite", "project-1");
     database.close();
-    writeFileSync(path.join(directory, "loom-workflow-credentials.json"), JSON.stringify({ version: 1, credentials: [] }));
+    writeFileSync(path.join(directory, "pixice-workflow-credentials.json"), JSON.stringify({ version: 1, credentials: [] }));
     const backup = await createUpdateDataBackup({
       userDataPath: directory,
       currentVersion: "0.1.0",
       targetVersion: "0.2.0"
     });
-    writeFileSync(path.join(directory, "loom.sqlite"), "corrupt");
-    rmSync(path.join(directory, "loom-workflow-credentials.json"));
+    writeFileSync(path.join(directory, "pixice.sqlite"), "corrupt");
+    rmSync(path.join(directory, "pixice-workflow-credentials.json"));
 
     expect(recoverUpdateDataFromBackup({ userDataPath: directory })).toEqual(expect.arrayContaining([
-      { name: "loom.sqlite", backupPath: path.join(backup.path, "loom.sqlite") },
-      { name: "loom-workflow-credentials.json", backupPath: path.join(backup.path, "loom-workflow-credentials.json") }
+      { name: "pixice.sqlite", backupPath: path.join(backup.path, "pixice.sqlite") },
+      { name: "pixice-workflow-credentials.json", backupPath: path.join(backup.path, "pixice-workflow-credentials.json") }
     ]));
-    const restored = new DatabaseSync(path.join(directory, "loom.sqlite"), { readOnly: true });
+    const restored = new DatabaseSync(path.join(directory, "pixice.sqlite"), { readOnly: true });
     expect(restored.prepare("SELECT value FROM records").get()).toEqual({ value: "project-1" });
-    expect(JSON.parse(readFileSync(path.join(directory, "loom-workflow-credentials.json"), "utf8"))).toEqual({ version: 1, credentials: [] });
+    expect(JSON.parse(readFileSync(path.join(directory, "pixice-workflow-credentials.json"), "utf8"))).toEqual({ version: 1, credentials: [] });
     restored.close();
   });
 });

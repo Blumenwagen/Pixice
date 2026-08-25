@@ -24,7 +24,7 @@ export const WORKFLOW_ICONS = Object.freeze({
   scheduleTrigger: Gauge,
   webhookTrigger: PlugsConnected,
   useSkill: Sparkle,
-  loomAgent: Brain,
+  pixiceAgent: Brain,
   httpRequest: Globe,
   transform: Code,
   aggregate: Files,

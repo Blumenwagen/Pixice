@@ -42,7 +42,7 @@ jobs:
               repo: context.repo.repo,
               sha: context.sha,
               state: success ? 'success' : 'failure',
-              context: 'loom/check',
+              context: 'pixice/check',
               description: success ? 'pnpm check passed' : 'pnpm check failed',
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });

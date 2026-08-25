@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PixiceWorkflows } from "../electron/workflows/loom-workflows.mjs";
+import { PixiceWorkflows } from "../electron/workflows/pixice-workflows.mjs";
 import { WorkflowStore } from "../electron/workflows/workflow-store.mjs";
 
 const temporaryDirectories = [];
@@ -36,7 +36,7 @@ function capability(directory) {
 
 describe("workflow subworkflows", () => {
   it("runs a child workflow with parent metadata and returns its output", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-subworkflow-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-subworkflow-"));
     temporaryDirectories.push(directory);
     const { workflows, store } = capability(directory);
 
@@ -93,7 +93,7 @@ describe("workflow subworkflows", () => {
   });
 
   it("rejects recursive workflow calls instead of deadlocking", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-subworkflow-cycle-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-subworkflow-cycle-"));
     temporaryDirectories.push(directory);
     const { workflows, store } = capability(directory);
     const created = workflows.create({ projectId: "project-1", name: "Recursive" });

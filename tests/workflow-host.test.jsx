@@ -19,7 +19,7 @@ const workflow = {
     viewport: { x: 0, y: 0, zoom: 1 },
     nodes: [
       { id: "trigger", type: "manualTrigger", name: "Manual trigger", description: "", position: { x: 50, y: 100 }, config: {} },
-      { id: "agent", type: "loomAgent", name: "Review release", description: "", position: { x: 380, y: 100 }, config: { prompt: "Review", executionMode: "background", permissionMode: "workspace-write" } },
+      { id: "agent", type: "pixiceAgent", name: "Review release", description: "", position: { x: 380, y: 100 }, config: { prompt: "Review", executionMode: "background", permissionMode: "workspace-write" } },
       { id: "output", type: "output", name: "Result", description: "", position: { x: 710, y: 100 }, config: {} }
     ],
     edges: [
@@ -62,10 +62,10 @@ function Shell({ taskNames = ["Lead task"], activeThreadId = "thread-lead", onTa
   const [previewOpen, setPreviewOpen] = useState(false);
   const [navigationVersion, setNavigationVersion] = useState(0);
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent("loom:active-thread-changed", { detail: activeThreadId }));
+    window.dispatchEvent(new CustomEvent("pixice:active-thread-changed", { detail: activeThreadId }));
   }, [activeThreadId]);
   return (
-    <div className="loom-app view-task" data-active-thread-id={activeThreadId} style={{ "--rail-width": "264px" }}>
+    <div className="pixice-app view-task" data-active-thread-id={activeThreadId} style={{ "--rail-width": "264px" }}>
       <aside className="sidebar">
         <div className="rail-group" key={navigationVersion}><div data-workflow-nav-slot /></div>
         <div className="task-tree">
@@ -89,18 +89,18 @@ function Shell({ taskNames = ["Lead task"], activeThreadId = "thread-lead", onTa
 }
 
 beforeEach(() => {
-  localStorage.setItem("loom.activeProjectId", "project-1");
+  localStorage.setItem("pixice.activeProjectId", "project-1");
 });
 
 afterEach(() => {
-  delete window.loom;
+  delete window.pixice;
   localStorage.clear();
 });
 
 describe("WorkflowHost", () => {
   it("adds a dedicated Workflows navigation item and opens the library workspace", async () => {
     const { api } = createApi();
-    window.loom = api;
+    window.pixice = api;
     render(<WorkflowHost><Shell /></WorkflowHost>);
 
     const navigation = await screen.findByRole("button", { name: "Workflows" });
@@ -113,7 +113,7 @@ describe("WorkflowHost", () => {
 
   it("opens and closes the workflow workspace without a takeover transition", async () => {
     const { api } = createApi();
-    window.loom = api;
+    window.pixice = api;
     const { container } = render(<WorkflowHost><Shell /></WorkflowHost>);
 
     fireEvent.click(await screen.findByRole("button", { name: "Workflows" }));
@@ -121,7 +121,7 @@ describe("WorkflowHost", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
     expect(document.querySelector('[data-workflow-workspace="true"]')).not.toBeInTheDocument();
-    expect(container.querySelector(".loom-app")).not.toHaveAttribute("data-workflows-active");
+    expect(container.querySelector(".pixice-app")).not.toHaveAttribute("data-workflows-active");
   });
 
   it("takes over the primary sidebar like the Settings workspace", () => {
@@ -133,7 +133,7 @@ describe("WorkflowHost", () => {
     expect(overlayRules.at(-1)?.[1]).toContain("z-index: 24;");
     expect(overlayRules.at(-1)?.[1]).toContain("background: transparent;");
     expect(overlayRules.at(-1)?.[1]).not.toContain("backdrop-filter");
-    expect(workflowHostCss).toContain('.loom-app[data-workflows-active="true"] > .sidebar');
+    expect(workflowHostCss).toContain('.pixice-app[data-workflows-active="true"] > .sidebar');
     expect(workflowHostCss).toContain("visibility: hidden;");
   });
 
@@ -144,7 +144,7 @@ describe("WorkflowHost", () => {
 
   it("keeps the Workflows navigation item when the app navigation remounts", async () => {
     const { api } = createApi();
-    window.loom = api;
+    window.pixice = api;
     render(<WorkflowHost><Shell /></WorkflowHost>);
 
     fireEvent.click(await screen.findByRole("button", { name: "Workflows" }));
@@ -164,7 +164,7 @@ describe("WorkflowHost", () => {
       { id: "thread-other", name: "Other task", parentThreadId: null },
       { id: "thread-lead", name: "Lead task", parentThreadId: null }
     ]);
-    window.loom = api;
+    window.pixice = api;
     render(<WorkflowHost><Shell taskNames={["Lead task", "Other task"]} onTaskClick={onTaskClick} /></WorkflowHost>);
     await screen.findByRole("button", { name: "Workflows" });
 
@@ -190,7 +190,7 @@ describe("WorkflowHost", () => {
       { id: "thread-lead", name: "Lead task", parentThreadId: null },
       { id: "thread-other", name: "Other task", parentThreadId: null }
     ]);
-    window.loom = api;
+    window.pixice = api;
     const view = render(
       <WorkflowHost>
         <Shell taskNames={["Lead task", "Other task"]} activeThreadId="thread-lead" />
@@ -223,7 +223,7 @@ describe("WorkflowHost", () => {
       { id: "thread-lead", name: "Lead task", parentThreadId: null },
       { id: "thread-foreground", name: "Foreground agent", parentThreadId: null }
     ]);
-    window.loom = api;
+    window.pixice = api;
     const view = render(<WorkflowHost><Shell taskNames={["Lead task", "Foreground agent"]} onTaskClick={onTaskClick} /></WorkflowHost>);
     await screen.findByRole("button", { name: "Workflows" });
 

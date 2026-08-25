@@ -32,7 +32,7 @@ Do not put credential values in `.env.example`, workflow YAML, release notes, or
 7. Install and smoke-test each package on a clean machine or virtual machine. Test provider sign-in, GitHub sign-in, a new thread, a tool approval, file editing, workflows, updates, and uninstall behavior.
 8. Commit the release changes, then create and push the matching annotated tag, such as `v0.1.0-beta.1`.
 
-Tag builds require Apple signing and notarization credentials. The macOS jobs verify the packaged application's signature, application identifier, team identifier, entitlements, and Gatekeeper assessment before uploading separate arm64 and x64 packages, updater metadata, and `SHA256SUMS.txt`. A version containing a prerelease suffix is published as a GitHub prerelease. Manual workflow runs can also build unsigned Windows x64 and Linux packages for packaging checks when `include_portable` is selected; they are not included in tagged releases.
+Tag builds require Apple signing and notarization credentials. The macOS job verifies the packaged application's signature, application identifier, team identifier, entitlements, and Gatekeeper assessment before uploading the arm64 package, updater metadata, and `SHA256SUMS.txt`. A version containing a prerelease suffix is published as a GitHub prerelease. Manual workflow runs can also build unsigned Windows x64 and Linux packages for packaging checks when `include_portable` is selected; they are not included in tagged releases.
 
 ## Release decision
 

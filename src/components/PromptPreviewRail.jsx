@@ -11,7 +11,7 @@ export function PromptPreviewRail({ items, activeId, onItemSelect, className = "
   const lastPointerType = useRef(null);
   const prefersReducedMotion = useReducedMotion();
   const appReducesMotion = typeof document !== "undefined"
-    && document.querySelector(".loom-app")?.dataset.reduceMotion === "true";
+    && document.querySelector(".pixice-app")?.dataset.reduceMotion === "true";
   const reduceMotion = prefersReducedMotion || appReducesMotion;
   const [hoveredId, setHoveredId] = useState(null);
   const [focusedId, setFocusedId] = useState(null);

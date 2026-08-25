@@ -100,7 +100,7 @@ describe("advanced workflow node executors", () => {
   });
 
   it("queries SQLite read-only and requires explicit permission for mutations", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-sqlite-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-sqlite-"));
     temporaryDirectories.push(directory);
     const databasePath = path.join(directory, "data.sqlite");
     const database = new DatabaseSync(databasePath);

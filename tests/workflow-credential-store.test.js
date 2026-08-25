@@ -19,7 +19,7 @@ const crypto = {
 
 describe("workflow credentials", () => {
   it("stores project-scoped secrets encrypted and returns only safe metadata", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-credentials-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-credentials-"));
     directories.push(directory);
     const store = new WorkflowCredentialStore(directory, { crypto });
     const created = store.create({
@@ -33,7 +33,7 @@ describe("workflow credentials", () => {
     expect(store.list("project-1")[0]).not.toHaveProperty("values");
     expect(store.list("project-2")).toEqual([]);
     expect(store.resolve("project-1", created.id).values).toEqual({ token: "super-secret-token" });
-    const file = readFileSync(path.join(directory, "loom-workflow-credentials.json"), "utf8");
+    const file = readFileSync(path.join(directory, "pixice-workflow-credentials.json"), "utf8");
     expect(file).not.toContain("super-secret-token");
 
     const renamed = store.update({ projectId: "project-1", credentialId: created.id, name: "GitHub prod" });
@@ -50,7 +50,7 @@ describe("workflow credentials", () => {
     expect(bearerHeaders.get("authorization")).toBe("Bearer token");
     expect(workflowCredentialAuthorizesRequest(bearer, { url: bearerUrl, headers: bearerHeaders })).toBe(true);
 
-    const basic = { type: "basic", values: { username: "loom", password: "secret" } };
+    const basic = { type: "basic", values: { username: "pixice", password: "secret" } };
     const basicHeaders = new Headers();
     applyWorkflowCredential(basic, { url: bearerUrl, headers: basicHeaders });
     expect(workflowCredentialAuthorizesRequest(basic, { url: bearerUrl, headers: basicHeaders })).toBe(true);

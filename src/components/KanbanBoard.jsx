@@ -13,7 +13,7 @@ export const KANBAN_COLUMNS = [
   { id: "done", label: "Done", help: "Finished work", icon: CheckCircle }
 ];
 
-const TASK_MIME = "text/x-loom-board-task";
+const TASK_MIME = "text/x-pixice-board-task";
 const RUNNING_STATUSES = new Set(["running", "inProgress", "active"]);
 const DONE_STATUSES = new Set(["completed", "complete", "idle"]);
 

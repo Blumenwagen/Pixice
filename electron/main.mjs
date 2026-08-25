@@ -24,21 +24,22 @@ import { ProviderRegistry } from "./providers/provider-registry.mjs";
 import { BrowserWorkspace, browserDynamicTools } from "./browser/browser-workspace.mjs";
 import {
   isPixiceQuestionToolCall,
-  LOOM_QUESTION_METHOD,
-  loomQuestionRequest,
-  loomQuestionToolResult,
+  PIXICE_QUESTION_METHOD,
+  pixiceQuestionRequest,
+  pixiceQuestionToolResult,
   questionDynamicTools
 } from "./runtime/question-tool.mjs";
-import { PixiceBridge, LOOM_BRIDGE_NAMESPACE, loomBridgeDynamicTools } from "./runtime/loom-bridge.mjs";
-import { PixiceBoard, LOOM_BOARD_NAMESPACE, loomBoardDynamicTools } from "./runtime/loom-board.mjs";
+import { PixiceBridge, PIXICE_BRIDGE_NAMESPACE, pixiceBridgeDynamicTools } from "./runtime/pixice-bridge.mjs";
+import { PixiceBoard, PIXICE_BOARD_NAMESPACE, pixiceBoardDynamicTools } from "./runtime/pixice-board.mjs";
 import {
   InstrumentService,
-  LOOM_INSTRUMENTS_NAMESPACE,
+  PIXICE_INSTRUMENTS_NAMESPACE,
   instrumentDynamicTools
 } from "./instruments/instrument-service.mjs";
 import { PixiceAppUpdater } from "./updater/app-updater.mjs";
 import { CodexUpdater, installAndActivateCodexUpdate } from "./updater/codex-updater.mjs";
 import { PixiceDatabase } from "./persistence/database.mjs";
+import { migrateLegacyBrandData } from "./persistence/brand-data-migration.mjs";
 import {
   createUpdateDataBackup,
   ensureVersionUpdateDataBackup,
@@ -56,7 +57,7 @@ const { autoUpdater } = electronUpdater;
 const isDev = !app.isPackaged;
 const threadSourceKinds = [
   "cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview",
-  "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "loomBridge", "unknown"
+  "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "pixiceBridge", "unknown"
 ];
 
 let mainWindow;
@@ -68,9 +69,9 @@ let browserWorkspace;
 let appUpdater;
 let codexUpdater;
 let githubCli;
-let loomBridge;
-let loomBoard;
-let loomInstruments;
+let pixiceBridge;
+let pixiceBoard;
+let pixiceInstruments;
 let database;
 let quitting = false;
 let runtimeStatus = { state: "starting" };
@@ -83,11 +84,11 @@ const threadProjects = new Map();
 const pendingRequests = new Map();
 const pendingTaskNames = new Set();
 const scheduledThreadNames = new Set();
-const loomDynamicTools = [
+const pixiceDynamicTools = [
   ...browserDynamicTools,
   ...questionDynamicTools,
-  ...loomBridgeDynamicTools,
-  ...loomBoardDynamicTools,
+  ...pixiceBridgeDynamicTools,
+  ...pixiceBoardDynamicTools,
   ...instrumentDynamicTools
 ];
 let runtimeGeneration = 0;
@@ -146,7 +147,7 @@ const requirePromptInput = (value, context) => {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "A message or attachment is required" });
   }
 };
-const send = (type, payload = {}) => mainWindow?.webContents.send("loom:event", { type, payload, at: new Date().toISOString() });
+const send = (type, payload = {}) => mainWindow?.webContents.send("pixice:event", { type, payload, at: new Date().toISOString() });
 
 function currentAgentInstructions() {
   return composeAgentInstructions({
@@ -457,8 +458,8 @@ function monitorStatus(thread) {
 }
 
 function createWindow() {
-  const captureWidth = Number(process.env.LOOM_CAPTURE_WIDTH || 1480);
-  const captureHeight = Number(process.env.LOOM_CAPTURE_HEIGHT || 1000);
+  const captureWidth = Number(process.env.PIXICE_CAPTURE_WIDTH || 1480);
+  const captureHeight = Number(process.env.PIXICE_CAPTURE_HEIGHT || 1000);
   const usesNativeGlass = process.platform === "darwin";
   mainWindow = new BrowserWindow({
     width: captureWidth,
@@ -495,10 +496,10 @@ function createWindow() {
   });
   mainWindow.once("ready-to-show", () => mainWindow.show());
   mainWindow.webContents.once("did-finish-load", () => {
-    if (!process.env.LOOM_CAPTURE_PATH) return;
+    if (!process.env.PIXICE_CAPTURE_PATH) return;
     setTimeout(async () => {
       const image = await mainWindow.webContents.capturePage();
-      writeFileSync(process.env.LOOM_CAPTURE_PATH, image.toPNG());
+      writeFileSync(process.env.PIXICE_CAPTURE_PATH, image.toPNG());
       quitting = true;
       appUpdater?.stop();
       browserWorkspace?.destroy();
@@ -669,7 +670,7 @@ async function pickProjectFolders({ multiple = true } = {}) {
 
 async function ensureThreadLoaded(project, threadId) {
   const cwd = await threadSessions.ensure(threadId, async () => {
-    const response = await runtime.request("thread/resume", { threadId, developerInstructions: currentAgentInstructions(), dynamicTools: loomDynamicTools });
+    const response = await runtime.request("thread/resume", { threadId, developerInstructions: currentAgentInstructions(), dynamicTools: pixiceDynamicTools });
     const resumedCwd = response.thread?.cwd;
     if (!resumedCwd) throw new Error("Runtime returned a thread without a working directory");
     return realpathSync(resumedCwd);
@@ -745,8 +746,8 @@ async function readInstrumentCapability({ projectId, threadId, capability, argum
   }
   if (capability === "workflows.list") {
     emptyArguments.parse(rawArguments);
-    const integration = loomBridge.workflowIntegration ?? await loomBridge.workflowReady;
-    if (!integration) throw loomBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+    const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
+    if (!integration) throw pixiceBridge.workflowError ?? new Error("Pixice workflows are unavailable");
     return integration.workflows.list(projectId).slice(0, 200).map((workflow) => ({
       id: workflow.id,
       name: workflow.name,
@@ -760,8 +761,8 @@ async function readInstrumentCapability({ projectId, threadId, capability, argum
       workflowId: z.string().trim().min(1).max(160),
       runId: z.string().trim().min(1).max(160).optional()
     }).strict().parse(rawArguments);
-    const integration = loomBridge.workflowIntegration ?? await loomBridge.workflowReady;
-    if (!integration) throw loomBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+    const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
+    if (!integration) throw pixiceBridge.workflowError ?? new Error("Pixice workflows are unavailable");
     const result = integration.workflows.read(projectId, value.workflowId);
     const run = value.runId ? result.runs.find((candidate) => candidate.id === value.runId) : result.runs[0];
     if (value.runId && !run) throw new Error("Workflow run not found in this project");
@@ -834,8 +835,8 @@ async function resolveInstrumentCapability({ projectId, capability, arguments: r
       input: z.unknown().optional(),
       triggerNodeId: z.string().trim().min(1).max(160).optional()
     }).strict().parse(rawArguments);
-    const integration = loomBridge.workflowIntegration ?? await loomBridge.workflowReady;
-    if (!integration) throw loomBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+    const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
+    if (!integration) throw pixiceBridge.workflowError ?? new Error("Pixice workflows are unavailable");
     const { workflow } = integration.workflows.read(projectId, value.workflowId);
     return { arguments: value, targetVersion: instrumentTargetVersion(workflow), summary: `Run workflow “${workflow.name}”.` };
   }
@@ -872,8 +873,8 @@ async function invokeInstrumentCapability({ projectId, threadId, capability, arg
     return moved;
   }
   if (capability === "workflow.run") {
-    const integration = loomBridge.workflowIntegration ?? await loomBridge.workflowReady;
-    if (!integration) throw loomBridge.workflowError ?? new Error("Pixice workflows are unavailable");
+    const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
+    if (!integration) throw pixiceBridge.workflowError ?? new Error("Pixice workflows are unavailable");
     return integration.workflows.startRun({
       projectId,
       workflowId: value.workflowId,
@@ -1137,27 +1138,27 @@ function registerIpc() {
   ipcMain.handle("instruments:list", (_event, payload) => {
     const value = idPayload.extend({ threadId: z.string().trim().min(1).max(160).optional() }).parse(payload);
     getProject(value.projectId);
-    return { data: loomInstruments.list(value.projectId, value.threadId) };
+    return { data: pixiceInstruments.list(value.projectId, value.threadId) };
   });
   ipcMain.handle("instruments:tools", (_event, payload) => {
     const value = idPayload.parse(payload);
     getProject(value.projectId);
-    return { data: loomInstruments.listTools(value.projectId) };
+    return { data: pixiceInstruments.listTools(value.projectId) };
   });
   ipcMain.handle("instruments:read", (_event, payload) => {
     const value = instrumentScope.parse(payload);
     getProject(value.projectId);
-    return loomInstruments.read(value.projectId, value.instrumentId);
+    return pixiceInstruments.read(value.projectId, value.instrumentId);
   });
   ipcMain.handle("instruments:open", (_event, payload) => {
     const value = instrumentScope.extend({ workspaceId: z.string().trim().min(1).max(240).optional() }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.open(value.projectId, value.instrumentId, value.workspaceId);
+    return pixiceInstruments.open(value.projectId, value.instrumentId, value.workspaceId);
   });
   ipcMain.handle("instruments:refresh", (_event, payload) => {
     const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), source: z.string().trim().min(1).max(160).optional() }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.refresh(value.projectId, value.instrumentId, value.source, value.threadId);
+    return pixiceInstruments.refresh(value.projectId, value.instrumentId, value.source, value.threadId);
   });
   ipcMain.handle("instruments:event", (_event, payload) => {
     const value = instrumentScope.extend({
@@ -1170,7 +1171,7 @@ function registerIpc() {
       permissionMode: permissionModeSchema.optional()
     }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.dispatchAgentEvent(value.projectId, value.instrumentId, value.actionId, value.payload, {
+    return pixiceInstruments.dispatchAgentEvent(value.projectId, value.instrumentId, value.actionId, value.payload, {
       model: value.model,
       serviceTier: value.serviceTier,
       effort: value.effort,
@@ -1185,62 +1186,62 @@ function registerIpc() {
       requestId: z.string().uuid()
     }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.dispatchCapability(value.projectId, value.instrumentId, value.actionId, value.arguments, value.threadId, value.requestId);
+    return pixiceInstruments.dispatchCapability(value.projectId, value.instrumentId, value.actionId, value.arguments, value.threadId, value.requestId);
   });
   ipcMain.handle("instruments:pin", (_event, payload) => {
     const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), pinned: z.boolean() }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.setPinned(value.projectId, value.instrumentId, value.pinned, value.threadId);
+    return pixiceInstruments.setPinned(value.projectId, value.instrumentId, value.pinned, value.threadId);
   });
   ipcMain.handle("instruments:events", (_event, payload) => {
     const value = instrumentScope.parse(payload);
     getProject(value.projectId);
-    return { data: loomInstruments.listEvents(value.projectId, value.instrumentId) };
+    return { data: pixiceInstruments.listEvents(value.projectId, value.instrumentId) };
   });
   ipcMain.handle("instruments:receipts", (_event, payload) => {
     const value = instrumentScope.parse(payload);
     getProject(value.projectId);
-    return { data: loomInstruments.listReceipts(value.projectId, value.instrumentId) };
+    return { data: pixiceInstruments.listReceipts(value.projectId, value.instrumentId) };
   });
   ipcMain.handle("instruments:launch", (_event, payload) => {
     const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), values: z.record(z.unknown()).default({}) }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.launch(value.projectId, value.instrumentId, value.values, value.threadId);
+    return pixiceInstruments.launch(value.projectId, value.instrumentId, value.values, value.threadId);
   });
   ipcMain.handle("instruments:rename", (_event, payload) => {
     const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), name: z.string().trim().min(1).max(160) }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.renameTool(value.projectId, value.instrumentId, value.name, value.threadId);
+    return pixiceInstruments.renameTool(value.projectId, value.instrumentId, value.name, value.threadId);
   });
   ipcMain.handle("instruments:grants", (_event, payload) => {
     const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), grants: z.array(z.string().trim().min(1).max(120)).max(20) }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.setGrants(value.projectId, value.instrumentId, value.grants, value.threadId);
+    return pixiceInstruments.setGrants(value.projectId, value.instrumentId, value.grants, value.threadId);
   });
   ipcMain.handle("instruments:duplicate", (_event, payload) => {
     const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160) }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.duplicateTool(value.projectId, value.instrumentId, value.threadId);
+    return pixiceInstruments.duplicateTool(value.projectId, value.instrumentId, value.threadId);
   });
   ipcMain.handle("instruments:revisions", (_event, payload) => {
     const value = instrumentScope.parse(payload);
     getProject(value.projectId);
-    return { data: loomInstruments.listRevisions(value.projectId, value.instrumentId) };
+    return { data: pixiceInstruments.listRevisions(value.projectId, value.instrumentId) };
   });
   ipcMain.handle("instruments:restore", (_event, payload) => {
     const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160), version: z.number().int().positive() }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.restoreRevision(value.projectId, value.instrumentId, value.version, value.threadId);
+    return pixiceInstruments.restoreRevision(value.projectId, value.instrumentId, value.version, value.threadId);
   });
   ipcMain.handle("instruments:delete-tool", (_event, payload) => {
     const value = instrumentScope.extend({ threadId: z.string().trim().min(1).max(160) }).parse(payload);
     getProject(value.projectId);
-    return loomInstruments.deleteTool(value.projectId, value.instrumentId, value.threadId);
+    return pixiceInstruments.deleteTool(value.projectId, value.instrumentId, value.threadId);
   });
   ipcMain.handle("instruments:delete", (_event, payload) => {
     const value = instrumentScope.parse(payload);
     getProject(value.projectId);
-    return loomInstruments.delete(value.projectId, value.instrumentId);
+    return pixiceInstruments.delete(value.projectId, value.instrumentId);
   });
 
   ipcMain.handle("threads:list", async (_event, payload) => {
@@ -1306,8 +1307,8 @@ function registerIpc() {
       approvalsReviewer: permissions.approvalsReviewer,
       sandbox: permissions.sandbox,
       developerInstructions: currentAgentInstructions(),
-      dynamicTools: loomDynamicTools,
-      threadSource: "loom"
+      dynamicTools: pixiceDynamicTools,
+      threadSource: "pixice"
     });
     rememberThread(project, response.thread, { loaded: true });
     pendingTaskNames.add(response.thread.id);
@@ -1426,9 +1427,9 @@ function registerIpc() {
     const key = requestKey(value.requestId);
     const pending = pendingRequests.get(key);
     if (!pending || pending.generation !== runtimeGeneration) throw new Error("Question is no longer pending");
-    if (pending.kind === "loom-question-tool") {
-      runtime.respond(value.requestId, loomQuestionToolResult(value));
-    } else if (pending.kind === "loom-question") {
+    if (pending.kind === "pixice-question-tool") {
+      runtime.respond(value.requestId, pixiceQuestionToolResult(value));
+    } else if (pending.kind === "pixice-question") {
       runtime.respond(value.requestId, value);
     } else if (pending.request.method?.includes("requestUserInput")) {
       const answers = Object.fromEntries(Object.entries(value.answers).map(([id, answer]) => [id, { answers: [answer] }]));
@@ -1526,6 +1527,7 @@ function registerIpc() {
 
 app.whenReady().then(async () => {
   const userDataPath = app.getPath("userData");
+  migrateLegacyBrandData(userDataPath);
   const bundledResourcesPath = isDev ? path.join(__dirname, "../resources") : process.resourcesPath;
   const recordedDataVersion = readUpdateDataVersion(userDataPath);
   if (recordedDataVersion && recordedDataVersion !== app.getVersion()) recoverUpdateDataFromBackup({ userDataPath });
@@ -1538,8 +1540,8 @@ app.whenReady().then(async () => {
   });
   codexUpdater.on("status", (status) => send("CodexUpdateState", status));
   developerInstructionsPath = isDev
-    ? path.join(__dirname, "../resources/runtime/loom-developer-instructions.md")
-    : path.join(process.resourcesPath, "runtime/loom-developer-instructions.md");
+    ? path.join(__dirname, "../resources/runtime/pixice-developer-instructions.md")
+    : path.join(process.resourcesPath, "runtime/pixice-developer-instructions.md");
   agentBehaviorsDirectory = isDev
     ? path.join(__dirname, "../resources/runtime/agent-behaviors")
     : path.join(process.resourcesPath, "runtime/agent-behaviors");
@@ -1559,12 +1561,12 @@ app.whenReady().then(async () => {
     const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
     return project ? { projectId: project.id, cwd: binding?.cwd || projectPrimaryRoot(project) } : null;
   };
-  loomBoard = new PixiceBoard({
+  pixiceBoard = new PixiceBoard({
     database,
     threadContext: boardThreadContext,
     onChange: (payload) => send("BoardUpdated", payload)
   });
-  loomInstruments = new InstrumentService({
+  pixiceInstruments = new InstrumentService({
     userDataPath: app.getPath("userData"),
     threadContext: boardThreadContext,
     readCapability: readInstrumentCapability,
@@ -1586,10 +1588,10 @@ app.whenReady().then(async () => {
     onOpen: (payload) => send("InstrumentOpenRequested", payload),
     onEventChange: (payload) => send("InstrumentInteractionUpdated", payload)
   });
-  loomBridge = new PixiceBridge({
+  pixiceBridge = new PixiceBridge({
     runtime,
     database,
-    dynamicTools: () => loomDynamicTools,
+    dynamicTools: () => pixiceDynamicTools,
     threadContext: (threadId) => {
       const binding = database.getThreadProviderBinding(threadId);
       const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
@@ -1618,9 +1620,9 @@ app.whenReady().then(async () => {
     database,
     clientVersion: app.getVersion(),
     developerInstructions: currentAgentInstructions,
-    loomBridge,
-    loomBoard,
-    loomInstruments,
+    pixiceBridge,
+    pixiceBoard,
+    pixiceInstruments,
     pathToClaudeCodeExecutable: resolveClaudeCodeExecutable()
       ?? (app.isPackaged ? resolvePackagedClaudeCodeExecutable({ resourcesPath: process.resourcesPath }) : undefined),
     requireExternalExecutable: app.isPackaged
@@ -1696,7 +1698,7 @@ app.whenReady().then(async () => {
       database.saveThreadPlan(threadId, plan);
     }
     if ((method === "thread/deleted" || method === "thread/archived") && threadId) {
-      loomInstruments.removeEphemeralForThread(threadId);
+      pixiceInstruments.removeEphemeralForThread(threadId);
       threadPlans.delete(threadId);
       threadMonitorCache.delete(threadId);
       threadSessions.delete(threadId);
@@ -1727,25 +1729,25 @@ app.whenReady().then(async () => {
     });
   });
   runtime.on("server-request", (request) => {
-    if (request.method === "item/tool/call" && request.params?.namespace === LOOM_BOARD_NAMESPACE) {
-      void loomBoard.handleToolCall(request.params)
+    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_BOARD_NAMESPACE) {
+      void pixiceBoard.handleToolCall(request.params)
         .then((response) => runtime.respond(request.id, response))
         .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
       return;
     }
-    if (request.method === "item/tool/call" && request.params?.namespace === LOOM_INSTRUMENTS_NAMESPACE) {
-      void loomInstruments.handleToolCall(request.params)
+    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_INSTRUMENTS_NAMESPACE) {
+      void pixiceInstruments.handleToolCall(request.params)
         .then((response) => runtime.respond(request.id, response))
         .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
       return;
     }
-    if (request.method === "item/tool/call" && request.params?.namespace === LOOM_BRIDGE_NAMESPACE) {
-      void loomBridge.handleToolCall(request.params)
+    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_BRIDGE_NAMESPACE) {
+      void pixiceBridge.handleToolCall(request.params)
         .then((response) => runtime.respond(request.id, response))
         .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
       return;
     }
-    if (request.method === "item/tool/call" && request.params?.namespace === "loom_browser") {
+    if (request.method === "item/tool/call" && request.params?.namespace === "pixice_browser") {
       void browserWorkspace.handleToolCall(request.params)
         .then((response) => runtime.respond(request.id, response))
         .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
@@ -1755,8 +1757,8 @@ app.whenReady().then(async () => {
     let kind = "runtime-request";
     if (isPixiceQuestionToolCall(request)) {
       try {
-        displayRequest = loomQuestionRequest(request);
-        kind = "loom-question-tool";
+        displayRequest = pixiceQuestionRequest(request);
+        kind = "pixice-question-tool";
       } catch (error) {
         runtime.respond(request.id, {
           success: false,
@@ -1764,11 +1766,11 @@ app.whenReady().then(async () => {
         });
         return;
       }
-    } else if (request.method === LOOM_QUESTION_METHOD) kind = "loom-question";
+    } else if (request.method === PIXICE_QUESTION_METHOD) kind = "pixice-question";
     pendingRequests.set(requestKey(request.id), { request, kind, generation: runtimeGeneration });
     send("AttentionRequired", { ...displayRequest, projectId: threadProjects.get(request.params?.threadId) });
     if (Notification.isSupported()) {
-      new Notification({ title: kind.startsWith("loom-question") ? "A task has a question" : "Pixice needs your attention", body: displayRequest.method }).show();
+      new Notification({ title: kind.startsWith("pixice-question") ? "A task has a question" : "Pixice needs your attention", body: displayRequest.method }).show();
     }
   });
   runtime.on("recoverable-error", (error) => send("RuntimeError", error));
@@ -1796,8 +1798,8 @@ app.whenReady().then(async () => {
   appUpdater.start();
   codexUpdater.start();
   await runtime.start();
-  await loomBridge.workflowReady;
-  if (!loomBridge.workflowError) markUpdateDataVersion(userDataPath, app.getVersion());
+  await pixiceBridge.workflowReady;
+  if (!pixiceBridge.workflowError) markUpdateDataVersion(userDataPath, app.getVersion());
   app.on("activate", () => mainWindow.show());
 });
 
@@ -1823,7 +1825,7 @@ app.on("before-quit", async (event) => {
   codexUpdater?.stop();
   browserWorkspace?.destroy();
   await runtime?.stop();
-  loomInstruments?.close();
+  pixiceInstruments?.close();
   app.quit();
 });
 

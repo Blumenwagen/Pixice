@@ -90,7 +90,7 @@
   .root { display: none; }
 }
 
-:global(.loom-app[data-inspector-open="true"]) .root {
+:global(.pixice-app[data-inspector-open="true"]) .root {
   display: none;
 }
 

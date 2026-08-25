@@ -78,7 +78,7 @@ type WorkflowNodeType =
   | "scheduleTrigger"
   | "webhookTrigger"
   | "useSkill"
-  | "loomAgent"
+  | "pixiceAgent"
   | "output"
   | "httpRequest"
   | "transform"
@@ -198,9 +198,9 @@ type WorkflowTriggerStatus = {
 
 declare global {
   interface Window {
-    loom?: {
+    pixice?: {
       app: {
-        bootstrap(): Promise<{ projects: PixiceProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; category: "core" | "loom-native"; defaultEnabled: boolean }> }>;
+        bootstrap(): Promise<{ projects: PixiceProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; category: "core" | "pixice-native"; defaultEnabled: boolean }> }>;
         saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; checkCodexUpdates?: boolean; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };

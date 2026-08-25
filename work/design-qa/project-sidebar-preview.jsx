@@ -5,7 +5,7 @@ import { ProjectCreationDialog } from "../../src/components/sidebar/ProjectSwitc
 import "../../src/styles.css";
 
 const PROJECTS = [
-  { id: "loom", displayName: "Pixice", icon: "code", color: "pink", lastUsedAt: "2026-08-22T12:09:00.000Z", canonicalPath: "/work/loom", folders: ["/work/loom"] },
+  { id: "pixice", displayName: "Pixice", icon: "code", color: "pink", lastUsedAt: "2026-08-22T12:09:00.000Z", canonicalPath: "/work/pixice", folders: ["/work/pixice"] },
   { id: "studio", displayName: "Studio", icon: "sparkles", color: "purple", lastUsedAt: "2026-08-22T12:08:00.000Z", canonicalPath: "/work/studio", folders: ["/work/studio", "/work/shared"] },
   { id: "terminal", displayName: "Tooling", icon: "terminal", color: "green", lastUsedAt: "2026-08-22T12:07:00.000Z", canonicalPath: "/work/tooling", folders: ["/work/tooling"] },
   { id: "web", displayName: "Website", icon: "globe", color: "blue", lastUsedAt: "2026-08-22T12:06:00.000Z", canonicalPath: "/work/website", folders: ["/work/website"] },
@@ -17,7 +17,7 @@ const PROJECTS = [
 ];
 
 const THREADS = {
-  loom: [
+  pixice: [
     { id: "thread-1", name: "Rework project navigation", status: { type: "idle" } },
     { id: "thread-2", name: "Multi-folder persistence", status: { type: "inProgress" } },
     { id: "thread-3", name: "Sidebar visual review", status: { type: "idle" } }
@@ -33,7 +33,7 @@ const THREADS = {
 };
 
 const PROJECT_ACTIVITY = {
-  loom: { runningThreadIds: ["thread-2"], unseenThreadIds: [] },
+  pixice: { runningThreadIds: ["thread-2"], unseenThreadIds: [] },
   studio: { runningThreadIds: ["studio-live-1", "studio-live-2"], unseenThreadIds: ["studio-done-1"] },
   terminal: { runningThreadIds: [], unseenThreadIds: ["tooling-done-1", "tooling-done-2"] },
   metrics: { runningThreadIds: ["metrics-live-1"], unseenThreadIds: [] }
@@ -65,7 +65,7 @@ function SidebarPreview() {
   const tooltipProject = PROJECTS.find((project) => project.id === tooltipProjectId);
   const legacySidebar = previewParams.get("legacy") === "1";
   const recentProjectLimit = previewParams.get("thirdRow") === "1" ? 9 : 6;
-  const [selectedProjectId, setSelectedProjectId] = useState("loom");
+  const [selectedProjectId, setSelectedProjectId] = useState("pixice");
   const [projects, setProjects] = useState(PROJECTS);
   const [selectedThreadId, setSelectedThreadId] = useState("thread-1");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -87,8 +87,8 @@ function SidebarPreview() {
   }, [expanded, tooltipProject]);
 
   return (
-    <div className="loom-stage">
-      <div className="loom-app sidebar-design-preview" data-sidebar-expanded={expanded} style={{ "--sidebar-width": `${width}px` }}>
+    <div className="pixice-stage">
+      <div className="pixice-app sidebar-design-preview" data-sidebar-expanded={expanded} style={{ "--sidebar-width": `${width}px` }}>
         <Sidebar
           projects={projects}
           projectActivity={PROJECT_ACTIVITY}

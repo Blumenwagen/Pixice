@@ -17,7 +17,7 @@ function functionTool(name, description, properties = {}, required = []) {
 
 export const browserDynamicTools = [{
   type: "namespace",
-  name: "loom_browser",
+  name: "pixice_browser",
   description: "Operate the current Codex thread's isolated Pixice in-app preview browser. Use this namespace when the user asks for Pixice's in-app or preview browser; it is separate from external Browser and Chrome plugins. Inspect before interacting and use the returned element indexes.",
   tools: [
     functionTool("navigate", "Navigate the active tab, or open the URL in a new tab.", {
@@ -307,7 +307,7 @@ export class BrowserWorkspace {
     let workspace = this.#workspaces.get(workspaceId);
     if (!workspace) {
       const partitionKey = createHash("sha256").update(workspaceId).digest("hex").slice(0, 24);
-      workspace = { id: workspaceId, partition: `persist:loom-browser-${partitionKey}`, tabs: new Map(), activeTabId: null };
+      workspace = { id: workspaceId, partition: `persist:pixice-browser-${partitionKey}`, tabs: new Map(), activeTabId: null };
       this.#workspaces.set(workspaceId, workspace);
     }
     return workspace;

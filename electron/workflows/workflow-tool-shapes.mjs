@@ -18,7 +18,7 @@ const edge = z.object({
   targetPort: z.string().trim().min(1).max(80).default("input")
 }).strict();
 
-export const loomWorkflowToolShapes = {
+export const pixiceWorkflowToolShapes = {
   list_workflows: {},
   describe_nodes: {},
   inspect_workflow: { workflowId: identifier },

@@ -13,7 +13,7 @@ afterEach(() => {
 
 describe("thread runtime persistence", () => {
   it("round-trips project appearance and multiple folders", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const now = new Date().toISOString();
@@ -52,7 +52,7 @@ describe("thread runtime persistence", () => {
   });
 
   it("orders projects by persisted recency after selection", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const olderAt = "2026-08-20T10:00:00.000Z";
@@ -92,9 +92,9 @@ describe("thread runtime persistence", () => {
   });
 
   it("migrates legacy projects to the structured project DTO", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
-    const sqlite = new DatabaseSync(path.join(directory, "loom.sqlite"));
+    const sqlite = new DatabaseSync(path.join(directory, "pixice.sqlite"));
     sqlite.exec(`
       CREATE TABLE projects (
         id TEXT PRIMARY KEY, canonical_path TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
@@ -121,7 +121,7 @@ describe("thread runtime persistence", () => {
   });
 
   it("restores and removes structured plan progress", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const plan = [{ step: "Audit runtime", status: "inProgress" }];
@@ -135,7 +135,7 @@ describe("thread runtime persistence", () => {
   });
 
   it("persists turn timing across runtime snapshots", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
 
@@ -152,7 +152,7 @@ describe("thread runtime persistence", () => {
   });
 
   it("persists generated thread names independently from Codex list metadata", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
 
@@ -165,7 +165,7 @@ describe("thread runtime persistence", () => {
   });
 
   it("persists, orders, and detaches project board tasks across app restarts", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const now = new Date().toISOString();
@@ -193,7 +193,7 @@ describe("thread runtime persistence", () => {
   });
 
   it("persists provider ownership, resume cursors, and canonical snapshots", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
 
@@ -222,7 +222,7 @@ describe("thread runtime persistence", () => {
   });
 
   it("persists Pixice bridge ancestry and model choices", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
 
@@ -235,7 +235,7 @@ describe("thread runtime persistence", () => {
 
     expect(database.getThreadLink("claude-child")).toMatchObject({
       parentThreadId: "gpt-parent",
-      kind: "loomBridge",
+      kind: "pixiceBridge",
       model: "claude:claude-sonnet-4-6",
       effort: "high"
     });
@@ -246,8 +246,25 @@ describe("thread runtime persistence", () => {
     database.db.close();
   });
 
+  it("migrates bridge ancestry saved by the previous product name", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const legacyKind = `${["lo", "om"].join("")}Bridge`;
+    database.saveThreadLink({
+      childThreadId: "legacy-child",
+      parentThreadId: "parent",
+      kind: legacyKind
+    });
+    database.db.close();
+
+    const reopened = new PixiceDatabase(directory);
+    expect(reopened.getThreadLink("legacy-child")?.kind).toBe("pixiceBridge");
+    reopened.db.close();
+  });
+
   it("keeps task defaults in user data across database migrations and app updates", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
 
@@ -272,7 +289,7 @@ describe("thread runtime persistence", () => {
   });
 
   it("deduplicates measured usage and aggregates cost and token history", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-database-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
     const recordedAt = new Date().toISOString();

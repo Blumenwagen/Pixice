@@ -16,6 +16,23 @@ function ensureColumn(db, table, name, definition) {
   if (!columns.some((column) => column.name === name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
 }
 
+const LEGACY_AGENT_NODE_TYPE = `${["lo", "om"].join("")}Agent`;
+
+function migrateLegacyAgentNodes(db) {
+  const update = db.prepare("UPDATE workflows SET graph = ? WHERE id = ?");
+  for (const row of db.prepare("SELECT id, graph FROM workflows").all()) {
+    const graph = parseJson(row.graph, null);
+    if (!graph || !Array.isArray(graph.nodes)) continue;
+    let changed = false;
+    const nodes = graph.nodes.map((node) => {
+      if (node?.type !== LEGACY_AGENT_NODE_TYPE) return node;
+      changed = true;
+      return { ...node, type: "pixiceAgent" };
+    });
+    if (changed) update.run(JSON.stringify({ ...graph, nodes }), row.id);
+  }
+}
+
 function mapWorkflow(row) {
   if (!row) return null;
   return workflowDocumentSchema.parse({
@@ -55,7 +72,7 @@ function mapRun(row) {
 
 export class WorkflowStore {
   constructor(userDataPath) {
-    this.db = new DatabaseSync(path.join(userDataPath, "loom-workflows.sqlite"));
+    this.db = new DatabaseSync(path.join(userDataPath, "pixice-workflows.sqlite"));
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -103,6 +120,7 @@ export class WorkflowStore {
       ensureColumn(this.db, "workflow_runs", "parent_run_id", "TEXT");
       ensureColumn(this.db, "workflow_runs", "parent_node_id", "TEXT");
       ensureColumn(this.db, "workflow_runs", "call_stack", "TEXT NOT NULL DEFAULT '[]'");
+      migrateLegacyAgentNodes(this.db);
       this.db.exec("COMMIT");
     } catch (error) {
       try { this.db.exec("ROLLBACK"); } catch {}

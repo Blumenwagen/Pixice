@@ -12,7 +12,7 @@ export function threadTitle(thread) {
 
 export function isSidebarThread(thread) {
   return !thread?.parentThreadId
-    || thread?.bridge?.kind === "loomBridge"
+    || thread?.bridge?.kind === "pixiceBridge"
     || Boolean(thread?.bridgeModel);
 }
 
@@ -253,7 +253,7 @@ export function projectCollabAgents(threads, item) {
       startedAt: existing?.startedAt ?? item.startedAt ?? item.createdAt ?? new Date().toISOString(),
       agentStatusMessage: agentState?.message ?? existing?.agentStatusMessage ?? null,
       bridge: existing?.bridge ?? (item.bridge ? {
-        kind: "loomBridge",
+        kind: "pixiceBridge",
         parentThreadId: item.senderThreadId,
         model: item.model ?? null,
         effort: item.effort ?? null

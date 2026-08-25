@@ -27,7 +27,7 @@ import {
   workflowSkillPublicMetadata
 } from "./workflow-skill-node.mjs";
 
-export const LOOM_WORKFLOW_NAMESPACE = "loom_workflows";
+export const PIXICE_WORKFLOW_NAMESPACE = "pixice_workflows";
 const WORKFLOW_TOOL_NAMES = [
   "list_workflows",
   "describe_nodes",
@@ -38,7 +38,7 @@ const WORKFLOW_TOOL_NAMES = [
   "run_workflow",
   "open_workflow"
 ];
-export const LOOM_WORKFLOW_MCP_TOOLS = new Set(WORKFLOW_TOOL_NAMES.map((name) => `mcp__loom_workflows__${name}`));
+export const PIXICE_WORKFLOW_MCP_TOOLS = new Set(WORKFLOW_TOOL_NAMES.map((name) => `mcp__pixice_workflows__${name}`));
 
 const identifier = z.string().trim().min(1).max(160);
 const graphShape = {
@@ -121,7 +121,7 @@ const edgeJsonSchema = {
   additionalProperties: false
 };
 
-export const loomWorkflowTools = [
+export const pixiceWorkflowTools = [
   {
     type: "function",
     name: "list_workflows",
@@ -215,11 +215,11 @@ export const loomWorkflowTools = [
   }
 ];
 
-export const loomWorkflowDynamicTools = [{
+export const pixiceWorkflowDynamicTools = [{
   type: "namespace",
-  name: LOOM_WORKFLOW_NAMESPACE,
+  name: PIXICE_WORKFLOW_NAMESPACE,
   description: "Build and run Pixice-native visual automations with local triggers, APIs, encrypted credentials, deterministic data operations, SQLite, subworkflows, loops, notifications, attached Skills, board actions, and Pixice Agents.",
-  tools: loomWorkflowTools
+  tools: pixiceWorkflowTools
 }];
 
 function textResult(value, success = true) {
@@ -558,7 +558,7 @@ export class PixiceWorkflows {
             status: "running",
             startedAt: new Date().toISOString(),
             input: workflowNodeIsTrigger(node) ? run.input : workflowNodeIsAttachment(node) ? [] : inputs.map((entry) => entry.value),
-            ...(node.type === "loomAgent" ? { executionMode: node.config?.executionMode ?? "background" } : {})
+            ...(node.type === "pixiceAgent" ? { executionMode: node.config?.executionMode ?? "background" } : {})
           });
           try {
             const result = normalizeWorkflowNodeResult(await this.#executeNode({
@@ -643,7 +643,7 @@ export class PixiceWorkflows {
           : Object.fromEntries(inputs.map((entry) => [entry.sourceNodeId, entry.value]));
       return workflowNodeResult(value, {});
     }
-    if (node.type === "loomAgent") return workflowNodeResult(await this.#runAgentNode({ workflow, node, inputs, run, state }));
+    if (node.type === "pixiceAgent") return workflowNodeResult(await this.#runAgentNode({ workflow, node, inputs, run, state }));
     const builtIn = await executeBuiltInWorkflowNode({
       node,
       inputs,
@@ -762,7 +762,7 @@ export class PixiceWorkflows {
       sandbox: permissions.sandbox,
       developerInstructions,
       dynamicTools: this.dynamicTools(),
-      threadSource: "loomBridge"
+      threadSource: "pixiceBridge"
     };
     if (executionMode === "background" && run.sourceThreadId) threadRequest.parentThreadId = run.sourceThreadId;
     const started = await this.runtime.request("thread/start", threadRequest);
@@ -776,7 +776,7 @@ export class PixiceWorkflows {
       this.database?.saveThreadLink({
         childThreadId: thread.id,
         parentThreadId: run.sourceThreadId ?? `workflow:${workflow.id}`,
-        kind: "loomWorkflowBackground",
+        kind: "pixiceWorkflowBackground",
         model: modelId,
         effort
       });
@@ -931,12 +931,12 @@ export class PixiceWorkflows {
   #publishAgentState({ executionMode, parentThreadId, childThreadId, workflow, run, node, model, effort, status, message }) {
     if (executionMode !== "background" || !parentThreadId) return;
     this.onAgentActivity?.({
-      method: "loom/workflow/agent/updated",
+      method: "pixice/workflow/agent/updated",
       threadId: parentThreadId,
       item: {
-        id: `loom-workflow:${run.id}:${node.id}`,
+        id: `pixice-workflow:${run.id}:${node.id}`,
         type: "collabAgentToolCall",
-        tool: status === "running" ? "spawnAgent" : "loomWorkflow",
+        tool: status === "running" ? "spawnAgent" : "pixiceWorkflow",
         senderThreadId: parentThreadId,
         receiverThreadIds: [childThreadId],
         prompt: `${workflow.name} · ${node.name}`,

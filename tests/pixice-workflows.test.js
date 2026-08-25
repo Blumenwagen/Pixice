@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PixiceWorkflows, loomWorkflowDynamicTools } from "../electron/workflows/loom-workflows.mjs";
+import { PixiceWorkflows, pixiceWorkflowDynamicTools } from "../electron/workflows/pixice-workflows.mjs";
 import { WorkflowStore } from "../electron/workflows/workflow-store.mjs";
 
 const temporaryDirectories = [];
@@ -95,7 +95,7 @@ function createCapability({
 
 describe("Pixice workflow capability", () => {
   it("lets an agent discover, create, inspect, edit, open, and run a background workflow agent", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-agent-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-agent-"));
     temporaryDirectories.push(directory);
     const store = new WorkflowStore(directory);
     const runtime = new FakeRuntime();
@@ -115,7 +115,7 @@ describe("Pixice workflow capability", () => {
       tool: "create_workflow",
       arguments: { name: "Investigate regression", description: "Use a Pixice Agent" }
     })).workflow;
-    const createdAgent = created.graph.nodes.find((node) => node.type === "loomAgent");
+    const createdAgent = created.graph.nodes.find((node) => node.type === "pixiceAgent");
     expect(createdAgent.config.executionMode).toBe("background");
 
     const inspected = resultValue(await capability.workflows.handleToolCall({
@@ -123,7 +123,7 @@ describe("Pixice workflow capability", () => {
       tool: "inspect_workflow",
       arguments: { workflowId: created.id }
     })).workflow;
-    const agent = inspected.graph.nodes.find((node) => node.type === "loomAgent");
+    const agent = inspected.graph.nodes.find((node) => node.type === "pixiceAgent");
     const saved = resultValue(await capability.workflows.handleToolCall({
       threadId: "thread-parent",
       tool: "save_workflow",
@@ -147,7 +147,7 @@ describe("Pixice workflow capability", () => {
     expect(completed).toMatchObject({ status: "completed", output: "workflow answer" });
     expect(completed.nodeRuns[agent.id]).toMatchObject({ executionMode: "background", threadId: "workflow-thread-1" });
     expect(capability.saveThreadLink).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "loomWorkflowBackground",
+      kind: "pixiceWorkflowBackground",
       parentThreadId: "thread-parent"
     }));
     expect(runtime.requests.find((request) => request.method === "thread/start")?.payload.parentThreadId).toBe("thread-parent");
@@ -164,7 +164,7 @@ describe("Pixice workflow capability", () => {
   });
 
   it("attaches multiple installed and Markdown Skills to one Agent without turning them into workflow data", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-skills-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-skills-"));
     temporaryDirectories.push(directory);
     const userData = path.join(directory, "user-data");
     const projectRoot = path.join(directory, "project");
@@ -188,7 +188,7 @@ describe("Pixice workflow capability", () => {
         { id: "trigger", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
         { id: "installed", type: "useSkill", name: "Release Skill", description: "", position: { x: 0, y: 180 }, config: { source: "installed", skillRef: installedSkill, skillName: "Release Review" } },
         { id: "markdown", type: "useSkill", name: "Security Skill", description: "", position: { x: 0, y: 360 }, config: { source: "markdown", path: "docs/security.md", skillName: "Security Review" } },
-        { id: "agent", type: "loomAgent", name: "Review Agent", description: "", position: { x: 360, y: 120 }, config: { prompt: "Review this release.", model: null, effort: null, permissionMode: "workspace-write", executionMode: "background" } },
+        { id: "agent", type: "pixiceAgent", name: "Review Agent", description: "", position: { x: 360, y: 120 }, config: { prompt: "Review this release.", model: null, effort: null, permissionMode: "workspace-write", executionMode: "background" } },
         { id: "output", type: "output", name: "Result", description: "", position: { x: 720, y: 120 }, config: {} }
       ],
       edges: [
@@ -225,7 +225,7 @@ describe("Pixice workflow capability", () => {
   });
 
   it("does not let an attachment activate an Agent whose data branch was skipped", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-inactive-skill-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-inactive-skill-"));
     temporaryDirectories.push(directory);
     const store = new WorkflowStore(directory);
     const runtime = new FakeRuntime();
@@ -236,7 +236,7 @@ describe("Pixice workflow capability", () => {
         { id: "trigger", type: "manualTrigger", name: "Start", description: "", position: { x: 0, y: 0 }, config: {} },
         { id: "condition", type: "condition", name: "Run?", description: "", position: { x: 260, y: 0 }, config: { left: "{{input.run}}", operator: "isTrue", right: "" } },
         { id: "skill", type: "useSkill", name: "Unused Skill", description: "", position: { x: 260, y: 240 }, config: { source: "installed", skillRef: "missing", skillName: "Missing" } },
-        { id: "agent", type: "loomAgent", name: "Conditional Agent", description: "", position: { x: 560, y: 0 }, config: {} },
+        { id: "agent", type: "pixiceAgent", name: "Conditional Agent", description: "", position: { x: 560, y: 0 }, config: {} },
         { id: "output", type: "output", name: "Result", description: "", position: { x: 860, y: 0 }, config: {} }
       ],
       edges: [
@@ -258,7 +258,7 @@ describe("Pixice workflow capability", () => {
   });
 
   it("runs only the selected condition branch and merges it downstream", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-branch-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-branch-"));
     temporaryDirectories.push(directory);
     const store = new WorkflowStore(directory);
     const runtime = new FakeRuntime();
@@ -300,13 +300,13 @@ describe("Pixice workflow capability", () => {
   });
 
   it("promotes foreground agent nodes to normal root Pixice threads", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-foreground-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-foreground-"));
     temporaryDirectories.push(directory);
     const store = new WorkflowStore(directory);
     const runtime = new FakeRuntime();
     const capability = createCapability({ runtime, store });
     const created = capability.workflows.create({ projectId: "project-1", name: "Foreground review" });
-    const agent = created.graph.nodes.find((node) => node.type === "loomAgent");
+    const agent = created.graph.nodes.find((node) => node.type === "pixiceAgent");
     const saved = capability.workflows.save({
       projectId: "project-1",
       workflowId: created.id,
@@ -344,8 +344,8 @@ describe("Pixice workflow capability", () => {
   });
 
   it("advertises the Pixice workflow namespace", () => {
-    expect(loomWorkflowDynamicTools[0]).toMatchObject({ type: "namespace", name: "loom_workflows" });
-    expect(loomWorkflowDynamicTools[0].tools.map((tool) => tool.name)).toEqual([
+    expect(pixiceWorkflowDynamicTools[0]).toMatchObject({ type: "namespace", name: "pixice_workflows" });
+    expect(pixiceWorkflowDynamicTools[0].tools.map((tool) => tool.name)).toEqual([
       "list_workflows",
       "describe_nodes",
       "inspect_workflow",

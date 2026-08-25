@@ -15,14 +15,14 @@ afterEach(async () => {
 
 describe("Git review scoping", () => {
   it("excludes parent-repository changes outside a nested project", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "loom-git-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "pixice-git-"));
     temporaryDirectories.push(root);
     const nested = path.join(root, "packages", "app");
     await mkdir(nested, { recursive: true });
     await writeFile(path.join(root, "outside.txt"), "outside before\n");
     await writeFile(path.join(nested, "inside.txt"), "inside before\n");
     await run("git", ["init"], { cwd: root });
-    await run("git", ["config", "user.email", "loom@example.test"], { cwd: root });
+    await run("git", ["config", "user.email", "pixice@example.test"], { cwd: root });
     await run("git", ["config", "user.name", "Pixice Tests"], { cwd: root });
     await run("git", ["add", "."], { cwd: root });
     await run("git", ["commit", "-m", "initial"], { cwd: root });

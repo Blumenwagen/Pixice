@@ -44,8 +44,8 @@ module.exports = {
     { from: "SUPPORT.md", to: "SUPPORT.md" },
     { from: "resources/runtime/manifest.json", to: "runtime/manifest.json" },
     {
-      from: "resources/runtime/loom-developer-instructions.md",
-      to: "runtime/loom-developer-instructions.md"
+      from: "resources/runtime/pixice-developer-instructions.md",
+      to: "runtime/pixice-developer-instructions.md"
     },
     { from: "resources/runtime/agent-behaviors", to: "runtime/agent-behaviors" },
     {

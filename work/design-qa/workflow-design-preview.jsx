@@ -6,10 +6,10 @@ import "../../src/styles.css";
 const nodes = [
   { id: "brief", type: "manualTrigger", name: "Brief", description: "Capture the goal, audience, and constraints for this run.", position: { x: 40, y: 190 }, config: {} },
   { id: "scout", type: "httpRequest", name: "Scout", description: "Collect the source material the creative agents need.", position: { x: 320, y: 190 }, config: { method: "GET", url: "https://example.com" } },
-  { id: "writer", type: "loomAgent", name: "Writer", description: "Turn the research into a concise first draft.", position: { x: 600, y: 80 }, config: { prompt: "Write a draft.", executionMode: "background", permissionMode: "workspace-write" } },
-  { id: "designer", type: "loomAgent", name: "Designer", description: "Develop a visual direction alongside the written draft.", position: { x: 600, y: 300 }, config: { prompt: "Design the supporting visual.", executionMode: "background", permissionMode: "workspace-write" } },
+  { id: "writer", type: "pixiceAgent", name: "Writer", description: "Turn the research into a concise first draft.", position: { x: 600, y: 80 }, config: { prompt: "Write a draft.", executionMode: "background", permissionMode: "workspace-write" } },
+  { id: "designer", type: "pixiceAgent", name: "Designer", description: "Develop a visual direction alongside the written draft.", position: { x: 600, y: 300 }, config: { prompt: "Design the supporting visual.", executionMode: "background", permissionMode: "workspace-write" } },
   { id: "merge", type: "merge", name: "Merge", description: "Combine both creative outputs into one review package.", position: { x: 880, y: 190 }, config: {} },
-  { id: "critic", type: "loomAgent", name: "Critic", description: "Check quality, risk, and alignment before human review.", position: { x: 1160, y: 190 }, config: { prompt: "Review this work.", executionMode: "background", permissionMode: "read-only" } },
+  { id: "critic", type: "pixiceAgent", name: "Critic", description: "Check quality, risk, and alignment before human review.", position: { x: 1160, y: 190 }, config: { prompt: "Review this work.", executionMode: "background", permissionMode: "read-only" } },
   { id: "approval", type: "condition", name: "Human check", description: "Pause for a final decision before delivery.", position: { x: 1440, y: 190 }, config: { left: "{{input.approved}}", operator: "isTrue", right: "" } },
   { id: "deliver", type: "output", name: "Deliver", description: "Return the approved package to the calling task.", position: { x: 1720, y: 190 }, config: {} }
 ];
@@ -27,7 +27,7 @@ const edges = [
 
 const workflow = {
   id: "creative-review",
-  projectId: "loom-preview",
+  projectId: "pixice-preview",
   name: "Creative review thread",
   description: "Research, create, critique, and approve one deliverable.",
   enabled: false,
@@ -60,8 +60,8 @@ const api = {
 };
 
 createRoot(document.getElementById("root")).render(
-  <div className="loom-app" style={{ "--rail-width": "0px" }}>
-    <WorkflowWorkspace api={api} projectId="loom-preview" projectName="Pixice" models={[]} />
+  <div className="pixice-app" style={{ "--rail-width": "0px" }}>
+    <WorkflowWorkspace api={api} projectId="pixice-preview" projectName="Pixice" models={[]} />
   </div>
 );
 

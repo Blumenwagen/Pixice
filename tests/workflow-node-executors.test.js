@@ -94,7 +94,7 @@ describe("workflow node executors", () => {
   });
 
   it("reads and explicitly writes only inside the project", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-files-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-files-"));
     temporaryDirectories.push(directory);
     writeFileSync(path.join(directory, "README.md"), "hello", "utf8");
 
@@ -125,7 +125,7 @@ describe("workflow node executors", () => {
   });
 
   it("runs explicitly enabled commands without a shell and returns structured output", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-command-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-command-"));
     temporaryDirectories.push(directory);
     execFileSync("git", ["init", "-q"], { cwd: directory });
 
@@ -174,10 +174,10 @@ describe("workflow node executors", () => {
   });
 
   it("inspects a real Git repository without exposing arbitrary shell arguments", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-workflow-git-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-git-"));
     temporaryDirectories.push(directory);
     execFileSync("git", ["init", "-q"], { cwd: directory });
-    execFileSync("git", ["config", "user.email", "loom@example.test"], { cwd: directory });
+    execFileSync("git", ["config", "user.email", "pixice@example.test"], { cwd: directory });
     execFileSync("git", ["config", "user.name", "Pixice"], { cwd: directory });
     writeFileSync(path.join(directory, "file.txt"), "one\n", "utf8");
     execFileSync("git", ["add", "file.txt"], { cwd: directory });

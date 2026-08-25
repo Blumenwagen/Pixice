@@ -57,7 +57,7 @@ describe("agent hierarchy projection", () => {
     expect(threads[1]).toMatchObject({
       parentThreadId: "lead",
       bridge: {
-        kind: "loomBridge",
+        kind: "pixiceBridge",
         parentThreadId: "lead",
         model: "claude:claude-sonnet-4-6",
         effort: "high"
@@ -70,7 +70,7 @@ describe("agent hierarchy projection", () => {
     expect(isSidebarThread({
       id: "bridge-child",
       parentThreadId: "lead",
-      bridge: { kind: "loomBridge", parentThreadId: "lead" }
+      bridge: { kind: "pixiceBridge", parentThreadId: "lead" }
     })).toBe(true);
     expect(isSidebarThread({ id: "starting-bridge", parentThreadId: "lead", bridgeModel: "codex:gpt-5.6-terra" })).toBe(true);
     expect(isSidebarThread({ id: "subagent", parentThreadId: "lead" })).toBe(false);

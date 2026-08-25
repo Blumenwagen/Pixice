@@ -16,8 +16,8 @@ import path from "node:path";
 export const UPDATE_DATA_BACKUP_DIRECTORY = "update-data-backups";
 export const UPDATE_DATA_VERSION_FILE = "update-data-version.json";
 
-const SQLITE_FILES = ["loom.sqlite", "loom-workflows.sqlite", "pixice-instruments.sqlite"];
-const FILES = [...SQLITE_FILES, "loom-workflow-credentials.json"];
+const SQLITE_FILES = ["pixice.sqlite", "pixice-workflows.sqlite", "pixice-instruments.sqlite"];
+const FILES = [...SQLITE_FILES, "pixice-workflow-credentials.json"];
 
 function safeVersion(value) {
   return String(value || "unknown").replace(/[^0-9A-Za-z._-]/g, "_");

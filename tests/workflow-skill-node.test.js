@@ -25,7 +25,7 @@ function useSkill(config) {
 
 describe("workflow skill attachments", () => {
   it("flattens installed skill groups and resolves a directory SKILL.md", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-installed-skill-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-installed-skill-"));
     temporaryDirectories.push(directory);
     const skillDirectory = path.join(directory, "release-review");
     mkdirSync(skillDirectory);
@@ -58,8 +58,8 @@ describe("workflow skill attachments", () => {
   });
 
   it("attaches only project-scoped .md files and rejects escapes", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "loom-markdown-skill-"));
-    const outside = mkdtempSync(path.join(tmpdir(), "loom-markdown-outside-"));
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-markdown-skill-"));
+    const outside = mkdtempSync(path.join(tmpdir(), "pixice-markdown-outside-"));
     temporaryDirectories.push(directory, outside);
     mkdirSync(path.join(directory, "instructions"));
     writeFileSync(path.join(directory, "instructions", "review.md"), "# Review\nCheck every failure.", "utf8");
