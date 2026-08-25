@@ -4,7 +4,7 @@ Pixice is distributed without a product license at this time. This file applies 
 
 ## OpenAI Codex
 
-Pixice 0.1.0-beta.1 bundles the official Codex 0.149.0 app-server packages for its supported operating systems. Codex is Copyright OpenAI and contributors and is available under the Apache License 2.0.
+Pixice 0.1.0-beta.2 bundles the official Codex 0.149.0 app-server packages for its supported operating systems. Codex is Copyright OpenAI and contributors and is available under the Apache License 2.0.
 
 - Source and license: https://github.com/openai/codex
 - Release files: https://releases.openai.com/codex/releases/0.149.0/

@@ -2,7 +2,7 @@
 
 Effective August 22, 2026
 
-Pixice is a local desktop application. It does not include Pixice-owned analytics or advertising trackers in version 0.1.0-beta.1.
+Pixice is a local desktop application. It does not include Pixice-owned analytics or advertising trackers in version 0.1.0-beta.2.
 
 ## Data stored on the device
 
