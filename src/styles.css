@@ -780,6 +780,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   border-radius: var(--app-frame-radius);
 }
 .browser-tabbar {
+  position: relative;
   height: 42px;
   padding: 5px 7px 0;
   display: flex;
@@ -787,10 +788,12 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   gap: 6px;
   flex: none;
   background: #191919;
-  border-bottom: 1px solid var(--border);
+  box-shadow: inset 0 -1px var(--border);
   -webkit-app-region: drag;
 }
 .browser-tabs {
+  position: relative;
+  z-index: 1;
   min-width: 0;
   display: flex;
   align-items: flex-end;
@@ -812,11 +815,39 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   flex: 0 1 190px;
   color: var(--quiet);
   background: transparent;
-  border-radius: 9px 9px 0 0;
+  border-radius: 11px 11px 0 0;
+  transition: color 160ms ease, background-color 160ms ease;
 }
-.browser-tab:hover { color: var(--muted); background: rgba(255, 255, 255, .035); }
+.browser-tab:hover { color: var(--muted); background: rgba(255, 255, 255, .04); }
 .browser-tab.active { color: var(--foreground); background: transparent; }
-.browser-tab-active-indicator { position: absolute; inset: 0; z-index: 0; background: #242424; border-radius: inherit; box-shadow: 0 1px 0 rgba(255, 255, 255, .035) inset; }
+.browser-tab-active-indicator {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--canvas);
+  border-radius: inherit;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .055);
+}
+.browser-tab-active-indicator::before,
+.browser-tab-active-indicator::after {
+  position: absolute;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  content: "";
+  pointer-events: none;
+}
+.browser-tab-active-indicator::before {
+  left: -10px;
+  border-bottom-right-radius: 10px;
+  box-shadow: 5px 5px 0 5px var(--canvas);
+}
+.browser-tab-active-indicator::after {
+  right: -10px;
+  border-bottom-left-radius: 10px;
+  box-shadow: -5px 5px 0 5px var(--canvas);
+}
 .browser-tab > button[role="tab"] {
   position: relative;
   z-index: 1;
@@ -830,7 +861,9 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   color: inherit;
   background: transparent;
   cursor: pointer;
+  transition: transform 140ms ease;
 }
+.browser-tab > button[role="tab"]:active { transform: translateY(1px); }
 .browser-tab > .icon-button { position: relative; z-index: 1; }
 .browser-tab > button[role="tab"] svg { flex: none; }
 .browser-tab > button[role="tab"] span {
@@ -849,7 +882,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .browser-new-tab,
 .browser-close { width: 30px; height: 30px; border-radius: 8px; }
 .browser-new-tab { margin-bottom: 1px; }
-.browser-close { margin-bottom: 2px; -webkit-app-region: no-drag; }
+.browser-close { position: relative; z-index: 1; margin-bottom: 2px; -webkit-app-region: no-drag; }
 .browser-navigation {
   height: 43px;
   padding: 0 9px;
@@ -1075,7 +1108,17 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   border-radius: 13px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, .12);
 }
-.proactive-suggestion::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: color-mix(in oklab, var(--primary) 70%, transparent); }
+.proactive-suggestion::after {
+  position: absolute;
+  inset: 0;
+  opacity: .15;
+  background-image: radial-gradient(color-mix(in oklab, var(--primary) 34%, transparent) .65px, transparent .75px);
+  background-size: 4px 4px;
+  mask-image: linear-gradient(105deg, transparent 58%, #000 100%);
+  pointer-events: none;
+  content: "";
+}
+.proactive-suggestion > * { position: relative; z-index: 1; }
 .proactive-suggestion-icon { width: 28px; height: 28px; display: grid; place-items: center; color: color-mix(in oklab, var(--primary) 72%, var(--foreground)); background: color-mix(in oklab, var(--primary) 11%, transparent); border-radius: 8px; }
 .proactive-suggestion-copy { min-width: 0; display: grid; gap: 3px; }
 .proactive-suggestion-eyebrow { color: color-mix(in oklab, var(--primary) 66%, var(--muted)); font-size: 8.5px; font-weight: 650; letter-spacing: .02em; }
@@ -1387,7 +1430,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   --progress-accent: var(--thread);
   --progress-accent-bright: var(--thread-bright);
   --progress-active: color-mix(in oklab, var(--thread) 11%, #242424);
-  margin: 0 12px 34px;
+  margin: 0 0 34px;
   overflow: hidden;
   color: #ececef;
   background: #212121;
@@ -1395,7 +1438,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   border-radius: 18px;
   box-shadow: 0 14px 30px rgba(0, 0, 0, .18);
 }
-.message-stream + .task-progress { margin-top: 28px; }
+:is(.message-stream, .proactive-suggestions) + .task-progress { margin-top: 28px; }
 .progress-head {
   width: 100%;
   min-height: 62px;
@@ -1471,65 +1514,6 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   .progress-footer { padding: 8px 0; align-items: flex-start; flex-direction: column; gap: 5px; }
   .task-map-button { margin-left: 46px; }
 }
-.working-trace { margin: 4px 0 10px; color: var(--muted); font-size: 11px; }
-.trace-toggle {
-  min-height: 30px;
-  margin-left: -6px;
-  padding: 4px 6px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  background: transparent;
-  border-radius: 8px;
-  cursor: pointer;
-  text-align: left;
-  transition: color 150ms ease, background-color 150ms ease;
-}
-.trace-toggle:hover { color: var(--foreground); background: color-mix(in oklab, var(--foreground) 5%, transparent); }
-.trace-status-icon { flex: none; color: var(--quiet); transition: color 240ms ease, filter 240ms ease; }
-.working-trace[data-working="true"] .trace-status-icon { color: var(--thread-bright); filter: drop-shadow(0 0 6px var(--thread-glow)); }
-.trace-status-orb { width: 20px; height: 20px; margin: 0 -2px; }
-.trace-reasoning-list { margin: 0 0 3px; display: grid; gap: 4px; user-select: text; }
-.trace-reasoning-list .trace-entry.reasoning { min-height: 0; padding: 5px 6px; }
-.trace-reasoning-list .trace-commentary { padding: 5px 6px 5px 28px; }
-.trace-live-toggle { min-width: 0; cursor: default; }
-.trace-live-toggle:hover { color: var(--muted); background: transparent; }
-.trace-live-viewport {
-  position: relative;
-  min-width: 0;
-  height: 18px;
-  display: block;
-  flex: 1;
-  overflow: hidden;
-}
-.trace-live-item {
-  position: absolute;
-  inset: 0;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  line-height: 18px;
-  white-space: nowrap;
-}
-.trace-live-item > span:not([data-shimmer-label]) { min-width: 0; overflow: hidden; color: var(--quiet); font-size: 11px; font-weight: 450; text-overflow: ellipsis; }
-.elapsed-time { flex: none; color: var(--quiet); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.trace-toggle-label { color: inherit; font-size: 12px; font-weight: 600; white-space: nowrap; }
-.trace-toggle-label.shimmer {
-  color: var(--foreground);
-  animation: trace-pulse 1.5s ease-in-out infinite;
-}
-.trace-caret { flex: none; color: var(--quiet); transition: transform 240ms var(--ease); }
-.working-trace[data-expanded="true"] .trace-caret { transform: rotate(90deg); }
-.trace-disclosure {
-  display: grid;
-  grid-template-rows: 0fr;
-  opacity: 0;
-  transition: grid-template-rows 320ms var(--ease), opacity 180ms ease;
-}
-.working-trace[data-expanded="true"] .trace-disclosure { grid-template-rows: 1fr; opacity: 1; }
-.trace-disclosure-inner { min-height: 0; overflow: hidden; }
 .trace-list {
   position: relative;
   margin: 2px 0 4px 5px;
@@ -1585,15 +1569,6 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .trace-commentary { padding: 4px 6px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .trace-commentary .markdown-body > :first-child { margin-top: 0; }
 .trace-commentary .markdown-body > :last-child { margin-bottom: 0; }
-@keyframes trace-pulse { 50% { opacity: .52; } }
-
-.pixice-app[data-reduce-motion="true"] .trace-live-item {
-  opacity: 1 !important;
-  filter: none !important;
-  transform: none !important;
-  transition: none !important;
-}
-
 .composer {
   position: absolute;
   right: 0;

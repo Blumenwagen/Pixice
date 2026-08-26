@@ -284,6 +284,17 @@ export function parseDiff(diff) {
   return files.map((file) => ({ ...file, rows: parseDiffRows(file.lines) }));
 }
 
+export function reviewFiles(diff, dirtyPaths = []) {
+  const files = parseDiff(diff);
+  const diffPaths = new Set(files.map((file) => file.path));
+  for (const dirtyPath of dirtyPaths ?? []) {
+    if (!dirtyPath || diffPaths.has(dirtyPath)) continue;
+    files.push({ path: dirtyPath, plus: 0, minus: 0, lines: [], rows: [] });
+    diffPaths.add(dirtyPath);
+  }
+  return files;
+}
+
 function parseDiffRows(lines) {
   const rows = [];
   let oldLine = 0;

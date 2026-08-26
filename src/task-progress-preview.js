@@ -76,6 +76,17 @@ const agents = [
   { id: "model-agent", parentThreadId: rootThread.id, name: "Cookie model", preview: "Design cookie model", status: "completed", agentRole: "Cookie model", agentStatusMessage: "Completed" }
 ];
 
+const previewProactiveSuggestions = [{
+  id: "preview-task-status",
+  projectId: project.id,
+  threadId: rootThread.id,
+  type: "task-status",
+  status: "open",
+  title: "Ready to close this task?",
+  message: "The latest work for “Refactor authentication flow” completed.",
+  payload: { taskId: "preview-task", taskTitle: "Refactor authentication flow", targetColumn: "done" }
+}];
+
 const previewScheduleTasks = [
   {
     id: "scheduled-temporal-model", projectId: project.id, title: "Temporal model", description: "Unify Board and Timeline around one work item.",
@@ -218,6 +229,7 @@ const releaseTool = {
 export function createTaskProgressPreviewApi() {
   let previewTools = [releaseTool];
   let boardTasks = structuredClone(previewScheduleTasks);
+  let proactiveSuggestions = structuredClone(previewProactiveSuggestions);
   const boardActivity = new Map(boardTasks.map((task) => [task.id, [{ id: `${task.id}:activity`, taskId: task.id, projectId: project.id, kind: "schedule-changed", summary: task.schedule.explanation, actorKind: "agent", actorId: task.owner, createdAt: task.updatedAt }]]));
   const listeners = new Set();
   const emit = (type, payload) => listeners.forEach((listener) => listener({ type, payload }));
@@ -304,6 +316,14 @@ export function createTaskProgressPreviewApi() {
     approvals: { resolve: async () => ({ ok: true }) },
     requests: { respond: async () => ({ ok: true }) },
     review: { read: async () => ({ repository: project.repository, diff: "" }) },
+    proactivity: {
+      list: async ({ threadId }) => ({ data: proactiveSuggestions.filter((suggestion) => !threadId || suggestion.threadId === threadId) }),
+      resolve: async ({ suggestionId, decision }) => {
+        const suggestion = proactiveSuggestions.find((candidate) => candidate.id === suggestionId);
+        proactiveSuggestions = proactiveSuggestions.filter((candidate) => candidate.id !== suggestionId);
+        return { suggestion: { ...suggestion, status: decision === "accept" ? "accepted" : "dismissed" } };
+      }
+    },
     board: {
       list: async () => ({ data: boardTasks }),
       read: async ({ taskId }) => ({ task: findBoardTask(taskId), activity: boardActivity.get(taskId) ?? [] }),

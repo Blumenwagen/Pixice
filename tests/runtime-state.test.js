@@ -4,6 +4,7 @@ import {
   descendantsOf,
   mergeThreadSnapshot,
   parseDiff,
+  reviewFiles,
   threadStatus
 } from "../src/state/runtime.js";
 
@@ -169,6 +170,18 @@ describe("runtime state projection", () => {
       { old: null, cur: 1, type: "add", text: "new" },
       { old: null, cur: 2, type: "add", text: "line" }
     ]);
+  });
+
+  it("keeps changed paths that do not have a textual diff", () => {
+    expect(reviewFiles("", ["blog/"])).toEqual([
+      { path: "blog/", plus: 0, minus: 0, lines: [], rows: [] }
+    ]);
+
+    const files = reviewFiles(
+      "diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n@@ -1 +1 @@\n-old\n+new",
+      ["src/a.js", "assets/logo.png"]
+    );
+    expect(files.map((file) => file.path)).toEqual(["src/a.js", "assets/logo.png"]);
   });
 
   it("surfaces approval-waiting threads as attention", () => {

@@ -10,8 +10,7 @@ import {
 import { APP_ICONS } from "./components/icons/app-iconography.jsx";
 import pixiceIcon from "./assets/pixice-icon.png";
 import { ReasoningOrb } from "./components/ReasoningOrb.jsx";
-import { ThinkingState } from "./components/ThinkingState.jsx";
-import { StreamingText } from "./components/StreamingText.jsx";
+import { AgentActivity } from "./components/AgentActivity.jsx";
 import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
 import { InlineVisualization, parseVisualizationSpec } from "./components/InlineVisualization.jsx";
 import { InstrumentHost } from "./components/instruments/InstrumentHost.jsx";
@@ -34,8 +33,8 @@ import {
   flattenItems,
   isSidebarThread,
   mergeThreadSnapshot,
-  parseDiff,
   projectCollabAgents,
+  reviewFiles,
   threadStatus,
   threadTitle
 } from "./state/runtime.js";
@@ -102,6 +101,7 @@ const BEHAVIOR_PREFERENCE_OPTIONS = {
 };
 
 const MOTION_EASE = [0.22, 1, 0.36, 1];
+const PREVIEW_TAB_SPRING = { type: "spring", stiffness: 460, damping: 38, mass: 0.72 };
 const NewTaskIcon = APP_ICONS.newTask;
 const BoardIcon = APP_ICONS.board;
 
@@ -993,7 +993,19 @@ function FileSurface({ file, onUpdate, onSave }) {
   return <pre className="text-file-preview"><code>{source}</code></pre>;
 }
 
-function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fileTabs, instrumentTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource }) {
+function PreviewTabSurface({ workspaceId, reduceMotion }) {
+  return (
+    <motion.span
+      aria-hidden="true"
+      className="browser-tab-active-indicator"
+      initial={false}
+      layoutId={`preview-tab-${workspaceId}`}
+      transition={reduceMotion ? { duration: 0 } : PREVIEW_TAB_SPRING}
+    />
+  );
+}
+
+function BrowserPanel({ api, workspaceId, state, onState, onClose, onBrowserClose, projectId, fileTabs, instrumentTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource }) {
   const viewportRef = useRef(null);
   const systemReducedMotion = useReducedMotion();
   const isPresent = useIsPresent();
@@ -1089,17 +1101,17 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
         <div className="browser-tabs" role="tablist" aria-label="Workspace tabs">
           {state.tabs.map((tab) => (
             <div className={`browser-tab${tab.id === activeTabId ? " active" : ""}`} role="presentation" key={tab.id}>
-              {tab.id === activeTabId && <motion.span className="browser-tab-active-indicator" layoutId={`preview-tab-${workspaceId}`} transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }} />}
+              {tab.id === activeTabId && <PreviewTabSurface workspaceId={workspaceId} reduceMotion={systemReducedMotion} />}
               <button role="tab" aria-selected={tab.id === activeTabId} onClick={() => void run(() => api.browser.activate({ workspaceId, tabId: tab.id }), true)}>
                 {tab.loading ? <SpinnerGap className="spin-icon" size={12} /> : <Globe size={12} />}
                 <span>{tab.title || "New tab"}</span>
               </button>
-              <IconButton label={`Close ${tab.title || "tab"}`} onClick={() => void run(() => api.browser.close({ workspaceId, tabId: tab.id }), tab.id === activeTabId)}><X size={11} /></IconButton>
+              <IconButton label={`Close ${tab.title || "tab"}`} onClick={() => onBrowserClose(tab.id)}><X size={11} /></IconButton>
             </div>
           ))}
           {fileTabs.map((file) => (
             <div className={`browser-tab file-tab${file.id === activeTabId ? " active" : ""}${file.dirty ? " dirty" : ""}`} role="presentation" key={file.id}>
-              {file.id === activeTabId && <motion.span className="browser-tab-active-indicator" layoutId={`preview-tab-${workspaceId}`} transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }} />}
+              {file.id === activeTabId && <PreviewTabSurface workspaceId={workspaceId} reduceMotion={systemReducedMotion} />}
               <button role="tab" aria-selected={file.id === activeTabId} onClick={() => onActiveTabChange(file.id)}>
                 {file.previewKind === "html" ? <Code size={12} /> : <File size={12} />}
                 <span>{file.name}</span>
@@ -1109,7 +1121,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, projectId, fi
           ))}
           {instrumentTabs.map((instrument) => (
             <div className={`browser-tab instrument-tab${`instrument:${instrument.id}` === activeTabId ? " active" : ""}`} role="presentation" key={instrument.id}>
-              {`instrument:${instrument.id}` === activeTabId && <motion.span className="browser-tab-active-indicator" layoutId={`preview-tab-${workspaceId}`} transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }} />}
+              {`instrument:${instrument.id}` === activeTabId && <PreviewTabSurface workspaceId={workspaceId} reduceMotion={systemReducedMotion} />}
               <button role="tab" aria-selected={`instrument:${instrument.id}` === activeTabId} onClick={() => onActiveTabChange(`instrument:${instrument.id}`)}>
                 <Gauge size={12} />
                 <span>{instrument.document.title}</span>
@@ -1595,6 +1607,7 @@ function sameThreadSummary(left, right) {
 
 function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false, timestamp = null, showTimestamp = true }) {
   const [animate] = useState(() => !seenResponseIds.has(responseKey));
+  const systemReducedMotion = useReducedMotion();
   useEffect(() => {
     seenResponseIds.add(responseKey);
   }, [responseKey, seenResponseIds]);
@@ -1603,9 +1616,13 @@ function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sen
     <div className="assistant-message-block">
       <article className={`message assistant-message ${forceFinal ? "final_answer" : item.phase ?? ""}`}>
         {animate ? (
-          <StreamingText text={item.text}>
-            {(shown, caret) => <MarkdownMessage text={shown} trailing={caret} />}
-          </StreamingText>
+          <motion.div
+            initial={systemReducedMotion ? false : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: systemReducedMotion ? 0 : 0.24, ease: MOTION_EASE }}
+          >
+            <MarkdownMessage text={item.text} />
+          </motion.div>
         ) : <MarkdownMessage text={item.text} />}
         {sentToMain && <div className="bridge-answer-status"><CheckCircle size={11} weight="fill" />Sent answer to main agent</div>}
       </article>
@@ -1992,122 +2009,36 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
 }
 
 export function WorkingTrace({ items, running, settled, startedAt = null, completedAt = null, defaultDisclosure = "auto" }) {
-  const disclosureId = useId();
-  const [manualExpanded, setManualExpanded] = useState(null);
-  const wasSettled = useRef(settled);
-  const systemReducedMotion = useReducedMotion();
   const now = useLiveNow(running);
-  const toolCount = items.filter((item) => item.type !== "agentMessage" && item.type !== "reasoning").length;
-  const reasoningItems = items.filter((item) => item.type === "reasoning" || (item.type === "agentMessage" && item.text));
-  const latestTraceIndex = items.findLastIndex((item) => item.type === "agentMessage" ? Boolean(item.text) : TRACE_ITEM_TYPES.has(item.type));
-  const latestTraceItem = latestTraceIndex === -1 ? null : items[latestTraceIndex];
-  const latestAction = latestTraceItem && latestTraceItem.type !== "agentMessage" && latestTraceItem.type !== "reasoning"
-    ? latestTraceItem
-    : null;
-  const latestActionKey = latestAction
-    ? `${latestAction.renderId ?? latestAction.id ?? `${latestAction.type}-${latestTraceIndex}`}-${latestAction.status ?? "idle"}`
-    : "pending";
-  const latestActivity = (() => {
-    if (!latestAction) return { label: "Thinking", detail: latestTraceItem ? "" : "Getting started" };
-    if (latestAction.type === "commandExecution") {
-      const command = Array.isArray(latestAction.command) ? latestAction.command.join(" ") : latestAction.command;
-      return { label: latestAction.status === "completed" ? "Ran command" : "Running command", detail: command };
-    }
-    if (latestAction.type === "fileChange") {
-      const count = latestAction.changes?.length ?? 0;
-      return { label: latestAction.status === "completed" ? "Updated files" : "Updating files", detail: `${count} file${count === 1 ? "" : "s"}` };
-    }
-    if (latestAction.type === "collabAgentToolCall") {
-      const count = latestAction.receiverThreadIds?.length ?? 0;
-      return { label: latestAction.status === "completed" ? "Delegated work" : "Delegating work", detail: `${count} agent${count === 1 ? "" : "s"}` };
-    }
-    if (latestAction.type === "mcpToolCall" || latestAction.type === "dynamicToolCall") {
-      return { label: latestAction.status === "completed" ? "Used tool" : "Using tool", detail: latestAction.tool };
-    }
-    return { label: "Working", detail: "" };
-  })();
   const start = timestampMillis(startedAt);
   const end = timestampMillis(completedAt) || now;
-  const elapsed = start ? formatElapsedDuration(Math.max(0, end - start)) : "";
-  const doneLabel = elapsed
-    ? `${toolCount ? "Worked" : "Thought"} for ${elapsed}`
-    : toolCount
-      ? `Ran ${toolCount} action${toolCount === 1 ? "" : "s"}`
-      : "Thought through the task";
-  const label = settled ? doneLabel : "Work details";
-  const automaticExpanded = defaultDisclosure === "expanded" || (defaultDisclosure === "auto" && !settled);
-  const expanded = manualExpanded ?? automaticExpanded;
-
-  useEffect(() => {
-    if (!wasSettled.current && settled) setManualExpanded(null);
-    wasSettled.current = settled;
-  }, [settled]);
+  const duration = start ? Math.max(0, end - start) / 1000 : 0;
+  const activityItems = items.flatMap((item, index) => {
+    if (item.type === "agentMessage" && !item.text) return [];
+    const kind = item.type === "reasoning" ? "thinking" : item.type === "agentMessage" ? "message" : "tool";
+    return [{
+      id: `${item.renderId ?? item.id ?? `${item.type}-${index}`}-${item.status ?? "idle"}`,
+      type: "trace",
+      kind,
+      source: item,
+    }];
+  });
+  const defaultOpen = defaultDisclosure === "expanded" || (defaultDisclosure === "auto" && !settled);
 
   return (
-    <section className="working-trace" data-expanded={expanded} data-working={running}>
-      {running ? (
-        <>
-          {reasoningItems.length > 0 && (
-            <div className="trace-reasoning-list">
-              {reasoningItems.map((item, index) => item.type === "agentMessage" ? (
-                <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div>
-              ) : (
-                <ActivityItem item={item} key={item.renderId ?? item.id ?? `reasoning-${index}`} />
-              ))}
-            </div>
-          )}
-          <div className="trace-toggle trace-live-toggle" role="status" aria-live="polite" aria-label={`${latestActivity.label}${latestActivity.detail ? `: ${latestActivity.detail}` : ""}`}>
-            <ReasoningOrb className="trace-status-orb" label={latestActivity.label} decorative />
-            <span className="trace-live-viewport">
-              <AnimatePresence initial={false} mode="popLayout">
-                <motion.span
-                  className="trace-live-item"
-                  key={latestActionKey}
-                  initial={systemReducedMotion ? false : { opacity: 0, y: 5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -5 }}
-                  transition={{ duration: systemReducedMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] }}
-                >
-                  <ThinkingState>{latestActivity.label}</ThinkingState>
-                  {latestActivity.detail && <span>{latestActivity.detail}</span>}
-                </motion.span>
-              </AnimatePresence>
-            </span>
-            {elapsed && <span className="elapsed-time">Working for {elapsed}</span>}
-          </div>
-        </>
-      ) : (
-        <>
-          <button
-            type="button"
-            className="trace-toggle"
-            aria-expanded={expanded}
-            aria-controls={disclosureId}
-            onClick={() => setManualExpanded((current) => !(current ?? automaticExpanded))}
-          >
-            <Sparkle className="trace-status-icon" size={15} weight="regular" />
-            <span className="trace-toggle-label">{label}</span>
-            <CaretRight className="trace-caret" size={13} />
-          </button>
-          <div
-            id={disclosureId}
-            className="trace-disclosure"
-            aria-hidden={!expanded}
-            inert={!expanded}
-          >
-            <div className="trace-disclosure-inner">
-              <div className="trace-list">
-                {items.map((item, index) => item.type === "agentMessage" ? (
-                  item.text ? <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div> : null
-                ) : (
-                  <ActivityItem item={item} key={item.renderId ?? item.id ?? `${item.type}-${index}`} />
-                ))}
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-    </section>
+    <AgentActivity
+      items={activityItems}
+      contentType="trace"
+      status={running ? "working" : "complete"}
+      duration={duration}
+      defaultOpen={defaultOpen}
+      collapseOnComplete={defaultDisclosure !== "expanded"}
+      className="working-trace"
+      contentClassName="trace-list"
+      renderItem={(item) => item.source.type === "agentMessage"
+        ? <div className="trace-commentary"><MarkdownMessage text={item.source.text} /></div>
+        : <ActivityItem item={item.source} />}
+    />
   );
 }
 
@@ -2726,6 +2657,7 @@ function ConversationWorkspace({
   previewInstrumentTabs,
   previewActiveTabId,
   onPreviewActiveTabChange,
+  onPreviewBrowserClose,
   onPreviewFileUpdate,
   onPreviewFileClose,
   onPreviewInstrumentClose,
@@ -2974,6 +2906,7 @@ function ConversationWorkspace({
             instrumentTabs={previewInstrumentTabs}
             activeTabId={previewActiveTabId}
             onActiveTabChange={onPreviewActiveTabChange}
+            onBrowserClose={onPreviewBrowserClose}
             onFileUpdate={onPreviewFileUpdate}
             onFileClose={onPreviewFileClose}
             onInstrumentClose={onPreviewInstrumentClose}
@@ -3244,9 +3177,12 @@ function FileDiff({ file }) {
 }
 
 function ReviewWorkspace({ project, review, loading, onRefresh, onExternal }) {
-  const files = useMemo(() => parseDiff(review?.diff), [review?.diff]);
+  const files = useMemo(
+    () => reviewFiles(review?.diff, review?.repository?.dirtyPaths),
+    [review?.diff, review?.repository?.dirtyPaths]
+  );
   const [selectedPath, setSelectedPath] = useState(null);
-  useEffect(() => setSelectedPath(files[0]?.path ?? null), [review?.diff]);
+  useEffect(() => setSelectedPath(files[0]?.path ?? null), [files]);
   const selected = files.find((file) => file.path === selectedPath) ?? files[0];
   const dirtyCount = review?.repository?.dirtyPaths?.length ?? 0;
 
@@ -3261,7 +3197,7 @@ function ReviewWorkspace({ project, review, loading, onRefresh, onExternal }) {
         </div>
         <div>
           <button onClick={() => onExternal("terminal")}><TerminalWindow size={16} />Terminal</button>
-          <button onClick={() => onExternal("editor")}><Desktop size={16} />Editor</button>
+          <button onClick={() => onExternal("editor", selected?.path)}><Desktop size={16} />Editor</button>
           <button onClick={() => onExternal("reveal")}><FolderOpen size={16} />Reveal</button>
           <IconButton label="Refresh review" onClick={onRefresh}><ArrowClockwise size={17} /></IconButton>
         </div>
@@ -3272,11 +3208,16 @@ function ReviewWorkspace({ project, review, loading, onRefresh, onExternal }) {
         <div className="review-layout">
           <aside className="file-browser">
             <div className="list-label">Changed files</div>
-            {files.map((file) => (
-              <button key={file.path} className={file.path === selected?.path ? "selected" : ""} onClick={() => setSelectedPath(file.path)}>
-                <File size={16} /><span><strong>{file.path.split("/").pop()}</strong><small>{file.path.split("/").slice(0, -1).join("/")}</small></span><b>+{file.plus}</b><em>−{file.minus}</em>
-              </button>
-            ))}
+            {files.map((file) => {
+              const displayPath = file.path.replace(/\/$/, "");
+              const parts = displayPath.split("/");
+              return (
+                <button key={file.path} className={file.path === selected?.path ? "selected" : ""} onClick={() => setSelectedPath(file.path)}>
+                  {file.path.endsWith("/") ? <Folder size={16} /> : <File size={16} />}
+                  <span><strong>{parts.pop()}</strong><small>{parts.join("/")}</small></span><b>+{file.plus}</b><em>−{file.minus}</em>
+                </button>
+              );
+            })}
           </aside>
           <section className="diff-panel">
             <FileDiff file={selected} />
@@ -5353,13 +5294,25 @@ export function App() {
       }
       if (event.type === "BrowserState") {
         const workspaceId = event.payload.workspaceId;
-        updatePreviewWorkspace(workspaceId, (workspace) => ({
-          ...workspace,
-          browserState: event.payload,
-          activeTabId: workspace.activeTabId?.startsWith("file:") || workspace.activeTabId?.startsWith("instrument:")
+        updatePreviewWorkspace(workspaceId, (workspace) => {
+          const fileTabs = workspace.fileTabs ?? [];
+          const instrumentTabs = workspace.instrumentTabs ?? [];
+          const browserTabs = event.payload.tabs ?? [];
+          const availableIds = new Set([
+            ...browserTabs.map((tab) => tab.id),
+            ...fileTabs.map((tab) => tab.id),
+            ...instrumentTabs.map((tab) => `instrument:${tab.id}`)
+          ]);
+          const activeTabId = availableIds.has(workspace.activeTabId)
             ? workspace.activeTabId
-            : event.payload.activeTabId ?? workspace.activeTabId
-        }));
+            : event.payload.activeTabId ?? fileTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? null;
+          return {
+            ...workspace,
+            browserState: event.payload,
+            activeTabId,
+            open: availableIds.size ? workspace.open : false
+          };
+        });
         return;
       }
       if (event.type === "BrowserOpenRequested") {
@@ -5930,20 +5883,70 @@ export function App() {
     setPreviewFileTabs((current) => current.map((tab) => tab.id === tabId ? { ...tab, ...patch } : tab));
   }, [setPreviewFileTabs]);
 
+  const closePreviewBrowser = useCallback(async (tabId) => {
+    if (!api?.browser || !previewWorkspaceId) return;
+    try {
+      const nextBrowserState = await api.browser.close({ workspaceId: previewWorkspaceId, tabId });
+      updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
+        const fileTabs = workspace.fileTabs ?? [];
+        const instrumentTabs = workspace.instrumentTabs ?? [];
+        const browserTabs = nextBrowserState.tabs ?? [];
+        const availableIds = new Set([
+          ...browserTabs.map((tab) => tab.id),
+          ...fileTabs.map((tab) => tab.id),
+          ...instrumentTabs.map((tab) => `instrument:${tab.id}`)
+        ]);
+        const activeTabId = availableIds.has(workspace.activeTabId)
+          ? workspace.activeTabId
+          : nextBrowserState.activeTabId ?? fileTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? null;
+        return {
+          ...workspace,
+          browserState: nextBrowserState,
+          activeTabId,
+          open: availableIds.size ? workspace.open : false
+        };
+      });
+    } catch (cause) {
+      setError(cause.message);
+    }
+  }, [api, previewWorkspaceId, updatePreviewWorkspace]);
+
   const closePreviewFile = useCallback((tabId) => {
     const target = previewFileTabs.find((tab) => tab.id === tabId);
     if (target?.dirty && !window.confirm(`Close “${target.name}” without saving your changes?`)) return;
-    const remaining = previewFileTabs.filter((tab) => tab.id !== tabId);
-    setPreviewFileTabs(remaining);
-    if (previewActiveTabId === tabId) setPreviewActiveTabId(remaining.at(-1)?.id ?? (previewInstrumentTabs[0] ? `instrument:${previewInstrumentTabs[0].id}` : null) ?? browserState.activeTabId ?? null);
-  }, [browserState.activeTabId, previewActiveTabId, previewFileTabs, previewInstrumentTabs, setPreviewActiveTabId, setPreviewFileTabs]);
+    updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
+      const fileTabs = (workspace.fileTabs ?? []).filter((tab) => tab.id !== tabId);
+      const instrumentTabs = workspace.instrumentTabs ?? [];
+      const browserTabs = workspace.browserState?.tabs ?? [];
+      const availableIds = new Set([
+        ...browserTabs.map((tab) => tab.id),
+        ...fileTabs.map((tab) => tab.id),
+        ...instrumentTabs.map((tab) => `instrument:${tab.id}`)
+      ]);
+      const activeTabId = workspace.activeTabId === tabId
+        ? fileTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? workspace.browserState?.activeTabId ?? browserTabs[0]?.id ?? null
+        : workspace.activeTabId;
+      return { ...workspace, fileTabs, activeTabId: availableIds.size ? activeTabId : null, open: availableIds.size ? workspace.open : false };
+    });
+  }, [previewFileTabs, previewWorkspaceId, updatePreviewWorkspace]);
 
   const closePreviewInstrument = useCallback((instrumentId) => {
     const tabId = `instrument:${instrumentId}`;
-    const remaining = previewInstrumentTabs.filter((instrument) => instrument.id !== instrumentId);
-    setPreviewInstrumentTabs(remaining);
-    if (previewActiveTabId === tabId) setPreviewActiveTabId(remaining[0] ? `instrument:${remaining[0].id}` : previewFileTabs.at(-1)?.id ?? browserState.activeTabId ?? null);
-  }, [browserState.activeTabId, previewActiveTabId, previewFileTabs, previewInstrumentTabs, setPreviewActiveTabId, setPreviewInstrumentTabs]);
+    updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
+      const instrumentTabs = (workspace.instrumentTabs ?? []).filter((instrument) => instrument.id !== instrumentId);
+      const fileTabs = workspace.fileTabs ?? [];
+      const browserTabs = workspace.browserState?.tabs ?? [];
+      const availableIds = new Set([
+        ...browserTabs.map((tab) => tab.id),
+        ...fileTabs.map((tab) => tab.id),
+        ...instrumentTabs.map((tab) => `instrument:${tab.id}`)
+      ]);
+      const activeTabId = workspace.activeTabId === tabId
+        ? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? fileTabs.at(-1)?.id ?? workspace.browserState?.activeTabId ?? browserTabs[0]?.id ?? null
+        : workspace.activeTabId;
+      return { ...workspace, instrumentTabs, activeTabId: availableIds.size ? activeTabId : null, open: availableIds.size ? workspace.open : false };
+    });
+  }, [previewWorkspaceId, updatePreviewWorkspace]);
 
   const refreshPreviewInstrument = useCallback(async (instrumentId, source) => {
     if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Instrument data refresh is unavailable");
@@ -6220,11 +6223,11 @@ export function App() {
     }
   };
 
-  const openExternal = async (kind) => {
+  const openExternal = async (kind, path) => {
     if (!api || !selectedProjectId) return;
     try {
       if (kind === "terminal") await api.external.openTerminal({ projectId: selectedProjectId });
-      if (kind === "editor") await api.external.openEditor({ projectId: selectedProjectId });
+      if (kind === "editor") await api.external.openEditor({ projectId: selectedProjectId, ...(path ? { path } : {}) });
       if (kind === "reveal") await api.external.reveal({ projectId: selectedProjectId });
     } catch (cause) {
       setError(cause.message);
@@ -6400,6 +6403,7 @@ export function App() {
         previewInstrumentTabs={previewInstrumentTabs}
         previewActiveTabId={previewActiveTabId}
         onPreviewActiveTabChange={setPreviewActiveTabId}
+        onPreviewBrowserClose={closePreviewBrowser}
         onPreviewFileUpdate={updatePreviewFile}
         onPreviewFileClose={closePreviewFile}
         onPreviewInstrumentClose={closePreviewInstrument}

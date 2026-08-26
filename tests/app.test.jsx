@@ -811,6 +811,53 @@ describe("Pixice app shell", () => {
     expect(window.pixice.extensions.list).toHaveBeenCalled();
   });
 
+  it("shows status-only Review items instead of a clean working tree", async () => {
+    window.pixice.review.read.mockResolvedValue({
+      repository: { ...project.repository, dirtyPaths: ["blog/"] },
+      diff: ""
+    });
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+
+    expect(await screen.findByText("1 changed file")).toBeInTheDocument();
+    expect(screen.getByText("blog")).toBeInTheDocument();
+    expect(screen.getByText("No textual diff is available for this file.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Working tree is clean" })).not.toBeInTheDocument();
+  });
+
+  it("opens the selected Review file in the external editor", async () => {
+    window.pixice.review.read.mockResolvedValue({
+      repository: { ...project.repository, dirtyPaths: ["src/auth.js", "src/session.js"] },
+      diff: [
+        "diff --git a/src/auth.js b/src/auth.js",
+        "--- a/src/auth.js",
+        "+++ b/src/auth.js",
+        "@@ -1 +1 @@",
+        "-old auth",
+        "+new auth",
+        "diff --git a/src/session.js b/src/session.js",
+        "--- a/src/session.js",
+        "+++ b/src/session.js",
+        "@@ -1 +1 @@",
+        "-old session",
+        "+new session"
+      ].join("\n")
+    });
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(await screen.findByRole("button", { name: /session\.js/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+
+    await waitFor(() => expect(window.pixice.external.openEditor).toHaveBeenCalledWith({
+      projectId: "project-1",
+      path: "src/session.js"
+    }));
+  });
+
   it("lets Tools replace the primary sidebar instead of adding a second rail", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -2042,7 +2089,7 @@ describe("Pixice app shell", () => {
     }));
   });
 
-  it("keeps one live trace line while running and collapses the history after the final answer", async () => {
+  it("streams activity rows while running and collapses the history after the final answer", async () => {
     const startedAt = new Date(Date.now() - 65_000).toISOString();
     const completedAt = new Date(Date.parse(startedAt) + 65_000).toISOString();
     const liveItems = [
@@ -2058,13 +2105,13 @@ describe("Pixice app shell", () => {
     window.pixice = createApi(liveThread);
 
     render(<App />);
-    const runningStatus = await screen.findByRole("status", { name: "Running command: pnpm test" });
+    const runningStatus = await screen.findByRole("status", { name: "Working through the run…" });
     expect(document.querySelector(".task-row.active [data-reasoning-orb]")).toBeInTheDocument();
-    expect(runningStatus.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
-    expect(runningStatus.querySelectorAll(".trace-live-item")).toHaveLength(1);
-    expect(runningStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Running command");
-    expect(runningStatus.closest(".working-trace").querySelector(".trace-reasoning-list")).toHaveTextContent("Checking the current flow");
-    expect(runningStatus).toHaveTextContent(/Working for 1m [5-6]s/);
+    expect(runningStatus.querySelector("[data-reasoning-orb]")).not.toBeInTheDocument();
+    expect(runningStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Working through the run");
+    expect(runningStatus.closest(".working-trace")).toHaveTextContent("Checking the current flow");
+    expect(runningStatus.closest(".working-trace")).toHaveTextContent("pnpm test");
+    expect(runningStatus.closest(".working-trace").querySelectorAll('[role="listitem"]')).toHaveLength(2);
 
     act(() => window.pixice.emit({
       type: "RuntimeEvent",
@@ -2130,9 +2177,9 @@ describe("Pixice app shell", () => {
 
     expect(await screen.findByText("Delegated agent")).toBeInTheDocument();
     expect(document.querySelector(".agent-row.child")).toHaveTextContent(/Working for \d+s · Inspecting Electron/);
-    await waitFor(() => expect(workingTrace).not.toHaveTextContent("pnpm test"));
-    expect(workingTrace).toHaveTextContent("Delegated work");
-    expect(workingTrace.querySelectorAll(".trace-live-item")).toHaveLength(1);
+    await waitFor(() => expect(workingTrace).toHaveTextContent("spawnAgent"));
+    expect(workingTrace).toHaveTextContent("pnpm test");
+    expect(workingTrace.querySelectorAll('[role="listitem"]')).toHaveLength(3);
 
     act(() => window.pixice.emit({
       type: "RuntimeEvent",
@@ -2165,11 +2212,12 @@ describe("Pixice app shell", () => {
       }
     }));
 
-    const settledToggle = await screen.findByRole("button", { name: "Worked for 1m 5s" });
+    const settledToggle = await screen.findByRole("button", { name: /tool calls?, 1 message/ });
     await waitFor(() => expect(settledToggle).toHaveAttribute("aria-expanded", "false"));
     const disclosure = document.getElementById(settledToggle.getAttribute("aria-controls"));
     expect(disclosure).toHaveAttribute("aria-hidden", "true");
     expect(await screen.findByText("Everything passes.")).toBeInTheDocument();
+    expect(document.querySelector("[data-streaming]")).not.toBeInTheDocument();
     expect(document.querySelectorAll("time.message-timestamp")).toHaveLength(2);
 
     fireEvent.click(settledToggle);
@@ -2177,7 +2225,7 @@ describe("Pixice app shell", () => {
     expect(disclosure).toHaveAttribute("aria-hidden", "false");
   });
 
-  it("shows only the newest working animation when an active turn has multiple trace groups", async () => {
+  it("shows only the newest working activity stream when an active turn has multiple trace groups", async () => {
     const startedAt = new Date(Date.now() - 30_000).toISOString();
     const liveThread = {
       ...thread,
@@ -2197,12 +2245,12 @@ describe("Pixice app shell", () => {
     window.pixice = createApi(liveThread);
 
     render(<App />);
-    expect(await screen.findByRole("status", { name: "Thinking" })).toBeInTheDocument();
+    expect(await screen.findByRole("status", { name: "Working through the run…" })).toBeInTheDocument();
 
     const traces = document.querySelectorAll(".conversation-column .working-trace");
     expect(traces).toHaveLength(2);
     expect(document.querySelectorAll('.conversation-column .working-trace[data-working="true"]')).toHaveLength(1);
-    expect(document.querySelectorAll(".conversation-column .trace-live-toggle")).toHaveLength(1);
+    expect(document.querySelectorAll('.conversation-column .working-trace[data-state="working"]')).toHaveLength(1);
     expect(traces[0]).toHaveAttribute("data-working", "false");
     expect(traces[0]).toHaveTextContent("Updated files");
     expect(traces[1]).toHaveAttribute("data-working", "true");
@@ -2230,7 +2278,7 @@ describe("Pixice app shell", () => {
     window.pixice = createApi(detailedThread);
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: "Ran 1 action" })).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("button", { name: "1 tool call, 0 messages" })).toHaveAttribute("aria-expanded", "true");
     expect(document.querySelectorAll("time.message-timestamp")).toHaveLength(0);
 
     act(() => window.pixice.emit({
@@ -2368,7 +2416,7 @@ describe("Pixice app shell", () => {
     await waitFor(() => expect(screen.getByRole("navigation", { name: "Prompts in this thread" })).toBeInTheDocument());
   });
 
-  it("shows the morphing reasoning orb while waiting for the first activity event", async () => {
+  it("shows the activity shimmer while waiting for the first activity event", async () => {
     const waitingThread = {
       ...thread,
       status: { type: "active" },
@@ -2381,10 +2429,9 @@ describe("Pixice app shell", () => {
     window.pixice = createApi(waitingThread);
 
     render(<App />);
-    const thinkingStatus = await screen.findByRole("status", { name: "Thinking: Getting started" });
-    expect(thinkingStatus.querySelector("[data-reasoning-orb]")).toBeInTheDocument();
-    expect(thinkingStatus.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
-    expect(thinkingStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Thinking");
+    const thinkingStatus = await screen.findByRole("status", { name: "Working through the run…" });
+    expect(thinkingStatus.querySelector("[data-reasoning-orb]")).not.toBeInTheDocument();
+    expect(thinkingStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Working through the run");
 
     act(() => window.pixice.emit({
       type: "RuntimeEvent",
@@ -2396,8 +2443,8 @@ describe("Pixice app shell", () => {
       }
     }));
 
-    const activeThinkingStatus = await screen.findByRole("status", { name: "Thinking" });
-    expect(activeThinkingStatus.querySelector("[data-reasoning-orb]")).toBeInTheDocument();
+    const activeThinkingStatus = await screen.findByRole("status", { name: "Working through the run…" });
+    expect(activeThinkingStatus.querySelector("[data-reasoning-orb]")).not.toBeInTheDocument();
     expect(activeThinkingStatus.closest(".working-trace")).toHaveTextContent("Reading the current implementation");
   });
 
@@ -2930,6 +2977,9 @@ describe("Pixice app shell", () => {
     expect(app).toHaveAttribute("data-preview-open", "true");
     expect(sidebar).toHaveAttribute("data-expanded", "false");
     expect(app).toHaveAttribute("data-sidebar-expanded", "false");
+    expect(document.querySelectorAll(".browser-tab-active-indicator")).toHaveLength(1);
+    expect(appCss).toMatch(/\.browser-tab\s*\{[^}]*height:\s*32px;/s);
+    expect(appCss).toMatch(/\.browser-tab-active-indicator::before[\s\S]*border-bottom-right-radius:\s*10px;/);
     expect(screen.getByRole("separator", { name: "Resize chat and preview" })).toBeInTheDocument();
     expect(appCss).toMatch(/\.task-workspace\.preview-mode\s*\{[^}]*var\(--app-frame-gap\)[^}]*minmax\(360px, 1fr\);/s);
 
@@ -3117,6 +3167,38 @@ describe("Pixice app shell", () => {
       content: "export const ready = false;\n",
       expectedMtimeMs: 1
     }));
+  });
+
+  it("closes the first browser tab when a file tab remains, then closes Preview with the final tab", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open src/runtime.js" }));
+    expect(await screen.findByRole("tab", { name: "runtime.js" })).toHaveAttribute("aria-selected", "true");
+    window.pixice.browser.close.mockResolvedValueOnce({ native: false, workspaceId: "thread-1", activeTabId: null, tabs: [] });
+
+    await user.click(screen.getByRole("button", { name: "Close New tab" }));
+
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "New tab" })).not.toBeInTheDocument());
+    expect(screen.getByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "runtime.js" })).toHaveAttribute("aria-selected", "true");
+
+    await user.click(screen.getByRole("button", { name: "Close runtime.js" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
+  });
+
+  it("closes Preview when its only browser tab closes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await screen.findByRole("region", { name: "Preview workspace" });
+    window.pixice.browser.close.mockResolvedValueOnce({ native: false, workspaceId: "thread-1", activeTabId: null, tabs: [] });
+
+    await user.click(screen.getByRole("button", { name: "Close New tab" }));
+
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
   });
 
   it("replaces the active composer with a sequential question flow", async () => {

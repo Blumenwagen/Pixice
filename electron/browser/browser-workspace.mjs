@@ -173,8 +173,7 @@ export class BrowserWorkspace {
     workspace.tabs.delete(id);
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     if (workspace.activeTabId === id) workspace.activeTabId = [...workspace.tabs.keys()].at(-1) ?? null;
-    if (!workspace.activeTabId) return this.createTab(workspaceId);
-    this.#attachActive();
+    if (workspace.activeTabId) this.#attachActive();
     this.#publish(workspaceId);
     return this.snapshot(workspaceId);
   }

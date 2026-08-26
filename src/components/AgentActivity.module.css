@@ -1,0 +1,70 @@
+.activity {
+  width: 100%;
+  margin: 4px 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workingStatus,
+.completedStatus {
+  min-width: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+.completedStatus {
+  gap: 6px;
+  padding: 0;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  transition: color 150ms ease;
+}
+
+.completedStatus:hover,
+.completedStatus:focus-visible {
+  color: var(--foreground);
+}
+
+.completedStatus:focus-visible {
+  outline: 2px solid var(--thread-bright);
+  outline-offset: 3px;
+}
+
+.summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+.chevron { display: inline-flex; flex: none; color: var(--quiet); }
+.disclosure { overflow: hidden; }
+
+.viewport {
+  padding-right: 4px;
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
+.viewport::-webkit-scrollbar { display: none; }
+.scrollable { overflow-y: auto; }
+
+.content {
+  padding: 8px 0;
+  display: grid;
+  gap: 2px;
+  user-select: text;
+}
+
+:global(.pixice-app[data-reduce-motion="true"]) .chevron,
+:global(.pixice-app[data-reduce-motion="true"]) .disclosure,
+:global(.pixice-app[data-reduce-motion="true"]) .content > * {
+  transform: none !important;
+  transition: none !important;
+}

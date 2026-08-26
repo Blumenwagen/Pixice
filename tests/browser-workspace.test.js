@@ -90,6 +90,20 @@ describe("BrowserWorkspace", () => {
     });
   });
 
+  it("allows the workspace to become empty when its last browser tab closes", async () => {
+    const { workspace, attached } = createHarness();
+    const initial = workspace.createTab("thread-empty");
+    await Promise.resolve();
+    workspace.setViewport({ workspaceId: "thread-empty", visible: true, bounds: { x: 0, y: 0, width: 800, height: 600 } });
+
+    const next = workspace.closeTab("thread-empty", initial.activeTabId);
+
+    expect(next.activeTabId).toBeNull();
+    expect(next.tabs).toHaveLength(0);
+    expect(FakeWebContentsView.instances[0].webContents.closed).toBe(true);
+    expect(attached.size).toBe(0);
+  });
+
   it("ignores a stale home-page failure after a successful navigation", async () => {
     const { workspace } = createHarness();
 
