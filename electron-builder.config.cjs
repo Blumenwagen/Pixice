@@ -19,6 +19,7 @@ module.exports = {
   icon: "build/icon.png",
   asar: true,
   npmRebuild: false,
+  beforePack: "scripts/verify-desktop-renderer.cjs",
   afterPack: "scripts/after-pack-macos.cjs",
   directories: {
     output: "release"

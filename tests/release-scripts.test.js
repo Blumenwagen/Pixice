@@ -4,15 +4,43 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import verifyDesktopRendererBeforePack from "../scripts/verify-desktop-renderer.cjs";
 
 const run = promisify(execFile);
 const temporaryDirectories = [];
+const { verifyDesktopRenderer } = verifyDesktopRendererBeforePack;
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
 describe("release scripts", () => {
+  it("rejects web asset URLs before packaging an Electron renderer", async () => {
+    const project = await mkdtemp(path.join(os.tmpdir(), "pixice-desktop-renderer-"));
+    temporaryDirectories.push(project);
+    const client = path.join(project, "dist", "client");
+    await mkdir(path.join(client, "assets"), { recursive: true });
+    await writeFile(path.join(client, "assets", "app.js"), "export {};");
+    await writeFile(path.join(client, "index.html"), '<script type="module" src="/assets/app.js"></script>');
+
+    expect(() => verifyDesktopRenderer(project)).toThrow(/require \.\/assets\/ references/);
+  });
+
+  it("accepts relative Electron asset URLs when every asset exists", async () => {
+    const project = await mkdtemp(path.join(os.tmpdir(), "pixice-desktop-renderer-"));
+    temporaryDirectories.push(project);
+    const client = path.join(project, "dist", "client");
+    await mkdir(path.join(client, "assets"), { recursive: true });
+    await writeFile(path.join(client, "assets", "app.js"), "export {};");
+    await writeFile(path.join(client, "assets", "app.css"), "body {}");
+    await writeFile(
+      path.join(client, "index.html"),
+      '<script type="module" src="./assets/app.js"></script><link rel="stylesheet" href="./assets/app.css">',
+    );
+
+    expect(verifyDesktopRenderer(project).assets).toEqual(["./assets/app.js", "./assets/app.css"]);
+  });
+
   it("checksums only regular artifacts and ignores unpacked output directories", async () => {
     const release = await mkdtemp(path.join(os.tmpdir(), "pixice-release-"));
     temporaryDirectories.push(release);

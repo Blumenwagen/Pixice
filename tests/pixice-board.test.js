@@ -82,6 +82,38 @@ describe("Pixice board agent capability", () => {
     ]);
   });
 
+  it("refreshes the Board after an agent applies a plan", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-board-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const now = new Date().toISOString();
+    database.upsertProject({ id: "project-1", canonicalPath: "/workspace", displayName: "Workspace", createdAt: now, updatedAt: now });
+    const onChange = vi.fn();
+    const board = new PixiceBoard({
+      database,
+      threadContext: () => ({ projectId: "project-1", cwd: "/workspace" }),
+      onChange
+    });
+
+    const proposed = resultValue(await board.handleToolCall({
+      threadId: "thread-agent",
+      tool: "propose_plan",
+      arguments: { title: "Roadmap", items: [{ id: "feature-1", title: "Feature one" }] }
+    })).proposal;
+    await board.handleToolCall({
+      threadId: "thread-agent",
+      tool: "apply_plan",
+      arguments: { proposalId: proposed.id }
+    });
+
+    expect(onChange).toHaveBeenCalledWith({
+      action: "plan-applied",
+      projectId: "project-1",
+      proposalId: proposed.id
+    });
+    database.db.close();
+  });
+
   it("keeps protected deadlines and Workflow execution under user control", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-board-"));
     temporaryDirectories.push(directory);

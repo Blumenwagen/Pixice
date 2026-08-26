@@ -280,6 +280,7 @@ export class PixiceBoard {
         const proposal = this.database.getBoardPlanProposal(input.proposalId);
         if (!proposal || proposal.projectId !== context.projectId) throw new Error("Plan proposal not found in this project");
         const applied = this.database.applyBoardPlanProposal(proposal.id, { actorKind: "agent", actorId: params.threadId });
+        this.onChange?.({ action: "plan-applied", projectId: context.projectId, proposalId: proposal.id });
         this.onOpen?.({ projectId: context.projectId, proposalId: proposal.id, threadId: params.threadId, workspaceId: params.threadId, reason: "plan", actorKind: "agent", actorId: params.threadId });
         return textResult(applied);
       }

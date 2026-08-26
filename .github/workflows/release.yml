@@ -85,6 +85,7 @@ jobs:
       - run: node scripts/sync-github-cli.mjs --target=${{ matrix.runtime }}
       - run: node scripts/verify-runtime.mjs --target=${{ matrix.runtime }} --require-github-cli
       - run: pnpm exec vite build --mode desktop
+      - run: pnpm verify:desktop-renderer
       - run: pnpm exec electron-builder --config electron-builder.config.cjs --${{ matrix.target }} --${{ matrix.arch }} --publish never
       - name: Verify signed macOS application
         if: runner.os == 'macOS' && env.CSC_LINK != ''
@@ -153,6 +154,7 @@ jobs:
       - run: node scripts/sync-github-cli.mjs --target=${{ matrix.runtime }}
       - run: node scripts/verify-runtime.mjs --target=${{ matrix.runtime }} --require-github-cli
       - run: pnpm exec vite build --mode desktop
+      - run: pnpm verify:desktop-renderer
       - run: pnpm exec electron-builder --config electron-builder.config.cjs --${{ matrix.target }} --${{ matrix.arch }} --publish never
       - uses: actions/upload-artifact@v4
         with:

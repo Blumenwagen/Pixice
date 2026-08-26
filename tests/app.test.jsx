@@ -48,7 +48,7 @@ const thread = {
 };
 
 function createApi(threadValue = thread, initialProactiveSuggestions = []) {
-  let eventListener = null;
+  const eventListeners = new Set();
   const threadValues = Array.isArray(threadValue) ? threadValue : [threadValue];
   let boardTasks = [];
   let proactiveSuggestions = [...initialProactiveSuggestions];
@@ -59,7 +59,7 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
   };
   const scopedBrowserState = (payload = {}) => ({ ...browserState, workspaceId: payload.workspaceId });
   const api = {
-    emit(event) { eventListener?.(event); },
+    emit(event) { eventListeners.forEach((listener) => listener(event)); },
     app: {
       platform: "test",
       bootstrap: vi.fn().mockResolvedValue({ projects: [project], models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", provider: "codex", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], runtime: { state: "ready", connected: true }, settings: {} }),
@@ -284,7 +284,7 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
     models: { list: vi.fn().mockResolvedValue([]) },
     extensions: { list: vi.fn().mockResolvedValue({ skills: [], apps: [], mcp: [], errors: [] }) },
     external: { openEditor: vi.fn(), openTerminal: vi.fn(), reveal: vi.fn() },
-    events: { subscribe: vi.fn((listener) => { eventListener = listener; return () => { eventListener = null; }; }) }
+    events: { subscribe: vi.fn((listener) => { eventListeners.add(listener); return () => { eventListeners.delete(listener); }; }) }
   };
   return api;
 }
@@ -562,6 +562,38 @@ describe("Pixice app shell", () => {
     expect(screen.queryByRole("button", { name: "Next range" })).not.toBeInTheDocument();
     expect(screen.getAllByText("Schedule editor").length).toBeGreaterThan(0);
     expect(localStorage.getItem(`pixice.boardView.${project.id}`)).toBe("board");
+  });
+
+  it("reloads an open Board when an agent applies a plan", async () => {
+    const api = createApi();
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    expect(await screen.findByRole("heading", { name: "Plan work before it runs" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Agent-created roadmap item" })).not.toBeInTheDocument();
+
+    await api.board.create({
+      projectId: project.id,
+      title: "Agent-created roadmap item",
+      description: "Applied from a reviewed plan",
+      column: "ready",
+      schedule: {
+        plannedStart: "2026-09-07T07:00:00.000Z",
+        plannedEnd: "2026-09-28T07:00:00.000Z",
+        timezone: "Europe/Zurich"
+      }
+    });
+    expect((await api.board.list({ projectId: project.id })).data).toEqual([
+      expect.objectContaining({ title: "Agent-created roadmap item" })
+    ]);
+    const boardLoadsBeforeEvent = api.board.list.mock.calls.length;
+    act(() => api.emit({ type: "BoardUpdated", payload: { action: "plan-applied", projectId: project.id } }));
+
+    await waitFor(() => expect(api.board.list.mock.calls.length).toBeGreaterThan(boardLoadsBeforeEvent));
+    expect(await screen.findByText("Agent-created roadmap item")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Timeline" }));
+    expect(screen.getAllByText("Agent-created roadmap item").length).toBeGreaterThan(0);
   });
 
   it("shows a bridge-created Pixice thread in the sidebar like a regular task", async () => {

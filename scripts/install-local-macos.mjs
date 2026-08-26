@@ -56,7 +56,7 @@ async function assertAppBundle(appPath) {
   if (!bundleStats.isDirectory() || !executableStats.isFile()) {
     throw new Error(`Not a Pixice app bundle: ${appPath}`);
   }
-  await verifyMacAppSignature(appPath);
+  await verifyMacAppSignature(appPath, { requireTeamIdentifier: false });
 }
 
 async function runningPixicePids(target) {
