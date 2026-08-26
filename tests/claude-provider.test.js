@@ -2,8 +2,10 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { browserDynamicTools } from "../electron/browser/browser-workspace.mjs";
 import { AsyncPromptQueue, ClaudeProvider, claudeAccountIsAuthenticated, claudePermissionSettings, claudeQueryOptions, resolveClaudeCodeExecutable, resolvePackagedClaudeCodeExecutable } from "../electron/providers/claude-provider.mjs";
 import { PixiceDatabase } from "../electron/persistence/database.mjs";
+import { pixiceBoardTools } from "../electron/runtime/pixice-board.mjs";
 
 const temporaryDirectories = [];
 
@@ -212,11 +214,19 @@ describe("Claude provider", () => {
       interrupt: vi.fn(),
       close: vi.fn()
     };
+    const pixiceBoard = {
+      handleToolCall: vi.fn().mockResolvedValue({ success: true, contentItems: [{ type: "inputText", text: "board result" }] })
+    };
+    const pixiceBrowser = {
+      handleToolCall: vi.fn().mockResolvedValue({ success: true, contentItems: [{ type: "inputText", text: "browser result" }] })
+    };
     const provider = new ClaudeProvider({
       database,
       clientVersion: "test",
       pixiceBridge: { handleToolCall: vi.fn() },
+      pixiceBoard,
       pixiceInstruments: { handleToolCall: vi.fn() },
+      pixiceBrowser,
       queryFactory: (args) => { queryArguments = args; return query; }
     });
     const events = [];
@@ -240,10 +250,36 @@ describe("Claude provider", () => {
     expect(queryArguments.options).toMatchObject({ model: "sonnet", effort: "high", permissionMode: "acceptEdits" });
     expect(queryArguments.options.mcpServers.pixice).toMatchObject({ type: "sdk", name: "pixice" });
     expect(queryArguments.options.mcpServers.pixice_bridge).toMatchObject({ type: "sdk", name: "pixice_bridge" });
+    expect(queryArguments.options.mcpServers.pixice_board).toMatchObject({ type: "sdk", name: "pixice_board" });
     expect(queryArguments.options.mcpServers.pixice_instruments).toMatchObject({ type: "sdk", name: "pixice_instruments" });
+    expect(queryArguments.options.mcpServers.pixice_browser).toMatchObject({ type: "sdk", name: "pixice_browser" });
+    expect(Object.keys(queryArguments.options.mcpServers.pixice_board.instance._registeredTools)).toEqual(
+      pixiceBoardTools.map((definition) => definition.name)
+    );
+    expect(Object.keys(queryArguments.options.mcpServers.pixice_browser.instance._registeredTools)).toEqual(
+      browserDynamicTools[0].tools.map((definition) => definition.name)
+    );
     await expect(queryArguments.options.canUseTool("mcp__pixice__request_user_input", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_bridge__spawn_thread", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    await expect(queryArguments.options.canUseTool("mcp__pixice_board__read_task", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_instruments__create_instrument", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    await expect(queryArguments.options.canUseTool("mcp__pixice_browser__navigate", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+
+    await queryArguments.options.mcpServers.pixice_browser.instance._registeredTools.navigate.handler({ url: "https://apple.com" });
+    expect(pixiceBrowser.handleToolCall).toHaveBeenCalledWith(expect.objectContaining({
+      namespace: "pixice_browser",
+      tool: "navigate",
+      threadId: thread.id,
+      arguments: { url: "https://apple.com" },
+      source: "claude"
+    }));
+    await queryArguments.options.mcpServers.pixice_board.instance._registeredTools.read_task.handler({ taskId: "task-1" });
+    expect(pixiceBoard.handleToolCall).toHaveBeenCalledWith(expect.objectContaining({
+      namespace: "pixice_board",
+      tool: "read_task",
+      threadId: thread.id,
+      arguments: { taskId: "task-1" }
+    }));
 
     output.push({ type: "system", subtype: "init", session_id: thread.providerThreadId, uuid: "init-1" });
     output.push({ type: "system", subtype: "status", status: "compacting", session_id: thread.providerThreadId, uuid: "compact-1" });

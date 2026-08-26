@@ -612,10 +612,9 @@ function SidebarThreadScroll({ children, heading, className = "" }) {
   return (
     <div className={`thread-scroll-region${className ? ` ${className}` : ""}`}>
       {heading}
-      <div className="thread-list-scroll" ref={scrollRef} onScroll={updateOverflow}>
+      <div className="thread-list-scroll" ref={scrollRef} onScroll={updateOverflow} data-overflow={hasMoreBelow}>
         <div className="thread-list-content">{children}</div>
       </div>
-      <div className="thread-overflow-fade" data-visible={hasMoreBelow} aria-hidden="true" />
     </div>
   );
 }

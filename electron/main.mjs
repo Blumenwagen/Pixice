@@ -1840,6 +1840,12 @@ app.whenReady().then(async () => {
     pixiceBridge,
     pixiceBoard,
     pixiceInstruments,
+    pixiceBrowser: {
+      handleToolCall: (params) => {
+        if (!browserWorkspace) throw new Error("Pixice browser is not ready");
+        return browserWorkspace.handleToolCall(params);
+      }
+    },
     pathToClaudeCodeExecutable: resolveClaudeCodeExecutable()
       ?? (app.isPackaged ? resolvePackagedClaudeCodeExecutable({ resourcesPath: process.resourcesPath }) : undefined),
     requireExternalExecutable: app.isPackaged

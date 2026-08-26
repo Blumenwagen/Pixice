@@ -1,10 +1,45 @@
 import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 
 const HOME_HTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><style>
-html,body{height:100%;margin:0}body{display:grid;place-items:center;color:#85858b;background:#171717;font:14px system-ui,sans-serif}.home{text-align:center}.mark{width:42px;height:42px;margin:0 auto 14px;display:grid;place-items:center;color:#c9c9ce;background:#252527;border:1px solid #343438;border-radius:13px;font-size:20px}strong{display:block;color:#e8e8eb;font-size:15px}p{margin:7px 0 0;font-size:12px}</style></head><body><div class="home"><div class="mark">◎</div><strong>Browse with Pixice</strong><p>Enter an address above or ask Codex to investigate a page.</p></div></body></html>`;
+html,body{height:100%;margin:0}body{display:grid;place-items:center;color:#85858b;background:#171717;font:14px system-ui,sans-serif}.home{text-align:center}.mark{width:42px;height:42px;margin:0 auto 14px;display:grid;place-items:center;color:#c9c9ce;background:#252527;border:1px solid #343438;border-radius:13px;font-size:20px}strong{display:block;color:#e8e8eb;font-size:15px}p{margin:7px 0 0;font-size:12px}</style></head><body><div class="home"><div class="mark">◎</div><strong>Browse with Pixice</strong><p>Enter an address above or ask your agent to investigate a page.</p></div></body></html>`;
 const HOME_URL = `data:text/html;charset=utf-8,${encodeURIComponent(HOME_HTML)}`;
 const INTERACTIVE_SELECTOR = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]';
 const NATIVE_PREVIEW_RADIUS = 14;
+
+export const PIXICE_BROWSER_NAMESPACE = "pixice_browser";
+
+export const browserToolShapes = {
+  navigate: {
+    url: z.string().trim().min(1),
+    newTab: z.boolean().optional()
+  },
+  inspect: {
+    maxChars: z.number().int().min(1_000).max(30_000).optional()
+  },
+  click: {
+    index: z.number().int().nonnegative()
+  },
+  type: {
+    index: z.number().int().nonnegative(),
+    text: z.string(),
+    submit: z.boolean().optional()
+  },
+  scroll: {
+    x: z.number().int().optional(),
+    y: z.number().int()
+  },
+  tabs: {
+    action: z.enum(["list", "new", "activate", "close"]),
+    tabId: z.string().optional(),
+    url: z.string().optional()
+  },
+  screenshot: {}
+};
+
+export const PIXICE_BROWSER_MCP_TOOLS = new Set(
+  Object.keys(browserToolShapes).map((name) => `mcp__${PIXICE_BROWSER_NAMESPACE}__${name}`)
+);
 
 function functionTool(name, description, properties = {}, required = []) {
   return {
@@ -17,8 +52,8 @@ function functionTool(name, description, properties = {}, required = []) {
 
 export const browserDynamicTools = [{
   type: "namespace",
-  name: "pixice_browser",
-  description: "Operate the current Codex thread's isolated Pixice in-app preview browser. Use this namespace when the user asks for Pixice's in-app or preview browser; it is separate from external Browser and Chrome plugins. Inspect before interacting and use the returned element indexes.",
+  name: PIXICE_BROWSER_NAMESPACE,
+  description: "Operate the current thread's isolated Pixice in-app preview browser. Use this namespace when the user asks for Pixice's in-app or preview browser; it is separate from external Browser and Chrome plugins. Inspect before interacting and use the returned element indexes.",
   tools: [
     functionTool("navigate", "Navigate the active tab, or open the URL in a new tab.", {
       url: { type: "string", description: "An http(s) URL or localhost address." },
@@ -233,7 +268,7 @@ export class BrowserWorkspace {
   async handleToolCall(params) {
     const workspaceId = params.threadId;
     if (!workspaceId) return textResult("Pixice browser tools require a thread-scoped call.", false);
-    this.#emit("BrowserOpenRequested", { threadId: workspaceId, workspaceId, source: "codex" });
+    this.#emit("BrowserOpenRequested", { threadId: workspaceId, workspaceId, source: params.source ?? "codex" });
     const workspace = this.#workspace(workspaceId);
     if (!workspace.activeTabId) this.createTab(workspaceId);
     const args = params.arguments ?? {};

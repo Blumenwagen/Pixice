@@ -309,21 +309,12 @@ body.preview-resizing .task-workspace { transition: none; }
   overflow-y: auto;
   scrollbar-width: none;
 }
+.thread-list-scroll[data-overflow="true"] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 44px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 44px), transparent 100%);
+}
 .thread-list-scroll::-webkit-scrollbar { display: none; }
 .thread-list-content { min-height: 100%; }
-.thread-overflow-fade {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 2;
-  height: 44px;
-  pointer-events: none;
-  opacity: 0;
-  background: linear-gradient(to bottom, transparent, rgba(36, 36, 36, .94));
-  transition: opacity 160ms ease;
-}
-.thread-overflow-fade[data-visible="true"] { opacity: 1; }
 .workspace-heading {
   position: relative;
   height: 28px;

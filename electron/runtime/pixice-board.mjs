@@ -200,16 +200,18 @@ const descriptions = {
   bind_workflow: "Create a disabled task-to-Workflow event binding for user review in Preview. Agents cannot enable execution."
 };
 
+export const pixiceBoardTools = Object.keys(toolSchemas).map((name) => ({
+  type: "function",
+  name,
+  description: descriptions[name],
+  inputSchema: toolSchemas[name]
+}));
+
 export const pixiceBoardDynamicTools = [{
   type: "namespace",
   name: PIXICE_BOARD_NAMESPACE,
   description: "Inspect and manage the current Pixice project's scheduled Board work. Dated work items also appear in Timeline and may link to a running thread.",
-  tools: Object.keys(toolSchemas).map((name) => ({
-    type: "function",
-    name,
-    description: descriptions[name],
-    inputSchema: toolSchemas[name]
-  }))
+  tools: pixiceBoardTools
 }];
 
 function textResult(value, success = true) {

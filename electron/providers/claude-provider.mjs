@@ -3,17 +3,22 @@ import { randomUUID } from "node:crypto";
 import { constants, accessSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import {
+  PIXICE_BROWSER_MCP_TOOLS,
+  PIXICE_BROWSER_NAMESPACE,
+  browserDynamicTools,
+  browserToolShapes
+} from "../browser/browser-workspace.mjs";
 import { buildClaudeUserMessage } from "../runtime/user-input.mjs";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { normalizePixiceQuestions, pixiceQuestionToolShape } from "../runtime/question-tool.mjs";
-import { PIXICE_BRIDGE_MCP_TOOLS, pixiceBridgeToolShapes } from "../runtime/pixice-bridge.mjs";
-import { PIXICE_BOARD_MCP_TOOLS, pixiceBoardToolShapes } from "../runtime/pixice-board.mjs";
+import { PIXICE_BRIDGE_MCP_TOOLS, pixiceBridgeDynamicTools, pixiceBridgeToolShapes } from "../runtime/pixice-bridge.mjs";
+import { PIXICE_BOARD_MCP_TOOLS, pixiceBoardToolShapes, pixiceBoardTools } from "../runtime/pixice-board.mjs";
 import {
   PIXICE_INSTRUMENTS_MCP_TOOLS,
   instrumentToolShapes,
   instrumentTools
 } from "../instruments/instrument-service.mjs";
-import { pixiceWorkflowTools } from "../workflows/pixice-workflows.mjs";
 
 const FALLBACK_MODELS = [
   { value: "default", displayName: "Claude (recommended)", description: "Use Claude Code's recommended model." }
@@ -153,7 +158,8 @@ export function claudePermissionSettings(mode) {
       PIXICE_QUESTION_MCP_TOOL,
       ...PIXICE_BRIDGE_MCP_TOOLS,
       ...PIXICE_BOARD_MCP_TOOLS,
-      ...PIXICE_INSTRUMENTS_MCP_TOOLS
+      ...PIXICE_INSTRUMENTS_MCP_TOOLS,
+      ...PIXICE_BROWSER_MCP_TOOLS
     ]
   };
 }
@@ -234,6 +240,24 @@ function toolItem(block) {
   return { ...common, type: "mcpToolCall", server: "claude", tool: block.name, arguments: block.input };
 }
 
+function claudeMcpResult(result) {
+  return {
+    content: (result.contentItems ?? []).map((item) => {
+      if (item.type !== "inputImage") return { type: "text", text: item.text ?? "" };
+      const match = /^data:([^;,]+);base64,(.*)$/s.exec(item.imageUrl ?? "");
+      return {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: match?.[1] ?? "image/png",
+          data: match?.[2] ?? ""
+        }
+      };
+    }),
+    isError: result.success === false
+  };
+}
+
 function appendItem(turn, item) {
   const index = turn.items.findIndex((candidate) => candidate.id === item.id);
   if (index === -1) turn.items.push(item);
@@ -251,6 +275,7 @@ export class ClaudeProvider extends EventEmitter {
     pixiceBridge = null,
     pixiceBoard = null,
     pixiceInstruments = null,
+    pixiceBrowser = null,
     pathToClaudeCodeExecutable = resolveClaudeCodeExecutable(),
     requireExternalExecutable = false
   }) {
@@ -264,6 +289,7 @@ export class ClaudeProvider extends EventEmitter {
     this.pixiceBridge = pixiceBridge;
     this.pixiceBoard = pixiceBoard;
     this.pixiceInstruments = pixiceInstruments;
+    this.pixiceBrowser = pixiceBrowser;
     this.pathToClaudeCodeExecutable = pathToClaudeCodeExecutable;
     this.requireExternalExecutable = requireExternalExecutable;
     this.sessions = new Map();
@@ -633,7 +659,8 @@ export class ClaudeProvider extends EventEmitter {
         pixice: this.#pixiceQuestionServer(context),
         ...(this.pixiceBridge ? { pixice_bridge: this.#pixiceBridgeServer(context) } : {}),
         ...(this.pixiceBoard ? { pixice_board: this.#pixiceBoardServer(context) } : {}),
-        ...(this.pixiceInstruments ? { pixice_instruments: this.#pixiceInstrumentsServer(context) } : {})
+        ...(this.pixiceInstruments ? { pixice_instruments: this.#pixiceInstrumentsServer(context) } : {}),
+        ...(this.pixiceBrowser ? { [PIXICE_BROWSER_NAMESPACE]: this.#pixiceBrowserServer(context) } : {})
       },
       pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable
     });
@@ -887,7 +914,13 @@ export class ClaudeProvider extends EventEmitter {
 
   #canUseTool(context, toolName, input, details) {
     if (context.internalNoTools) return Promise.resolve({ behavior: "deny", message: "This internal helper cannot use tools" });
-    if (toolName === PIXICE_QUESTION_MCP_TOOL || PIXICE_BRIDGE_MCP_TOOLS.has(toolName) || PIXICE_INSTRUMENTS_MCP_TOOLS.has(toolName)) {
+    if (
+      toolName === PIXICE_QUESTION_MCP_TOOL
+      || PIXICE_BRIDGE_MCP_TOOLS.has(toolName)
+      || PIXICE_BOARD_MCP_TOOLS.has(toolName)
+      || PIXICE_INSTRUMENTS_MCP_TOOLS.has(toolName)
+      || PIXICE_BROWSER_MCP_TOOLS.has(toolName)
+    ) {
       return Promise.resolve({ behavior: "allow", updatedInput: input });
     }
     if (context.permissionMode === "read-only" && READ_TOOLS.has(toolName)) {
@@ -951,28 +984,18 @@ export class ClaudeProvider extends EventEmitter {
         turnId: context.currentTurn?.id,
         arguments: input
       });
-      return {
-        content: (result.contentItems ?? []).map((item) => item.type === "inputImage"
-          ? { type: "image", source: { type: "base64", media_type: "image/png", data: item.imageUrl?.split(",")[1] ?? "" } }
-          : { type: "text", text: item.text ?? "" }),
-        isError: result.success === false
-      };
+      return claudeMcpResult(result);
     };
     return createSdkMcpServer({
       name: "pixice_bridge",
       version: this.clientVersion || "1.0.0",
       alwaysLoad: true,
-      tools: [
-        tool("list_models", "List only connected GPT and Claude models available for cross-model Pixice delegation, including capability ratings and a recommendation. Normally prefer GPT for cost efficiency; prefer Claude only when requested, when it is the only connected family, or for UI design and taste.", pixiceBridgeToolShapes.list_models, run("list_models")),
-        tool("spawn_thread", "Spawn a new Pixice thread on a connected selected model, wait for it to finish, and return its answer. Cross-family direction is supported in either direction.", pixiceBridgeToolShapes.spawn_thread, run("spawn_thread")),
-        tool("send_update", "Send a progress update from a bridge-created child thread to its parent.", pixiceBridgeToolShapes.send_update, run("send_update")),
-        ...pixiceWorkflowTools.map((definition) => tool(
-          definition.name,
-          definition.description,
-          pixiceBridgeToolShapes[definition.name],
-          run(definition.name)
-        ))
-      ]
+      tools: pixiceBridgeDynamicTools[0].tools.map((definition) => tool(
+        definition.name,
+        definition.description,
+        pixiceBridgeToolShapes[definition.name],
+        run(definition.name)
+      ))
     });
   }
 
@@ -985,23 +1008,18 @@ export class ClaudeProvider extends EventEmitter {
         turnId: context.currentTurn?.id,
         arguments: input
       });
-      return {
-        content: (result.contentItems ?? []).map((item) => ({ type: "text", text: item.text ?? "" })),
-        isError: result.success === false
-      };
+      return claudeMcpResult(result);
     };
     return createSdkMcpServer({
       name: "pixice_board",
       version: this.clientVersion || "1.0.0",
       alwaysLoad: true,
-      tools: [
-        tool("list_tasks", "Inspect the current project's kanban tasks in board order.", pixiceBoardToolShapes.list_tasks, run("list_tasks")),
-        tool("create_task", "Add a task to the current project's kanban without starting a new thread.", pixiceBoardToolShapes.create_task, run("create_task")),
-        tool("update_task", "Edit a kanban task's title or description.", pixiceBoardToolShapes.update_task, run("update_task")),
-        tool("move_task", "Move or reorder a kanban task.", pixiceBoardToolShapes.move_task, run("move_task")),
-        tool("delete_task", "Delete a kanban task without deleting its linked thread.", pixiceBoardToolShapes.delete_task, run("delete_task")),
-        tool("attach_thread", "Attach a Pixice thread to a kanban task. Defaults to the active thread.", pixiceBoardToolShapes.attach_thread, run("attach_thread"))
-      ]
+      tools: pixiceBoardTools.map((definition) => tool(
+        definition.name,
+        definition.description,
+        pixiceBoardToolShapes[definition.name],
+        run(definition.name)
+      ))
     });
   }
 
@@ -1014,10 +1032,7 @@ export class ClaudeProvider extends EventEmitter {
         turnId: context.currentTurn?.id,
         arguments: input
       });
-      return {
-        content: (result.contentItems ?? []).map((item) => ({ type: "text", text: item.text ?? "" })),
-        isError: result.success === false
-      };
+      return claudeMcpResult(result);
     };
     return createSdkMcpServer({
       name: "pixice_instruments",
@@ -1027,6 +1042,31 @@ export class ClaudeProvider extends EventEmitter {
         definition.name,
         definition.description,
         instrumentToolShapes[definition.name],
+        run(definition.name)
+      ))
+    });
+  }
+
+  #pixiceBrowserServer(context) {
+    const run = (name) => async (input) => {
+      const result = await this.pixiceBrowser.handleToolCall({
+        namespace: PIXICE_BROWSER_NAMESPACE,
+        tool: name,
+        threadId: context.thread.id,
+        turnId: context.currentTurn?.id,
+        arguments: input,
+        source: "claude"
+      });
+      return claudeMcpResult(result);
+    };
+    return createSdkMcpServer({
+      name: PIXICE_BROWSER_NAMESPACE,
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: browserDynamicTools[0].tools.map((definition) => tool(
+        definition.name,
+        definition.description,
+        browserToolShapes[definition.name],
         run(definition.name)
       ))
     });

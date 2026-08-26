@@ -1105,13 +1105,12 @@ describe("Pixice app shell", () => {
     const workspaceHeading = sidebar.querySelector(".workspace-heading");
     const threadRegion = sidebar.querySelector(".thread-scroll-region");
     const threadScroller = sidebar.querySelector(".thread-list-scroll");
-    const overflowFade = sidebar.querySelector(".thread-overflow-fade");
     expect(workspaceHeading).toHaveTextContent("Workspace");
     expect(within(workspaceHeading).getByRole("button", { name: "Collapse navigation labels" })).toBeInTheDocument();
     expect(navigation.children[0]).toBe(workspaceHeading.closest(".rail-group"));
     expect(navigation.children[1]).toBe(threadRegion);
     expect(threadRegion).toContainElement(screen.getByRole("button", { name: "Refactor authentication" }));
-    expect(overflowFade).toHaveAttribute("data-visible", "false");
+    expect(threadScroller).toHaveAttribute("data-overflow", "false");
 
     Object.defineProperties(threadScroller, {
       clientHeight: { configurable: true, value: 100 },
@@ -1119,13 +1118,15 @@ describe("Pixice app shell", () => {
       scrollTop: { configurable: true, writable: true, value: 0 }
     });
     fireEvent.scroll(threadScroller);
-    expect(overflowFade).toHaveAttribute("data-visible", "true");
+    expect(threadScroller).toHaveAttribute("data-overflow", "true");
 
     threadScroller.scrollTop = 200;
     fireEvent.scroll(threadScroller);
-    expect(overflowFade).toHaveAttribute("data-visible", "false");
+    expect(threadScroller).toHaveAttribute("data-overflow", "false");
     expect(appCss).toMatch(/\.rail-scroll\s*\{[^}]*overflow-y:\s*hidden;/s);
     expect(appCss).toMatch(/\.thread-list-scroll\s*\{[^}]*overflow-y:\s*auto;/s);
+    expect(appCss).toMatch(/\.thread-list-scroll\[data-overflow="true"\]\s*\{[^}]*mask-image:\s*linear-gradient/s);
+    expect(appCss).not.toContain("thread-overflow-fade");
     expect(sidebar.children[0]).toBe(navigation);
     expect(sidebar.children[1]).toBe(projectHeader);
     expect(sidebar.children[2]).toBe(settings);
