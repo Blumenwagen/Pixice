@@ -10,7 +10,7 @@ import {
 import { APP_ICONS } from "./components/icons/app-iconography.jsx";
 import pixiceIcon from "./assets/pixice-icon.png";
 import { ReasoningOrb } from "./components/ReasoningOrb.jsx";
-import { AgentActivity } from "./components/AgentActivity.jsx";
+import { ThinkingState } from "./components/ThinkingState.jsx";
 import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
 import { InlineVisualization, parseVisualizationSpec } from "./components/InlineVisualization.jsx";
 import { InstrumentHost } from "./components/instruments/InstrumentHost.jsx";
@@ -28,13 +28,16 @@ import { normalizeThreadCleanupAgeDays, THREAD_CLEANUP_MAX_DAYS, THREAD_CLEANUP_
 import { resolveThreadNamingModel, threadNamingModels, THREAD_NAMING_AUTO, THREAD_NAMING_OFF } from "../electron/runtime/thread-naming-models.mjs";
 import { resolveWorkflowGenerationModel, workflowGenerationModels, WORKFLOW_GENERATION_AUTO } from "../electron/runtime/workflow-generation-models.mjs";
 import {
+  appendLocalUserMessage,
   applyRuntimePayload,
   descendantsOf,
   flattenItems,
   isSidebarThread,
   mergeThreadSnapshot,
   projectCollabAgents,
+  removeLocalUserMessage,
   reviewFiles,
+  turnIsCompacting,
   threadStatus,
   threadTitle
 } from "./state/runtime.js";
@@ -1321,6 +1324,13 @@ function ActivityItem({ item }) {
     const count = item.changes?.length ?? 0;
     return <div className="trace-entry"><Files size={14} /><span className="trace-entry-copy"><strong>Updated files</strong><small>{count} file{count === 1 ? "" : "s"}</small></span><StatusDot status={item.status === "completed" ? "complete" : "running"} /></div>;
   }
+  if (item.type === "contextCompaction") {
+    const failed = item.status === "failed" || Boolean(item.failure);
+    const completed = Boolean(item.completedAt) || item.status === "completed";
+    const label = failed ? "Compaction failed" : completed ? "Compacted context" : "Compacting context";
+    const detail = failed ? item.failure?.message ?? "Conversation summary failed" : completed ? "Conversation summary ready" : "Summarizing the conversation";
+    return <div className="trace-entry"><Brain size={14} /><span className="trace-entry-copy"><strong>{label}</strong><small>{detail}</small></span><StatusDot status={failed ? "error" : completed ? "complete" : "running"} /></div>;
+  }
   if (item.type === "collabAgentToolCall") {
     const count = item.receiverThreadIds?.length ?? 0;
     return <div className="trace-entry"><GitBranch size={14} /><span className="trace-entry-copy"><strong>{item.tool}</strong><small>{count} agent{count === 1 ? "" : "s"}</small></span><StatusDot status={item.status === "completed" ? "complete" : "running"} /></div>;
@@ -1688,7 +1698,7 @@ function ConversationItem({ item, forceFinal = false, responseKey, seenResponseI
   return <ActivityItem item={item} />;
 }
 
-const TRACE_ITEM_TYPES = new Set(["reasoning", "commandExecution", "fileChange", "collabAgentToolCall", "mcpToolCall", "dynamicToolCall"]);
+const TRACE_ITEM_TYPES = new Set(["reasoning", "commandExecution", "fileChange", "contextCompaction", "collabAgentToolCall", "mcpToolCall", "dynamicToolCall"]);
 
 function turnIsRunning(status) {
   return status === "inProgress" || status === "running" || status === "active";
@@ -2009,36 +2019,122 @@ function ComposerPicker({ label, hint, value, options, onChange, kind, align = "
 }
 
 export function WorkingTrace({ items, running, settled, startedAt = null, completedAt = null, defaultDisclosure = "auto" }) {
+  const disclosureId = useId();
+  const [manualExpanded, setManualExpanded] = useState(null);
+  const wasSettled = useRef(settled);
+  const systemReducedMotion = useReducedMotion();
   const now = useLiveNow(running);
+  const toolCount = items.filter((item) => item.type !== "agentMessage" && item.type !== "reasoning").length;
+  const reasoningItems = items.filter((item) => item.type === "reasoning" || (item.type === "agentMessage" && item.text));
+  const latestTraceIndex = items.findLastIndex((item) => item.type === "agentMessage" ? Boolean(item.text) : TRACE_ITEM_TYPES.has(item.type));
+  const latestTraceItem = latestTraceIndex === -1 ? null : items[latestTraceIndex];
+  const latestAction = latestTraceItem && latestTraceItem.type !== "agentMessage" && latestTraceItem.type !== "reasoning"
+    ? latestTraceItem
+    : null;
+  const latestActionKey = latestAction
+    ? `${latestAction.renderId ?? latestAction.id ?? `${latestAction.type}-${latestTraceIndex}`}-${latestAction.status ?? "idle"}`
+    : "pending";
+  const latestActivity = (() => {
+    if (!latestAction) return { label: "Thinking", detail: latestTraceItem ? "" : "Getting started" };
+    if (latestAction.type === "commandExecution") {
+      const command = Array.isArray(latestAction.command) ? latestAction.command.join(" ") : latestAction.command;
+      return { label: latestAction.status === "completed" ? "Ran command" : "Running command", detail: command };
+    }
+    if (latestAction.type === "fileChange") {
+      const count = latestAction.changes?.length ?? 0;
+      return { label: latestAction.status === "completed" ? "Updated files" : "Updating files", detail: `${count} file${count === 1 ? "" : "s"}` };
+    }
+    if (latestAction.type === "contextCompaction") {
+      if (latestAction.status === "failed" || latestAction.failure) return { label: "Compaction failed", detail: latestAction.failure?.message ?? "Conversation summary failed" };
+      if (latestAction.status === "completed" || latestAction.completedAt) return { label: "Compacted context", detail: "Conversation summary ready" };
+      return { label: "Compacting…", detail: "Compacting context" };
+    }
+    if (latestAction.type === "collabAgentToolCall") {
+      const count = latestAction.receiverThreadIds?.length ?? 0;
+      return { label: latestAction.status === "completed" ? "Delegated work" : "Delegating work", detail: `${count} agent${count === 1 ? "" : "s"}` };
+    }
+    if (latestAction.type === "mcpToolCall" || latestAction.type === "dynamicToolCall") {
+      return { label: latestAction.status === "completed" ? "Used tool" : "Using tool", detail: latestAction.tool };
+    }
+    return { label: "Working", detail: "" };
+  })();
   const start = timestampMillis(startedAt);
   const end = timestampMillis(completedAt) || now;
-  const duration = start ? Math.max(0, end - start) / 1000 : 0;
-  const activityItems = items.flatMap((item, index) => {
-    if (item.type === "agentMessage" && !item.text) return [];
-    const kind = item.type === "reasoning" ? "thinking" : item.type === "agentMessage" ? "message" : "tool";
-    return [{
-      id: `${item.renderId ?? item.id ?? `${item.type}-${index}`}-${item.status ?? "idle"}`,
-      type: "trace",
-      kind,
-      source: item,
-    }];
-  });
-  const defaultOpen = defaultDisclosure === "expanded" || (defaultDisclosure === "auto" && !settled);
+  const elapsed = start ? formatElapsedDuration(Math.max(0, end - start)) : "";
+  const doneLabel = elapsed
+    ? `${toolCount ? "Worked" : "Thought"} for ${elapsed}`
+    : toolCount
+      ? `Ran ${toolCount} action${toolCount === 1 ? "" : "s"}`
+      : "Thought through the task";
+  const label = settled ? doneLabel : "Work details";
+  const automaticExpanded = defaultDisclosure === "expanded" || (defaultDisclosure === "auto" && !settled);
+  const expanded = manualExpanded ?? automaticExpanded;
+
+  useEffect(() => {
+    if (!wasSettled.current && settled) setManualExpanded(null);
+    wasSettled.current = settled;
+  }, [settled]);
 
   return (
-    <AgentActivity
-      items={activityItems}
-      contentType="trace"
-      status={running ? "working" : "complete"}
-      duration={duration}
-      defaultOpen={defaultOpen}
-      collapseOnComplete={defaultDisclosure !== "expanded"}
-      className="working-trace"
-      contentClassName="trace-list"
-      renderItem={(item) => item.source.type === "agentMessage"
-        ? <div className="trace-commentary"><MarkdownMessage text={item.source.text} /></div>
-        : <ActivityItem item={item.source} />}
-    />
+    <section className="working-trace" data-expanded={expanded} data-working={running}>
+      {running ? (
+        <>
+          {reasoningItems.length > 0 && (
+            <div className="trace-reasoning-list">
+              {reasoningItems.map((item, index) => item.type === "agentMessage" ? (
+                <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div>
+              ) : (
+                <ActivityItem item={item} key={item.renderId ?? item.id ?? `reasoning-${index}`} />
+              ))}
+            </div>
+          )}
+          <div className="trace-toggle trace-live-toggle" role="status" aria-live="polite" aria-label={`${latestActivity.label}${latestActivity.detail ? `: ${latestActivity.detail}` : ""}`}>
+            <ReasoningOrb className="trace-status-orb" label={latestActivity.label} decorative />
+            <span className="trace-live-viewport">
+              <AnimatePresence initial={false} mode="popLayout">
+                <motion.span
+                  className="trace-live-item"
+                  key={latestActionKey}
+                  initial={systemReducedMotion ? false : { opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -5 }}
+                  transition={{ duration: systemReducedMotion ? 0 : 0.28, ease: MOTION_EASE }}
+                >
+                  <ThinkingState>{latestActivity.label}</ThinkingState>
+                  {latestActivity.detail && <span>{latestActivity.detail}</span>}
+                </motion.span>
+              </AnimatePresence>
+            </span>
+            {elapsed && <span className="elapsed-time">Working for {elapsed}</span>}
+          </div>
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="trace-toggle"
+            aria-expanded={expanded}
+            aria-controls={disclosureId}
+            onClick={() => setManualExpanded((current) => !(current ?? automaticExpanded))}
+          >
+            <Sparkle className="trace-status-icon" size={15} weight="regular" />
+            <span className="trace-toggle-label">{label}</span>
+            <CaretRight className="trace-caret" size={13} />
+          </button>
+          <div id={disclosureId} className="trace-disclosure" aria-hidden={!expanded} inert={!expanded}>
+            <div className="trace-disclosure-inner">
+              <div className="trace-list">
+                {items.map((item, index) => item.type === "agentMessage" ? (
+                  item.text ? <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div> : null
+                ) : (
+                  <ActivityItem item={item} key={item.renderId ?? item.id ?? `${item.type}-${index}`} />
+                ))}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -3072,6 +3168,8 @@ function ApprovalCard({ request, onResolve }) {
 }
 
 function agentStatusCopy(agent) {
+  const activeTurn = [...(agent?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
+  if (turnIsCompacting(activeTurn)) return "Compacting";
   const status = threadStatus(agent);
   if (status === "running" || status === "inProgress") return "Working";
   if (status === "completed" || status === "idle") return "Completed";
@@ -3088,6 +3186,8 @@ function activeAgentStartedAt(agent) {
 function InspectorAgentRow({ agent, lead = false, parentTitle = "" }) {
   const status = threadStatus(agent);
   const running = status === "running" || status === "inProgress";
+  const activeTurn = [...(agent?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
+  const compacting = turnIsCompacting(activeTurn);
   const startedAt = activeAgentStartedAt(agent);
   const title = threadTitle(agent);
   const detail = lead
@@ -3102,7 +3202,7 @@ function InspectorAgentRow({ agent, lead = false, parentTitle = "" }) {
         <strong>{name}</strong>
         <small>
           {running && timestampMillis(startedAt)
-            ? <ElapsedTime startedAt={startedAt} running prefix="Working for " />
+            ? <ElapsedTime startedAt={startedAt} running prefix={compacting ? "Compacting for " : "Working for "} />
             : agentStatusCopy(agent)}
           {detail ? ` · ${detail}` : ""}
         </small>
@@ -6108,6 +6208,9 @@ export function App() {
     submittingRef.current = true;
     setSubmitting(true);
     let optimisticThreadId = null;
+    let optimisticTurnId = null;
+    let optimisticMessageId = null;
+    let removeOptimisticTurnOnFailure = false;
     const selectedModelInfo = models.find((model) => model.model === selectedModel);
     const selectedFastTier = fastServiceTier(selectedModelInfo);
     const serviceTier = selectedFastTier ? (fastMode ? selectedFastTier : null) : undefined;
@@ -6144,11 +6247,34 @@ export function App() {
         }
       }
       if (activeTurn && targetThreadId === startingThreadId) {
+        optimisticTurnId = activeTurn.id;
+        optimisticMessageId = `local-user:${activeTurn.id}:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+        if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
+          setThread((current) => appendLocalUserMessage(current, {
+            turnId: activeTurn.id,
+            text,
+            attachments,
+            messageId: optimisticMessageId
+          }));
+        }
         await api.turns.steer({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, attachments });
         if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
           window.setTimeout(() => refreshThread(projectId, targetThreadId), 250);
         }
+        optimisticTurnId = null;
+        optimisticMessageId = null;
       } else {
+        optimisticTurnId = `local-turn:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+        optimisticMessageId = `local-user:${optimisticTurnId}`;
+        removeOptimisticTurnOnFailure = true;
+        if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
+          setThread((current) => appendLocalUserMessage(current, {
+            turnId: optimisticTurnId,
+            text,
+            attachments,
+            messageId: optimisticMessageId
+          }));
+        }
         const response = await api.turns.start({
           projectId,
           threadId: targetThreadId,
@@ -6160,18 +6286,70 @@ export function App() {
           permissionMode
         });
         if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
-          setThread((current) => current
-            ? applyRuntimePayload(current, { method: "turn/started", threadId: targetThreadId, turn: response.turn })
-            : current);
+          const temporaryTurnId = optimisticTurnId;
+          const localMessageId = optimisticMessageId;
+          setThread((current) => {
+            if (!current) return current;
+            const createdAt = response.turn.startedAt ?? response.turn.createdAt;
+            const responseAlreadyArrived = (current.turns ?? []).some((turn) => turn.id === response.turn.id);
+            if (!responseAlreadyArrived) {
+              const withoutTemporaryTurn = removeLocalUserMessage(current, {
+                turnId: temporaryTurnId,
+                messageId: localMessageId,
+                removeEmptyTurn: true
+              });
+              const incoming = appendLocalUserMessage({
+                id: current.id,
+                turns: [{ ...response.turn, renderId: temporaryTurnId }]
+              }, {
+                turnId: response.turn.id,
+                text,
+                attachments,
+                createdAt,
+                messageId: localMessageId,
+                skipIfMatching: true
+              });
+              return mergeThreadSnapshot(withoutTemporaryTurn, incoming);
+            }
+            const withoutTemporaryTurn = removeLocalUserMessage(current, {
+              turnId: temporaryTurnId,
+              messageId: localMessageId,
+              removeEmptyTurn: true
+            });
+            const keyedThread = {
+              ...withoutTemporaryTurn,
+              turns: (withoutTemporaryTurn.turns ?? []).map((turn) => turn.id === response.turn.id
+                ? { ...turn, renderId: turn.renderId ?? temporaryTurnId }
+                : turn)
+            };
+            const started = applyRuntimePayload(keyedThread, { method: "turn/started", threadId: targetThreadId, turn: response.turn });
+            return appendLocalUserMessage(started, {
+              turnId: response.turn.id,
+              text,
+              attachments,
+              createdAt,
+              messageId: localMessageId,
+              skipIfMatching: true
+            });
+          });
           window.setTimeout(() => refreshThread(projectId, targetThreadId), 250);
           window.setTimeout(() => refreshThread(projectId, targetThreadId), 900);
         }
+        optimisticTurnId = null;
+        optimisticMessageId = null;
       }
       markThreadMessaged(targetThreadId);
       setError(null);
       return true;
     } catch (cause) {
       if (optimisticThreadId) optimisticThreadsRef.current.delete(optimisticThreadId);
+      if (optimisticTurnId && optimisticMessageId) {
+        setThread((current) => removeLocalUserMessage(current, {
+          turnId: optimisticTurnId,
+          messageId: optimisticMessageId,
+          removeEmptyTurn: removeOptimisticTurnOnFailure
+        }));
+      }
       setError(cause.message);
       return false;
     } finally {

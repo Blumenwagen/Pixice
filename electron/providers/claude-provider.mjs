@@ -537,6 +537,7 @@ export class ClaudeProvider extends EventEmitter {
       runner: null,
       abortController: null,
       currentTurn: null,
+      compactionItem: null,
       toolItems: new Map()
     };
     this.sessions.set(threadId, context);
@@ -673,7 +674,8 @@ export class ClaudeProvider extends EventEmitter {
       return;
     }
     if (!context.currentTurn) return;
-    if (message.type === "stream_event") this.#handleStreamEvent(context, message);
+    if (message.type === "system" && message.subtype === "status") this.#handleStatus(context, message);
+    else if (message.type === "stream_event") this.#handleStreamEvent(context, message);
     else if (message.type === "assistant") this.#handleAssistant(context, message);
     else if (message.type === "tool_progress") this.#handleToolProgress(context, message);
     else if (message.type === "result") this.#handleResult(context, message);
@@ -686,6 +688,49 @@ export class ClaudeProvider extends EventEmitter {
         message: message.message
       });
     }
+  }
+
+  #handleStatus(context, message) {
+    const turn = context.currentTurn;
+    if (message.status === "compacting") {
+      if (context.compactionItem) return;
+      const item = {
+        id: `claude-compaction:${turn.id}:${message.uuid}`,
+        type: "contextCompaction",
+        status: "inProgress",
+        startedAt: now(),
+        provider: "claude"
+      };
+      context.compactionItem = item;
+      appendItem(turn, item);
+      this.#emitEvent("TaskUpdated", {
+        method: "item/started",
+        threadId: context.thread.id,
+        turnId: turn.id,
+        item
+      });
+      this.#persist(context);
+      return;
+    }
+    if (!context.compactionItem) return;
+    this.#finishCompaction(context, message.compact_result === "failed", message.compact_error);
+  }
+
+  #finishCompaction(context, failed = false, error = null) {
+    const item = context.compactionItem;
+    const turn = context.currentTurn;
+    if (!item || !turn) return;
+    item.status = failed ? "failed" : "completed";
+    item.completedAt = now();
+    if (error) item.failure = { message: error };
+    this.#emitEvent("TaskUpdated", {
+      method: "item/completed",
+      threadId: context.thread.id,
+      turnId: turn.id,
+      item
+    });
+    context.compactionItem = null;
+    this.#persist(context);
   }
 
   #handleStreamEvent(context, message) {
@@ -750,6 +795,7 @@ export class ClaudeProvider extends EventEmitter {
 
   #handleResult(context, message) {
     const turn = context.currentTurn;
+    if (context.compactionItem) this.#finishCompaction(context, message.is_error, message.errors?.join("\n"));
     const modelUsage = message.modelUsage ?? message.model_usage ?? {};
     const usageEntries = Object.entries(modelUsage);
     if (usageEntries.length) {
@@ -815,6 +861,7 @@ export class ClaudeProvider extends EventEmitter {
   #completeTurn(context, status, error) {
     const turn = context.currentTurn;
     if (!turn) return;
+    if (context.compactionItem) this.#finishCompaction(context, status !== "completed", error);
     turn.status = status;
     turn.completedAt = now();
     if (error) turn.error = { message: error };
@@ -1036,6 +1083,7 @@ export class ClaudeProvider extends EventEmitter {
       runner: null,
       abortController: null,
       currentTurn: null,
+      compactionItem: null,
       toolItems: new Map()
     };
     this.sessions.set(threadId, context);

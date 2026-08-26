@@ -246,6 +246,22 @@ describe("Claude provider", () => {
     await expect(queryArguments.options.canUseTool("mcp__pixice_instruments__create_instrument", {}, {})).resolves.toMatchObject({ behavior: "allow" });
 
     output.push({ type: "system", subtype: "init", session_id: thread.providerThreadId, uuid: "init-1" });
+    output.push({ type: "system", subtype: "status", status: "compacting", session_id: thread.providerThreadId, uuid: "compact-1" });
+    await tick();
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "TaskUpdated",
+        payload: expect.objectContaining({
+          method: "item/started",
+          item: expect.objectContaining({ type: "contextCompaction", status: "inProgress", provider: "claude" })
+        })
+      })
+    ]));
+    expect((await provider.request("thread/read", { threadId: thread.id })).thread.turns[0].items)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ type: "contextCompaction", status: "inProgress" })]));
+
+    output.push({ type: "system", subtype: "status", status: null, compact_result: "success", session_id: thread.providerThreadId, uuid: "compact-2" });
     output.push({
       type: "stream_event",
       session_id: thread.providerThreadId,
@@ -271,12 +287,16 @@ describe("Claude provider", () => {
 
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "TaskUpdated", payload: expect.objectContaining({ method: "turn/started", turn: expect.objectContaining({ id: turn.id }) }) }),
+      expect.objectContaining({ type: "TaskUpdated", payload: expect.objectContaining({ method: "item/completed", item: expect.objectContaining({ type: "contextCompaction", status: "completed" }) }) }),
       expect.objectContaining({ type: "TaskUpdated", payload: expect.objectContaining({ method: "item/agentMessage/delta", delta: "Done" }) }),
       expect.objectContaining({ type: "TaskUpdated", payload: expect.objectContaining({ method: "turn/completed", turn: expect.objectContaining({ status: "completed" }) }) })
     ]));
     expect(database.getThreadProviderBinding(thread.id)).toMatchObject({ provider: "claude", resumeCursor: thread.providerThreadId });
     expect((await provider.request("thread/read", { threadId: thread.id })).thread.turns[0].items)
-      .toEqual(expect.arrayContaining([expect.objectContaining({ type: "agentMessage", text: "Done", phase: "final_answer" })]));
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "contextCompaction", status: "completed" }),
+        expect.objectContaining({ type: "agentMessage", text: "Done", phase: "final_answer" })
+      ]));
 
     await provider.stop();
     database.db.close();

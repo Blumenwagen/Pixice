@@ -1071,6 +1071,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .conversation-scroll {
   min-height: 0;
   flex: 1;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-color: var(--border) transparent;
   scrollbar-width: thin;
@@ -1092,7 +1093,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   margin-right: 340px;
   margin-left: var(--inspector-chat-left);
 }
-.message-stream { display: grid; gap: 22px; }
+.message-stream { min-width: 0; display: grid; gap: 22px; }
 .proactive-suggestions { margin-top: 24px; display: grid; gap: 9px; }
 .proactive-suggestion {
   position: relative;
@@ -1514,8 +1515,46 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   .progress-footer { padding: 8px 0; align-items: flex-start; flex-direction: column; gap: 5px; }
   .task-map-button { margin-left: 46px; }
 }
+.working-trace { min-width: 0; margin: 4px 0 10px; overflow: hidden; color: var(--muted); font-size: 11px; }
+.trace-toggle {
+  min-width: 0;
+  min-height: 30px;
+  margin-left: -6px;
+  padding: 4px 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: color 150ms ease, background-color 150ms ease;
+}
+.trace-toggle:hover { color: var(--foreground); background: color-mix(in oklab, var(--foreground) 5%, transparent); }
+.trace-status-icon { flex: none; color: var(--quiet); transition: color 240ms ease, filter 240ms ease; }
+.working-trace[data-working="true"] .trace-status-icon { color: var(--thread-bright); filter: drop-shadow(0 0 6px var(--thread-glow)); }
+.trace-status-orb { width: 20px; height: 20px; margin: 0 -2px; }
+.trace-reasoning-list { min-width: 0; margin: 0 0 3px; display: grid; gap: 4px; overflow: hidden; user-select: text; }
+.trace-reasoning-list .trace-entry.reasoning { min-height: 0; padding: 5px 6px; }
+.trace-reasoning-list .trace-commentary { padding: 5px 6px 5px 28px; }
+.trace-live-toggle { cursor: default; }
+.trace-live-toggle:hover { color: var(--muted); background: transparent; }
+.trace-live-viewport { position: relative; min-width: 0; height: 18px; display: block; flex: 1; overflow: hidden; }
+.trace-live-item { position: absolute; inset: 0; min-width: 0; display: flex; align-items: baseline; gap: 7px; line-height: 18px; white-space: nowrap; }
+.trace-live-item > span:not([data-shimmer-label]) { min-width: 0; overflow: hidden; color: var(--quiet); font-size: 11px; font-weight: 450; text-overflow: ellipsis; white-space: nowrap; }
+.elapsed-time { flex: none; color: var(--quiet); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.trace-toggle-label { color: inherit; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.trace-caret { flex: none; color: var(--quiet); transition: transform 240ms var(--ease); }
+.working-trace[data-expanded="true"] .trace-caret { transform: rotate(90deg); }
+.trace-disclosure { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 320ms var(--ease), opacity 180ms ease; }
+.working-trace[data-expanded="true"] .trace-disclosure { grid-template-rows: 1fr; opacity: 1; }
+.trace-disclosure-inner { min-width: 0; min-height: 0; overflow: hidden; }
 .trace-list {
   position: relative;
+  min-width: 0;
+  width: calc(100% - 5px);
+  max-width: calc(100% - 5px);
   margin: 2px 0 4px 5px;
   padding: 2px 0 2px 17px;
   display: grid;
@@ -1569,6 +1608,14 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .trace-commentary { padding: 4px 6px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .trace-commentary .markdown-body > :first-child { margin-top: 0; }
 .trace-commentary .markdown-body > :last-child { margin-bottom: 0; }
+@keyframes trace-pulse { 50% { opacity: .52; } }
+
+.pixice-app[data-reduce-motion="true"] .trace-live-item {
+  opacity: 1 !important;
+  filter: none !important;
+  transform: none !important;
+  transition: none !important;
+}
 .composer {
   position: absolute;
   right: 0;

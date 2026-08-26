@@ -24,7 +24,10 @@ export function flattenItems(thread) {
 
 function itemFingerprint(item) {
   if (item.type === "userMessage") {
-    return `user:${item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n") ?? ""}`;
+    const content = item.content ?? [];
+    const text = content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    const imageCount = content.filter((part) => part.type === "image").length;
+    return `user:${text ?? ""}:images:${imageCount}`;
   }
   if (item.type === "agentMessage") return `agent:${item.phase ?? ""}:${item.text ?? ""}`;
   if (item.type === "reasoning") return `reasoning:${JSON.stringify(item.summary ?? item.content ?? "")}`;
@@ -33,6 +36,7 @@ function itemFingerprint(item) {
   if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") {
     return `${item.type}:${item.server ?? ""}:${item.tool ?? item.name ?? ""}:${JSON.stringify(item.arguments ?? item.input ?? "")}`;
   }
+  if (item.type === "contextCompaction") return "contextCompaction";
   if (item.type === "imageGeneration") return "imageGeneration";
   return null;
 }
@@ -42,17 +46,19 @@ function mergeTurnItems(currentItems = [], incomingItems = []) {
   const currentById = new Map(currentItems.map((item) => [item.id, item]));
   const incomingIds = new Set(incomingItems.map((item) => item.id));
   const consumedCurrentIds = new Set();
-  const hasPersistedUserMessage = incomingItems.some((item) => item.type === "userMessage");
   const merged = incomingItems.map((item) => {
     let current = currentById.get(item.id);
     if (!current) {
       const fingerprint = itemFingerprint(item);
-      current = currentItems.find((candidate) =>
+      const candidates = currentItems.filter((candidate) =>
         !incomingIds.has(candidate.id)
         && !consumedCurrentIds.has(candidate.id)
         && fingerprint
         && itemFingerprint(candidate) === fingerprint
       );
+      current = item.type === "userMessage"
+        ? candidates.find((candidate) => String(candidate.id).startsWith("local-user:")) ?? candidates[0]
+        : candidates[0];
     }
     if (!current) return item;
     consumedCurrentIds.add(current.id);
@@ -65,7 +71,6 @@ function mergeTurnItems(currentItems = [], incomingItems = []) {
   const retained = [];
   currentItems.forEach((item) => {
     if (incomingIds.has(item.id) || consumedCurrentIds.has(item.id)) return;
-    if (hasPersistedUserMessage && String(item.id).startsWith("local-user:")) return;
     retained.push(item);
   });
   const finalIndex = merged.findIndex((item) => item.type === "agentMessage" && item.phase === "final_answer");
@@ -94,6 +99,13 @@ function stampTurnItems(items = [], { startedAt, completedAt } = {}) {
 
 function turnIsSettled(status) {
   return status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted";
+}
+
+export function turnIsCompacting(turn) {
+  if (!turn || turnIsSettled(turn.status)) return false;
+  const item = [...(turn.items ?? [])].reverse().find((candidate) => candidate.type === "contextCompaction");
+  if (!item) return false;
+  return !item.completedAt && !turnIsSettled(item.status);
 }
 
 function turnFingerprint(turn) {
@@ -142,9 +154,13 @@ export function mergeThreadSnapshot(current, incoming) {
 
 function upsertItem(turn, item) {
   const items = [...(turn.items ?? [])];
-  const index = items.findIndex((candidate) => candidate.id === item.id);
+  let index = items.findIndex((candidate) => candidate.id === item.id);
+  if (index === -1 && item.type === "userMessage") {
+    const fingerprint = itemFingerprint(item);
+    index = items.findIndex((candidate) => String(candidate.id).startsWith("local-user:") && itemFingerprint(candidate) === fingerprint);
+  }
   if (index === -1) items.push(item);
-  else items[index] = { ...items[index], ...item };
+  else items[index] = { ...items[index], ...item, renderId: items[index].renderId ?? items[index].id };
   return { ...turn, items };
 }
 
@@ -153,6 +169,52 @@ function updateTurn(thread, turnId, updater, fallback) {
   const index = turns.findIndex((turn) => turn.id === turnId);
   if (index === -1) turns.push(updater(fallback ?? { id: turnId, items: [], status: "inProgress" }));
   else turns[index] = updater(turns[index]);
+  return { ...thread, turns };
+}
+
+export function appendLocalUserMessage(thread, {
+  turnId,
+  text = "",
+  attachments = [],
+  createdAt = new Date().toISOString(),
+  messageId = null,
+  skipIfMatching = false
+}) {
+  if (!thread || !turnId) return thread;
+  const content = [];
+  if (text) content.push({ type: "text", text });
+  attachments.forEach((attachment) => {
+    if (!attachment?.type?.startsWith("image/") || !attachment.dataUrl) return;
+    content.push({
+      type: "image",
+      url: attachment.dataUrl,
+      name: attachment.name,
+      mimeType: attachment.type
+    });
+  });
+  if (!content.length) return thread;
+
+  return updateTurn(thread, turnId, (turn) => {
+    const item = {
+      id: messageId ?? `local-user:${turnId}:${createdAt}`,
+      type: "userMessage",
+      content,
+      createdAt
+    };
+    const fingerprint = itemFingerprint(item);
+    if (skipIfMatching && (turn.items ?? []).some((candidate) => itemFingerprint(candidate) === fingerprint)) return turn;
+    return { ...turn, items: [...(turn.items ?? []), item] };
+  });
+}
+
+export function removeLocalUserMessage(thread, { turnId, messageId, removeEmptyTurn = false }) {
+  if (!thread || !turnId || !messageId) return thread;
+  const turns = (thread.turns ?? []).flatMap((turn) => {
+    if (turn.id !== turnId) return [turn];
+    const items = (turn.items ?? []).filter((item) => item.id !== messageId);
+    if (removeEmptyTurn && items.length === 0) return [];
+    return [{ ...turn, items }];
+  });
   return { ...thread, turns };
 }
 

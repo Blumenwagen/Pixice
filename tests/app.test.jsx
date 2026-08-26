@@ -2089,7 +2089,7 @@ describe("Pixice app shell", () => {
     }));
   });
 
-  it("streams activity rows while running and collapses the history after the final answer", async () => {
+  it("keeps one live trace line with its timer while running and expands the full history after the final answer", async () => {
     const startedAt = new Date(Date.now() - 65_000).toISOString();
     const completedAt = new Date(Date.parse(startedAt) + 65_000).toISOString();
     const liveItems = [
@@ -2105,13 +2105,13 @@ describe("Pixice app shell", () => {
     window.pixice = createApi(liveThread);
 
     render(<App />);
-    const runningStatus = await screen.findByRole("status", { name: "Working through the run…" });
+    const runningStatus = await screen.findByRole("status", { name: "Running command: pnpm test" });
     expect(document.querySelector(".task-row.active [data-reasoning-orb]")).toBeInTheDocument();
-    expect(runningStatus.querySelector("[data-reasoning-orb]")).not.toBeInTheDocument();
-    expect(runningStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Working through the run");
-    expect(runningStatus.closest(".working-trace")).toHaveTextContent("Checking the current flow");
-    expect(runningStatus.closest(".working-trace")).toHaveTextContent("pnpm test");
-    expect(runningStatus.closest(".working-trace").querySelectorAll('[role="listitem"]')).toHaveLength(2);
+    expect(runningStatus.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
+    expect(runningStatus.querySelectorAll(".trace-live-item")).toHaveLength(1);
+    expect(runningStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Running command");
+    expect(runningStatus.closest(".working-trace").querySelector(".trace-reasoning-list")).toHaveTextContent("Checking the current flow");
+    expect(runningStatus).toHaveTextContent(/Working for 1m [5-6]s/);
 
     act(() => window.pixice.emit({
       type: "RuntimeEvent",
@@ -2177,9 +2177,9 @@ describe("Pixice app shell", () => {
 
     expect(await screen.findByText("Delegated agent")).toBeInTheDocument();
     expect(document.querySelector(".agent-row.child")).toHaveTextContent(/Working for \d+s · Inspecting Electron/);
-    await waitFor(() => expect(workingTrace).toHaveTextContent("spawnAgent"));
-    expect(workingTrace).toHaveTextContent("pnpm test");
-    expect(workingTrace.querySelectorAll('[role="listitem"]')).toHaveLength(3);
+    await waitFor(() => expect(workingTrace).not.toHaveTextContent("pnpm test"));
+    expect(workingTrace).toHaveTextContent("Delegated work");
+    expect(workingTrace.querySelectorAll(".trace-live-item")).toHaveLength(1);
 
     act(() => window.pixice.emit({
       type: "RuntimeEvent",
@@ -2212,12 +2212,11 @@ describe("Pixice app shell", () => {
       }
     }));
 
-    const settledToggle = await screen.findByRole("button", { name: /tool calls?, 1 message/ });
+    const settledToggle = await screen.findByRole("button", { name: "Worked for 1m 5s" });
     await waitFor(() => expect(settledToggle).toHaveAttribute("aria-expanded", "false"));
     const disclosure = document.getElementById(settledToggle.getAttribute("aria-controls"));
     expect(disclosure).toHaveAttribute("aria-hidden", "true");
     expect(await screen.findByText("Everything passes.")).toBeInTheDocument();
-    expect(document.querySelector("[data-streaming]")).not.toBeInTheDocument();
     expect(document.querySelectorAll("time.message-timestamp")).toHaveLength(2);
 
     fireEvent.click(settledToggle);
@@ -2225,7 +2224,13 @@ describe("Pixice app shell", () => {
     expect(disclosure).toHaveAttribute("aria-hidden", "false");
   });
 
-  it("shows only the newest working activity stream when an active turn has multiple trace groups", async () => {
+  it("contains the live trace animation within the conversation width", () => {
+    expect(appCss).toMatch(/\.working-trace\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(appCss).toMatch(/\.trace-live-viewport\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(appCss).toMatch(/\.conversation-scroll\s*\{[^}]*overflow-x:\s*hidden;/s);
+  });
+
+  it("shows only the newest working animation when an active turn has multiple trace groups", async () => {
     const startedAt = new Date(Date.now() - 30_000).toISOString();
     const liveThread = {
       ...thread,
@@ -2245,12 +2250,12 @@ describe("Pixice app shell", () => {
     window.pixice = createApi(liveThread);
 
     render(<App />);
-    expect(await screen.findByRole("status", { name: "Working through the run…" })).toBeInTheDocument();
+    expect(await screen.findByRole("status", { name: "Thinking" })).toBeInTheDocument();
 
     const traces = document.querySelectorAll(".conversation-column .working-trace");
     expect(traces).toHaveLength(2);
     expect(document.querySelectorAll('.conversation-column .working-trace[data-working="true"]')).toHaveLength(1);
-    expect(document.querySelectorAll('.conversation-column .working-trace[data-state="working"]')).toHaveLength(1);
+    expect(document.querySelectorAll(".conversation-column .trace-live-toggle")).toHaveLength(1);
     expect(traces[0]).toHaveAttribute("data-working", "false");
     expect(traces[0]).toHaveTextContent("Updated files");
     expect(traces[1]).toHaveAttribute("data-working", "true");
@@ -2278,7 +2283,7 @@ describe("Pixice app shell", () => {
     window.pixice = createApi(detailedThread);
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: "1 tool call, 0 messages" })).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("button", { name: "Ran 1 action" })).toHaveAttribute("aria-expanded", "true");
     expect(document.querySelectorAll("time.message-timestamp")).toHaveLength(0);
 
     act(() => window.pixice.emit({
@@ -2416,7 +2421,7 @@ describe("Pixice app shell", () => {
     await waitFor(() => expect(screen.getByRole("navigation", { name: "Prompts in this thread" })).toBeInTheDocument());
   });
 
-  it("shows the activity shimmer while waiting for the first activity event", async () => {
+  it("shows the morphing reasoning orb and timer while waiting for the first activity event", async () => {
     const waitingThread = {
       ...thread,
       status: { type: "active" },
@@ -2429,9 +2434,10 @@ describe("Pixice app shell", () => {
     window.pixice = createApi(waitingThread);
 
     render(<App />);
-    const thinkingStatus = await screen.findByRole("status", { name: "Working through the run…" });
-    expect(thinkingStatus.querySelector("[data-reasoning-orb]")).not.toBeInTheDocument();
-    expect(thinkingStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Working through the run");
+    const thinkingStatus = await screen.findByRole("status", { name: "Thinking: Getting started" });
+    expect(thinkingStatus.querySelector("[data-reasoning-orb]")).toBeInTheDocument();
+    expect(thinkingStatus.querySelector('[data-reasoning-orb] > [aria-hidden="true"]')).toBeInTheDocument();
+    expect(thinkingStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Thinking");
 
     act(() => window.pixice.emit({
       type: "RuntimeEvent",
@@ -2443,9 +2449,36 @@ describe("Pixice app shell", () => {
       }
     }));
 
-    const activeThinkingStatus = await screen.findByRole("status", { name: "Working through the run…" });
-    expect(activeThinkingStatus.querySelector("[data-reasoning-orb]")).not.toBeInTheDocument();
+    const activeThinkingStatus = await screen.findByRole("status", { name: "Thinking" });
+    expect(activeThinkingStatus.querySelector("[data-reasoning-orb]")).toBeInTheDocument();
     expect(activeThinkingStatus.closest(".working-trace")).toHaveTextContent("Reading the current implementation");
+
+    act(() => window.pixice.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "item/started",
+        threadId: "thread-1",
+        turnId: "turn-waiting",
+        item: { id: "compaction-waiting", type: "contextCompaction" }
+      }
+    }));
+
+    const compactingStatus = await screen.findByRole("status", { name: /Compacting/ });
+    await waitFor(() => expect(compactingStatus.querySelector("[data-shimmer-label]")).toHaveTextContent("Compacting"));
+    expect(compactingStatus.closest(".working-trace")).toHaveTextContent("Compacting context");
+
+    act(() => window.pixice.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "item/completed",
+        threadId: "thread-1",
+        turnId: "turn-waiting",
+        item: { id: "compaction-waiting", type: "contextCompaction" }
+      }
+    }));
+
+    const resumedStatus = await screen.findByRole("status", { name: "Compacted context: Conversation summary ready" });
+    expect(resumedStatus.closest(".working-trace")).toHaveTextContent("Compacted context");
   });
 
   it("creates a real thread before sending the first new-task message", async () => {
@@ -2814,6 +2847,56 @@ describe("Pixice app shell", () => {
       projectId: "project-1",
       threadId: "thread-new"
     });
+  });
+
+  it("keeps a newly submitted prompt visible while turn startup is still pending", async () => {
+    const user = userEvent.setup();
+    const liveApi = createApi();
+    let resolveStart;
+    liveApi.turns.start = vi.fn(() => new Promise((resolve) => { resolveStart = resolve; }));
+    window.pixice = liveApi;
+
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Keep this prompt on screen");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    const prompt = await screen.findByText("Keep this prompt on screen");
+    expect(prompt.closest(".user-message")).toBeInTheDocument();
+
+    await act(async () => resolveStart({ turn: { id: "turn-pending", status: "inProgress", items: [] } }));
+    expect(screen.getAllByText("Keep this prompt on screen")).toHaveLength(1);
+  });
+
+  it("keeps a steering prompt visible while the active turn accepts it", async () => {
+    const user = userEvent.setup();
+    const activeThread = {
+      ...thread,
+      status: { type: "active" },
+      turns: [{
+        id: "turn-active",
+        status: "inProgress",
+        items: [
+          { id: "active-user", type: "userMessage", content: [{ type: "text", text: "Start the active run" }] },
+          { id: "active-reasoning", type: "reasoning", summary: ["Working on it"] }
+        ]
+      }]
+    };
+    const liveApi = createApi(activeThread);
+    let resolveSteer;
+    liveApi.turns.steer = vi.fn(() => new Promise((resolve) => { resolveSteer = resolve; }));
+    window.pixice = liveApi;
+
+    render(<App />);
+    await screen.findByText("Working on it");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Keep the steering message visible");
+    fireEvent.click(screen.getByRole("button", { name: "Steer task" }));
+
+    const prompt = await screen.findByText("Keep the steering message visible");
+    expect(prompt.closest(".user-message")).toBeInTheDocument();
+
+    await act(async () => resolveSteer({}));
+    expect(screen.getAllByText("Keep the steering message visible")).toHaveLength(1);
   });
 
   it("keeps follow-up prompts and answers visible without reopening the task", async () => {
