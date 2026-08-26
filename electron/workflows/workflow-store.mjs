@@ -214,6 +214,21 @@ export class WorkflowStore {
     }
   }
 
+  deleteProject(projectId) {
+    const workflows = this.listWorkflows(projectId);
+    if (!workflows.length) return [];
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM workflow_runs WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM workflows WHERE project_id = ?").run(projectId);
+      this.db.exec("COMMIT");
+      return workflows;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   createRun(run) {
     this.db.prepare(`
       INSERT INTO workflow_runs (

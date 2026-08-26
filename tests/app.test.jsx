@@ -228,7 +228,8 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
       list: vi.fn().mockResolvedValue([project]),
       touch: vi.fn().mockResolvedValue(null),
       pickFolders: vi.fn().mockResolvedValue(["/work/aurora", "/work/shared"]),
-      create: vi.fn().mockResolvedValue(project)
+      create: vi.fn().mockResolvedValue(project),
+      delete: vi.fn().mockResolvedValue(project)
     },
     board: {
       list: vi.fn(async () => ({ data: boardTasks })),
@@ -980,6 +981,37 @@ describe("Pixice app shell", () => {
     expect(projectNode).toHaveClass("selected");
     expect(within(projectNode).getByRole("button", { name: "Aurora" })).toHaveAttribute("aria-expanded", "true");
     expect(within(projectNode).getByRole("button", { name: "Refactor authentication" })).toBeInTheDocument();
+  });
+
+  it("deletes projects from legacy list rows and selects the next project", async () => {
+    const secondProject = {
+      id: "project-2",
+      displayName: "Beacon",
+      canonicalPath: "/work/beacon",
+      icon: "terminal",
+      color: "green",
+      folders: ["/work/beacon"]
+    };
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project, secondProject],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", provider: "codex", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: { legacySidebar: true }
+    });
+    window.pixice = api;
+    localStorage.setItem("pixice.preferences", JSON.stringify({ legacySidebar: true }));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Delete Aurora" }));
+
+    await waitFor(() => expect(api.projects.delete).toHaveBeenCalledWith({ projectId: "project-1" }));
+    expect(confirm).toHaveBeenCalledWith("Delete “Aurora”?\n\nThis removes the project and its Pixice data. Your folders and files stay on disk.");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Aurora" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Beacon" })).toHaveAttribute("aria-current", "true");
+    confirm.mockRestore();
   });
 
   it("keeps Workspace fixed, scrolls only threads, and fades when more threads remain", async () => {

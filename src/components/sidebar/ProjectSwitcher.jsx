@@ -22,6 +22,7 @@ import {
   Sparkle,
   Stack,
   TerminalWindow,
+  Trash,
   TreeStructure,
   X
 } from "../icons/index.jsx";
@@ -144,13 +145,17 @@ export function ProjectSwitcher({
   activityByProject = {},
   selectedProjectId = null,
   onSelectProject,
+  onDeleteProject,
   onCreateProject,
   expanded = true,
   recentProjectLimit = 6,
   className = ""
 }) {
   const overflowId = useId();
+  const switcherRef = useRef(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [deleteProjectId, setDeleteProjectId] = useState(null);
+  const [deletingProjectId, setDeletingProjectId] = useState(null);
   const visibleProjectLimit = expanded ? Math.max(1, recentProjectLimit) : Math.min(6, Math.max(1, recentProjectLimit));
   const recentProjects = projects.slice(0, visibleProjectLimit);
   const overflowProjects = projects.slice(visibleProjectLimit);
@@ -159,33 +164,87 @@ export function ProjectSwitcher({
     if (!expanded) setOverflowOpen(false);
   }, [expanded]);
 
-  const selectProject = (projectId) => onSelectProject?.(projectId);
+  useEffect(() => {
+    if (!deleteProjectId) return undefined;
+    const dismiss = (event) => {
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      if (event.type === "pointerdown" && switcherRef.current?.contains(event.target)) return;
+      setDeleteProjectId(null);
+    };
+    window.addEventListener("pointerdown", dismiss);
+    window.addEventListener("keydown", dismiss);
+    window.addEventListener("blur", dismiss);
+    return () => {
+      window.removeEventListener("pointerdown", dismiss);
+      window.removeEventListener("keydown", dismiss);
+      window.removeEventListener("blur", dismiss);
+    };
+  }, [deleteProjectId]);
+
+  useEffect(() => {
+    if (deleteProjectId && !projects.some((project) => project.id === deleteProjectId)) setDeleteProjectId(null);
+  }, [deleteProjectId, projects]);
+
+  const selectProject = (projectId) => {
+    setDeleteProjectId(null);
+    onSelectProject?.(projectId);
+  };
+  const armProjectDelete = (event, projectId) => {
+    if (!onDeleteProject || deletingProjectId) return;
+    event.preventDefault();
+    setDeleteProjectId(projectId);
+  };
+  const deleteProject = async (projectId) => {
+    if (!onDeleteProject || deletingProjectId) return;
+    setDeletingProjectId(projectId);
+    try {
+      await onDeleteProject(projectId);
+    } finally {
+      setDeletingProjectId(null);
+      setDeleteProjectId(null);
+    }
+  };
 
   return (
-    <section className={`${styles.switcher} ${className}`.trim()} aria-label="Projects">
+    <section ref={switcherRef} className={`${styles.switcher} ${className}`.trim()} aria-label="Projects">
       <div className={styles.grid} role="list" aria-label="Recent projects">
         {recentProjects.map((project) => {
           const selected = project.id === selectedProjectId;
           const label = project.displayName || "Untitled project";
           const activity = activityByProject[project.id];
           const activityDescription = projectActivityDetails(activity).description;
+          const deleteArmed = deleteProjectId === project.id;
+          const deleting = deletingProjectId === project.id;
           return (
             <div className={styles.tileSlot} role="listitem" key={project.id}>
               <button
                 type="button"
-                className={`${styles.tile} ${selected ? styles.activeTile : ""}`.trim()}
+                className={`${styles.tile} ${selected ? styles.activeTile : ""} ${deleteArmed ? styles.deleteTile : ""}`.trim()}
                 style={projectStyle(project)}
-                aria-label={label}
+                aria-label={deleteArmed ? `Delete ${label}` : label}
                 aria-current={selected ? "true" : undefined}
                 aria-pressed={selected}
-                title={activityDescription ? `${label} · ${activityDescription}` : label}
-                onClick={() => selectProject(project.id)}
+                title={deleteArmed ? `Delete ${label}` : activityDescription ? `${label} · ${activityDescription}` : label}
+                disabled={deleting}
+                onContextMenu={(event) => armProjectDelete(event, project.id)}
+                onClick={() => deleteArmed ? void deleteProject(project.id) : selectProject(project.id)}
               >
                 <span className={styles.projectIcon} aria-hidden="true">
-                  <ProjectGlyph icon={project.icon} size={20} />
+                  <AnimatePresence initial={false} mode="wait">
+                    <motion.span
+                      className={styles.projectIconGlyph}
+                      key={deleteArmed ? "delete" : project.icon}
+                      initial={{ opacity: 0, scale: 0.55, rotate: deleteArmed ? -18 : 18 }}
+                      animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                      exit={{ opacity: 0, scale: 0.55, rotate: deleteArmed ? 18 : -18 }}
+                      transition={{ duration: 0.14 }}
+                    >
+                      {deleteArmed ? <Trash size={20} /> : <ProjectGlyph icon={project.icon} size={20} />}
+                    </motion.span>
+                  </AnimatePresence>
                 </span>
-                <ProjectActivityMarks activity={activity} />
-                <span className={styles.tooltip} role="tooltip">{label}{activityDescription ? ` · ${activityDescription}` : ""}</span>
+                {!deleteArmed && <ProjectActivityMarks activity={activity} />}
+                <span className={styles.tooltip} role="tooltip">{deleteArmed ? `Click to delete ${label}` : `${label}${activityDescription ? ` · ${activityDescription}` : ""}`}</span>
               </button>
             </div>
           );
@@ -218,7 +277,7 @@ export function ProjectSwitcher({
               const activity = activityByProject[project.id];
               const activityDescription = projectActivityDetails(activity).description;
               return (
-                <div role="listitem" key={project.id}>
+                <div className={styles.overflowProjectRow} role="listitem" key={project.id}>
                   <button
                     type="button"
                     className={`${styles.overflowProject} ${selected ? styles.activeOverflowProject : ""}`.trim()}
@@ -231,6 +290,18 @@ export function ProjectSwitcher({
                     <span className={styles.overflowLabel}>{label}</span>
                     <ProjectActivityMarks activity={activity} inline />
                   </button>
+                  {onDeleteProject && (
+                    <button
+                      type="button"
+                      className={styles.overflowDelete}
+                      aria-label={`Delete ${label}`}
+                      title={`Delete ${label}`}
+                      disabled={deletingProjectId === project.id}
+                      onClick={() => void deleteProject(project.id)}
+                    >
+                      <Trash size={13} />
+                    </button>
+                  )}
                 </div>
               );
             })}

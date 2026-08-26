@@ -312,6 +312,14 @@ export class InstrumentService {
     return instrument;
   }
 
+  deleteProject(projectId) {
+    const instruments = this.store.deleteProject(projectId).map(publicInstrument);
+    for (const instrument of instruments) {
+      this.onChange?.({ action: "deleted", projectId, threadId: instrument.threadId, instrument });
+    }
+    return instruments;
+  }
+
   removeEphemeralForThread(threadId) {
     const instruments = this.store.deleteEphemeralForThread(threadId).map(publicInstrument);
     for (const instrument of instruments) {

@@ -91,6 +91,36 @@ describe("thread runtime persistence", () => {
     database.db.close();
   });
 
+  it("deletes a project and its Pixice metadata without affecting other projects", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const now = new Date().toISOString();
+    database.createProject({
+      id: "project-delete",
+      canonicalPath: "/workspace/delete",
+      displayName: "Delete me",
+      folders: ["/workspace/delete", "/workspace/shared"],
+      createdAt: now,
+      updatedAt: now
+    });
+    database.createProject({
+      id: "project-keep",
+      canonicalPath: "/workspace/keep",
+      displayName: "Keep me",
+      folders: ["/workspace/keep"],
+      createdAt: now,
+      updatedAt: now
+    });
+    database.createBoardTask({ id: "task-delete", projectId: "project-delete", title: "Project task", column: "backlog" });
+
+    expect(database.deleteProject("project-delete")).toMatchObject({ id: "project-delete", folders: ["/workspace/delete", "/workspace/shared"] });
+    expect(database.getProject("project-delete")).toBeNull();
+    expect(database.listBoardTasks("project-delete")).toEqual([]);
+    expect(database.listProjects().map((candidate) => candidate.id)).toEqual(["project-keep"]);
+    database.db.close();
+  });
+
   it("migrates legacy projects to the structured project DTO", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);

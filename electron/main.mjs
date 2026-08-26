@@ -1094,6 +1094,20 @@ function registerIpc() {
     });
     return projectWithRepository(project);
   });
+  ipcMain.handle("projects:delete", async (_event, payload) => {
+    const { projectId } = idPayload.parse(payload);
+    const project = getProject(projectId);
+    const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
+    integration.workflows.deleteProject(projectId);
+    integration.credentialStore.deleteProject(projectId);
+    pixiceInstruments.deleteProject(projectId);
+    database.deleteProject(projectId);
+    for (const [threadId, knownProjectId] of threadProjects) {
+      if (knownProjectId === projectId) threadProjects.delete(threadId);
+    }
+    send("ProjectDeleted", { projectId });
+    return project;
+  });
   ipcMain.handle("projects:open", async () => {
     const [canonicalPath] = await pickProjectFolders({ multiple: false });
     if (!canonicalPath) return null;

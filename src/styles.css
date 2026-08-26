@@ -495,6 +495,7 @@ body.preview-resizing .task-workspace { transition: none; }
 .workflow-nav-slot { display: contents; }
 .workflow-workspace-slot { display: contents; }
 .project-list { display: grid; gap: 1px; }
+.project-node { position: relative; min-width: 0; }
 .project-row { min-height: 30px; padding: 0; gap: 2px; }
 .project-row:hover { background: transparent; }
 .project-row .rail-icon { width: 22px; height: 28px; }
@@ -503,6 +504,22 @@ body.preview-resizing .task-workspace { transition: none; }
 .project-node.selected .project-icon { color: #d8d8dc; }
 .project-copy { display: block; }
 .project-copy strong { display: block; overflow: hidden; font-size: 12.5px; font-weight: 560; text-overflow: ellipsis; }
+.project-delete.icon-button {
+  position: absolute;
+  top: 3px;
+  right: 14px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  color: var(--quiet);
+  background: var(--sidebar);
+  opacity: 0;
+}
+.project-node:hover > .project-delete,
+.project-node:focus-within > .project-delete { opacity: 1; }
+.project-delete.icon-button:hover { color: #ff7378; background: color-mix(in oklab, #e5484d 13%, var(--sidebar)); }
+.project-node:hover > .project-row .project-copy,
+.project-node:focus-within > .project-row .project-copy { padding-right: 26px; }
 .task-tree {
   margin: 1px 12px 10px;
   display: grid;

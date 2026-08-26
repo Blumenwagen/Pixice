@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     touch: invoke("projects:touch"),
     pickFolders: invoke("projects:pick-folders"),
     create: invoke("projects:create"),
+    delete: invoke("projects:delete"),
     open: invoke("projects:open")
   }),
   board: Object.freeze({

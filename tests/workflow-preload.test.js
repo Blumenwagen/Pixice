@@ -39,10 +39,12 @@ describe("workflow preload bridge", () => {
     await api.projects.touch({ projectId: "project-studio" });
     await api.projects.pickFolders();
     await api.projects.create(project);
+    await api.projects.delete({ projectId: "project-studio" });
 
     expect(invoke).toHaveBeenNthCalledWith(1, "projects:touch", { projectId: "project-studio" });
     expect(invoke).toHaveBeenNthCalledWith(2, "projects:pick-folders", undefined);
     expect(invoke).toHaveBeenNthCalledWith(3, "projects:create", project);
+    expect(invoke).toHaveBeenNthCalledWith(4, "projects:delete", { projectId: "project-studio" });
   });
 
   it("wraps positional credential helpers into validated IPC payload objects", async () => {

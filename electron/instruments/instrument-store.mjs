@@ -288,6 +288,23 @@ export class InstrumentStore {
     return current;
   }
 
+  deleteProject(projectId) {
+    const instruments = this.list(projectId);
+    if (!instruments.length) return [];
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM instrument_events WHERE instrument_id IN (SELECT id FROM instruments WHERE project_id = ?)").run(projectId);
+      this.db.prepare("DELETE FROM instrument_revisions WHERE instrument_id IN (SELECT id FROM instruments WHERE project_id = ?)").run(projectId);
+      this.db.prepare("DELETE FROM instrument_action_receipts WHERE instrument_id IN (SELECT id FROM instruments WHERE project_id = ?)").run(projectId);
+      this.db.prepare("DELETE FROM instruments WHERE project_id = ?").run(projectId);
+      this.db.exec("COMMIT");
+      return instruments;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   deleteEphemeralForThread(threadId) {
     const instruments = this.db.prepare("SELECT * FROM instruments WHERE thread_id = ? AND lifecycle = 'ephemeral'").all(threadId).map(mapInstrument);
     if (!instruments.length) return [];

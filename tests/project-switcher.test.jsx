@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ProjectCreationDialog, ProjectSwitcher } from "../src/components/sidebar/ProjectSwitcher.jsx";
 
@@ -118,6 +118,45 @@ describe("ProjectSwitcher", () => {
     expect(screen.getByRole("button", { name: "Project 2" })).toHaveAttribute("title", "Project 2 · 1 finished, unseen");
     expect(projectSwitcherCss).toMatch(/\.runningMark i\s*\{[^}]*animation:\s*project-running-pulse/s);
     expect(projectSwitcherCss).toMatch(/data-reduce-motion="true"[^}]*animation:\s*none/s);
+  });
+
+  it("arms a tile for deletion on right-click and deletes it on the next click", async () => {
+    const onDeleteProject = vi.fn().mockResolvedValue(true);
+    const onSelectProject = vi.fn();
+    render(
+      <ProjectSwitcher
+        projects={[projects[0]]}
+        selectedProjectId="project-1"
+        expanded
+        onSelectProject={onSelectProject}
+        onDeleteProject={onDeleteProject}
+      />
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Project 1" }));
+    const deleteTile = screen.getByRole("button", { name: "Delete Project 1" });
+    expect(deleteTile).toHaveAttribute("title", "Delete Project 1");
+    expect(onSelectProject).not.toHaveBeenCalled();
+    expect(projectSwitcherCss).toMatch(/\.deleteTile[\s\S]*background:\s*#e5484d/);
+
+    fireEvent.click(deleteTile);
+    await waitFor(() => expect(onDeleteProject).toHaveBeenCalledWith("project-1"));
+  });
+
+  it("gives older project rows the same hover delete action as thread rows", async () => {
+    const onDeleteProject = vi.fn().mockResolvedValue(true);
+    render(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="project-1"
+        expanded
+        onDeleteProject={onDeleteProject}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete Project 7" }));
+    await waitFor(() => expect(onDeleteProject).toHaveBeenCalledWith("project-7"));
   });
 
   it("offers a richer icon and pastel color palette in the creation dialog", () => {

@@ -338,6 +338,16 @@ export class PixiceWorkflows {
     return deleted;
   }
 
+  deleteProject(projectId) {
+    const workflows = this.store.listWorkflows(projectId);
+    if (workflows.some((workflow) => this.isWorkflowActive(workflow.id))) {
+      throw new Error("Stop active workflow runs before deleting this project");
+    }
+    const deleted = this.store.deleteProject(projectId);
+    deleted.forEach((workflow) => this.#changed("deleted", workflow));
+    return deleted;
+  }
+
   isWorkflowActive(workflowId) {
     return [...this.activeRuns.values()].some((entry) => entry.workflowId === workflowId);
   }

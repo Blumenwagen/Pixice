@@ -138,6 +138,14 @@ export class WorkflowCredentialStore {
     return publicCredential(record);
   }
 
+  deleteProject(projectId) {
+    const deleted = this.records.filter((record) => record.projectId === projectId);
+    if (!deleted.length) return [];
+    this.records = this.records.filter((record) => record.projectId !== projectId);
+    this.#save();
+    return deleted.map(publicCredential);
+  }
+
   resolve(projectId, credentialId) {
     if (!credentialId) return null;
     const record = this.records.find((candidate) => candidate.id === credentialId && candidate.projectId === projectId);

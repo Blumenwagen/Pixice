@@ -623,6 +623,7 @@ export function Sidebar({
   seenThreadCompletions,
   selectedProjectId,
   onSelectProject,
+  onDeleteProject,
   tasks,
   selectedThreadId,
   onSelectThread,
@@ -824,6 +825,11 @@ export function Sidebar({
                         <span className="rail-icon project-icon"><Folder size={16} /></span>
                         <span className="project-copy"><strong>{project.displayName}</strong></span>
                       </button>
+                      {onDeleteProject && (
+                        <IconButton className="project-delete" label={`Delete ${project.displayName}`} onClick={() => onDeleteProject(project.id)}>
+                          <Trash size={13} />
+                        </IconButton>
+                      )}
                       {selected && (
                         <SidebarThreadList
                           tasks={tasks}
@@ -885,6 +891,7 @@ export function Sidebar({
             activityByProject={projectActivity}
             selectedProjectId={selectedProjectId}
             onSelectProject={onSelectProject}
+            onDeleteProject={onDeleteProject}
             onCreateProject={onOpenProject}
             expanded={expanded}
             recentProjectLimit={recentProjectLimit}
@@ -5590,6 +5597,34 @@ export function App() {
     setActiveView("task");
   };
 
+  const deleteProject = async (projectId) => {
+    if (!api?.projects?.delete) return false;
+    const target = projects.find((candidate) => candidate.id === projectId);
+    if (!target) return false;
+    if (preferences.confirmBeforeDelete && !window.confirm(`Delete “${target.displayName}”?\n\nThis removes the project and its Pixice data. Your folders and files stay on disk.`)) return false;
+    try {
+      await api.projects.delete({ projectId });
+      const remaining = projects.filter((candidate) => candidate.id !== projectId);
+      setProjects((current) => current.filter((candidate) => candidate.id !== projectId));
+      if (selectedProjectIdRef.current === projectId) {
+        const removedIndex = projects.findIndex((candidate) => candidate.id === projectId);
+        const nextProject = remaining[Math.min(Math.max(removedIndex, 0), remaining.length - 1)] ?? null;
+        setDraftMode(false);
+        selectedProjectIdRef.current = nextProject?.id ?? null;
+        selectedThreadIdRef.current = null;
+        setSelectedProjectId(nextProject?.id ?? null);
+        setSelectedThreadId(null);
+        setThread(null);
+        setPlan([]);
+        setActiveView("task");
+      }
+      return true;
+    } catch (cause) {
+      setError(cause.message);
+      return false;
+    }
+  };
+
   const selectThread = (threadId) => {
     setDraftMode(false);
     selectedThreadIdRef.current = threadId;
@@ -6415,6 +6450,7 @@ export function App() {
             seenThreadCompletions={seenThreadCompletions}
             selectedProjectId={selectedProjectId}
             onSelectProject={selectProject}
+            onDeleteProject={deleteProject}
             tasks={sidebarThreads}
             selectedThreadId={selectedThreadId}
             onSelectThread={selectThread}

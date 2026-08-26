@@ -24,7 +24,8 @@ type PixiceEvent = {
     | "UpdateState"
     | "CodexUpdateState"
     | "UsageUpdated"
-    | "CodexLimitsUpdated";
+    | "CodexLimitsUpdated"
+    | "ProjectDeleted";
   payload: any;
   at: string;
 };
@@ -275,6 +276,7 @@ declare global {
         touch(payload: ProjectScope): Promise<PixiceProject>;
         pickFolders(): Promise<string[]>;
         create(payload: { displayName: string; icon: ProjectIcon; color: ProjectColor; folders: string[] }): Promise<PixiceProject>;
+        delete(payload: ProjectScope): Promise<PixiceProject>;
         open(): Promise<PixiceProject | null>;
       };
       board: {

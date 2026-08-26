@@ -405,6 +405,30 @@ export class PixiceDatabase {
     return this.getProject(project.id);
   }
 
+  deleteProject(projectId) {
+    const project = this.getProject(projectId);
+    if (!project) return null;
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM board_task_trigger_receipts WHERE task_id IN (SELECT id FROM board_tasks WHERE project_id = ?)").run(projectId);
+      this.db.prepare("DELETE FROM board_task_activity WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM board_tasks WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM board_plan_proposals WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM work_pattern_occurrences WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM proactive_suggestions WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM thread_board_state WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM task_view_state WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").run(projectId);
+      this.db.prepare("DELETE FROM tasks WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM project_folders WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+      this.db.exec("COMMIT");
+      return project;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   upsertProject(project) {
     const existingProject = this.getProjectByFolder(project.canonicalPath);
     const existing = existingProject ? this.db.prepare("SELECT * FROM projects WHERE id = ?").get(existingProject.id) : null;
