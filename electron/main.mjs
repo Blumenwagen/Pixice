@@ -53,7 +53,8 @@ import {
   readUpdateDataVersion,
   recoverUpdateDataFromBackup
 } from "./persistence/update-data-backup.mjs";
-import { inspectRepository, readDiff } from "./git/worktrees.mjs";
+import { inspectRepository, readDiff, readDiffManifest, readFileDiff } from "./git/worktrees.mjs";
+import { projectRendererThread, projectRuntimePayloadForRenderer } from "./runtime/renderer-thread-projection.mjs";
 import { projectFolderDialogProperties } from "./projects/project-folder-dialog.mjs";
 import { GitHubCli, prependGitHubCliToPath } from "./github/github-cli.mjs";
 import { calculateUsageCost, listPricingCatalog, PRICING_VERIFIED_AT } from "./usage/pricing.mjs";
@@ -215,6 +216,34 @@ const requirePromptInput = (value, context) => {
   }
 };
 const send = (type, payload = {}) => mainWindow?.webContents.send("pixice:event", { type, payload, at: new Date().toISOString() });
+const RENDERER_STREAM_FRAME_MS = 16;
+const pendingRendererDeltas = new Map();
+let rendererDeltaTimer = null;
+
+function flushRendererDeltas() {
+  if (rendererDeltaTimer) clearTimeout(rendererDeltaTimer);
+  rendererDeltaTimer = null;
+  for (const { type, payload } of pendingRendererDeltas.values()) send(type, payload);
+  pendingRendererDeltas.clear();
+}
+
+function sendRuntimeEvent(type, payload = {}) {
+  payload = projectRuntimePayloadForRenderer(payload);
+  if (payload.method === "item/agentMessage/delta" && payload.threadId && payload.turnId && payload.itemId) {
+    const key = `${type}\u0000${payload.projectId ?? ""}\u0000${payload.threadId}\u0000${payload.turnId}\u0000${payload.itemId}`;
+    const pending = pendingRendererDeltas.get(key);
+    pendingRendererDeltas.set(key, pending
+      ? { type, payload: { ...pending.payload, ...payload, delta: `${pending.payload.delta ?? ""}${payload.delta ?? ""}` } }
+      : { type, payload });
+    if (!rendererDeltaTimer) {
+      rendererDeltaTimer = setTimeout(flushRendererDeltas, RENDERER_STREAM_FRAME_MS);
+      rendererDeltaTimer.unref?.();
+    }
+    return;
+  }
+  flushRendererDeltas();
+  send(type, payload);
+}
 
 function currentAgentInstructions() {
   return composeAgentInstructions({
@@ -557,7 +586,8 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      backgroundThrottling: false
     }
   });
   if (isDev) mainWindow.loadURL("http://127.0.0.1:5173");
@@ -575,7 +605,10 @@ function createWindow() {
     event.preventDefault();
     if (destination.protocol === "https:" || destination.protocol === "http:") shell.openExternal(url);
   });
-  mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.webContents.setBackgroundThrottling(true);
+    mainWindow.show();
+  });
   mainWindow.webContents.once("did-finish-load", () => {
     if (!process.env.PIXICE_CAPTURE_PATH) return;
     setTimeout(async () => {
@@ -1506,7 +1539,7 @@ function registerIpc() {
     const response = await runtime.request("thread/read", { threadId, includeTurns: true });
     if (!isWithinProject(project, response.thread.cwd)) throw new Error("Thread is outside the selected project");
     rememberThread(project, response.thread);
-    const thread = withPersistedThreadName(response.thread);
+    const thread = projectRendererThread(withPersistedThreadName(response.thread));
     return { ...response, thread, plan: threadPlans.get(threadId) ?? database.getThreadPlan(threadId) };
   });
   ipcMain.handle("threads:children", async (_event, payload) => {
@@ -1721,10 +1754,24 @@ function registerIpc() {
     const project = getProject(projectId);
     const primaryRoot = projectPrimaryRoot(project);
     const repository = await inspectRepository(primaryRoot);
-    const diff = repository.kind === "git"
-      ? await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: primaryRoot })
-      : "";
-    return { repository, diff };
+    const files = repository.kind === "git"
+      ? await readDiffManifest({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: primaryRoot })
+      : [];
+    return { repository, files };
+  });
+  ipcMain.handle("review:file", async (_event, payload) => {
+    const value = idPayload.extend({ path: z.string().trim().min(1).max(10_000) }).parse(payload);
+    const project = getProject(value.projectId);
+    const primaryRoot = projectPrimaryRoot(project);
+    const repository = await inspectRepository(primaryRoot);
+    if (repository.kind !== "git") return { path: value.path, diff: "", baseCommit: null };
+    const diff = await readFileDiff({
+      workingPath: repository.root,
+      baseCommit: repository.baseCommit,
+      scopePath: primaryRoot,
+      filePath: value.path
+    });
+    return { path: value.path, diff, baseCommit: repository.baseCommit };
   });
   ipcMain.handle("files:read", (_event, payload) => {
     const value = idPayload.extend({ path: z.string().trim().min(1) }).parse(payload);
@@ -2070,7 +2117,7 @@ app.whenReady().then(async () => {
     if (method === "turn/completed" && threadId) activeTurns.delete(threadId);
     if (method === "turn/started" || method === "turn/completed") updateTrayMenu();
     scheduleDelegatedThreadNames(event);
-    send(event.type, {
+    sendRuntimeEvent(event.type, {
       ...event.payload,
       projectId: threadProjects.get(threadId ?? event.payload?.thread?.id)
     });

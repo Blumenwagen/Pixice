@@ -424,7 +424,10 @@ declare global {
       elicitations: {
         respond(payload: { requestId: string | number; action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> }): Promise<unknown>;
       };
-      review: { read(payload: ProjectScope): Promise<{ repository: any; diff: string }> };
+      review: {
+        read(payload: ProjectScope): Promise<{ repository: any; files: Array<{ path: string; plus: number; minus: number; binary?: boolean }> }>;
+        file(payload: ProjectScope & { path: string }): Promise<{ path: string; diff: string; baseCommit: string | null }>;
+      };
       models: { list(): Promise<any[]> };
       extensions: { list(payload?: { projectId?: string; threadId?: string }): Promise<any> };
       external: {

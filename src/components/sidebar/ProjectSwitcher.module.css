@@ -112,7 +112,7 @@
   flex: none;
   background: #ff6877;
   border-radius: 50%;
-  animation: project-running-pulse 1.45s ease-in-out infinite;
+  animation: project-running-pulse 5.4s steps(3, end) infinite;
 }
 
 .unseenMark {
@@ -127,8 +127,8 @@
 }
 
 @keyframes project-running-pulse {
-  0%, 100% { opacity: .55; transform: scale(.82); }
-  50% { opacity: 1; transform: scale(1); }
+  0%, 5%, 14%, 100% { opacity: .55; transform: scale(.82); }
+  8%, 11% { opacity: 1; transform: scale(1); }
 }
 
 :global(.pixice-app[data-reduce-motion="true"]) .runningMark i { animation: none; }

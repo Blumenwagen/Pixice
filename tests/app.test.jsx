@@ -302,7 +302,10 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
     requests: { respond: vi.fn().mockResolvedValue({ ok: true }) },
     questions: { respond: vi.fn().mockResolvedValue({ ok: true }) },
     elicitations: { respond: vi.fn().mockResolvedValue({ ok: true }) },
-    review: { read: vi.fn().mockResolvedValue({ repository: project.repository, diff: "diff --git a/src/auth.js b/src/auth.js\n--- a/src/auth.js\n+++ b/src/auth.js\n@@ -1 +1 @@\n-old\n+new" }) },
+    review: {
+      read: vi.fn().mockResolvedValue({ repository: project.repository, diff: "diff --git a/src/auth.js b/src/auth.js\n--- a/src/auth.js\n+++ b/src/auth.js\n@@ -1 +1 @@\n-old\n+new" }),
+      file: vi.fn().mockResolvedValue({ path: "src/auth.js", baseCommit: "abc", diff: "diff --git a/src/auth.js b/src/auth.js\n--- a/src/auth.js\n+++ b/src/auth.js\n@@ -1 +1 @@\n-old\n+new" })
+    },
     models: { list: vi.fn().mockResolvedValue([]) },
     extensions: { list: vi.fn().mockResolvedValue({ skills: [], apps: [], mcp: [], errors: [] }) },
     external: { openEditor: vi.fn(), openTerminal: vi.fn(), reveal: vi.fn() },
@@ -972,7 +975,12 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).not.toBeInTheDocument();
-    expect(screen.getByRole("complementary", { name: "Settings navigation" })).toBeInTheDocument();
+    const settingsSidebar = screen.getByRole("complementary", { name: "Settings navigation" });
+    expect(settingsSidebar).toBeInTheDocument();
+    expect(within(settingsSidebar).getByRole("navigation").querySelectorAll("button")).toHaveLength(7);
+    expect(within(settingsSidebar).queryByRole("button", { name: /^Runtime/ })).not.toBeInTheDocument();
+    expect(within(settingsSidebar).queryByRole("button", { name: /^Notifications/ })).not.toBeInTheDocument();
+    expect(within(settingsSidebar).getByRole("button", { name: /^About Pixice/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back to task" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Capabilities/ }));
     expect(screen.queryByRole("heading", { name: "General" })).not.toBeInTheDocument();
@@ -994,6 +1002,34 @@ describe("Pixice app shell", () => {
     expect(screen.getByText("blog")).toBeInTheDocument();
     expect(screen.getByText("No textual diff is available for this file.")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Working tree is clean" })).not.toBeInTheDocument();
+  });
+
+  it("loads the Review manifest before requesting only the selected file diff", async () => {
+    const api = createApi();
+    api.review.read.mockResolvedValue({
+      repository: { ...project.repository, dirtyPaths: ["src/auth.js", "src/session.js"] },
+      files: [
+        { path: "src/auth.js", plus: 1, minus: 1 },
+        { path: "src/session.js", plus: 2, minus: 0 }
+      ]
+    });
+    api.review.file.mockImplementation(async ({ path }) => ({
+      path,
+      baseCommit: "abc",
+      diff: `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old selected\n+new selected`
+    }));
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+
+    await waitFor(() => expect(api.review.file).toHaveBeenCalledWith({ projectId: "project-1", path: "src/auth.js" }));
+    expect(await screen.findByText("new selected")).toBeInTheDocument();
+    expect(api.review.read).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /session\.js/ }));
+    await waitFor(() => expect(api.review.file).toHaveBeenCalledWith({ projectId: "project-1", path: "src/session.js" }));
+    expect(api.review.file).toHaveBeenCalledTimes(2);
   });
 
   it("opens the selected Review file in the external editor", async () => {
@@ -1158,6 +1194,10 @@ describe("Pixice app shell", () => {
     expect(JSON.parse(localStorage.getItem("pixice.preferences"))).toMatchObject({ threadCleanupAgeDays: 14 });
     fireEvent.change(screen.getByRole("combobox", { name: "Thread cleanup age" }), { target: { value: "custom" } });
     fireEvent.change(screen.getByRole("spinbutton", { name: "Custom thread cleanup age" }), { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Notify when tasks finish" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Play notification sounds" }));
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ completionNotifications: true });
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ notificationSound: false });
 
     fireEvent.click(screen.getByRole("button", { name: /^Conversation/ }));
     fireEvent.change(screen.getByRole("combobox", { name: "Send shortcut" }), { target: { value: "mod-enter" } });
@@ -1166,14 +1206,8 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Show message timestamps" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Completed work details" }), { target: { value: "expanded" } });
 
-    fireEvent.click(screen.getByRole("button", { name: /^Orchestration/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Agents/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Expand task progress by default" }));
-
-    fireEvent.click(screen.getByRole("button", { name: /^Notifications/ }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Notify when tasks finish" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Play notification sounds" }));
-    expect(api.app.saveSettings).toHaveBeenCalledWith({ completionNotifications: true });
-    expect(api.app.saveSettings).toHaveBeenCalledWith({ notificationSound: false });
 
     fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Show shortcut hints" }));
@@ -1227,7 +1261,7 @@ describe("Pixice app shell", () => {
     await screen.findByText("I traced the current flow.");
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    fireEvent.click(screen.getByRole("button", { name: /^GitHub/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Capabilities/ }));
     await waitFor(() => expect(api.github.status).toHaveBeenCalled());
     expect(await screen.findByText("Sign in required")).toBeInTheDocument();
 
@@ -1816,8 +1850,8 @@ describe("Pixice app shell", () => {
     await screen.findByText("I traced the current flow.");
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    fireEvent.click(screen.getByRole("button", { name: /^Agent Behavior/ }));
-    expect(await screen.findByRole("heading", { name: "Agent Behavior" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Agents/ }));
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Pixice-native features" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Parallel delegation" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Tools" })).not.toBeChecked();
@@ -1856,6 +1890,51 @@ describe("Pixice app shell", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     expect(window.pixice.providers.login).toHaveBeenCalledWith({ provider: "claude" });
     expect(screen.getByRole("button", { name: "Check sign-in" })).toBeInTheDocument();
+  });
+
+  it("shows Codex and Claude runtime health independently", async () => {
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [{ id: "claude", model: "claude-sonnet-5", displayName: "Claude Sonnet 5", provider: "claude", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    api.providers.list.mockResolvedValue([
+      { id: "codex", installed: true, compatible: true, connected: false, status: { state: "unavailable", message: "Codex service failed to start" }, health: { state: "healthy", message: "Codex executable verified" }, actions: { checkUpdate: true, login: false } },
+      { id: "claude", installed: true, compatible: true, connected: true, status: { state: "ready", message: "Claude runtime available" }, health: { state: "healthy", message: "Claude Code is ready" }, actions: { checkUpdate: true, login: true } }
+    ]);
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Providers/ }));
+
+    const healthSection = (await screen.findByRole("heading", { name: "Runtime health" })).closest("section");
+    const codexRow = within(healthSection).getByText("Codex", { selector: "strong" }).closest(".preference-row");
+    const claudeRow = within(healthSection).getByText("Claude Code", { selector: "strong" }).closest(".preference-row");
+    expect(within(codexRow).getByText("Offline")).toBeInTheDocument();
+    expect(within(codexRow).getByText(/Codex service failed to start/)).toBeInTheDocument();
+    expect(within(claudeRow).getByText("Connected")).toBeInTheDocument();
+    expect(within(claudeRow).getByText(/Claude runtime available/)).toBeInTheDocument();
+    expect(within(claudeRow).getByText(/1 model available/)).toBeInTheDocument();
+
+    act(() => api.emit({
+      type: "RuntimeStatus",
+      payload: {
+        state: "ready",
+        connected: true,
+        providers: {
+          codex: { state: "ready", message: "Codex runtime recovered" },
+          claude: { state: "unavailable", message: "Claude runtime stopped" }
+        }
+      }
+    }));
+    await waitFor(() => expect(within(codexRow).getByText("Connected")).toBeInTheDocument());
+    expect(within(codexRow).getByText(/Codex runtime recovered/)).toBeInTheDocument();
+    expect(within(claudeRow).getByText("Offline")).toBeInTheDocument();
+    expect(within(claudeRow).getByText(/Claude runtime stopped/)).toBeInTheDocument();
   });
 
   it("keeps separate setup actions available for missing and broken providers", async () => {
@@ -1957,8 +2036,8 @@ describe("Pixice app shell", () => {
     await user.click(screen.getByRole("button", { name: /^Providers/ }));
     expect(await screen.findByRole("article", { name: "OpenAI Codex provider" })).toBeInTheDocument();
     expect(screen.getByRole("article", { name: "Anthropic Claude provider" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /^Agent Behavior/ }));
-    expect(await screen.findByRole("heading", { name: "Agent Behavior" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Agents/ }));
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeInTheDocument();
   });
 
   it("updates an individual provider row from lifecycle progress events", async () => {
@@ -2036,11 +2115,6 @@ describe("Pixice app shell", () => {
     await user.click(within(claude).getByRole("button", { name: "Check update" }));
     await waitFor(() => expect(api.providers.checkUpdates).toHaveBeenCalledWith({ provider: "claude" }));
 
-    await user.click(screen.getByRole("button", { name: /^Updates/ }));
-    expect(await screen.findByRole("heading", { name: "Provider updates" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /update all/i })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Check all providers" }));
-    await waitFor(() => expect(api.providers.checkUpdates).toHaveBeenCalledWith());
     await user.click(screen.getByRole("checkbox", { name: "Check provider updates automatically" }));
     expect(api.app.saveSettings).toHaveBeenCalledWith({ checkProviderUpdates: false });
   });
@@ -2143,7 +2217,7 @@ describe("Pixice app shell", () => {
     expect(screen.queryByRole("region", { name: "Claude usage limits" })).not.toBeInTheDocument();
   });
 
-  it("checks GitHub releases from the Updates settings page", async () => {
+  it("checks GitHub releases from About Pixice", async () => {
     const api = createApi();
     api.updates.status.mockResolvedValue({ supported: true, state: "idle", currentVersion: "0.1.0", availableVersion: null, percent: 0, message: "Ready to check GitHub releases." });
     api.updates.check.mockResolvedValue({ supported: true, state: "not-available", currentVersion: "0.1.0", availableVersion: null, percent: 0, message: "Pixice is up to date." });
@@ -2152,15 +2226,15 @@ describe("Pixice app shell", () => {
     await screen.findByText("I traced the current flow.");
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Updates/ }));
-    expect(await screen.findByRole("heading", { name: "Updates" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /^About Pixice/ }));
+    expect(await screen.findByRole("heading", { name: "About Pixice" })).toBeInTheDocument();
     expect(screen.getByText("Pixice 0.1.0")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
     await waitFor(() => expect(api.updates.check).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("Pixice is up to date.")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Codex updates" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Pixice app updates and provider updates remain separate/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Provider updates" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Provider runtime updates live.*under Providers/)).toBeInTheDocument();
   });
 
   it("restores persistent model, reasoning, and permission defaults after an app update", async () => {
@@ -2598,6 +2672,9 @@ describe("Pixice app shell", () => {
     fireEvent.click(settledToggle);
     expect(settledToggle).toHaveAttribute("aria-expanded", "true");
     expect(disclosure).toHaveAttribute("aria-hidden", "false");
+    expect(screen.queryByText("13 tests passed")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("View output"));
+    expect(await screen.findByText("13 tests passed")).toBeInTheDocument();
   });
 
   it("contains the live trace animation within the conversation width", () => {

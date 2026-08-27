@@ -1,7 +1,7 @@
 import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useContext } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import {
-  ArrowClockwise, Bell, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
+  ArrowClockwise, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
   Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
   Globe, Info, LockKey, MagnifyingGlass, PaperPlaneTilt, Pause,
   PencilSimple, PlugsConnected, Plus, ShieldCheck, Sparkle, SpinnerGap, Stack,
@@ -32,8 +32,8 @@ import { resolveWorkflowGenerationModel, workflowGenerationModels, WORKFLOW_GENE
 import {
   appendLocalUserMessage,
   applyRuntimePayload,
+  coalesceRuntimeDeltas,
   descendantsOf,
-  flattenItems,
   isSidebarThread,
   mergeThreadSnapshot,
   projectCollabAgents,
@@ -50,6 +50,7 @@ const EMPTY_BROWSER_STATE = { native: false, activeTabId: null, tabs: [] };
 const EMPTY_PREVIEW_WORKSPACE = { open: false, browserState: EMPTY_BROWSER_STATE, fileTabs: [], instrumentTabs: [], customTabs: [], activeTabId: null };
 const EMPTY_UPDATE_STATUS = { supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." };
 const EMPTY_GITHUB_STATUS = { available: false, authenticated: false, source: null, version: null, account: null, message: "Checking GitHub connection…" };
+const RUNTIME_RECOVERY_SILENCE_MS = 12_000;
 const EMPTY_AGENT_BEHAVIORS = [];
 const WorkspaceOpenContext = createContext(null);
 const MIN_SIDEBAR_WIDTH = 224;
@@ -560,6 +561,57 @@ function SidebarNavItem({ icon: Icon, label, active, badge, badgeVisible = true,
   );
 }
 
+const SidebarThreadRow = memo(function SidebarThreadRow({ task, active, finished, animateLayout, onSelectThread, onDeleteThread }) {
+  const title = threadTitle(task);
+  const running = threadIsRunning(task);
+  const savedPlanProgress = normalizePlanProgress(task.planProgress);
+  const finishedPlanComplete = Boolean(savedPlanProgress)
+    && savedPlanProgress.completed === savedPlanProgress.total
+    && Boolean(threadCompletionRevision(task));
+  const planProgress = finishedPlanComplete ? null : savedPlanProgress;
+  const planProgressPercent = planProgress ? (planProgress.completed / planProgress.total) * 100 : 0;
+  return (
+    <motion.div
+      className={`task-row ${active ? "active" : ""} ${running ? "running" : ""} ${finished ? "finished" : ""}`}
+      layout={animateLayout ? "position" : false}
+      transition={animateLayout ? { layout: { duration: 0.22, ease: [0.22, 1, 0.36, 1] } } : undefined}
+      data-layout-animation={animateLayout ? "true" : "false"}
+    >
+      <button className="task-select" onClick={() => onSelectThread(task.id)} title={finished ? `${title} · Finished` : title} aria-current={active ? "page" : undefined}>
+        <span className="task-title">{title}</span>
+        {running && (
+          <ReasoningOrb
+            className="task-state task-reasoning-orb"
+            size={16}
+            label="Task is reasoning"
+            decorative
+          />
+        )}
+        {finished && (
+          <span className="task-state task-finished-badge" title="Finished" aria-hidden="true">
+            <Check size={9} />
+          </span>
+        )}
+      </button>
+      <IconButton className="task-delete" label={`Delete ${title}`} onClick={() => onDeleteThread(task.id)}>
+        <Trash size={13} />
+      </IconButton>
+      {planProgress && (
+        <div
+          className="task-row-progress"
+          role="progressbar"
+          aria-label={`${planProgress.completed} of ${planProgress.total} complete`}
+          aria-valuemin="0"
+          aria-valuemax={planProgress.total}
+          aria-valuenow={planProgress.completed}
+        >
+          <span style={{ width: `${planProgressPercent}%` }} />
+        </div>
+      )}
+    </motion.div>
+  );
+});
+
 function SidebarThreadList({ tasks, seenThreadCompletions, selectedThreadId, activeView, onSelectThread, onDeleteThread, ariaLabel, emptyMessage, reduceMotion = false }) {
   const systemReducedMotion = useReducedMotion();
   const animateLayout = !reduceMotion && !systemReducedMotion;
@@ -567,59 +619,21 @@ function SidebarThreadList({ tasks, seenThreadCompletions, selectedThreadId, act
     <div className="task-tree" aria-label={ariaLabel}>
       {emptyMessage && tasks.length === 0 && <p>{emptyMessage}</p>}
       {tasks.map((task) => {
-        const title = threadTitle(task);
         const active = task.id === selectedThreadId && activeView === "task";
-        const running = threadIsRunning(task);
         const completionRevision = threadCompletionRevision(task);
         const finished = Boolean(completionRevision)
           && !active
           && !threadCompletionWasSeen(task, completionRevision, seenThreadCompletions);
-        const savedPlanProgress = normalizePlanProgress(task.planProgress);
-        const finishedPlanComplete = Boolean(savedPlanProgress)
-          && savedPlanProgress.completed === savedPlanProgress.total
-          && Boolean(completionRevision);
-        const planProgress = finishedPlanComplete ? null : savedPlanProgress;
-        const planProgressPercent = planProgress ? (planProgress.completed / planProgress.total) * 100 : 0;
         return (
-          <motion.div
-            className={`task-row ${active ? "active" : ""} ${running ? "running" : ""} ${finished ? "finished" : ""}`}
+          <SidebarThreadRow
             key={task.id}
-            layout={animateLayout ? "position" : false}
-            transition={animateLayout ? { layout: { duration: 0.22, ease: [0.22, 1, 0.36, 1] } } : undefined}
-            data-layout-animation={animateLayout ? "true" : "false"}
-          >
-            <button className="task-select" onClick={() => onSelectThread(task.id)} title={finished ? `${title} · Finished` : title} aria-current={active ? "page" : undefined}>
-              <span className="task-title">{title}</span>
-              {running && (
-                <ReasoningOrb
-                  className="task-state task-reasoning-orb"
-                  size={16}
-                  label="Task is reasoning"
-                  decorative
-                />
-              )}
-              {finished && (
-                <span className="task-state task-finished-badge" title="Finished" aria-hidden="true">
-                  <Check size={9} />
-                </span>
-              )}
-            </button>
-            <IconButton className="task-delete" label={`Delete ${title}`} onClick={() => onDeleteThread(task.id)}>
-              <Trash size={13} />
-            </IconButton>
-            {planProgress && (
-              <div
-                className="task-row-progress"
-                role="progressbar"
-                aria-label={`${planProgress.completed} of ${planProgress.total} complete`}
-                aria-valuemin="0"
-                aria-valuemax={planProgress.total}
-                aria-valuenow={planProgress.completed}
-              >
-                <span style={{ width: `${planProgressPercent}%` }} />
-              </div>
-            )}
-          </motion.div>
+            task={task}
+            active={active}
+            finished={finished}
+            animateLayout={animateLayout}
+            onSelectThread={onSelectThread}
+            onDeleteThread={onDeleteThread}
+          />
         );
       })}
     </div>
@@ -1455,6 +1469,16 @@ function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, run
   );
 }
 
+function CommandOutput({ output }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="trace-command-output" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary><span>View output</span><CaretRight className="activity-caret" size={12} /></summary>
+      {open && <pre>{output}</pre>}
+    </details>
+  );
+}
+
 function ActivityItem({ item }) {
   if (item.type === "reasoning") {
     const summary = Array.isArray(item.summary)
@@ -1472,12 +1496,7 @@ function ActivityItem({ item }) {
           <span className="trace-entry-copy"><strong>Command</strong><code title={command}>{command}</code></span>
           <StatusDot status={item.status === "completed" ? "complete" : item.status === "failed" ? "error" : "running"} />
         </div>
-        {item.aggregatedOutput && (
-          <details className="trace-command-output">
-            <summary><span>View output</span><CaretRight className="activity-caret" size={12} /></summary>
-            <pre>{item.aggregatedOutput}</pre>
-          </details>
-        )}
+        {item.aggregatedOutput && <CommandOutput output={item.aggregatedOutput} />}
       </div>
     );
   }
@@ -1720,37 +1739,6 @@ function markResponsesSeen(thread, seenResponseIds) {
   });
 }
 
-function threadRevision(thread) {
-  const sized = (value) => typeof value === "string"
-    ? value.length
-    : Array.isArray(value)
-      ? value.reduce((total, part) => total + sized(part?.text ?? part?.url ?? part?.path ?? part), value.length)
-      : value && typeof value === "object"
-        ? Object.keys(value).length
-        : value == null ? 0 : String(value).length;
-  const turns = (thread?.turns ?? []).map((turn) => {
-    const items = (turn.items ?? []).map((item) => [
-      item.id,
-      item.type,
-      item.status,
-      item.phase,
-      item.createdAt,
-      item.completedAt,
-      sized(item.text),
-      sized(item.aggregatedOutput),
-      sized(item.result),
-      sized(item.revisedPrompt),
-      item.savedPath,
-      sized(item.failure),
-      sized(item.content),
-      sized(item.summary),
-      sized(item.changes)
-    ].join(":"));
-    return `${turn.id}:${turn.status}:${turn.startedAt ?? turn.createdAt ?? ""}:${turn.completedAt ?? ""}:${items.join("|")}`;
-  });
-  return `${thread?.id ?? ""}:${thread?.updatedAt ?? ""}:${threadStatus(thread)}:${turns.join(";")}`;
-}
-
 function samePlan(left, right) {
   if (left === right) return true;
   if (left.length !== right.length) return false;
@@ -1886,25 +1874,64 @@ function compactPreviewText(text) {
     .trim();
 }
 
-export function promptPreviewItems(thread) {
-  return (thread?.turns ?? []).flatMap((turn) => {
-    const turnItems = turn.items ?? [];
-    return turnItems.flatMap((item, index) => {
-      if (item.type !== "userMessage") return [];
-      const text = compactPreviewText(userMessageText(item));
-      const imageCount = (item.content ?? []).filter((part) => part.type === "image").length;
-      if (!text && imageCount === 0) return [];
-      const response = [...turnItems.slice(index + 1)]
-        .reverse()
-        .find((candidate) => candidate.type === "agentMessage" && candidate.text);
-      return [{
-        id: item.renderId ?? item.id ?? `${turn.renderId ?? turn.id ?? "turn"}-${index}`,
-        anchorId: promptAnchorId(turn, item, index),
-        label: text || `${imageCount} attached image${imageCount === 1 ? "" : "s"}`,
-        description: compactPreviewText(response?.text) || (turnIsRunning(turn.status) ? "Codex is working on this prompt." : "Open this prompt in the conversation."),
-      }];
-    });
+const promptPreviewTurnCache = new WeakMap();
+const conversationTurnProjectionCache = new WeakMap();
+
+function promptPreviewTurnItems(turn) {
+  let projected = promptPreviewTurnCache.get(turn);
+  if (projected) return projected;
+  const turnItems = turn.items ?? [];
+  projected = turnItems.flatMap((item, index) => {
+    if (item.type !== "userMessage") return [];
+    const text = compactPreviewText(userMessageText(item));
+    const imageCount = (item.content ?? []).filter((part) => part.type === "image").length;
+    if (!text && imageCount === 0) return [];
+    const response = [...turnItems.slice(index + 1)]
+      .reverse()
+      .find((candidate) => candidate.type === "agentMessage" && candidate.text);
+    return [{
+      id: item.renderId ?? item.id ?? `${turn.renderId ?? turn.id ?? "turn"}-${index}`,
+      anchorId: promptAnchorId(turn, item, index),
+      label: text || `${imageCount} attached image${imageCount === 1 ? "" : "s"}`,
+      description: compactPreviewText(response?.text) || (turnIsRunning(turn.status) ? "Codex is working on this prompt." : "Open this prompt in the conversation."),
+    }];
   });
+  promptPreviewTurnCache.set(turn, projected);
+  return projected;
+}
+
+export function promptPreviewItems(thread) {
+  return (thread?.turns ?? []).flatMap(promptPreviewTurnItems);
+}
+
+function projectConversationTurn(turn) {
+  let projected = conversationTurnProjectionCache.get(turn);
+  if (projected) return projected;
+  let latestPlanText = null;
+  const touchedPaths = new Set();
+  for (const item of turn.items ?? []) {
+    if (item.type === "plan") latestPlanText = item.text ?? latestPlanText;
+    if (item.type !== "fileChange") continue;
+    const paths = (item.changes ?? []).map((change) => change.path || change.filePath).filter(Boolean);
+    if (paths.length) paths.forEach((path) => touchedPaths.add(path));
+    else if (item.path || item.filePath) touchedPaths.add(item.path || item.filePath);
+  }
+  projected = { itemCount: turn.items?.length ?? 0, latestPlanText, touchedPaths: [...touchedPaths] };
+  conversationTurnProjectionCache.set(turn, projected);
+  return projected;
+}
+
+function projectConversation(thread) {
+  let itemCount = 0;
+  let latestPlanText = null;
+  const touchedPaths = new Set();
+  for (const turn of thread?.turns ?? []) {
+    const projected = projectConversationTurn(turn);
+    itemCount += projected.itemCount;
+    if (projected.latestPlanText) latestPlanText = projected.latestPlanText;
+    projected.touchedPaths.forEach((path) => touchedPaths.add(path));
+  }
+  return { itemCount, latestPlanText, touchedFileCount: touchedPaths.size };
 }
 
 const PERMISSION_OPTIONS = [
@@ -2368,7 +2395,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     rendered.push(<WorkingTrace items={[]} running settled={false} startedAt={startedAt} defaultDisclosure={completedWorkDetails} key={`pending-${turn.renderId ?? turn.id}`} />);
   }
 
-  return rendered;
+  return <div className="conversation-turn" data-turn-id={turn.id}>{rendered}</div>;
 }, (previous, next) => previous.turn === next.turn
   && previous.turnIndex === next.turnIndex
   && previous.thread?.id === next.thread?.id
@@ -2937,15 +2964,11 @@ function ConversationWorkspace({
     const saved = Number.parseInt(localStorage.getItem(PREVIEW_CHAT_WIDTH_KEY) ?? "", 10);
     return Number.isFinite(saved) ? clampPreviewChatWidth(saved) : null;
   });
-  const items = flattenItems(thread);
+  const conversationProjection = useMemo(() => projectConversation(thread), [thread]);
   const promptItems = useMemo(() => promptPreviewItems(thread), [thread]);
-  const latestPlanText = [...items].reverse().find((item) => item.type === "plan")?.text;
+  const latestPlanText = conversationProjection.latestPlanText;
   const agents = thread ? descendantsOf(threads, thread.id) : [];
-  const touchedFiles = new Set(items.flatMap((item) => {
-    if (item.type !== "fileChange") return [];
-    const paths = (item.changes ?? []).map((change) => change.path || change.filePath).filter(Boolean);
-    return paths.length ? paths : [item.path || item.filePath].filter(Boolean);
-  })).size || changedCount;
+  const touchedFiles = conversationProjection.touchedFileCount || changedCount;
   const scrollRef = useRef(null);
   const workspaceRef = useRef(null);
   const mainCanvasRef = useRef(null);
@@ -2974,7 +2997,6 @@ function ConversationWorkspace({
     }
     setActivePromptId((current) => current === nextId ? current : nextId);
   }, [promptItems]);
-  const liveLength = items.map((item) => (item.text?.length ?? 0) + (item.aggregatedOutput?.length ?? 0) + (Array.isArray(item.summary) ? item.summary.join("").length : 0)).join(":");
   useLayoutEffect(() => {
     if (followedThreadRef.current !== thread?.id) {
       followedThreadRef.current = thread?.id;
@@ -2985,7 +3007,7 @@ function ConversationWorkspace({
     if (node && followLatestRef.current) node.scrollTop = node.scrollHeight;
     const frame = window.requestAnimationFrame(updateActivePrompt);
     return () => window.cancelAnimationFrame(frame);
-  }, [thread?.id, items.length, liveLength, promptItems, updateActivePrompt]);
+  }, [thread?.id, thread?.turns, promptItems, updateActivePrompt]);
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
@@ -3101,7 +3123,7 @@ function ConversationWorkspace({
           ) : (
             <div className="conversation-column">
               <div className="message-stream">
-                {items.length === 0 && <p className="quiet-empty">This task has no messages yet.</p>}
+                {conversationProjection.itemCount === 0 && <p className="quiet-empty">This task has no messages yet.</p>}
                 {(thread.turns ?? []).map((turn, turnIndex) => (
                   <TurnConversation
                     thread={thread}
@@ -3448,21 +3470,32 @@ function FileDiff({ file }) {
   );
 }
 
-function ReviewWorkspace({ project, review, loading, onRefresh, onExternal }) {
+function ReviewWorkspace({ project, review, loading, fileLoadingPath, onLoadFile, onRefresh, onExternal }) {
   const currentReview = review?.projectId === project?.id ? review : null;
-  const files = useMemo(
+  const legacyFiles = useMemo(
     () => reviewFiles(currentReview?.diff, currentReview?.repository?.dirtyPaths),
     [currentReview?.diff, currentReview?.repository?.dirtyPaths]
   );
+  const files = Array.isArray(currentReview?.files) ? currentReview.files : legacyFiles;
   const [selectedPath, setSelectedPath] = useState(null);
   useEffect(() => {
     setSelectedPath((current) => current && files.some((file) => file.path === current)
       ? current
       : files[0]?.path ?? null);
   }, [files]);
-  const selected = files.find((file) => file.path === selectedPath) ?? files[0];
+  const selectedManifest = files.find((file) => file.path === selectedPath) ?? files[0];
+  const selectedPatch = selectedManifest ? currentReview?.fileDiffs?.[selectedManifest.path] : undefined;
+  const selectedParsed = selectedPatch === undefined
+    ? legacyFiles.find((file) => file.path === selectedManifest?.path)
+    : reviewFiles(selectedPatch, [selectedManifest.path])[0];
+  const selected = selectedManifest ? { ...selectedManifest, ...selectedParsed } : null;
   const dirtyCount = currentReview?.repository?.dirtyPaths?.length ?? 0;
   const blockingLoad = loading && !currentReview;
+
+  useEffect(() => {
+    if (!selectedManifest || !Array.isArray(currentReview?.files) || selectedPatch !== undefined || fileLoadingPath === selectedManifest.path) return;
+    onLoadFile(selectedManifest.path);
+  }, [currentReview?.files, fileLoadingPath, onLoadFile, selectedManifest, selectedPatch]);
 
   return (
     <main className="main-canvas workspace">
@@ -3498,7 +3531,9 @@ function ReviewWorkspace({ project, review, loading, onRefresh, onExternal }) {
             })}
           </aside>
           <section className="diff-panel">
-            <FileDiff file={selected} />
+            {fileLoadingPath === selected?.path && selectedPatch === undefined
+              ? <div className="loading-state"><SpinnerGap className="spin-icon" size={18} />Reading file diff…</div>
+              : <FileDiff file={selected} />}
           </section>
         </div>
       )}
@@ -3693,7 +3728,31 @@ function providerStatusLabel(provider, lifecycle, connected) {
   return "Sign in required";
 }
 
-function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onAction }) {
+function providerRuntimeHealth(provider, lifecycle, loading) {
+  if (loading && !provider.status && provider.installed === undefined) {
+    return { label: "Checking", tone: "", detail: "Reading this provider's runtime status." };
+  }
+  if (lifecycle.missing) {
+    return { label: "Not installed", tone: "offline", detail: provider.health?.message || "Install or locate this provider to make it available." };
+  }
+  if (lifecycle.requiresRepair) {
+    return { label: "Needs repair", tone: "offline", detail: provider.health?.message || "The installed runtime could not complete its health check." };
+  }
+  if (provider.connected) {
+    return { label: "Connected", tone: "ready", detail: provider.status?.message || provider.health?.message || "The runtime is ready." };
+  }
+  if (["connecting", "reconnecting"].includes(provider.status?.state)) {
+    return { label: "Starting", tone: "", detail: provider.status?.message || "Pixice is starting this runtime." };
+  }
+  const failed = provider.status?.state === "error";
+  return {
+    label: failed ? "Error" : "Offline",
+    tone: "offline",
+    detail: provider.status?.message || provider.health?.message || "This runtime is not currently available."
+  };
+}
+
+function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onAction, updateChecksEnabled, onUpdateChecksEnabledChange }) {
   const [providerOperations, setProviderOperations] = useState({});
   const [pendingProvider, setPendingProvider] = useState(null);
   const [actionErrors, setActionErrors] = useState({});
@@ -3758,6 +3817,19 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onA
         <p className="providers-intro">Set up each runtime separately. Accounts stay with the provider, and Pixice only reads the resulting connection status.</p>
         <IconButton label="Refresh providers" onClick={onRefresh} disabled={loading}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
       </div>
+      <SettingsGroup title="Runtime health" description="Codex and Claude start independently. One unavailable runtime never blocks the other or unrelated Pixice features.">
+        {providerRows.map((provider) => {
+          const lifecycle = providerLifecycle(provider);
+          const health = providerRuntimeHealth(provider, lifecycle, loading);
+          const providerModels = models.filter((model) => modelProvider(model) === provider.id).length;
+          const modelDetail = provider.connected ? `${providerModels} model${providerModels === 1 ? "" : "s"} available` : null;
+          return (
+            <SettingsRow key={provider.id} title={provider.runtimeLabel} description={[health.detail, modelDetail].filter(Boolean).join(" · ")}>
+              <span className={`settings-status ${health.tone}`}><i />{health.label}</span>
+            </SettingsRow>
+          );
+        })}
+      </SettingsGroup>
       <div className="provider-list" aria-label="AI providers">
         {loading && providers.length === 0 && <LoadingSkeleton label="Loading providers" rows={2} />}
         {providerRows.map((provider) => {
@@ -3818,6 +3890,11 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onA
           );
         })}
       </div>
+      <SettingsGroup title="Provider updates" description="Each installed provider checks and updates through its own official release path.">
+        <SettingsRow title="Automatic checks" description="Check quietly after startup and every six hours. Installation still requires a click in the provider row.">
+          <SettingsToggle label="Check provider updates automatically" checked={updateChecksEnabled} onChange={onUpdateChecksEnabledChange} />
+        </SettingsRow>
+      </SettingsGroup>
       {bridgeModels.length > 0 && (
         <section className="bridge-model-overview" aria-labelledby="bridge-model-title">
           <header>
@@ -4186,24 +4263,22 @@ function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsE
 }
 
 const SETTINGS_PAGES = [
-  { id: "general", label: "General", description: "Task defaults and safety", icon: Gear, keywords: "permissions model reasoning thread names workflow generation title luna terra claude automatic delete drafts cleanup age days custom awake sleep system" },
+  { id: "general", label: "General", description: "Defaults, safety, and alerts", icon: Gear, keywords: "permissions model reasoning thread names workflow generation title luna terra claude automatic delete drafts cleanup age days custom awake sleep system notifications alerts sound shortcuts keyboard" },
   { id: "conversation", label: "Conversation", description: "Writing, reading, and live output", icon: PencilSimple, keywords: "composer enter send shortcut drafts autofocus spellcheck slash commands timestamps work details expanded collapsed" },
-  { id: "agent-behavior", label: "Agent Behavior", description: "Guidance loaded for every agent", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration tools instruments interactive" },
-  { id: "orchestration", label: "Orchestration", description: "How delegated work surfaces", icon: TreeStructure, keywords: "agents progress task map approvals" },
-  { id: "notifications", label: "Notifications", description: "Attention, completion, and sound", icon: Bell, keywords: "desktop native system alerts approvals questions finished complete sound silent" },
+  { id: "agents", label: "Agents", description: "Behavior and orchestration", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration tools instruments interactive progress task map approvals" },
+  { id: "providers", label: "Providers", description: "Accounts, runtimes, and models", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions runtime health status connected update install locate repair" },
+  { id: "capabilities", label: "Capabilities", description: "GitHub, skills, apps, and MCP", icon: PlugsConnected, keywords: "extensions plugins tools servers github gh cli login pull request issues push fetch workflow" },
   { id: "appearance", label: "Appearance", description: "Layout, text, color, and motion", icon: Eye, keywords: "compact comfortable conversation width focused balanced wide text size small large accent coral rose amber green teal blue violet graphite transparency projects sidebar recent third row nine legacy old nested shortcuts animation" },
-  { id: "updates", label: "Updates", description: "Version and GitHub releases", icon: ArrowClockwise, keywords: "version release download install github update" },
-  { id: "github", label: "GitHub", description: "Account and agent access", icon: GitBranch, keywords: "github gh cli login sign in account pull request issues push fetch workflow" },
-  { id: "providers", label: "Providers", description: "Accounts, models, and sessions", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions" },
-  { id: "usage", label: "Usage", description: "Tokens, trends, and API cost", icon: ChartLineUp, keywords: "cost spend pricing tokens input output cache daily weekly monthly charts" },
-  { id: "runtime", label: "Runtime", description: "Codex connection and context", icon: Gauge, keywords: "status models project connected" },
-  { id: "capabilities", label: "Capabilities", description: "Skills, apps, and MCP", icon: PlugsConnected, keywords: "extensions plugins tools servers" },
-  { id: "shortcuts", label: "Shortcuts", description: "Fast paths through Pixice", icon: Code, keywords: "keyboard new task settings" }
+  { id: "usage", label: "Usage", description: "Tokens, trends, and API cost", icon: ChartLineUp, keywords: "cost spend pricing tokens input output cache daily weekly monthly charts" }
 ];
+
+const SETTINGS_ABOUT_PAGE = { id: "about", label: "About Pixice", description: "Version and app updates", icon: Info, keywords: "about pixice version release download install github update" };
+const ALL_SETTINGS_PAGES = [...SETTINGS_PAGES, SETTINGS_ABOUT_PAGE];
 
 function SettingsSidebar({ page, onPageChange, onBack }) {
   const [query, setQuery] = useState("");
   const visiblePages = SETTINGS_PAGES.filter((candidate) => `${candidate.label} ${candidate.description} ${candidate.keywords}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const showAbout = `${SETTINGS_ABOUT_PAGE.label} ${SETTINGS_ABOUT_PAGE.description} ${SETTINGS_ABOUT_PAGE.keywords}`.toLowerCase().includes(query.trim().toLowerCase());
 
   return (
     <aside className="settings-sidebar" aria-label="Settings navigation">
@@ -4218,15 +4293,22 @@ function SettingsSidebar({ page, onPageChange, onBack }) {
           </button>
         ))}
       </nav>
-      {visiblePages.length === 0 && <p className="settings-nav-empty">No matching settings.</p>}
+      {visiblePages.length === 0 && !showAbout && <p className="settings-nav-empty">No matching settings.</p>}
+      {showAbout && (
+        <div className="settings-sidebar-footer">
+          <button className={page === SETTINGS_ABOUT_PAGE.id ? "selected" : ""} onClick={() => onPageChange(SETTINGS_ABOUT_PAGE.id)} aria-current={page === SETTINGS_ABOUT_PAGE.id ? "page" : undefined}>
+            <Info size={17} weight={page === SETTINGS_ABOUT_PAGE.id ? "fill" : "regular"} />
+            <span><strong>{SETTINGS_ABOUT_PAGE.label}</strong><small>{SETTINGS_ABOUT_PAGE.description}</small></span>
+            <CaretRight size={13} />
+          </button>
+        </div>
+      )}
     </aside>
   );
 }
 
 function SettingsWorkspace({
   page,
-  runtime,
-  project,
   models,
   selectedModel,
   onModelChange,
@@ -4262,7 +4344,6 @@ function SettingsWorkspace({
   onProviderAction,
   providerUpdateChecksEnabled,
   onProviderUpdateChecksEnabledChange,
-  onCheckProviderUpdates,
   githubStatus,
   githubLoading,
   githubProgress,
@@ -4279,16 +4360,15 @@ function SettingsWorkspace({
   onUsageRangeChange,
   onRefreshUsage,
   onRefreshCapabilities,
-  onRefreshModels,
   updateStatus,
   onCheckForUpdates,
   onDownloadUpdate,
   onInstallUpdate
 }) {
-  const selectedPage = SETTINGS_PAGES.find((candidate) => candidate.id === page) ?? SETTINGS_PAGES[0];
+  const selectedPage = ALL_SETTINGS_PAGES.find((candidate) => candidate.id === page) ?? SETTINGS_PAGES[0];
   const systemReducedMotion = useReducedMotion();
   const settingsScrollRef = useRef(null);
-  const selectedPageIndex = SETTINGS_PAGES.findIndex((candidate) => candidate.id === selectedPage.id);
+  const selectedPageIndex = ALL_SETTINGS_PAGES.findIndex((candidate) => candidate.id === selectedPage.id);
   const previousPageIndexRef = useRef(selectedPageIndex);
   const pageDirection = selectedPageIndex >= previousPageIndexRef.current ? 1 : -1;
   const selectedModelInfo = models.find((model) => model.model === selectedModel);
@@ -4299,8 +4379,6 @@ function SettingsWorkspace({
   const generationModelValue = (model) => String(model.id ?? "").includes(":") ? model.id : `${model.provider}:${model.model}`;
   const effortOptions = selectedModelInfo?.supportedReasoningEfforts?.map((option) => option.reasoningEffort ?? option.effort ?? option) ?? ["medium", "high"];
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
-  const capabilityCount = extensions.apps.length + extensions.mcp.length + extensions.skills.reduce((count, entry) => count + (entry.skills?.length ?? 0), 0);
-
   useEffect(() => {
     previousPageIndexRef.current = selectedPageIndex;
     settingsScrollRef.current?.scrollTo?.({ top: 0, behavior: "auto" });
@@ -4397,6 +4475,21 @@ function SettingsWorkspace({
             </div>
           </SettingsRow>
         </SettingsGroup>
+        <SettingsGroup title="Notifications" description="Choose when the desktop app asks for attention or reports finished work.">
+          <SettingsRow title="Questions and approvals" description="Notify when an agent needs a decision before it can continue.">
+            <SettingsToggle label="Notify for questions and approvals" checked={attentionNotifications} onChange={onAttentionNotificationsChange} />
+          </SettingsRow>
+          <SettingsRow title="Task completion" description="Notify when a lead task finishes its active turn.">
+            <SettingsToggle label="Notify when tasks finish" checked={completionNotifications} onChange={onCompletionNotificationsChange} />
+          </SettingsRow>
+          <SettingsRow title="Notification sound" description="Allow task notifications to play the operating system's alert sound.">
+            <SettingsToggle label="Play notification sounds" checked={notificationSound} onChange={onNotificationSoundChange} />
+          </SettingsRow>
+        </SettingsGroup>
+        <SettingsGroup title="Keyboard shortcuts" description="These shortcuts are available anywhere in Pixice.">
+          <SettingsRow title="New task" description="Start a blank task in the selected project."><kbd className="settings-shortcut">{isMac ? "⌘ N" : "Ctrl N"}</kbd></SettingsRow>
+          <SettingsRow title="Open settings" description="Jump directly to this settings workspace."><kbd className="settings-shortcut">{isMac ? "⌘ ," : "Ctrl ,"}</kbd></SettingsRow>
+        </SettingsGroup>
       </>
     );
   } else if (page === "conversation") {
@@ -4436,7 +4529,7 @@ function SettingsWorkspace({
         </SettingsGroup>
       </>
     );
-  } else if (page === "agent-behavior") {
+  } else if (page === "agents") {
     const coreBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category !== "pixice-native");
     const pixiceNativeBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category === "pixice-native");
     const renderBehavior = (behavior) => (
@@ -4454,39 +4547,22 @@ function SettingsWorkspace({
             {pixiceNativeBehaviors.map(renderBehavior)}
           </SettingsGroup>
         )}
+        <SettingsGroup title="Live orchestration" description="Decide how Pixice reveals parallel work and decisions.">
+          <SettingsRow title="Show task progress" description="Keep live plans, completion, agents, and touched files in the conversation.">
+            <SettingsToggle label="Show task progress" checked={preferences.showTaskProgress} onChange={(value) => onPreferenceChange("showTaskProgress", value)} />
+          </SettingsRow>
+          <SettingsRow title="Expand task progress by default" description="Open the plan steps when a task progress card first appears.">
+            <SettingsToggle label="Expand task progress by default" checked={preferences.expandTaskProgress} onChange={(value) => onPreferenceChange("expandTaskProgress", value)} />
+          </SettingsRow>
+          <SettingsRow title="Open task map when agents join" description="Reveal the inspector when a task delegates work to another agent.">
+            <SettingsToggle label="Open task map when agents join" checked={preferences.autoOpenTaskMap} onChange={(value) => onPreferenceChange("autoOpenTaskMap", value)} />
+          </SettingsRow>
+          <SettingsRow title="Bring approvals forward" description="Open Attention automatically when an active task needs your decision.">
+            <SettingsToggle label="Bring approvals forward" checked={preferences.bringApprovalsForward} onChange={(value) => onPreferenceChange("bringApprovalsForward", value)} />
+          </SettingsRow>
+        </SettingsGroup>
         <p className="settings-footnote">New agents use changes immediately. Existing sessions pick them up when Pixice next resumes them; an active turn keeps its current guidance.</p>
       </>
-    );
-  } else if (page === "orchestration") {
-    pageContent = (
-      <SettingsGroup title="Live orchestration" description="Decide how Pixice reveals parallel work and decisions.">
-        <SettingsRow title="Show task progress" description="Keep live plans, completion, agents, and touched files in the conversation.">
-          <SettingsToggle label="Show task progress" checked={preferences.showTaskProgress} onChange={(value) => onPreferenceChange("showTaskProgress", value)} />
-        </SettingsRow>
-        <SettingsRow title="Expand task progress by default" description="Open the plan steps when a task progress card first appears.">
-          <SettingsToggle label="Expand task progress by default" checked={preferences.expandTaskProgress} onChange={(value) => onPreferenceChange("expandTaskProgress", value)} />
-        </SettingsRow>
-        <SettingsRow title="Open task map when agents join" description="Reveal the inspector when a task delegates work to another agent.">
-          <SettingsToggle label="Open task map when agents join" checked={preferences.autoOpenTaskMap} onChange={(value) => onPreferenceChange("autoOpenTaskMap", value)} />
-        </SettingsRow>
-        <SettingsRow title="Bring approvals forward" description="Open Attention automatically when an active task needs your decision.">
-          <SettingsToggle label="Bring approvals forward" checked={preferences.bringApprovalsForward} onChange={(value) => onPreferenceChange("bringApprovalsForward", value)} />
-        </SettingsRow>
-      </SettingsGroup>
-    );
-  } else if (page === "notifications") {
-    pageContent = (
-      <SettingsGroup title="Desktop notifications" description="These alerts are sent by the Pixice desktop process and work while the window is in the background.">
-        <SettingsRow title="Questions and approvals" description="Notify when an agent needs a decision before it can continue.">
-          <SettingsToggle label="Notify for questions and approvals" checked={attentionNotifications} onChange={onAttentionNotificationsChange} />
-        </SettingsRow>
-        <SettingsRow title="Task completion" description="Notify when a lead task finishes its active turn.">
-          <SettingsToggle label="Notify when tasks finish" checked={completionNotifications} onChange={onCompletionNotificationsChange} />
-        </SettingsRow>
-        <SettingsRow title="Notification sound" description="Allow task notifications to play the operating system's alert sound.">
-          <SettingsToggle label="Play notification sounds" checked={notificationSound} onChange={onNotificationSoundChange} />
-        </SettingsRow>
-      </SettingsGroup>
     );
   } else if (page === "appearance") {
     pageContent = (
@@ -4537,9 +4613,8 @@ function SettingsWorkspace({
         </SettingsGroup>
       </>
     );
-  } else if (page === "updates") {
+  } else if (page === "about") {
     const updateBusy = ["checking", "downloading", "protecting-data"].includes(updateStatus.state);
-    const providerUpdateBusy = providers.some((provider) => ["checking", "updating"].includes(provider.updateState?.state));
     const action = updateStatus.state === "available"
       ? { label: `Download ${updateStatus.availableVersion}`, run: onDownloadUpdate }
       : updateStatus.state === "downloaded" || updateStatus.state === "install-error"
@@ -4562,71 +4637,25 @@ function SettingsWorkspace({
             </div>
           )}
         </SettingsGroup>
-        <SettingsGroup title="Provider updates" description="Pixice checks each installed provider independently and uses that provider's official update path.">
-          <SettingsRow title="Automatic checks" description="Check quietly after startup and every six hours. Updates still require a click.">
-            <SettingsToggle label="Check provider updates automatically" checked={providerUpdateChecksEnabled} onChange={onProviderUpdateChecksEnabledChange} />
-          </SettingsRow>
-          <SettingsRow title="Check installed providers" description="Codex and Claude checks run independently. A failed provider does not block the other.">
-            <button className="settings-action" disabled={providersLoading || providerUpdateBusy} onClick={onCheckProviderUpdates}>
-              {(providersLoading || providerUpdateBusy) && <SpinnerGap className="spin-icon" size={14} />}Check all providers
-            </button>
-          </SettingsRow>
-          {PROVIDER_SETTINGS_DEFINITIONS.map((definition) => {
-            const provider = providers.find((candidate) => candidate.id === definition.id) ?? { id: definition.id };
-            const lifecycle = providerLifecycle(provider);
-            const updateState = provider.updateState ?? {};
-            const description = lifecycle.missing
-              ? `${definition.runtimeLabel} is not installed.`
-              : updateState.message || `${provider.version ? `Installed ${provider.version}` : "Installed version unknown"}.`;
-            return (
-              <SettingsRow key={definition.id} title={definition.label} description={description}>
-                {lifecycle.updateAvailable ? (
-                  <button className="settings-action primary" disabled={!lifecycle.actions.update || lifecycle.busy} onClick={() => onProviderAction(provider.id, "update")}>
-                    {updateState.state === "updating" && <SpinnerGap className="spin-icon" size={14} />}Update to {updateState.availableVersion}
-                  </button>
-                ) : (
-                  <button className="settings-action" disabled={!lifecycle.actions.checkUpdate || lifecycle.busy} onClick={() => onProviderAction(provider.id, "checkUpdates")}>
-                    {updateState.state === "checking" && <SpinnerGap className="spin-icon" size={14} />}{lifecycle.missing ? "Not installed" : "Check update"}
-                  </button>
-                )}
-              </SettingsRow>
-            );
-          })}
-        </SettingsGroup>
-        <p className="settings-footnote">Pixice app updates and provider updates remain separate. There is no Update all action.</p>
-      </>
-    );
-  } else if (page === "runtime") {
-    pageContent = (
-      <>
-        <SettingsGroup title="Codex runtime" description="Live status from the desktop bridge.">
-          <SettingsRow title="Connection" description={runtime.connected ? runtime.userAgent || "Local Codex runtime" : "The runtime is not currently available."}>
-            <span className={`settings-status ${runtime.connected ? "ready" : "offline"}`}><i />{runtime.connected ? "Connected" : "Offline"}</span>
-          </SettingsRow>
-          <SettingsRow title="Available models" description={`${models.length} model${models.length === 1 ? "" : "s"} reported by Codex.`}>
-            <button className="settings-action" onClick={onRefreshModels}><ArrowClockwise size={15} />Refresh</button>
-          </SettingsRow>
-        </SettingsGroup>
-        <SettingsGroup title="Current context">
-          <SettingsRow title="Project" description={project?.canonicalPath ?? "Open a project to provide working context."}><span className="settings-value">{project?.displayName ?? "None"}</span></SettingsRow>
-          <SettingsRow title="Capabilities" description="Skills, apps, and MCP servers currently loaded."><span className="settings-value">{capabilityCount}</span></SettingsRow>
-        </SettingsGroup>
+        <p className="settings-footnote">Provider runtime updates live with their separate installation and account controls under Providers.</p>
       </>
     );
   } else if (page === "providers") {
-    pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} />;
-  } else if (page === "github") {
-    pageContent = <GitHubSettings status={githubStatus} loading={githubLoading} progress={githubProgress} onRefresh={onRefreshGitHub} onLogin={onGitHubLogin} onLogout={onGitHubLogout} />;
+    pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} updateChecksEnabled={providerUpdateChecksEnabled} onUpdateChecksEnabledChange={onProviderUpdateChecksEnabledChange} />;
   } else if (page === "usage") {
     pageContent = <UsageSettings summary={usageSummary} loading={usageLoading} error={usageError} limits={usageLimits} limitsLoading={usageLimitsLoading} limitsError={usageLimitsError} rangeDays={usageRangeDays} onRangeChange={onUsageRangeChange} onRefresh={onRefreshUsage} />;
   } else if (page === "capabilities") {
-    pageContent = <CapabilitiesSettings extensions={extensions} loading={extensionsLoading} onRefresh={onRefreshCapabilities} />;
-  } else {
     pageContent = (
-      <SettingsGroup title="App shortcuts" description="These shortcuts are available anywhere in Pixice.">
-        <SettingsRow title="New task" description="Start a blank task in the selected project."><kbd className="settings-shortcut">{isMac ? "⌘ N" : "Ctrl N"}</kbd></SettingsRow>
-        <SettingsRow title="Open settings" description="Jump directly to this settings workspace."><kbd className="settings-shortcut">{isMac ? "⌘ ," : "Ctrl ,"}</kbd></SettingsRow>
-      </SettingsGroup>
+      <>
+        <section className="settings-combined-section">
+          <header><h2>GitHub</h2><p>Connect the GitHub CLI account used by agents and release operations.</p></header>
+          <GitHubSettings status={githubStatus} loading={githubLoading} progress={githubProgress} onRefresh={onRefreshGitHub} onLogin={onGitHubLogin} onLogout={onGitHubLogout} />
+        </section>
+        <section className="settings-combined-section">
+          <header><h2>Agent capabilities</h2><p>Inspect the Skills, Apps, and MCP servers currently available to agents.</p></header>
+          <CapabilitiesSettings extensions={extensions} loading={extensionsLoading} onRefresh={onRefreshCapabilities} />
+        </section>
+      </>
     );
   }
 
@@ -4700,10 +4729,12 @@ export function App() {
   const [threads, setThreads] = useState([]);
   const [selectedThreadId, setSelectedThreadId] = useState(null);
   const selectedThreadIdRef = useRef(null);
+  const lastRuntimeActivityAtRef = useRef(Date.now());
   const optimisticThreadsRef = useRef(new Map());
   const threadLoadRequestRef = useRef(0);
   const threadsLoadRequestRef = useRef(0);
   const reviewLoadRequestRef = useRef(0);
+  const reviewFileRequestRef = useRef(new Map());
   const boardLoadRequestRef = useRef(0);
   const proactivityLoadRequestRef = useRef(0);
   const toolsLoadRequestRef = useRef(0);
@@ -4718,7 +4749,7 @@ export function App() {
   const [thread, setThread] = useState(null);
   const [plan, setPlan] = useState([]);
   const [attention, setAttention] = useState([]);
-  const [review, setReview] = useState({ projectId: null, repository: null, diff: "" });
+  const [review, setReview] = useState({ projectId: null, repository: null, files: [], fileDiffs: {} });
   const [boardTasks, setBoardTasks] = useState([]);
   const [boardPhases, setBoardPhases] = useState([]);
   const [proactiveSuggestions, setProactiveSuggestions] = useState([]);
@@ -4783,7 +4814,7 @@ export function App() {
   }, []);
   const [draftMode, setDraftMode] = useState(false);
   const draftModeRef = useRef(false);
-  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, board: false, tools: false, extensions: false, providers: false, github: false, usage: false, usageLimits: false });
+  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, reviewFile: null, board: false, tools: false, extensions: false, providers: false, github: false, usage: false, usageLimits: false });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -4939,8 +4970,8 @@ export function App() {
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const projectActivityKey = projects.map((project) => project.id).sort().join("|");
-  const activeTurn = [...(thread?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
-  const sidebarThreads = threads
+  const activeTurn = useMemo(() => [...(thread?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status)), [thread]);
+  const sidebarThreads = useMemo(() => threads
     .filter(isSidebarThread)
     .map((candidate) => {
       const selected = candidate.id === thread?.id;
@@ -4950,9 +4981,10 @@ export function App() {
         || candidate.turns?.at(-1)?.status === "completed"
         || threadStatus(candidate) === "completed"
       );
-      return selected
-        ? { ...candidate, sidebarCompleted, status: { type: activeTurn ? "active" : "idle", activeFlags: [] } }
-        : { ...candidate, sidebarCompleted };
+      const status = selected ? { type: activeTurn ? "active" : "idle", activeFlags: [] } : candidate.status;
+      return candidate.sidebarCompleted === sidebarCompleted && threadStatus({ status }) === threadStatus(candidate)
+        ? candidate
+        : { ...candidate, sidebarCompleted, status };
     })
     .map((candidate, originalIndex) => ({ candidate, originalIndex }))
     .sort((left, right) => {
@@ -4966,7 +4998,7 @@ export function App() {
       if (leftWasAgentSpawned !== rightWasAgentSpawned) return leftWasAgentSpawned ? 1 : -1;
       return left.originalIndex - right.originalIndex;
     })
-    .map(({ candidate }) => candidate);
+    .map(({ candidate }) => candidate), [activeTurn, thread?.id, threadMessageRecency, threads]);
   const selectedThreadCompletionRevision = threadCompletionRevision(sidebarThreads.find((candidate) => candidate.id === selectedThreadId));
   const changedCount = review.projectId === selectedProjectId ? review.repository?.dirtyPaths?.length ?? 0 : 0;
 
@@ -5001,7 +5033,9 @@ export function App() {
     runtimeDeltaFrameRef.current = null;
     const pending = pendingRuntimeDeltasRef.current.splice(0);
     if (!pending.length) return;
-    setThread((current) => pending.reduce((next, entry) => applyRuntimePayload(next ?? entry.fallback, entry.payload), current));
+    const payloads = coalesceRuntimeDeltas(pending.map((entry) => entry.payload));
+    const fallback = pending.findLast((entry) => entry.fallback)?.fallback ?? null;
+    setThread((current) => payloads.reduce((next, payload) => applyRuntimePayload(next ?? fallback, payload), current));
   }, []);
 
   const commitRuntimePayload = useCallback((payload, fallback = null) => {
@@ -5017,7 +5051,9 @@ export function App() {
     const pending = pendingRuntimeDeltasRef.current.splice(0);
     cancelRuntimeDeltaFrame();
     setThread((current) => {
-      const withPending = pending.reduce((next, entry) => applyRuntimePayload(next ?? entry.fallback, entry.payload), current);
+      const pendingPayloads = coalesceRuntimeDeltas(pending.map((entry) => entry.payload));
+      const pendingFallback = pending.findLast((entry) => entry.fallback)?.fallback ?? fallback;
+      const withPending = pendingPayloads.reduce((next, pendingPayload) => applyRuntimePayload(next ?? pendingFallback, pendingPayload), current);
       return applyRuntimePayload(withPending ?? fallback, payload);
     });
   }, [cancelRuntimeDeltaFrame, flushRuntimeDeltas]);
@@ -5033,6 +5069,7 @@ export function App() {
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
+    lastRuntimeActivityAtRef.current = Date.now();
     window.dispatchEvent(new CustomEvent("pixice:active-thread-changed", { detail: selectedThreadId }));
   }, [selectedThreadId]);
 
@@ -5150,8 +5187,7 @@ export function App() {
           });
         }
         setThread((current) => {
-          const merged = mergeThreadSnapshot(current, response.thread);
-          return threadRevision(merged) === threadRevision(current) ? current : merged;
+          return mergeThreadSnapshot(current, response.thread);
         });
       }
     } catch {
@@ -5194,14 +5230,37 @@ export function App() {
     try {
       const result = await api.review.read({ projectId });
       if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
-      setReview({ ...result, projectId });
+      setReview({ ...result, projectId, fileDiffs: {} });
       setProjects((current) => current.map((project) => project.id === projectId ? { ...project, repository: result.repository } : project));
     } catch (cause) {
       if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setError(cause.message);
-      setReview({ projectId, repository: null, diff: "" });
+      setReview({ projectId, repository: null, files: [], fileDiffs: {} });
     } finally {
       if (requestId === reviewLoadRequestRef.current) setLoading((state) => ({ ...state, review: false }));
+    }
+  }, [api]);
+
+  const loadReviewFile = useCallback(async (projectId, filePath) => {
+    if (!api?.review?.file || !projectId || !filePath) return;
+    if (reviewFileRequestRef.current.has(filePath)) return;
+    const requestId = Symbol(filePath);
+    reviewFileRequestRef.current.set(filePath, requestId);
+    setLoading((state) => ({ ...state, reviewFile: filePath }));
+    try {
+      const result = await api.review.file({ projectId, path: filePath });
+      if (reviewFileRequestRef.current.get(filePath) !== requestId || selectedProjectIdRef.current !== projectId) return;
+      setReview((current) => {
+        if (current.projectId !== projectId || current.repository?.baseCommit !== result.baseCommit) return current;
+        return { ...current, fileDiffs: { ...current.fileDiffs, [filePath]: result.diff } };
+      });
+    } catch (cause) {
+      if (reviewFileRequestRef.current.get(filePath) === requestId) setError(cause.message);
+    } finally {
+      if (reviewFileRequestRef.current.get(filePath) === requestId) {
+        reviewFileRequestRef.current.delete(filePath);
+        setLoading((state) => ({ ...state, reviewFile: state.reviewFile === filePath ? null : state.reviewFile }));
+      }
     }
   }, [api]);
 
@@ -5299,16 +5358,6 @@ export function App() {
     await loadProviders();
     await loadModels();
   }, [loadModels, loadProviders]);
-
-  const checkAllProviderUpdates = useCallback(async () => {
-    if (!api?.providers?.checkUpdates) return;
-    try {
-      await api.providers.checkUpdates();
-      await loadProviders();
-    } catch (cause) {
-      setError(cause.message);
-    }
-  }, [api, loadProviders]);
 
   const loadGitHubStatus = useCallback(async () => {
     if (!api?.github) return;
@@ -5606,7 +5655,7 @@ export function App() {
       selectedThreadIdRef.current = null;
       setSelectedThreadId(null);
       setThread(null);
-      setReview({ projectId: null, repository: null, diff: "" });
+      setReview({ projectId: null, repository: null, files: [], fileDiffs: {} });
       return;
     }
     localStorage.setItem("pixice.activeProjectId", selectedProjectId);
@@ -5645,15 +5694,23 @@ export function App() {
     if (!api || !selectedProjectId || !selectedThreadId || !activeTurn) return undefined;
     let cancelled = false;
     let timer;
+    const scheduleForActivity = () => {
+      const quietFor = Date.now() - lastRuntimeActivityAtRef.current;
+      timer = window.setTimeout(refresh, Math.max(1_000, RUNTIME_RECOVERY_SILENCE_MS - quietFor));
+    };
     const refresh = async () => {
+      if (Date.now() - lastRuntimeActivityAtRef.current < RUNTIME_RECOVERY_SILENCE_MS) {
+        scheduleForActivity();
+        return;
+      }
       try {
         await refreshThread(selectedProjectId, selectedThreadId);
       } catch {
         // Live notifications remain the primary path; polling is only a quiet fallback.
       }
-      if (!cancelled) timer = window.setTimeout(refresh, 4000);
+      if (!cancelled) timer = window.setTimeout(refresh, RUNTIME_RECOVERY_SILENCE_MS);
     };
-    timer = window.setTimeout(refresh, 4000);
+    scheduleForActivity();
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -5678,10 +5735,9 @@ export function App() {
   useEffect(() => {
     if (activeView === "settings") loadExtensions();
     if (activeView === "settings" && settingsPage === "providers") loadProviders();
-    if (activeView === "settings" && settingsPage === "github") loadGitHubStatus();
+    if (activeView === "settings" && settingsPage === "capabilities") loadGitHubStatus();
     if (activeView === "settings" && settingsPage === "usage") loadUsage(usageRangeDays);
     if (activeView === "settings" && settingsPage === "usage") loadUsageLimits();
-    if (activeView === "review" && selectedProjectId) loadReview(selectedProjectId);
     if (activeView === "tools" && selectedProjectId) loadProjectTools(selectedProjectId);
   }, [activeView, loadExtensions, loadGitHubStatus, loadProjectTools, loadProviders, loadReview, loadUsage, loadUsageLimits, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey, usageLimitsRefreshKey]);
 
@@ -5709,6 +5765,18 @@ export function App() {
     return api.events.subscribe((event) => {
       if (event.type === "RuntimeStatus") {
         setRuntime(event.payload);
+        if (event.payload?.providers) {
+          setProviders((current) => current.map((provider) => {
+            const status = event.payload.providers[provider.id];
+            if (!status) return provider;
+            const connected = status.state === "ready"
+              ? true
+              : ["error", "stopped", "unavailable"].includes(status.state)
+                ? false
+                : provider.connected;
+            return { ...provider, connected, status };
+          }));
+        }
         if (event.payload.connected) {
           loadModels().catch(() => null);
           if (selectedProjectId) {
@@ -5866,6 +5934,7 @@ export function App() {
       const payload = event.payload ?? {};
       const activityProjectId = payload.projectId;
       const activityThreadId = payload.threadId ?? payload.thread?.id;
+      if (activityThreadId && activityThreadId === selectedThreadIdRef.current) lastRuntimeActivityAtRef.current = Date.now();
       if (activityProjectId && activityThreadId && ["thread/started", "thread/status/changed", "turn/started", "turn/completed"].includes(payload.method)) {
         setProjectActivity((current) => {
           const existing = current[activityProjectId] ?? { runningThreadIds: [], unseenThreadIds: [] };
@@ -6935,13 +7004,11 @@ export function App() {
       />
     );
   } else if (activeView === "review") {
-    content = <ReviewWorkspace project={selectedProject} review={review} loading={loading.review} onRefresh={() => loadReview(selectedProjectId)} onExternal={openExternal} />;
+    content = <ReviewWorkspace project={selectedProject} review={review} loading={loading.review} fileLoadingPath={loading.reviewFile} onLoadFile={(filePath) => loadReviewFile(selectedProjectId, filePath)} onRefresh={() => loadReview(selectedProjectId)} onExternal={openExternal} />;
   } else if (activeView === "settings") {
     content = (
       <SettingsWorkspace
         page={settingsPage}
-        runtime={runtime}
-        project={selectedProject}
         models={models}
         selectedModel={defaultModel}
         onModelChange={changeDefaultModel}
@@ -6977,7 +7044,6 @@ export function App() {
         onProviderAction={runProviderAction}
         providerUpdateChecksEnabled={providerUpdateChecksEnabled}
         onProviderUpdateChecksEnabledChange={changeProviderUpdateChecksEnabled}
-        onCheckProviderUpdates={checkAllProviderUpdates}
         githubStatus={githubStatus}
         githubLoading={loading.github}
         githubProgress={githubProgress}
@@ -6994,7 +7060,6 @@ export function App() {
         onUsageRangeChange={setUsageRangeDays}
         onRefreshUsage={() => { loadUsage(usageRangeDays); loadUsageLimits(); }}
         onRefreshCapabilities={loadExtensions}
-        onRefreshModels={() => loadModels().catch((cause) => setError(cause.message))}
         updateStatus={updateStatus}
         onCheckForUpdates={() => runUpdateAction("check")}
         onDownloadUpdate={() => runUpdateAction("download")}

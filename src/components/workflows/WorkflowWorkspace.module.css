@@ -252,10 +252,10 @@
   border-color: color-mix(in oklab, var(--node-tone) 90%, white);
   box-shadow: 0 20px 48px rgba(0, 0, 0, .34), 0 0 0 4px color-mix(in oklab, var(--node-tone) 17%, transparent), 0 0 24px color-mix(in oklab, var(--node-tone) 16%, transparent);
 }
-.node[data-status="running"] { animation: running-node 1.8s ease-in-out infinite; }
+.node[data-status="running"] { animation: running-node 5.4s steps(3, end) infinite; }
 @keyframes running-node {
-  0%, 100% { box-shadow: 0 20px 45px rgba(0, 0, 0, .28), 0 0 0 0 color-mix(in oklab, var(--node-tone) 0%, transparent); }
-  50% { box-shadow: 0 20px 45px rgba(0, 0, 0, .28), 0 0 0 6px color-mix(in oklab, var(--node-tone) 10%, transparent), 0 0 28px color-mix(in oklab, var(--node-tone) 18%, transparent); }
+  0%, 5%, 14%, 100% { box-shadow: 0 20px 45px rgba(0, 0, 0, .28), 0 0 0 0 color-mix(in oklab, var(--node-tone) 0%, transparent); }
+  8%, 11% { box-shadow: 0 20px 45px rgba(0, 0, 0, .28), 0 0 0 6px color-mix(in oklab, var(--node-tone) 10%, transparent), 0 0 28px color-mix(in oklab, var(--node-tone) 18%, transparent); }
 }
 
 .nodeIcon {
@@ -1014,7 +1014,7 @@
   border-left-color: var(--node-tone);
   box-shadow: 0 12px 30px rgba(0, 0, 0, .3), 0 0 0 3px color-mix(in oklab, var(--node-tone) 14%, transparent);
 }
-.node[data-status="running"] { animation: running-node 1.8s ease-in-out infinite; }
+.node[data-status="running"] { animation: running-node 5.4s steps(3, end) infinite; }
 
 .nodeIcon {
   width: 36px;

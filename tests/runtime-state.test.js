@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendLocalUserMessage,
   applyRuntimePayload,
+  coalesceRuntimeDeltas,
   descendantsOf,
   mergeThreadSnapshot,
   parseDiff,
@@ -13,6 +14,17 @@ import {
 } from "../src/state/runtime.js";
 
 describe("runtime state projection", () => {
+  it("coalesces streamed text by item while preserving item order", () => {
+    expect(coalesceRuntimeDeltas([
+      { method: "item/agentMessage/delta", threadId: "lead", turnId: "turn", itemId: "a", delta: "one" },
+      { method: "item/agentMessage/delta", threadId: "lead", turnId: "turn", itemId: "b", delta: "other" },
+      { method: "item/agentMessage/delta", threadId: "lead", turnId: "turn", itemId: "a", delta: " two", receivedAt: "later" }
+    ])).toEqual([
+      { method: "item/agentMessage/delta", threadId: "lead", turnId: "turn", itemId: "a", delta: "one two", receivedAt: "later" },
+      { method: "item/agentMessage/delta", threadId: "lead", turnId: "turn", itemId: "b", delta: "other" }
+    ]);
+  });
+
   it("hides Preview hints and reconciles them with the visible local prompt", () => {
     const tagged = "look at this\n\n<pixice-preview-context>Pixice Preview is open with a browser tab selected.</pixice-preview-context>";
     expect(stripPreviewContext(tagged)).toBe("look at this");
@@ -289,6 +301,34 @@ describe("runtime state projection", () => {
       { id: "other", parentThreadId: null }
     ];
     expect(descendantsOf(threads, "lead").map((thread) => thread.id)).toEqual(["api", "tests"]);
+  });
+
+  it("reuses an unchanged thread snapshot and its derived row identities", () => {
+    const current = {
+      id: "lead",
+      name: "Stable thread",
+      updatedAt: "2026-08-27T12:00:00.000Z",
+      status: { type: "idle" },
+      turns: [{
+        id: "turn",
+        status: "completed",
+        completedAt: "2026-08-27T12:00:00.000Z",
+        items: [{ id: "answer", type: "agentMessage", phase: "final_answer", text: "Done" }]
+      }]
+    };
+    const incoming = JSON.parse(JSON.stringify(current));
+
+    const merged = mergeThreadSnapshot(current, incoming);
+
+    expect(merged).toBe(current);
+    expect(merged.turns[0]).toBe(current.turns[0]);
+    expect(merged.turns[0].items[0]).toBe(current.turns[0].items[0]);
+
+    const changed = JSON.parse(JSON.stringify(current));
+    changed.turns[0].items[0].text = "Nope";
+    const changedMerge = mergeThreadSnapshot(current, changed);
+    expect(changedMerge).not.toBe(current);
+    expect(changedMerge.turns[0].items[0].text).toBe("Nope");
   });
 
   it("parses changed files and line totals from a unified diff", () => {

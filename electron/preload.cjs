@@ -115,7 +115,7 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
   requests: Object.freeze({ respond: invoke("requests:respond") }),
   questions: Object.freeze({ respond: invoke("questions:respond") }),
   elicitations: Object.freeze({ respond: invoke("elicitations:respond") }),
-  review: Object.freeze({ read: invoke("review:read") }),
+  review: Object.freeze({ read: invoke("review:read"), file: invoke("review:file") }),
   models: Object.freeze({ list: invoke("models:list") }),
   extensions: Object.freeze({ list: invoke("extensions:list") }),
   external: Object.freeze({ openEditor: invoke("external:editor"), openTerminal: invoke("external:terminal"), reveal: invoke("external:reveal") }),

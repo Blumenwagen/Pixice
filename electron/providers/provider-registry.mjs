@@ -24,7 +24,8 @@ function authenticationState(result) {
 }
 
 function persistedThread(database, binding) {
-  const snapshot = database.getProviderThreadSnapshot?.(binding.threadId);
+  const snapshot = database.getProviderThreadSummary?.(binding.threadId)
+    ?? database.getProviderThreadSnapshot?.(binding.threadId);
   if (!snapshot) return null;
   const link = database.getThreadLink?.(binding.threadId);
   return tagProvider({
@@ -358,13 +359,21 @@ export class ProviderRegistry extends EventEmitter {
 
   #saveBinding(provider, binding) {
     if (!binding?.threadId) return;
-    this.database.saveThreadProviderBinding({
+    const existing = this.database.getThreadProviderBinding(binding.threadId);
+    const next = {
       threadId: binding.threadId,
       provider,
       providerThreadId: binding.providerThreadId ?? null,
       resumeCursor: binding.resumeCursor ?? null,
-      cwd: binding.cwd ?? this.database.getThreadProviderBinding(binding.threadId)?.cwd ?? ""
-    });
+      cwd: binding.cwd ?? existing?.cwd ?? ""
+    };
+    if (
+      existing?.provider === next.provider
+      && (existing.providerThreadId ?? null) === next.providerThreadId
+      && (existing.resumeCursor ?? null) === next.resumeCursor
+      && (existing.cwd ?? "") === next.cwd
+    ) return;
+    this.database.saveThreadProviderBinding(next);
   }
 
   #saveThreadSummary(provider, thread) {

@@ -29,6 +29,7 @@ import {
 const FALLBACK_MODELS = [
   { value: "default", displayName: "Claude (recommended)", description: "Use Claude Code's recommended model." }
 ];
+export const CLAUDE_STREAM_CHECKPOINT_MS = 250;
 
 function normalizeClaudeModels(discovered = []) {
   const models = new Map();
@@ -262,7 +263,8 @@ export class ClaudeProvider extends EventEmitter {
     pathToClaudeCodeExecutable = null,
     requireExternalExecutable = false,
     runtimeLifecycle = null,
-    environment = process.env
+    environment = process.env,
+    streamCheckpointMs = CLAUDE_STREAM_CHECKPOINT_MS
   }) {
     super();
     this.id = "claude";
@@ -280,7 +282,10 @@ export class ClaudeProvider extends EventEmitter {
     this.requireExternalExecutable = requireExternalExecutable;
     this.runtimeLifecycle = runtimeLifecycle;
     this.environment = environment;
+    this.streamCheckpointMs = Math.max(1, Number(streamCheckpointMs) || CLAUDE_STREAM_CHECKPOINT_MS);
     this.sessions = new Map();
+    this.pendingSnapshotWrites = new Map();
+    this.persistedBindingKeys = new Map();
     this.pendingRequests = new Map();
     this.models = null;
     this.started = false;
@@ -316,11 +321,13 @@ export class ClaudeProvider extends EventEmitter {
   async stop() {
     this.#closeAuthSession();
     for (const context of this.sessions.values()) {
+      this.#flushPersist(context);
       context.queue?.close();
       context.abortController?.abort();
       context.query?.close?.();
     }
     this.sessions.clear();
+    this.persistedBindingKeys.clear();
     for (const pending of this.pendingRequests.values()) {
       pending.resolve(pending.kind === "pixice-question"
         ? { cancelled: true, answers: {} }
@@ -586,9 +593,11 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   #listThreads({ cwd, ancestorThreadId } = {}) {
-    const data = this.database.listThreadProviderBindings({ provider: this.id, cwd })
-      .map((binding) => this.database.getProviderThreadSnapshot(binding.threadId))
-      .filter(Boolean)
+    const data = (this.database.listProviderThreadSummaries
+      ? this.database.listProviderThreadSummaries({ provider: this.id, cwd })
+      : this.database.listThreadProviderBindings({ provider: this.id, cwd })
+        .map((binding) => this.database.getProviderThreadSnapshot(binding.threadId))
+        .filter(Boolean))
       .filter((thread) => !ancestorThreadId || thread.parentThreadId === ancestorThreadId);
     return { data, nextCursor: null };
   }
@@ -641,10 +650,12 @@ export class ClaudeProvider extends EventEmitter {
 
   #archiveThread(threadId) {
     const context = this.#context(threadId);
+    this.#flushPersist(context);
     context.queue?.close();
     context.abortController?.abort();
     context.query?.close?.();
     this.sessions.delete(threadId);
+    this.persistedBindingKeys.delete(threadId);
     this.#emitEvent("TaskUpdated", { method: "thread/archived", threadId });
     return { threadId };
   }
@@ -835,7 +846,8 @@ export class ClaudeProvider extends EventEmitter {
     const turn = context.currentTurn;
     const itemId = `claude-message:${message.uuid}`;
     if (event.delta?.type === "text_delta") {
-      const item = appendItem(turn, { id: itemId, type: "agentMessage", text: "", phase: "commentary" });
+      const item = turn.items.find((candidate) => candidate.id === itemId)
+        ?? appendItem(turn, { id: itemId, type: "agentMessage", text: "", phase: "commentary" });
       item.text += event.delta.text ?? "";
       this.#emitEvent("TaskUpdated", {
         method: "item/agentMessage/delta",
@@ -847,10 +859,11 @@ export class ClaudeProvider extends EventEmitter {
     }
     if (event.delta?.type === "thinking_delta") {
       const reasoningId = `claude-reasoning:${message.uuid}`;
-      const existing = appendItem(turn, { id: reasoningId, type: "reasoning", summary: [] });
+      const existing = turn.items.find((candidate) => candidate.id === reasoningId)
+        ?? appendItem(turn, { id: reasoningId, type: "reasoning", summary: [] });
       existing.summary = [{ type: "summary_text", text: `${existing.summary?.[0]?.text ?? ""}${event.delta.thinking ?? ""}` }];
     }
-    this.#persist(context);
+    this.#persist(context, { deferred: true });
   }
 
   #handleAssistant(context, message) {
@@ -1225,22 +1238,53 @@ export class ClaudeProvider extends EventEmitter {
     return context;
   }
 
-  #persist(context) {
+  #persist(context, { deferred = false } = {}) {
     if (context.thread.ephemeral) return;
-    this.database.saveThreadProviderBinding({
+    if (deferred) {
+      if (this.pendingSnapshotWrites.has(context.thread.id)) return;
+      const timer = setTimeout(() => {
+        this.pendingSnapshotWrites.delete(context.thread.id);
+        this.#writeStreamCheckpoint(context);
+      }, this.streamCheckpointMs);
+      timer.unref?.();
+      this.pendingSnapshotWrites.set(context.thread.id, { context, timer });
+      return;
+    }
+    this.#flushPersist(context, { force: true });
+  }
+
+  #flushPersist(context, { force = false } = {}) {
+    const pending = this.pendingSnapshotWrites.get(context.thread.id);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingSnapshotWrites.delete(context.thread.id);
+    }
+    if (pending || force) this.#writePersistedContext(context);
+  }
+
+  #writePersistedContext(context) {
+    const binding = {
       threadId: context.thread.id,
       provider: this.id,
       providerThreadId: context.providerThreadId,
       resumeCursor: context.resumeCursor,
       cwd: context.thread.cwd
-    });
+    };
+    const bindingKey = JSON.stringify([binding.providerThreadId, binding.resumeCursor, binding.cwd]);
+    if (this.persistedBindingKeys.get(context.thread.id) !== bindingKey) {
+      this.database.saveThreadProviderBinding(binding);
+      this.persistedBindingKeys.set(context.thread.id, bindingKey);
+      this.emit("binding", binding);
+    }
     this.database.saveProviderThreadSnapshot(context.thread.id, context.thread);
-    this.emit("binding", {
-      threadId: context.thread.id,
-      providerThreadId: context.providerThreadId,
-      resumeCursor: context.resumeCursor,
-      cwd: context.thread.cwd
-    });
+  }
+
+  #writeStreamCheckpoint(context) {
+    if (!context.currentTurn || !this.database.saveProviderActiveTurn) {
+      this.#writePersistedContext(context);
+      return;
+    }
+    this.database.saveProviderActiveTurn(context.thread.id, context.currentTurn);
   }
 
   #developerInstructions() {

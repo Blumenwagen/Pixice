@@ -381,6 +381,124 @@ describe("Claude provider", () => {
     database.db.close();
   });
 
+  it("persists a chatty Claude stream once at its terminal boundary", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-checkpoints-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    const provider = new ClaudeProvider({
+      database,
+      streamCheckpointMs: 10_000,
+      queryFactory: () => ({
+        [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
+        close: vi.fn()
+      })
+    });
+    const saveSnapshot = vi.spyOn(database, "saveProviderThreadSnapshot");
+    const saveBinding = vi.spyOn(database, "saveThreadProviderBinding");
+    await provider.start();
+    const { thread } = await provider.request("thread/start", { cwd: directory, model: "sonnet" });
+    await provider.request("turn/start", {
+      threadId: thread.id,
+      input: [{ type: "text", text: "Stream a long answer" }],
+      model: "sonnet"
+    });
+    saveSnapshot.mockClear();
+    saveBinding.mockClear();
+
+    for (let index = 0; index < 100; index += 1) {
+      output.push({
+        type: "stream_event",
+        session_id: thread.providerThreadId,
+        uuid: "streamed-answer",
+        event: { type: "content_block_delta", delta: { type: "text_delta", text: "abcdefghij" } }
+      });
+      await Promise.resolve();
+    }
+    for (const thinking of ["Think ", "carefully"]) {
+      output.push({
+        type: "stream_event",
+        session_id: thread.providerThreadId,
+        uuid: "streamed-thinking",
+        event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking } }
+      });
+      await Promise.resolve();
+    }
+    await tick();
+
+    expect(saveSnapshot).not.toHaveBeenCalled();
+    expect(saveBinding).not.toHaveBeenCalled();
+
+    output.push({
+      type: "result",
+      subtype: "success",
+      session_id: thread.providerThreadId,
+      uuid: "stream-result",
+      is_error: false,
+      result: "",
+      permission_denials: []
+    });
+    await tick();
+
+    expect(saveSnapshot).toHaveBeenCalledTimes(1);
+    expect(saveBinding).not.toHaveBeenCalled();
+    expect(database.getProviderThreadSnapshot(thread.id).turns[0].items)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "agentMessage", text: "abcdefghij".repeat(100) }),
+        expect.objectContaining({ type: "reasoning", summary: [{ type: "summary_text", text: "Think carefully" }] })
+      ]));
+
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("checkpoints only the active Claude turn between terminal snapshots", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-active-turn-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    const provider = new ClaudeProvider({
+      database,
+      streamCheckpointMs: 5,
+      queryFactory: () => ({
+        [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
+        close: vi.fn()
+      })
+    });
+    const saveSnapshot = vi.spyOn(database, "saveProviderThreadSnapshot");
+    const saveActiveTurn = vi.spyOn(database, "saveProviderActiveTurn");
+    await provider.start();
+    const { thread } = await provider.request("thread/start", { cwd: directory, model: "sonnet" });
+    await provider.request("turn/start", {
+      threadId: thread.id,
+      input: [{ type: "text", text: "Keep this recoverable" }],
+      model: "sonnet"
+    });
+    saveSnapshot.mockClear();
+
+    output.push({
+      type: "stream_event",
+      session_id: thread.providerThreadId,
+      uuid: "active-answer",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "Partial answer" } }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    expect(saveSnapshot).not.toHaveBeenCalled();
+    expect(saveActiveTurn).toHaveBeenCalledTimes(1);
+    expect(database.getProviderThreadSnapshot(thread.id).turns[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "agentMessage", text: "Partial answer" })
+    ]));
+
+    output.push({ type: "result", subtype: "success", session_id: thread.providerThreadId, uuid: "active-result", is_error: false, result: "", permission_denials: [] });
+    await tick();
+    expect(saveSnapshot).toHaveBeenCalledTimes(1);
+    expect(database.db.prepare("SELECT COUNT(*) AS count FROM provider_thread_active_turns WHERE thread_id = ?").get(thread.id).count).toBe(0);
+
+    await provider.stop();
+    database.db.close();
+  });
+
   it("keeps internal workflow helpers ephemeral and denies their tool calls", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-workflow-helper-"));
     temporaryDirectories.push(directory);

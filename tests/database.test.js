@@ -289,7 +289,13 @@ describe("thread runtime persistence", () => {
       resumeCursor: "session-1",
       cwd: "/workspace"
     });
-    database.saveProviderThreadSnapshot("thread-claude", { id: "thread-claude", turns: [] });
+    database.saveProviderThreadSnapshot("thread-claude", {
+      id: "thread-claude",
+      cwd: "/workspace",
+      name: "Claude task",
+      status: { type: "active", activeFlags: [] },
+      turns: [{ id: "turn-1", status: "inProgress", items: [{ id: "user", type: "userMessage" }] }]
+    });
 
     expect(database.getThreadProviderBinding("thread-claude")).toMatchObject({
       provider: "claude",
@@ -298,7 +304,29 @@ describe("thread runtime persistence", () => {
       cwd: "/workspace"
     });
     expect(database.listThreadProviderBindings({ provider: "claude" })).toHaveLength(1);
-    expect(database.getProviderThreadSnapshot("thread-claude")).toEqual({ id: "thread-claude", turns: [] });
+    expect(database.listProviderThreadSummaries({ provider: "claude", cwd: "/workspace" })).toEqual([
+      expect.objectContaining({ id: "thread-claude", name: "Claude task", status: { type: "active", activeFlags: [] } })
+    ]);
+    expect(database.listProviderThreadSummaries({ provider: "claude" })[0]).not.toHaveProperty("turns");
+
+    database.saveProviderActiveTurn("thread-claude", {
+      id: "turn-1",
+      status: "inProgress",
+      items: [{ id: "user", type: "userMessage" }, { id: "answer", type: "agentMessage", text: "Recovered output" }]
+    });
+    expect(database.getProviderThreadSnapshot("thread-claude").turns[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "answer", text: "Recovered output" })
+    ]));
+
+    database.saveProviderThreadSnapshot("thread-claude", {
+      id: "thread-claude",
+      cwd: "/workspace",
+      name: "Claude task",
+      status: { type: "idle" },
+      turns: [{ id: "turn-1", status: "completed", items: [{ id: "answer", type: "agentMessage", text: "Final output" }] }]
+    });
+    expect(database.getProviderThreadSnapshot("thread-claude").turns[0]).toMatchObject({ status: "completed" });
+    expect(database.getProviderThreadSummary("thread-claude")).toMatchObject({ completionRevision: "turn:turn-1" });
 
     database.deleteThreadProviderBinding("thread-claude");
     expect(database.getThreadProviderBinding("thread-claude")).toBeNull();

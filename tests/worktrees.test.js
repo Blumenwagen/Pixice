@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { inspectRepository, readDiff } from "../electron/git/worktrees.mjs";
+import { inspectRepository, readDiff, readDiffManifest, readFileDiff } from "../electron/git/worktrees.mjs";
 
 const run = promisify(execFile);
 const temporaryDirectories = [];
@@ -34,10 +34,19 @@ describe("Git review scoping", () => {
 
     const repository = await inspectRepository(nested);
     const diff = await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: nested });
+    const manifest = await readDiffManifest({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: nested });
+    const selectedDiff = await readFileDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: nested, filePath: "inside.txt" });
     expect(diff).toContain("packages/app/inside.txt");
     expect(diff).toContain("packages/app/inside-new.txt");
     expect(diff).not.toContain("outside.txt");
     expect(diff).not.toContain("outside-new.txt");
+    expect(manifest).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "inside.txt", plus: 1, minus: 1 }),
+      expect.objectContaining({ path: "inside-new.txt", plus: 1, minus: 0 })
+    ]));
+    expect(manifest.some((file) => file.path.includes("outside"))).toBe(false);
+    expect(selectedDiff).toContain("diff --git a/inside.txt b/inside.txt");
+    expect(selectedDiff).not.toContain("outside");
   });
 
   it("reads untracked LFS files when the optional Git LFS filter is unavailable", async () => {

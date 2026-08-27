@@ -104,6 +104,28 @@ function parsedJson(value, fallback) {
   }
 }
 
+function providerThreadSummary(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return {};
+  const latestTurn = snapshot.turns?.at?.(-1);
+  const completionRevision = latestTurn?.status === "completed"
+    ? `turn:${latestTurn.id ?? snapshot.updatedAt ?? "completed"}`
+    : snapshot.completionRevision ?? null;
+  return {
+    id: snapshot.id,
+    providerThreadId: snapshot.providerThreadId ?? null,
+    cwd: snapshot.cwd ?? "",
+    ephemeral: snapshot.ephemeral === true,
+    name: snapshot.name ?? null,
+    preview: snapshot.preview ?? "",
+    source: snapshot.source ?? "appServer",
+    createdAt: snapshot.createdAt ?? null,
+    updatedAt: snapshot.updatedAt ?? null,
+    parentThreadId: snapshot.parentThreadId ?? null,
+    status: snapshot.status ?? { type: "notLoaded" },
+    ...(completionRevision ? { completionRevision } : {})
+  };
+}
+
 function mapProactiveSuggestion(row) {
   if (!row) return null;
   return {
@@ -270,7 +292,11 @@ export class PixiceDatabase {
         updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS provider_thread_snapshots (
-        thread_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, updated_at TEXT NOT NULL,
+        thread_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL,
+        FOREIGN KEY(thread_id) REFERENCES thread_provider_bindings(thread_id)
+      );
+      CREATE TABLE IF NOT EXISTS provider_thread_active_turns (
+        thread_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, turn TEXT NOT NULL, updated_at TEXT NOT NULL,
         FOREIGN KEY(thread_id) REFERENCES thread_provider_bindings(thread_id)
       );
       CREATE TABLE IF NOT EXISTS thread_links (
@@ -309,6 +335,12 @@ export class PixiceDatabase {
       const activityColumns = new Set(this.db.prepare("PRAGMA table_info(board_task_activity)").all().map((column) => column.name));
       if (!activityColumns.has("actor_kind")) this.db.exec("ALTER TABLE board_task_activity ADD COLUMN actor_kind TEXT");
       if (!activityColumns.has("actor_id")) this.db.exec("ALTER TABLE board_task_activity ADD COLUMN actor_id TEXT");
+      const snapshotColumns = new Set(this.db.prepare("PRAGMA table_info(provider_thread_snapshots)").all().map((column) => column.name));
+      if (!snapshotColumns.has("summary")) this.db.exec("ALTER TABLE provider_thread_snapshots ADD COLUMN summary TEXT NOT NULL DEFAULT '{}'");
+      const updateSnapshotSummary = this.db.prepare("UPDATE provider_thread_snapshots SET summary = ? WHERE thread_id = ?");
+      for (const row of this.db.prepare("SELECT thread_id, snapshot FROM provider_thread_snapshots WHERE summary = '{}'").all()) {
+        updateSnapshotSummary.run(JSON.stringify(providerThreadSummary(parsedJson(row.snapshot, {}))), row.thread_id);
+      }
       this.db.exec(`
         INSERT OR IGNORE INTO project_folders (project_id, canonical_path, position, created_at)
         SELECT id, canonical_path, 0, created_at FROM projects
@@ -1188,6 +1220,7 @@ export class PixiceDatabase {
   }
 
   deleteThreadProviderBinding(threadId) {
+    this.db.prepare("DELETE FROM provider_thread_active_turns WHERE thread_id = ?").run(threadId);
     this.db.prepare("DELETE FROM provider_thread_snapshots WHERE thread_id = ?").run(threadId);
     this.db.prepare("DELETE FROM thread_provider_bindings WHERE thread_id = ?").run(threadId);
   }
@@ -1230,18 +1263,85 @@ export class PixiceDatabase {
   }
 
   saveProviderThreadSnapshot(threadId, snapshot) {
+    const updatedAt = new Date().toISOString();
     this.db.prepare(`
-      INSERT INTO provider_thread_snapshots (thread_id, snapshot, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(thread_id) DO UPDATE SET snapshot=excluded.snapshot, updated_at=excluded.updated_at
-    `).run(threadId, JSON.stringify(snapshot), new Date().toISOString());
+      INSERT INTO provider_thread_snapshots (thread_id, snapshot, summary, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        snapshot=excluded.snapshot, summary=excluded.summary, updated_at=excluded.updated_at
+    `).run(threadId, JSON.stringify(snapshot), JSON.stringify(providerThreadSummary(snapshot)), updatedAt);
+    this.db.prepare("DELETE FROM provider_thread_active_turns WHERE thread_id = ? AND updated_at <= ?").run(threadId, updatedAt);
+  }
+
+  saveProviderActiveTurn(threadId, turn) {
+    if (!turn?.id) return;
+    this.db.prepare(`
+      INSERT INTO provider_thread_active_turns (thread_id, turn_id, turn, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        turn_id=excluded.turn_id, turn=excluded.turn, updated_at=excluded.updated_at
+    `).run(threadId, turn.id, JSON.stringify(turn), new Date().toISOString());
+  }
+
+  deleteProviderActiveTurn(threadId) {
+    this.db.prepare("DELETE FROM provider_thread_active_turns WHERE thread_id = ?").run(threadId);
+  }
+
+  listProviderThreadSummaries({ provider, cwd } = {}) {
+    const clauses = [];
+    const values = [];
+    if (provider) {
+      clauses.push("bindings.provider = ?");
+      values.push(provider);
+    }
+    if (cwd) {
+      clauses.push("bindings.cwd = ?");
+      values.push(cwd);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this.db.prepare(`
+      SELECT bindings.*, snapshots.summary
+      FROM thread_provider_bindings AS bindings
+      JOIN provider_thread_snapshots AS snapshots ON snapshots.thread_id = bindings.thread_id
+      ${where}
+      ORDER BY bindings.updated_at DESC
+    `).all(...values).map((row) => {
+      const summary = providerThreadSummary(parsedJson(row.summary, {}));
+      return {
+        ...summary,
+        id: row.thread_id,
+        providerThreadId: row.provider_thread_id,
+        cwd: row.cwd,
+        provider: row.provider,
+        createdAt: summary.createdAt ?? row.created_at,
+        updatedAt: summary.updatedAt ?? row.updated_at
+      };
+    });
+  }
+
+  getProviderThreadSummary(threadId) {
+    const row = this.db.prepare("SELECT summary FROM provider_thread_snapshots WHERE thread_id = ?").get(threadId);
+    return row ? { ...providerThreadSummary(parsedJson(row.summary, {})), id: threadId } : null;
   }
 
   getProviderThreadSnapshot(threadId) {
-    const row = this.db.prepare("SELECT snapshot FROM provider_thread_snapshots WHERE thread_id = ?").get(threadId);
+    const row = this.db.prepare(`
+      SELECT snapshots.snapshot, snapshots.updated_at AS snapshot_updated_at,
+        active.turn, active.updated_at AS active_updated_at
+      FROM provider_thread_snapshots AS snapshots
+      LEFT JOIN provider_thread_active_turns AS active ON active.thread_id = snapshots.thread_id
+      WHERE snapshots.thread_id = ?
+    `).get(threadId);
     if (!row) return null;
     try {
-      return JSON.parse(row.snapshot);
+      const snapshot = JSON.parse(row.snapshot);
+      if (!row.turn || row.active_updated_at <= row.snapshot_updated_at) return snapshot;
+      const activeTurn = JSON.parse(row.turn);
+      const turns = [...(snapshot.turns ?? [])];
+      const index = turns.findIndex((turn) => turn.id === activeTurn.id);
+      if (index === -1) turns.push(activeTurn);
+      else turns[index] = activeTurn;
+      return { ...snapshot, status: { type: "active", activeFlags: [] }, updatedAt: row.active_updated_at, turns };
     } catch {
       return null;
     }

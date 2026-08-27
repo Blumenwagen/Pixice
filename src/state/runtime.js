@@ -28,6 +28,104 @@ export function flattenItems(thread) {
   );
 }
 
+const turnIndexes = new WeakMap();
+const itemIndexes = new WeakMap();
+const itemRevisions = new WeakMap();
+const turnRevisions = new WeakMap();
+
+function indexesFor(values, cache) {
+  let indexes = cache.get(values);
+  if (indexes) return indexes;
+  indexes = new Map(values.map((value, index) => [value.id, index]));
+  cache.set(values, indexes);
+  return indexes;
+}
+
+export function coalesceRuntimeDeltas(payloads = []) {
+  const coalesced = [];
+  const positions = new Map();
+  for (const payload of payloads) {
+    if (payload?.method !== "item/agentMessage/delta" || !payload.threadId || !payload.turnId || !payload.itemId) {
+      coalesced.push(payload);
+      continue;
+    }
+    const key = `${payload.threadId}\u0000${payload.turnId}\u0000${payload.itemId}`;
+    const position = positions.get(key);
+    if (position === undefined) {
+      positions.set(key, coalesced.length);
+      coalesced.push(payload);
+      continue;
+    }
+    const existing = coalesced[position];
+    coalesced[position] = {
+      ...existing,
+      ...payload,
+      delta: `${existing.delta ?? ""}${payload.delta ?? ""}`,
+      receivedAt: payload.receivedAt ?? existing.receivedAt
+    };
+  }
+  return coalesced;
+}
+
+function hashRuntimeString(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function runtimeValueSignature(value) {
+  if (value == null) return "0";
+  const serialized = typeof value === "string" ? value : JSON.stringify(value);
+  return `${serialized.length}:${hashRuntimeString(serialized)}`;
+}
+
+function runtimeItemRevision(item) {
+  let revision = itemRevisions.get(item);
+  if (revision) return revision;
+  revision = [
+    item.id,
+    item.type,
+    item.status,
+    item.phase,
+    item.createdAt,
+    item.completedAt,
+    runtimeValueSignature(item.command),
+    runtimeValueSignature(item.text),
+    runtimeValueSignature(item.aggregatedOutput),
+    runtimeValueSignature(item.result),
+    runtimeValueSignature(item.revisedPrompt),
+    item.savedPath,
+    runtimeValueSignature(item.failure),
+    runtimeValueSignature(item.content),
+    runtimeValueSignature(item.summary),
+    runtimeValueSignature(item.changes)
+  ].join(":");
+  itemRevisions.set(item, revision);
+  return revision;
+}
+
+export function runtimeTurnRevision(turn) {
+  let revision = turnRevisions.get(turn);
+  if (revision) return revision;
+  revision = `${turn.id}:${turn.status}:${turn.startedAt ?? turn.createdAt ?? ""}:${turn.completedAt ?? ""}:${(turn.items ?? []).map(runtimeItemRevision).join("|")}`;
+  turnRevisions.set(turn, revision);
+  return revision;
+}
+
+export function runtimeThreadRevision(thread) {
+  return [
+    thread?.id ?? "",
+    thread?.name ?? "",
+    thread?.preview ?? "",
+    thread?.updatedAt ?? "",
+    threadStatus(thread),
+    (thread?.turns ?? []).map(runtimeTurnRevision).join(";")
+  ].join(":");
+}
+
 function itemFingerprint(item) {
   if (item.type === "userMessage") {
     const content = item.content ?? [];
@@ -145,37 +243,62 @@ export function mergeThreadSnapshot(current, incoming) {
     const status = turnIsSettled(existing.status) && !turnIsSettled(turn.status)
       ? existing.status
       : turn.status;
-    return {
+    const merged = {
       ...existing,
       ...turn,
       renderId: existing.renderId ?? existing.id,
       status,
       items: mergeTurnItems(existing.items, turn.items)
     };
+    return runtimeTurnRevision(existing) === runtimeTurnRevision(merged) ? existing : merged;
   });
   (current.turns ?? []).forEach((turn) => {
     if (!incomingTurnIds.has(turn.id) && !consumedCurrentTurnIds.has(turn.id)) turns.push(turn);
   });
-  return { ...current, ...incoming, turns };
+  const merged = { ...current, ...incoming, turns };
+  return runtimeThreadRevision(current) === runtimeThreadRevision(merged) ? current : merged;
 }
 
 function upsertItem(turn, item) {
-  const items = [...(turn.items ?? [])];
-  let index = items.findIndex((candidate) => candidate.id === item.id);
+  const currentItems = turn.items ?? [];
+  const currentIndexes = indexesFor(currentItems, itemIndexes);
+  const items = [...currentItems];
+  let index = currentIndexes.get(item.id) ?? -1;
   if (index === -1 && item.type === "userMessage") {
     const fingerprint = itemFingerprint(item);
     index = items.findIndex((candidate) => String(candidate.id).startsWith("local-user:") && itemFingerprint(candidate) === fingerprint);
   }
-  if (index === -1) items.push(item);
-  else items[index] = { ...items[index], ...item, renderId: items[index].renderId ?? items[index].id };
+  const nextIndexes = new Map(currentIndexes);
+  if (index === -1) {
+    nextIndexes.set(item.id, items.length);
+    items.push(item);
+  } else {
+    const previousId = items[index].id;
+    items[index] = { ...items[index], ...item, renderId: items[index].renderId ?? items[index].id };
+    if (previousId !== items[index].id) nextIndexes.delete(previousId);
+    nextIndexes.set(items[index].id, index);
+  }
+  itemIndexes.set(items, nextIndexes);
   return { ...turn, items };
 }
 
 function updateTurn(thread, turnId, updater, fallback) {
-  const turns = [...(thread.turns ?? [])];
-  const index = turns.findIndex((turn) => turn.id === turnId);
-  if (index === -1) turns.push(updater(fallback ?? { id: turnId, items: [], status: "inProgress" }));
-  else turns[index] = updater(turns[index]);
+  const currentTurns = thread.turns ?? [];
+  const currentIndexes = indexesFor(currentTurns, turnIndexes);
+  const turns = [...currentTurns];
+  const index = currentIndexes.get(turnId) ?? -1;
+  const nextIndexes = new Map(currentIndexes);
+  if (index === -1) {
+    const turn = updater(fallback ?? { id: turnId, items: [], status: "inProgress" });
+    nextIndexes.set(turn.id, turns.length);
+    turns.push(turn);
+  } else {
+    const previousId = turns[index].id;
+    turns[index] = updater(turns[index]);
+    if (previousId !== turns[index].id) nextIndexes.delete(previousId);
+    nextIndexes.set(turns[index].id, index);
+  }
+  turnIndexes.set(turns, nextIndexes);
   return { ...thread, turns };
 }
 
