@@ -2,16 +2,6 @@
 
 Pixice is distributed without a product license at this time. This file applies only to third-party software included with Pixice. It does not grant rights to Pixice itself.
 
-## OpenAI Codex
-
-Pixice 0.1.0-beta.2 bundles the official Codex 0.149.0 app-server packages for its supported operating systems. Codex is Copyright OpenAI and contributors and is available under the Apache License 2.0.
-
-- Source and license: https://github.com/openai/codex
-- Release files: https://releases.openai.com/codex/releases/0.149.0/
-- License text: https://www.apache.org/licenses/LICENSE-2.0
-
-The exact archive URLs and SHA-256 digests used by Pixice are recorded in `resources/runtime/manifest.json`.
-
 ## GitHub CLI
 
 Pixice release builds include the official GitHub CLI for the packaged operating system. GitHub CLI is Copyright GitHub and contributors and is available under the MIT License.
@@ -23,7 +13,7 @@ The packaged version, official archive URL, and SHA-256 digests are recorded in 
 
 ## Anthropic Claude Agent SDK
 
-Pixice includes `@anthropic-ai/claude-agent-sdk` 0.3.234 and its platform package. Anthropic states that use of the SDK is governed by its Commercial Terms of Service. Anthropic's terms and privacy policy apply when a user connects Claude.
+Pixice includes the JavaScript files from `@anthropic-ai/claude-agent-sdk` 0.3.234. Release packages exclude the SDK's optional platform runtime packages and require an external Claude Code installation. Anthropic states that use of the SDK is governed by its Commercial Terms of Service. Anthropic's terms and privacy policy apply when a user connects Claude.
 
 - Package source: https://github.com/anthropics/claude-agent-sdk-typescript
 - Commercial terms: https://www.anthropic.com/legal/commercial-terms

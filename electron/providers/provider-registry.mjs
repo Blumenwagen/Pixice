@@ -2,6 +2,8 @@ import { EventEmitter } from "node:events";
 import { annotateBridgeModel } from "../runtime/model-capabilities.mjs";
 
 const THREAD_METHOD_PREFIXES = ["thread/", "turn/"];
+const PROVIDER_UPDATE_CHECK_DELAY_MS = 8_000;
+const PROVIDER_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 function isThreadMethod(method) {
   return THREAD_METHOD_PREFIXES.some((prefix) => method.startsWith(prefix));
@@ -16,7 +18,7 @@ function tagProvider(value, provider) {
 }
 
 function authenticationState(result) {
-  const requiresAuth = result?.requiresAuth ?? true;
+  const requiresAuth = result?.requiresAuth ?? result?.requiresOpenaiAuth ?? true;
   const authenticated = result?.authenticated ?? (Boolean(result?.account) || !requiresAuth);
   return { requiresAuth, authenticated };
 }
@@ -56,6 +58,9 @@ export class ProviderRegistry extends EventEmitter {
     this.threadOwners = new Map();
     this.modelProviders = new Map();
     this.statuses = new Map();
+    this.providerUpdateChecksEnabled = false;
+    this.providerUpdateCheckTimer = null;
+    this.providerUpdateCheckInterval = null;
   }
 
   get connected() {
@@ -78,6 +83,7 @@ export class ProviderRegistry extends EventEmitter {
     provider.on("recoverable-error", (error) => this.emit("recoverable-error", { ...error, provider: provider.id }));
     provider.on("diagnostic", (message) => this.emit("diagnostic", `[${provider.id}] ${message}`));
     provider.on("binding", (binding) => this.#saveBinding(provider.id, binding));
+    provider.on("lifecycle", (lifecycle) => this.emit("provider-lifecycle", { provider: provider.id, ...lifecycle }));
     return provider;
   }
 
@@ -87,6 +93,7 @@ export class ProviderRegistry extends EventEmitter {
   }
 
   async stop() {
+    this.stopProviderUpdateChecks();
     await Promise.allSettled([...this.providers.values()].map((provider) => provider.stop()));
   }
 
@@ -99,27 +106,48 @@ export class ProviderRegistry extends EventEmitter {
       let account = null;
       let requiresAuth = true;
       let authenticated = false;
+      let externallyManagedAuth = provider.externallyManagedAuth?.() === true;
       let accountError = null;
+      const lifecycle = await provider.lifecycle?.() ?? {};
       try {
         const result = provider.account ? await provider.account() : null;
         account = result?.account ?? null;
         ({ requiresAuth, authenticated } = authenticationState(result));
+        externallyManagedAuth ||= result?.externallyManagedAuth === true;
       } catch (error) {
         accountError = error.message;
       }
       const sessionCount = this.database.listThreadProviderBindings
         ? this.database.listThreadProviderBindings({ provider: provider.id }).length
         : 0;
+      const actions = {
+        install: lifecycle.actions?.install === true && typeof provider.install === "function",
+        locate: lifecycle.actions?.locate === true && typeof provider.locate === "function",
+        repair: lifecycle.actions?.repair === true && typeof provider.repair === "function",
+        checkUpdate: lifecycle.actions?.checkUpdate === true && typeof provider.checkForUpdate === "function",
+        update: lifecycle.actions?.update === true && typeof provider.update === "function",
+        login: (lifecycle.actions?.login ?? provider.connected) && provider.connected && typeof provider.login === "function",
+        logout: (lifecycle.actions?.logout ?? provider.connected) && provider.connected && authenticated && !externallyManagedAuth && typeof provider.logout === "function"
+      };
       return {
         id: provider.id,
         connected: provider.connected,
         status: this.statuses.get(provider.id) ?? { state: provider.connected ? "ready" : "unavailable" },
+        ...lifecycle,
         account,
         authenticated,
+        externallyManagedAuth,
         requiresAuth,
         accountError,
         sessionCount,
-        loginAvailable: typeof provider.login === "function"
+        actions,
+        installAvailable: actions.install,
+        locateAvailable: actions.locate,
+        repairAvailable: actions.repair,
+        checkUpdateAvailable: actions.checkUpdate,
+        updateAvailable: actions.update,
+        loginAvailable: actions.login,
+        logoutAvailable: actions.logout
       };
     }));
   }
@@ -129,6 +157,71 @@ export class ProviderRegistry extends EventEmitter {
     if (!provider) throw new Error(`Provider ${providerId} is unavailable`);
     if (typeof provider.login !== "function") throw new Error(`${providerId} does not support sign in`);
     return provider.login();
+  }
+
+  logoutProvider(providerId) {
+    return this.#providerOperation(providerId, "logout", "sign out");
+  }
+
+  installProvider(providerId) {
+    return this.#providerOperation(providerId, "install", "install");
+  }
+
+  locateProvider(providerId, executablePath) {
+    return this.#providerOperation(providerId, "locate", "locate", executablePath);
+  }
+
+  repairProvider(providerId) {
+    return this.#providerOperation(providerId, "repair", "repair");
+  }
+
+  async checkProviderUpdates(providerId = null) {
+    const providers = providerId ? [this.providers.get(providerId)] : [...this.providers.values()];
+    if (providers.some((provider) => !provider)) throw new Error(`Provider ${providerId} is unavailable`);
+    const operations = providers.map(async (provider) => {
+      if (typeof provider.checkForUpdate !== "function") throw new Error(`${provider.id} does not support update checks`);
+      return { provider: provider.id, ...await provider.checkForUpdate() };
+    });
+    if (providerId) return [await operations[0]];
+    const settled = await Promise.allSettled(operations);
+    return settled.map((result, index) => result.status === "fulfilled"
+      ? result.value
+      : { provider: providers[index].id, updateState: { state: "error", message: result.reason?.message ?? String(result.reason) } });
+  }
+
+  updateProvider(providerId) {
+    return this.#providerOperation(providerId, "update", "update");
+  }
+
+  startProviderUpdateChecks({
+    enabled = true,
+    initialDelayMs = PROVIDER_UPDATE_CHECK_DELAY_MS,
+    intervalMs = PROVIDER_UPDATE_CHECK_INTERVAL_MS
+  } = {}) {
+    this.stopProviderUpdateChecks();
+    this.providerUpdateChecksEnabled = Boolean(enabled);
+    if (!this.providerUpdateChecksEnabled) return;
+    const check = () => this.checkProviderUpdates().catch((error) => this.emit("diagnostic", `Provider update check failed: ${error.message}`));
+    this.providerUpdateCheckTimer = setTimeout(check, initialDelayMs);
+    this.providerUpdateCheckTimer.unref?.();
+    this.providerUpdateCheckInterval = setInterval(check, intervalMs);
+    this.providerUpdateCheckInterval.unref?.();
+  }
+
+  setProviderUpdateChecksEnabled(enabled) {
+    this.startProviderUpdateChecks({ enabled, initialDelayMs: enabled ? 1_000 : PROVIDER_UPDATE_CHECK_DELAY_MS });
+  }
+
+  stopProviderUpdateChecks() {
+    if (this.providerUpdateCheckTimer) clearTimeout(this.providerUpdateCheckTimer);
+    if (this.providerUpdateCheckInterval) clearInterval(this.providerUpdateCheckInterval);
+    this.providerUpdateCheckTimer = null;
+    this.providerUpdateCheckInterval = null;
+    this.providerUpdateChecksEnabled = false;
+  }
+
+  refreshProvider(providerId) {
+    return this.#providerOperation(providerId, "refreshLifecycle", "refresh");
   }
 
   async request(method, params = {}) {
@@ -312,5 +405,12 @@ export class ProviderRegistry extends EventEmitter {
 
   #requestKey(id) {
     return `${typeof id}:${id}`;
+  }
+
+  #providerOperation(providerId, method, label, ...args) {
+    const provider = this.providers.get(providerId);
+    if (!provider) throw new Error(`Provider ${providerId} is unavailable`);
+    if (typeof provider[method] !== "function") throw new Error(`${providerId} does not support ${label}`);
+    return provider[method](...args);
   }
 }

@@ -9,6 +9,7 @@ type PixiceEvent = {
     | "AttentionReset"
     | "RuntimeError"
     | "RuntimeStatus"
+    | "ProviderLifecycleState"
     | "BrowserState"
     | "BrowserOpenRequested"
     | "BoardUpdated"
@@ -22,7 +23,6 @@ type PixiceEvent = {
     | "WorkflowTriggersUpdated"
     | "WorkflowCredentialsUpdated"
     | "UpdateState"
-    | "CodexUpdateState"
     | "UsageUpdated"
     | "CodexLimitsUpdated"
     | "ProjectDeleted";
@@ -32,6 +32,32 @@ type PixiceEvent = {
 
 type ProjectScope = { projectId: string };
 type ThreadScope = ProjectScope & { threadId: string };
+type PixiceProvider = {
+  id: "codex" | "claude" | string;
+  connected?: boolean;
+  installed?: boolean;
+  installState?: { state?: string; operation?: string | null; message?: string | null; progress?: string | null; error?: string | null };
+  updateState?: { state?: string; availableVersion?: string | null; checkedAt?: string | null; message?: string | null; error?: string | null };
+  executablePath?: string | null;
+  version?: string | null;
+  compatible?: boolean;
+  health?: { state?: "missing" | "broken" | "incompatible" | "healthy" | string; message?: string | null };
+  status?: { state?: string; message?: string | null };
+  authenticated?: boolean;
+  externallyManagedAuth?: boolean;
+  requiresAuth?: boolean;
+  account?: { email?: string | null; organization?: string | null; type?: string | null; planType?: string | null; subscriptionType?: string | null } | null;
+  accountError?: string | null;
+  sessionCount?: number;
+  actions?: { install?: boolean; locate?: boolean; repair?: boolean; checkUpdate?: boolean; update?: boolean; login?: boolean; logout?: boolean };
+  installAvailable?: boolean;
+  locateAvailable?: boolean;
+  repairAvailable?: boolean;
+  checkUpdateAvailable?: boolean;
+  updateAvailable?: boolean;
+  loginAvailable?: boolean;
+  logoutAvailable?: boolean;
+};
 type ProjectIcon = "folder" | "code" | "terminal" | "globe" | "sparkles" | "stack" | "brain" | "chart" | "desktop" | "file" | "files" | "git-branch" | "image" | "lock" | "shield" | "workflow" | "gauge" | "connect";
 type ProjectColor = "gray" | "blue" | "indigo" | "purple" | "pink" | "rose" | "red" | "orange" | "amber" | "yellow" | "green" | "teal";
 type PixiceProject = {
@@ -206,12 +232,18 @@ declare global {
     pixice?: {
       app: {
         bootstrap(): Promise<{ projects: PixiceProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; category: "core" | "pixice-native"; defaultEnabled: boolean }> }>;
-        saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; defaultFastMode?: boolean; threadNamingModel?: "auto" | "off" | `codex:${string}` | `claude:${string}`; workflowGenerationModel?: "auto" | `codex:${string}` | `claude:${string}`; attentionNotifications?: boolean; completionNotifications?: boolean; notificationSound?: boolean; checkCodexUpdates?: boolean; threadCompletionsSeen?: Record<string, string | number>; agentBehaviors?: Record<string, boolean> }): Promise<any>;
+        saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; defaultFastMode?: boolean; threadNamingModel?: "auto" | "off" | `codex:${string}` | `claude:${string}`; workflowGenerationModel?: "auto" | `codex:${string}` | `claude:${string}`; attentionNotifications?: boolean; completionNotifications?: boolean; notificationSound?: boolean; checkProviderUpdates?: boolean; threadCompletionsSeen?: Record<string, string | number>; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };
       providers: {
-        list(): Promise<any[]>;
+        list(): Promise<PixiceProvider[]>;
+        install(payload: { provider: "codex" | "claude" }): Promise<PixiceProvider>;
+        locate(payload: { provider: "codex" | "claude"; executablePath?: string }): Promise<PixiceProvider | { cancelled: true }>;
+        repair(payload: { provider: "codex" | "claude" }): Promise<PixiceProvider>;
+        checkUpdates(payload?: { provider?: "codex" | "claude" }): Promise<PixiceProvider[]>;
+        update(payload: { provider: "codex" | "claude" }): Promise<PixiceProvider>;
         login(payload: { provider: string }): Promise<{ provider: string; opened: boolean; loginId?: string | null }>;
+        logout(payload: { provider: "codex" | "claude" }): Promise<PixiceProvider>;
       };
       github: {
         status(): Promise<{ available: boolean; authenticated: boolean; source: "bundled" | "system" | null; version: string | null; account: { login: string; name?: string | null; avatarUrl?: string | null } | null; message: string }>;
@@ -251,11 +283,6 @@ declare global {
         download(): Promise<any>;
         install(): Promise<{ ok: boolean }>;
       };
-      codexUpdates: {
-        status(): Promise<any>;
-        check(): Promise<any>;
-        install(): Promise<any>;
-      };
       browser: {
         state(payload: { workspaceId: string }): Promise<any>;
         create(payload: { workspaceId: string; url?: string }): Promise<any>;
@@ -266,6 +293,30 @@ declare global {
         setViewport(payload: { workspaceId: string; visible: boolean; bounds?: { x: number; y: number; width: number; height: number } }): Promise<any>;
         adopt(payload: { fromWorkspaceId: string; toWorkspaceId: string }): Promise<any>;
         destroy(payload: { workspaceId: string }): Promise<{ destroyed: boolean; workspaceId: string }>;
+      };
+      preview: {
+        setContext(payload: {
+          threadId: string;
+          context: {
+            open: boolean;
+            tabCount: number;
+            active: null | {
+              kind: "browser" | "file" | "instrument" | "task" | "plan" | "workflow" | "new";
+              id?: string;
+              title?: string;
+              url?: string;
+              path?: string;
+              projectId?: string;
+              taskId?: string;
+              proposalId?: string;
+              workflowId?: string;
+              instrumentId?: string;
+              documentVersion?: number;
+              editable?: boolean;
+              dirty?: boolean;
+            };
+          };
+        }): Promise<any>;
       };
       files: {
         read(payload: ProjectScope & { path: string }): Promise<any>;
@@ -280,13 +331,14 @@ declare global {
         open(): Promise<PixiceProject | null>;
       };
       board: {
-        list(payload: ProjectScope): Promise<{ data: Array<any> }>;
+        list(payload: ProjectScope): Promise<{ data: Array<any>; phases: Array<any> }>;
         read(payload: ProjectScope & { taskId: string }): Promise<{ task: any; activity: Array<any> }>;
         create(payload: ProjectScope & { title: string; description?: string; column?: "backlog" | "ready" | "active" | "done"; kind?: "task" | "milestone" | "event"; priority?: "low" | "normal" | "high" | "urgent"; estimateMinutes?: number | null; owner?: string; schedule?: Record<string, unknown>; dependencies?: Array<Record<string, unknown>> }): Promise<any>;
         update(payload: ProjectScope & { taskId: string; title?: string; description?: string; kind?: "task" | "milestone" | "event"; priority?: "low" | "normal" | "high" | "urgent"; estimateMinutes?: number | null; owner?: string; schedule?: Record<string, unknown> | null; dependencies?: Array<Record<string, unknown>>; expectedRevision?: number; expectedScheduleRevision?: number }): Promise<any>;
         move(payload: ProjectScope & { taskId: string; column: "backlog" | "ready" | "active" | "done"; beforeTaskId?: string }): Promise<any>;
         delete(payload: ProjectScope & { taskId: string }): Promise<any>;
         attach(payload: ProjectScope & { taskId: string; threadId: string }): Promise<any>;
+        createPhase(payload: ProjectScope & { title: string; taskIds: string[] }): Promise<any>;
         activity(payload: ProjectScope & { taskId: string }): Promise<{ data: Array<any> }>;
         readProposal(payload: ProjectScope & { proposalId: string }): Promise<any>;
         applyProposal(payload: ProjectScope & { proposalId: string }): Promise<any>;

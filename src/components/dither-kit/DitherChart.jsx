@@ -61,7 +61,7 @@ function paintColumn(context, x, top, floor, color, { variant = "gradient", inte
   }
 }
 
-function resample(values, length) {
+export function resampleChartValues(values, length) {
   if (!values.length) return new Array(length).fill(0);
   const output = new Array(length);
   const last = Math.max(values.length - 1, 1);
@@ -70,7 +70,8 @@ function resample(values, length) {
     const lower = Math.floor(position);
     const mix = position - lower;
     const first = Number(values[lower]) || 0;
-    const second = Number(values[Math.min(lower + 1, values.length - 1)]) || first;
+    const next = Number(values[Math.min(lower + 1, values.length - 1)]);
+    const second = Number.isFinite(next) ? next : first;
     output[index] = first + (second - first) * mix;
   }
   return output;
@@ -162,7 +163,7 @@ function DitherChart({
     const drawArea = (reveal) => {
       const revealColumns = Math.ceil(columns * reveal);
       series.forEach((item, seriesIndex) => {
-        const sampled = resample(data.map((row) => Number(row[item.key]) || 0), columns);
+        const sampled = resampleChartValues(data.map((row) => Number(row[item.key]) || 0), columns);
         for (let x = 0; x < revealColumns; x += 1) {
           const top = plotFloor - (sampled[x] / maximum) * (plotFloor - plotTop);
           paintColumn(context, x, top, plotFloor, item.color, {

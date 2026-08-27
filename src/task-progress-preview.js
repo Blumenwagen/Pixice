@@ -229,6 +229,7 @@ const releaseTool = {
 export function createTaskProgressPreviewApi() {
   let previewTools = [releaseTool];
   let boardTasks = structuredClone(previewScheduleTasks);
+  let boardPhases = [];
   let proactiveSuggestions = structuredClone(previewProactiveSuggestions);
   const boardActivity = new Map(boardTasks.map((task) => [task.id, [{ id: `${task.id}:activity`, taskId: task.id, projectId: project.id, kind: "schedule-changed", summary: task.schedule.explanation, actorKind: "agent", actorId: task.owner, createdAt: task.updatedAt }]]));
   const listeners = new Set();
@@ -242,7 +243,8 @@ export function createTaskProgressPreviewApi() {
     return next;
   };
   const threads = [rootThread, secondaryThread, ...agents];
-  const browserState = {
+  let browserTabSequence = 1;
+  let browserState = {
     native: false,
     activeTabId: "preview-browser-tab",
     tabs: [{ id: "preview-browser-tab", title: "New tab", url: "", loading: false, error: null, canGoBack: false, canGoForward: false }]
@@ -258,13 +260,25 @@ export function createTaskProgressPreviewApi() {
     },
     browser: {
       state: async () => browserState,
-      create: async () => browserState,
-      close: async () => browserState,
-      activate: async () => browserState,
+      create: async () => {
+        const tab = { id: `preview-browser-tab-${++browserTabSequence}`, title: "New tab", url: "", loading: false, error: null, canGoBack: false, canGoForward: false };
+        browserState = { ...browserState, activeTabId: tab.id, tabs: [...browserState.tabs, tab] };
+        return browserState;
+      },
+      close: async ({ tabId }) => {
+        const tabs = browserState.tabs.filter((tab) => tab.id !== tabId);
+        browserState = { ...browserState, tabs, activeTabId: browserState.activeTabId === tabId ? tabs.at(-1)?.id ?? null : browserState.activeTabId };
+        return browserState;
+      },
+      activate: async ({ tabId }) => {
+        if (browserState.tabs.some((tab) => tab.id === tabId)) browserState = { ...browserState, activeTabId: tabId };
+        return browserState;
+      },
       navigate: async () => browserState,
       history: async () => browserState,
       setViewport: async () => browserState
     },
+    preview: { setContext: async ({ context }) => context },
     files: {
       read: async ({ path }) => ({ path: `/work/pixice/${path}`, relativePath: path, name: path.split("/").at(-1), extension: `.${path.split(".").at(-1)}`, kind: path.endsWith(".md") ? "markdown" : "text", content: "# Pixice\n", editable: true, size: 7, mtimeMs: 1 }),
       write: async ({ path, content }) => ({ path, relativePath: path.replace("/work/pixice/", ""), name: path.split("/").at(-1), extension: `.${path.split(".").at(-1)}`, kind: path.endsWith(".md") ? "markdown" : "text", content, editable: true, size: content.length, mtimeMs: 2 })
@@ -325,7 +339,7 @@ export function createTaskProgressPreviewApi() {
       }
     },
     board: {
-      list: async () => ({ data: boardTasks }),
+      list: async () => ({ data: boardTasks, phases: boardPhases }),
       read: async ({ taskId }) => ({ task: findBoardTask(taskId), activity: boardActivity.get(taskId) ?? [] }),
       create: async ({ title, description = "", column = "backlog", ...details }) => {
         const now = new Date().toISOString();
@@ -342,6 +356,25 @@ export function createTaskProgressPreviewApi() {
       move: async ({ taskId, column }) => touchBoardTask(findBoardTask(taskId), { column }),
       delete: async ({ taskId }) => { const task = findBoardTask(taskId); boardTasks = boardTasks.filter((candidate) => candidate.id !== taskId); emit("BoardUpdated", { action: "deleted", projectId: project.id, task }); return task; },
       attach: async ({ taskId, threadId }) => touchBoardTask(findBoardTask(taskId), { threadId }),
+      createPhase: async ({ title, taskIds }) => {
+        const phaseTasks = boardTasks.filter((task) => taskIds.includes(task.id));
+        const starts = phaseTasks.map((task) => Date.parse(task.schedule?.plannedStart)).filter(Number.isFinite);
+        const ends = phaseTasks.map((task) => Date.parse(task.schedule?.plannedEnd ?? task.schedule?.plannedStart)).filter(Number.isFinite);
+        const phase = {
+          id: `preview-phase-${boardPhases.length + 1}`,
+          projectId: project.id,
+          title,
+          taskIds,
+          tasks: phaseTasks.map((task) => ({ id: task.id, title: task.title, column: task.column })),
+          plannedStart: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
+          plannedEnd: ends.length ? new Date(Math.max(...ends)).toISOString() : null,
+          completedCount: phaseTasks.filter((task) => task.column === "done").length
+        };
+        boardPhases = [...boardPhases, phase];
+        boardTasks = boardTasks.map((task) => taskIds.includes(task.id) ? { ...task, phaseId: phase.id } : task);
+        emit("BoardUpdated", { action: "phase-created", projectId: project.id, phase });
+        return phase;
+      },
       saveBinding: async ({ taskId, bindingId, workflowId, triggerNodeId = null, triggerType, enabled = false, missedTriggerPolicy = "ask" }) => {
         const task = findBoardTask(taskId);
         const id = bindingId ?? `preview-binding-${Date.now()}`;

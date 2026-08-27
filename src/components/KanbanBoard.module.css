@@ -265,6 +265,8 @@
 }
 .scheduleChip span { flex: 1; }
 .scheduleChip b { color: #ef8e8e; font-size: 7.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.phaseChip { min-height: 22px; margin: -3px 0 7px; padding: 0 7px; display: flex; align-items: center; gap: 6px; color: var(--muted); background: color-mix(in oklab, var(--thread-bright) 5%, transparent); border: 1px solid color-mix(in oklab, var(--thread-bright) 18%, var(--border)); border-radius: 7px; font-size: 8px; }
+.phaseChip span { color: color-mix(in oklab, var(--thread-bright) 70%, white); font-size: 7px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; }
 
 .viewToolbar {
   min-height: 34px;
@@ -292,24 +294,53 @@
 .viewSummary { margin-left: auto; color: var(--quiet); font-size: 9px; font-variant-numeric: tabular-nums; }
 .floatingQuickAdd { position: absolute; z-index: 10; top: 132px; right: 24px; width: 260px; }
 
-.timeline { min-width: 0; min-height: 0; flex: 1; overflow: hidden; background: color-mix(in oklab, var(--surface) 64%, transparent); border: 1px solid color-mix(in oklab, var(--border) 84%, transparent); border-radius: 13px; }
-
-.timeline { display: flex; flex-direction: column; }
-.timelineHeader { height: 38px; display: grid; grid-template-columns: 190px minmax(700px, 1fr); border-bottom: 1px solid var(--border); }
-.timelineHeader > span { padding: 0 12px; display: flex; align-items: center; color: var(--quiet); border-right: 1px solid var(--border); font-size: 8px; font-weight: 650; text-transform: uppercase; }
-.timelineHeader > div { display: grid; grid-template-columns: repeat(var(--timeline-days, 35), minmax(0, 1fr)); }
+.timeline { --timeline-label-width: 210px; min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; background: color-mix(in oklab, var(--surface) 64%, transparent); border: 1px solid color-mix(in oklab, var(--border) 84%, transparent); border-radius: 13px; }
+.timelineTools { min-height: 44px; padding: 0 10px 0 12px; display: flex; align-items: center; gap: 12px; flex: none; border-bottom: 1px solid var(--border); }
+.timelineTools > span { display: flex; flex-direction: column; gap: 2px; }
+.timelineTools > span b { color: var(--foreground); font-size: 9.5px; font-weight: 620; }
+.timelineTools > span small,
+.timelineTools > small { color: var(--quiet); font-size: 8px; }
+.timelineTools .timelineScaleStatus { position: relative; min-width: 140px; }
+.timelineTools .timelineScaleCopy { display: flex; flex-direction: column; gap: 2px; }
+.timelineTools .timelineScaleCopy b { color: var(--foreground); font-size: 9.5px; font-weight: 620; }
+.timelineTools .timelineScaleCopy small { color: var(--quiet); font-size: 8px; }
+.timelineTools .timelineZoomHint { margin-left: auto; align-items: flex-end; }
+.timelineTools .timelineZoomHint b { color: var(--muted); font-size: 8px; font-weight: 560; }
+.phaseReview { min-height: 60px; padding: 8px 10px 8px 12px; display: flex; align-items: center; gap: 10px; flex: none; background: color-mix(in oklab, var(--thread-bright) 7%, transparent); border-bottom: 1px solid color-mix(in oklab, var(--thread-bright) 20%, var(--border)); }
+.phaseReview > span { min-width: 150px; display: flex; flex-direction: column; gap: 3px; }
+.phaseReview > span b { color: var(--foreground); font-size: 9.5px; font-weight: 630; }
+.phaseReview > span small { color: var(--muted); font-size: 8px; }
+.phaseReview label { min-width: 180px; display: flex; flex: 1; flex-direction: column; gap: 3px; color: var(--quiet); font-size: 7.5px; text-transform: uppercase; }
+.phaseReview input { height: 28px; padding: 0 8px; color: var(--foreground); background: rgba(8, 9, 11, .45); border: 1px solid var(--border); border-radius: 7px; outline: none; font-size: 9.5px; text-transform: none; }
+.phaseReview input:focus { border-color: color-mix(in oklab, var(--thread-bright) 58%, var(--border)); }
+.phaseReview button { height: 28px; padding: 0 9px; color: var(--muted); background: rgba(255, 255, 255, .045); border-radius: 7px; cursor: pointer; font-size: 8.5px; }
+.phaseReview .phaseConfirm { color: #251012; background: var(--thread-bright); font-weight: 650; }
+.phaseReview button:disabled { cursor: not-allowed; opacity: .5; }
+.timelineViewport { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; outline: none; isolation: isolate; }
+.timelineViewport:focus-visible { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--thread-bright) 40%, transparent); }
+.timelineCanvas { width: max(100%, calc(var(--timeline-label-width) + var(--timeline-track-width))); min-height: 100%; will-change: opacity, filter, transform; transition: width 160ms cubic-bezier(.22, 1, .36, 1); }
+.timelineHeader { position: sticky; z-index: 5; top: 0; height: 42px; display: grid; grid-template-columns: var(--timeline-label-width) var(--timeline-track-width); background: color-mix(in oklab, var(--surface) 94%, transparent); border-bottom: 1px solid var(--border); transition: grid-template-columns 160ms cubic-bezier(.22, 1, .36, 1); }
+.timelineHeader > span { position: sticky; z-index: 3; left: 0; padding: 0 12px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; color: var(--quiet); background: color-mix(in oklab, var(--surface) 96%, transparent); border-right: 1px solid var(--border); }
+.timelineHeader > span b { font-size: 8px; font-weight: 650; text-transform: uppercase; }
+.timelineHeader > span small { color: var(--muted); font-size: 8px; font-weight: 520; }
+.timelineHeader > div { display: grid; grid-template-columns: repeat(var(--timeline-columns, 35), minmax(0, 1fr)); }
 .timelineHeader time { display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--quiet); border-left: 1px solid rgba(255, 255, 255, .025); font-size: 7.5px; font-variant-numeric: tabular-nums; }
 .timelineHeader time[data-week="true"] { color: var(--muted); border-left-color: var(--border); }
 .timelineHeader time small { min-height: 8px; font-size: 6.5px; text-transform: uppercase; }
-.timelineBody { min-width: 890px; min-height: 0; flex: 1; overflow: auto; }
-.timelineRow { min-height: 49px; display: grid; grid-template-columns: 190px minmax(700px, 1fr); border-bottom: 1px solid var(--border); }
-.timelineLabel { min-width: 0; padding: 0 12px; display: flex; flex-direction: column; justify-content: center; gap: 2px; color: var(--foreground); background: transparent; border-right: 1px solid var(--border); cursor: pointer; text-align: left; }
-.timelineLabel strong { overflow: hidden; font-size: 9.5px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
-.timelineLabel span { color: var(--quiet); font-size: 7.5px; }
-.timelineTrack { position: relative; display: grid; grid-template-columns: repeat(var(--timeline-days, 35), minmax(0, 1fr)); align-items: center; }
+.timelineBody { min-width: 100%; min-height: 0; }
+.timelineRow { min-height: 54px; display: grid; grid-template-columns: var(--timeline-label-width) var(--timeline-track-width); border-bottom: 1px solid var(--border); transition: grid-template-columns 160ms cubic-bezier(.22, 1, .36, 1); }
+.timelineRow[data-suggested="true"] { background: color-mix(in oklab, var(--thread-bright) 2.5%, transparent); }
+.timelineLabel { position: sticky; z-index: 4; left: 0; min-width: 0; padding: 0 12px; display: flex; flex-direction: column; justify-content: center; gap: 2px; color: var(--foreground); background: color-mix(in oklab, var(--surface) 96%, transparent); border-right: 1px solid var(--border); cursor: pointer; text-align: left; }
+.timelineLabel:hover strong { color: var(--thread-bright); }
+.timelineLabel strong { overflow: hidden; font-size: 10.5px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.timelineLabel > span { min-width: 0; display: flex; align-items: center; gap: 5px; color: var(--quiet); font-size: 8px; }
+.timelineLabel > span time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.timelineLabel > span b { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.timelineLabel > span b::before { margin-right: 5px; color: var(--quiet); content: "·"; }
+.timelineTrack { position: relative; display: grid; grid-template-columns: repeat(var(--timeline-columns, 35), minmax(0, 1fr)); align-items: center; }
 .timelineTrack > span { align-self: stretch; border-left: 1px solid rgba(255, 255, 255, .025); }
 .timelineTrack > span[data-week="true"] { border-left-color: var(--border); }
-.timelineBar { position: absolute; z-index: 2; height: 23px; min-width: 6px; padding: 0 7px; overflow: hidden; color: #d9dce2; background: #3e4650; border: 1px solid #67717e; border-radius: 6px; cursor: grab; text-align: left; }
+.timelineBar { position: absolute; z-index: 2; height: 25px; min-width: 6px; padding: 0 7px; overflow: hidden; color: #d9dce2; background: #3e4650; border: 1px solid #67717e; border-radius: 6px; cursor: grab; text-align: left; transition: left 180ms cubic-bezier(.22, 1, .36, 1), width 180ms cubic-bezier(.22, 1, .36, 1); }
 .timelineBar[data-column="ready"] { background: #55472f; border-color: #94723e; }
 .timelineBar[data-column="active"] { background: #2d4f73; border-color: #4f8dca; }
 .timelineBar[data-column="done"] { background: #285d42; border-color: #3f9b69; }
@@ -317,12 +348,30 @@
 .timelineBar[data-kind="milestone"] span { display: none; }
 .timelineBar > span { position: relative; z-index: 2; display: block; overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .timelineBar > i { position: absolute; inset: auto auto 0 0; height: 2px; background: var(--thread-bright); }
+.timelineAggregateBar { height: 29px; cursor: pointer; background: #3b4049; border-color: #676d77; }
+.timelineAggregateBar[data-suggested="true"] { color: color-mix(in oklab, var(--thread-bright) 78%, white); background: color-mix(in oklab, var(--thread-bright) 13%, #272a30); border-color: color-mix(in oklab, var(--thread-bright) 46%, #555a64); border-style: dashed; }
 .timelineToday { position: absolute; z-index: 1; top: 0; bottom: 0; width: 1px; background: #f06464; }
+.timeline[data-scale="hour"] .timelineHeader time { color: var(--muted); font-size: 8px; }
+.timeline[data-scale="hour"] .timelineHeader time small { color: var(--quiet); font-size: 6px; }
+.timeline[data-scale="hour"] .timelineTrack > span { border-left-color: color-mix(in oklab, var(--border) 72%, transparent); }
+.timeline[data-scale="phase"] .timelineRow { min-height: 62px; }
 .timelineEmpty { padding: 42px; color: var(--quiet); font-size: 10px; text-align: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .timelineCanvas { transition: none; }
+  .timelineHeader,
+  .timelineRow,
+  .timelineBar { transition: none; }
+}
 
 @media (max-width: 760px) {
   .viewToolbar { align-items: stretch; flex-wrap: wrap; }
   .viewSummary { width: 100%; margin-left: 0; }
+  .timelineTools > small { display: none; }
+  .timeline { --timeline-label-width: 170px; }
+  .timelineCanvas { width: max(100%, calc(var(--timeline-label-width) + var(--timeline-track-width))); }
   .timelineHeader,
-  .timelineRow { grid-template-columns: 150px minmax(700px, 1fr); }
+  .timelineRow { grid-template-columns: 170px var(--timeline-track-width); }
+  .phaseReview { align-items: stretch; flex-wrap: wrap; }
+  .phaseReview > span { width: 100%; }
 }

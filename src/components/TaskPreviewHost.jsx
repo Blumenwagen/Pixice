@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Circle, Gauge, GitBranch, Plus, SpinnerGap, Trash, TreeStructure, Warning, X } from "./icons/index.jsx";
 import { KANBAN_COLUMNS } from "./KanbanBoard.jsx";
 import styles from "./TaskPreviewHost.module.css";
@@ -12,26 +11,6 @@ const TRIGGERS = [
   ["became-overdue", "Became overdue"],
   ["schedule-changed", "Schedule changed"]
 ];
-
-function previewPanel(workspaceId) {
-  return [...document.querySelectorAll(".browser-panel")].find((candidate) => candidate.dataset.previewWorkspaceId === workspaceId) ?? null;
-}
-
-function waitForPanel(workspaceId, timeoutMs = 2_000) {
-  const existing = previewPanel(workspaceId);
-  if (existing) return Promise.resolve(existing);
-  return new Promise((resolve) => {
-    const observer = new MutationObserver(() => {
-      const panel = previewPanel(workspaceId);
-      if (!panel) return;
-      observer.disconnect();
-      window.clearTimeout(timeout);
-      resolve(panel);
-    });
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    const timeout = window.setTimeout(() => { observer.disconnect(); resolve(null); }, timeoutMs);
-  });
-}
 
 function localInput(value) {
   if (!value) return "";
@@ -130,7 +109,7 @@ function scheduleImpactMessage(target) {
   return parts.join(" ");
 }
 
-function PlanPreview({ api, target, onClose, onOpenWorkspace }) {
+function PlanPreview({ api, target, onClose, onOpenWorkspace, onTitleChange, tabbed = false }) {
   const [proposal, setProposal] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -139,6 +118,9 @@ function PlanPreview({ api, target, onClose, onOpenWorkspace }) {
     api.board.readProposal({ projectId: target.projectId, proposalId: target.proposalId }).then((value) => active && setProposal(value)).catch((cause) => active && setError(cause.message));
     return () => { active = false; };
   }, [api, target.projectId, target.proposalId]);
+  useEffect(() => {
+    if (proposal?.title) onTitleChange?.(proposal.title);
+  }, [proposal?.title]);
   const act = async (action) => {
     setBusy(true);
     try {
@@ -147,13 +129,13 @@ function PlanPreview({ api, target, onClose, onOpenWorkspace }) {
       if (action === "discardProposal") onClose();
     } catch (cause) { setError(cause.message); } finally { setBusy(false); }
   };
-  if (error) return <div className={styles.preview}><header><span><Warning size={15} />Plan unavailable</span><button onClick={onClose} aria-label="Close task preview"><X size={15} /></button></header><div className={styles.empty}>{error}</div></div>;
-  if (!proposal) return <div className={styles.preview}><div className={styles.loading}><SpinnerGap className="spin-icon" size={18} />Loading plan</div></div>;
+  if (error) return <div className={styles.preview} data-tabbed={tabbed}><header><span><Warning size={15} />Plan unavailable</span>{!tabbed && <button onClick={onClose} aria-label="Close task preview"><X size={15} /></button>}</header><div className={styles.empty}>{error}</div></div>;
+  if (!proposal) return <div className={styles.preview} data-tabbed={tabbed}><div className={styles.loading}><SpinnerGap className="spin-icon" size={18} />Loading plan</div></div>;
   const plan = proposal.proposal;
-  return <div className={styles.preview}><header><span><Gauge size={15} />Plan proposal</span><div><button onClick={onOpenWorkspace}>Open full workspace</button><button onClick={onClose} aria-label="Close task preview"><X size={15} /></button></div></header><div className={styles.planHero}><small>{proposal.status}</small><h2>{proposal.title}</h2><p>{plan.outcome || "Review the dates and dependencies before applying this plan."}</p><div><span>{plan.items.length} items</span><span>{plan.timezone}</span><span>{plan.conflicts.length} conflicts</span></div></div>{plan.conflicts.length > 0 && <div className={styles.conflicts}>{plan.conflicts.map((conflict) => <p key={`${conflict.taskId}:${conflict.type}`}><Warning size={13} />{conflict.message}</p>)}</div>}<div className={styles.planList}>{plan.items.map((item) => <article key={item.id}><span data-column={item.column} /><div><strong>{item.title}</strong><small>{item.kind} · {item.estimateMinutes} min · {item.confidence} confidence</small></div><time>{shortDate(item.schedule.plannedStart)}<b>to {shortDate(item.schedule.plannedEnd)}</b></time></article>)}</div><footer><button className={styles.quiet} disabled={busy || proposal.status !== "proposed"} onClick={() => act("discardProposal")}>Discard</button><span /><button className={styles.primary} disabled={busy || proposal.status !== "proposed" || plan.conflicts.length > 0} onClick={() => act("applyProposal")}>{busy ? "Applying…" : proposal.status === "applied" ? "Plan applied" : "Apply plan"}</button></footer></div>;
+  return <div className={styles.preview} data-tabbed={tabbed}><header><span><Gauge size={15} />Plan proposal</span><div><button onClick={onOpenWorkspace}>Open Board</button>{!tabbed && <button onClick={onClose} aria-label="Close task preview"><X size={15} /></button>}</div></header><div className={styles.planHero}><small>{proposal.status}</small><h2>{proposal.title}</h2><p>{plan.outcome || "Review the dates and dependencies before applying this plan."}</p><div><span>{plan.items.length} items</span><span>{plan.timezone}</span><span>{plan.conflicts.length} conflicts</span></div></div>{plan.conflicts.length > 0 && <div className={styles.conflicts}>{plan.conflicts.map((conflict) => <p key={`${conflict.taskId}:${conflict.type}`}><Warning size={13} />{conflict.message}</p>)}</div>}<div className={styles.planList}>{plan.items.map((item) => <article key={item.id}><span data-column={item.column} /><div><strong>{item.title}</strong><small>{item.kind} · {item.estimateMinutes} min · {item.confidence} confidence</small></div><time>{shortDate(item.schedule.plannedStart)}<b>to {shortDate(item.schedule.plannedEnd)}</b></time></article>)}</div><footer><button className={styles.quiet} disabled={busy || proposal.status !== "proposed"} onClick={() => act("discardProposal")}>Discard</button><span /><button className={styles.primary} disabled={busy || proposal.status !== "proposed" || plan.conflicts.length > 0} onClick={() => act("applyProposal")}>{busy ? "Applying…" : proposal.status === "applied" ? "Plan applied" : "Apply plan"}</button></footer></div>;
 }
 
-function TaskEditor({ api, target, onClose, onOpenWorkspace }) {
+function TaskEditor({ api, target, onClose, onOpenWorkspace, onTitleChange, tabbed = false }) {
   const [task, setTask] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [activity, setActivity] = useState([]);
@@ -189,6 +171,9 @@ function TaskEditor({ api, target, onClose, onOpenWorkspace }) {
     setBindingDraft((current) => ({ ...current, workflowId: current.workflowId || workflowList.data?.[0]?.id || "" }));
   }, [api, target, target.projectId, target.scheduleProposal, target.taskId]);
   useEffect(() => { setError(null); void load().catch((cause) => setError(cause.message)); }, [load]);
+  useEffect(() => {
+    if (task?.title) onTitleChange?.(task.title);
+  }, [task?.title]);
   useEffect(() => api.events?.subscribe?.((event) => {
     if (!new Set(["BoardUpdated", "WorkflowTriggersUpdated", "WorkflowRunUpdated"]).has(event.type) || event.payload?.projectId && event.payload.projectId !== target.projectId) return;
     if (event.type === "WorkflowTriggersUpdated" && !event.payload?.statuses?.some((status) => status.projectId === target.projectId && (!status.taskId || status.taskId === target.taskId))) return;
@@ -230,72 +215,47 @@ function TaskEditor({ api, target, onClose, onOpenWorkspace }) {
       await load({ preserveDraft: dirty });
     } catch (cause) { setError(cause.message); } finally { setBusy(false); }
   };
-  if (error && !task) return <div className={styles.preview}><header><span><Warning size={15} />Work item unavailable</span><button onClick={onClose} aria-label="Close task preview"><X size={15} /></button></header><div className={styles.empty}>{error}</div></div>;
-  if (!task || !draft) return <div className={styles.preview}><div className={styles.loading}><SpinnerGap className="spin-icon" size={18} />Loading work item</div></div>;
+  if (error && !task) return <div className={styles.preview} data-tabbed={tabbed}><header><span><Warning size={15} />Work item unavailable</span>{!tabbed && <button onClick={onClose} aria-label="Close task preview"><X size={15} /></button>}</header><div className={styles.empty}>{error}</div></div>;
+  if (!task || !draft) return <div className={styles.preview} data-tabbed={tabbed}><div className={styles.loading}><SpinnerGap className="spin-icon" size={18} />Loading work item</div></div>;
   const workflowRunSection = <section><div className={styles.sectionTitle}><SpinnerGap size={14} /><div><strong>Workflow runs</strong><small>Runs started by this work item, including status and output.</small></div></div><div className={styles.workflowRuns}>{workflowRuns.length ? workflowRuns.map((run) => <article key={run.id} data-status={run.status}><i /><div><strong>{run.workflowName}</strong><small>{run.eventType ? `${TRIGGERS.find(([id]) => id === run.eventType)?.[1] ?? run.eventType} · ` : ""}{run.status}{run.error ? ` · ${run.error}` : ""}</small>{compactRunOutput(run.output) && <code>{compactRunOutput(run.output)}</code>}</div><time>{shortDate(run.completedAt ?? run.startedAt ?? run.createdAt)}</time></article>) : <p>No Workflow runs for this item yet.</p>}</div></section>;
-  return <div className={styles.preview}><header><span><Circle size={15} />Work item · revision {task.revision}</span><div><button onClick={onOpenWorkspace}>Open full workspace</button><button onClick={onClose} aria-label="Close task preview"><X size={15} /></button></div></header>{remoteTask && <div className={styles.remoteNotice}><Warning size={14} /><span>A newer saved revision is available. Your unsaved fields are still here.</span><button onClick={() => { const next = draftFromTask(remoteTask); setTask(remoteTask); setDraft(next); baselineRef.current = JSON.stringify(next); setRemoteTask(null); }}>Reload saved version</button></div>}<div className={styles.editorScroll}><section className={styles.editorHero}><label>Title<input autoFocus value={draft.title} maxLength={240} onChange={(event) => change({ title: event.target.value })} /></label><label>Notes<textarea rows={5} value={draft.description} maxLength={10000} onChange={(event) => change({ description: event.target.value })} /></label><div className={styles.fieldGrid}><label>Status<select value={draft.column} onChange={(event) => change({ column: event.target.value })}>{KANBAN_COLUMNS.map((column) => <option key={column.id} value={column.id}>{column.label}</option>)}</select></label><label>Kind<select value={draft.kind} onChange={(event) => change({ kind: event.target.value })}><option value="task">Task</option><option value="milestone">Milestone</option><option value="event">Event</option></select></label><label>Priority<select value={draft.priority} onChange={(event) => change({ priority: event.target.value })}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Estimate · minutes<input type="number" min="0" value={draft.estimateMinutes} onChange={(event) => change({ estimateMinutes: event.target.value })} /></label><label className={styles.wide}>Owner<input value={draft.owner} maxLength={160} placeholder="Person or agent" onChange={(event) => change({ owner: event.target.value })} /></label></div></section><section><div className={styles.sectionTitle}><Gauge size={14} /><div><strong>Schedule</strong><small>Dates place this same item on Timeline.</small></div></div><div className={styles.fieldGrid}><label>Planned start<input type="datetime-local" value={draft.plannedStart} onChange={(event) => change({ plannedStart: event.target.value })} /></label><label>Planned end<input type="datetime-local" value={draft.plannedEnd} onChange={(event) => change({ plannedEnd: event.target.value })} /></label><label>Hard deadline<input type="datetime-local" value={draft.hardDeadline} onChange={(event) => change({ hardDeadline: event.target.value })} /></label><label>Timezone<input value={draft.timezone} onChange={(event) => change({ timezone: event.target.value })} /></label></div><div className={styles.inlineChecks}><label><input type="checkbox" checked={draft.allDay} onChange={(event) => change({ allDay: event.target.checked })} />All day</label><label><input type="checkbox" checked={draft.autoSchedule} onChange={(event) => change({ autoSchedule: event.target.checked })} />Maintain unlocked dates</label><label><input type="checkbox" checked={draft.lockedFields.includes("hardDeadline")} onChange={(event) => change({ lockedFields: event.target.checked ? [...new Set([...draft.lockedFields, "hardDeadline"])] : draft.lockedFields.filter((field) => field !== "hardDeadline") })} />Protect deadline</label></div></section><section><div className={styles.sectionTitle}><GitBranch size={14} /><div><strong>Dependencies</strong><small>Finish-to-start links are cycle checked before saving.</small></div></div><div className={styles.dependencyList}>{tasks.filter((candidate) => candidate.id !== task.id).map((candidate) => <label key={candidate.id}><input type="checkbox" checked={draft.dependencies.includes(candidate.id)} onChange={(event) => change({ dependencies: event.target.checked ? [...draft.dependencies, candidate.id] : draft.dependencies.filter((id) => id !== candidate.id) })} /><span>{candidate.title}</span><small>{candidate.column}</small></label>)}</div></section><section><div className={styles.sectionTitle}><TreeStructure size={14} /><div><strong>Workflow bindings</strong><small>Dates never run work by themselves. Enable each binding explicitly.</small></div></div><div className={styles.bindings}>{task.workflowBindings?.map((binding) => <article key={binding.id}><div><strong>{workflows.find((workflow) => workflow.id === binding.workflowId)?.name ?? binding.workflowId}</strong><small>{TRIGGERS.find(([id]) => id === binding.triggerType)?.[1] ?? binding.triggerType}</small></div><label className={styles.bindingPolicy}>Missed<select aria-label={`Missed event policy for ${binding.triggerType}`} value={binding.missedTriggerPolicy} onChange={(event) => updateBinding(binding, { missedTriggerPolicy: event.target.value })}><option value="ask">Ask</option><option value="skip">Skip</option><option value="notify">Notify</option><option value="run">Run</option></select></label><label><input type="checkbox" checked={binding.enabled} onChange={(event) => updateBinding(binding, { enabled: event.target.checked })} />Enabled</label><button onClick={() => api.board.deleteBinding({ projectId: target.projectId, taskId: task.id, bindingId: binding.id }).then(() => load({ preserveDraft: dirty }))} aria-label="Remove workflow binding"><Trash size={13} /></button></article>)}</div><div className={styles.bindingAdd}><select value={bindingDraft.workflowId} onChange={(event) => setBindingDraft((current) => ({ ...current, workflowId: event.target.value }))}><option value="">Choose workflow</option>{workflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select><select value={bindingDraft.triggerType} onChange={(event) => setBindingDraft((current) => ({ ...current, triggerType: event.target.value }))}>{TRIGGERS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><select aria-label="Missed event policy" value={bindingDraft.missedTriggerPolicy} onChange={(event) => setBindingDraft((current) => ({ ...current, missedTriggerPolicy: event.target.value }))}><option value="ask">Ask if missed</option><option value="skip">Skip if missed</option><option value="notify">Notify if missed</option><option value="run">Run if missed</option></select><button disabled={!bindingDraft.workflowId || busy} onClick={saveBinding}><Plus size={13} />Add disabled binding</button></div></section>{workflowRunSection}<section><div className={styles.sectionTitle}><Check size={14} /><div><strong>Activity</strong><small>Recent user, agent, and Workflow changes.</small></div></div><div className={styles.activity}>{activity.length ? activity.map((entry) => <article key={entry.id}><i /><div><strong>{entry.summary}</strong><small>{entry.actorKind || "Pixice"}{entry.actorId ? ` · ${entry.actorId}` : ""}</small></div><time>{shortDate(entry.createdAt)}</time></article>) : <p>No recorded changes yet.</p>}</div></section></div>{error && <div className={styles.error}>{error}</div>}<footer><button className={styles.delete} disabled={busy} onClick={remove}><Trash size={13} />Delete</button><span /><small>{dirty ? "Unsaved changes" : `Saved ${shortDate(task.updatedAt)}`}</small><button className={styles.primary} disabled={busy || !dirty || !draft.title.trim()} onClick={save}>{busy ? "Saving…" : "Save changes"}</button></footer></div>;
+  return <div className={styles.preview} data-tabbed={tabbed}><header><span><Circle size={15} />Work item · revision {task.revision}</span><div><button onClick={onOpenWorkspace}>Open Board</button>{!tabbed && <button onClick={onClose} aria-label="Close task preview"><X size={15} /></button>}</div></header>{remoteTask && <div className={styles.remoteNotice}><Warning size={14} /><span>A newer saved revision is available. Your unsaved fields are still here.</span><button onClick={() => { const next = draftFromTask(remoteTask); setTask(remoteTask); setDraft(next); baselineRef.current = JSON.stringify(next); setRemoteTask(null); }}>Reload saved version</button></div>}<div className={styles.editorScroll}><section className={styles.editorHero}><label>Title<input autoFocus value={draft.title} maxLength={240} onChange={(event) => change({ title: event.target.value })} /></label><label>Notes<textarea rows={5} value={draft.description} maxLength={10000} onChange={(event) => change({ description: event.target.value })} /></label><div className={styles.fieldGrid}><label>Status<select value={draft.column} onChange={(event) => change({ column: event.target.value })}>{KANBAN_COLUMNS.map((column) => <option key={column.id} value={column.id}>{column.label}</option>)}</select></label><label>Kind<select value={draft.kind} onChange={(event) => change({ kind: event.target.value })}><option value="task">Task</option><option value="milestone">Milestone</option><option value="event">Event</option></select></label><label>Priority<select value={draft.priority} onChange={(event) => change({ priority: event.target.value })}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Estimate · minutes<input type="number" min="0" value={draft.estimateMinutes} onChange={(event) => change({ estimateMinutes: event.target.value })} /></label><label className={styles.wide}>Owner<input value={draft.owner} maxLength={160} placeholder="Person or agent" onChange={(event) => change({ owner: event.target.value })} /></label></div></section><section><div className={styles.sectionTitle}><Gauge size={14} /><div><strong>Schedule</strong><small>Dates place this same item on Timeline.</small></div></div><div className={styles.fieldGrid}><label>Planned start<input type="datetime-local" value={draft.plannedStart} onChange={(event) => change({ plannedStart: event.target.value })} /></label><label>Planned end<input type="datetime-local" value={draft.plannedEnd} onChange={(event) => change({ plannedEnd: event.target.value })} /></label><label>Hard deadline<input type="datetime-local" value={draft.hardDeadline} onChange={(event) => change({ hardDeadline: event.target.value })} /></label><label>Timezone<input value={draft.timezone} onChange={(event) => change({ timezone: event.target.value })} /></label></div><div className={styles.inlineChecks}><label><input type="checkbox" checked={draft.allDay} onChange={(event) => change({ allDay: event.target.checked })} />All day</label><label><input type="checkbox" checked={draft.autoSchedule} onChange={(event) => change({ autoSchedule: event.target.checked })} />Maintain unlocked dates</label><label><input type="checkbox" checked={draft.lockedFields.includes("hardDeadline")} onChange={(event) => change({ lockedFields: event.target.checked ? [...new Set([...draft.lockedFields, "hardDeadline"])] : draft.lockedFields.filter((field) => field !== "hardDeadline") })} />Protect deadline</label></div></section><section><div className={styles.sectionTitle}><GitBranch size={14} /><div><strong>Dependencies</strong><small>Finish-to-start links are cycle checked before saving.</small></div></div><div className={styles.dependencyList}>{tasks.filter((candidate) => candidate.id !== task.id).map((candidate) => <label key={candidate.id}><input type="checkbox" checked={draft.dependencies.includes(candidate.id)} onChange={(event) => change({ dependencies: event.target.checked ? [...draft.dependencies, candidate.id] : draft.dependencies.filter((id) => id !== candidate.id) })} /><span>{candidate.title}</span><small>{candidate.column}</small></label>)}</div></section><section><div className={styles.sectionTitle}><TreeStructure size={14} /><div><strong>Workflow bindings</strong><small>Dates never run work by themselves. Enable each binding explicitly.</small></div></div><div className={styles.bindings}>{task.workflowBindings?.map((binding) => <article key={binding.id}><div><strong>{workflows.find((workflow) => workflow.id === binding.workflowId)?.name ?? binding.workflowId}</strong><small>{TRIGGERS.find(([id]) => id === binding.triggerType)?.[1] ?? binding.triggerType}</small></div><label className={styles.bindingPolicy}>Missed<select aria-label={`Missed event policy for ${binding.triggerType}`} value={binding.missedTriggerPolicy} onChange={(event) => updateBinding(binding, { missedTriggerPolicy: event.target.value })}><option value="ask">Ask</option><option value="skip">Skip</option><option value="notify">Notify</option><option value="run">Run</option></select></label><label><input type="checkbox" checked={binding.enabled} onChange={(event) => updateBinding(binding, { enabled: event.target.checked })} />Enabled</label><button onClick={() => api.board.deleteBinding({ projectId: target.projectId, taskId: task.id, bindingId: binding.id }).then(() => load({ preserveDraft: dirty }))} aria-label="Remove workflow binding"><Trash size={13} /></button></article>)}</div><div className={styles.bindingAdd}><select value={bindingDraft.workflowId} onChange={(event) => setBindingDraft((current) => ({ ...current, workflowId: event.target.value }))}><option value="">Choose workflow</option>{workflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select><select value={bindingDraft.triggerType} onChange={(event) => setBindingDraft((current) => ({ ...current, triggerType: event.target.value }))}>{TRIGGERS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><select aria-label="Missed event policy" value={bindingDraft.missedTriggerPolicy} onChange={(event) => setBindingDraft((current) => ({ ...current, missedTriggerPolicy: event.target.value }))}><option value="ask">Ask if missed</option><option value="skip">Skip if missed</option><option value="notify">Notify if missed</option><option value="run">Run if missed</option></select><button disabled={!bindingDraft.workflowId || busy} onClick={saveBinding}><Plus size={13} />Add disabled binding</button></div></section>{workflowRunSection}<section><div className={styles.sectionTitle}><Check size={14} /><div><strong>Activity</strong><small>Recent user, agent, and Workflow changes.</small></div></div><div className={styles.activity}>{activity.length ? activity.map((entry) => <article key={entry.id}><i /><div><strong>{entry.summary}</strong><small>{entry.actorKind || "Pixice"}{entry.actorId ? ` · ${entry.actorId}` : ""}</small></div><time>{shortDate(entry.createdAt)}</time></article>) : <p>No recorded changes yet.</p>}</div></section></div>{error && <div className={styles.error}>{error}</div>}<footer><button className={styles.delete} disabled={busy} onClick={remove}><Trash size={13} />Delete</button><span /><small>{dirty ? "Unsaved changes" : `Saved ${shortDate(task.updatedAt)}`}</small><button className={styles.primary} disabled={busy || !dirty || !draft.title.trim()} onClick={save}>{busy ? "Saving…" : "Save changes"}</button></footer></div>;
+}
+
+export function TaskPreviewContent({ api = window.pixice, target, onClose, onOpenWorkspace, onTitleChange, tabbed = false }) {
+  if (!target) return null;
+  return target.proposalId
+    ? <PlanPreview api={api} target={target} onClose={onClose} onOpenWorkspace={onOpenWorkspace} onTitleChange={onTitleChange} tabbed={tabbed} />
+    : <TaskEditor key={`${target.taskId}:${target.scheduleProposal?.plannedStart ?? "saved"}`} api={api} target={target} onClose={onClose} onOpenWorkspace={onOpenWorkspace} onTitleChange={onTitleChange} tabbed={tabbed} />;
 }
 
 export function TaskPreviewHost({ children }) {
   const api = window.pixice;
-  const [target, setTarget] = useState(null);
-  const [host, setHost] = useState(null);
-  const pendingRef = useRef(null);
-  const open = useCallback(async (detail) => {
+  const open = useCallback((detail) => {
     if (!detail?.workspaceId || (!detail.taskId && !detail.proposalId)) return;
-    pendingRef.current = detail;
     window.dispatchEvent(new CustomEvent("pixice:request-task-preview", { detail }));
-    const panel = await waitForPanel(detail.workspaceId);
-    if (!panel || pendingRef.current !== detail) return;
-    pendingRef.current = null;
-    setHost(panel);
-    setTarget(detail);
-    window.dispatchEvent(new CustomEvent("pixice:task-preview-activated", { detail }));
-    await api?.browser?.setViewport?.({ workspaceId: detail.workspaceId, visible: false }).catch(() => {});
-  }, [api]);
+    const kind = detail.proposalId ? "plan" : "task";
+    const entityId = detail.proposalId ?? detail.taskId;
+    window.dispatchEvent(new CustomEvent("pixice:open-preview-tab", {
+      detail: {
+        workspaceId: detail.workspaceId,
+        tab: {
+          id: `${kind}:${entityId}`,
+          kind,
+          title: kind === "plan" ? "Plan proposal" : "Work item",
+          payload: detail
+        }
+      }
+    }));
+  }, []);
   useEffect(() => {
-    const custom = (event) => void open(event.detail);
+    const custom = (event) => open(event.detail);
     window.addEventListener("pixice:task-preview-requested", custom);
     const unsubscribe = api?.events?.subscribe?.((event) => {
-      if (event.type === "WorkflowOpenRequested" || event.type === "WorkflowForegroundRequested") {
-        setTarget(null);
-        setHost(null);
-        return;
-      }
       if (event.type !== "TaskPreviewOpenRequested") return;
       const detail = event.payload ?? {};
-      const activeThreadId = document.querySelector(".pixice-app")?.dataset.activeThreadId;
-      if (detail.workspaceId && activeThreadId === detail.workspaceId) void open(detail);
-      else pendingRef.current = detail;
+      if (detail.workspaceId) open(detail);
     });
     return () => { window.removeEventListener("pixice:task-preview-requested", custom); unsubscribe?.(); };
   }, [api, open]);
-  useEffect(() => {
-    if (!host || !target) return undefined;
-    const previousPosition = host.style.position;
-    const previousOverflow = host.style.overflow;
-    const previous = host.getAttribute("data-preview-overlay-host");
-    const covered = [...host.children].filter((node) => !node.classList?.contains(styles.preview));
-    const coveredState = covered.map((node) => ({ node, inert: node.inert, ariaHidden: node.getAttribute("aria-hidden") }));
-    host.style.position = "relative";
-    host.style.overflow = "hidden";
-    host.dataset.previewOverlayHost = "true";
-    covered.forEach((node) => { node.inert = true; node.setAttribute("aria-hidden", "true"); });
-    return () => {
-      host.style.position = previousPosition;
-      host.style.overflow = previousOverflow;
-      if (previous === null) host.removeAttribute("data-preview-overlay-host"); else host.setAttribute("data-preview-overlay-host", previous);
-      coveredState.forEach(({ node, inert, ariaHidden }) => {
-        node.inert = inert;
-        if (ariaHidden === null) node.removeAttribute("aria-hidden"); else node.setAttribute("aria-hidden", ariaHidden);
-      });
-    };
-  }, [host, target]);
-  const close = useCallback(() => { setTarget(null); setHost(null); }, []);
-  const openWorkspace = useCallback(() => {
-    window.dispatchEvent(new CustomEvent("pixice:open-board-workspace", { detail: { projectId: target.projectId, taskId: target.taskId, proposalId: target.proposalId } }));
-    close();
-  }, [close, target]);
-  const content = useMemo(() => target && host ? createPortal(target.proposalId ? <PlanPreview api={api} target={target} onClose={close} onOpenWorkspace={openWorkspace} /> : <TaskEditor key={`${target.taskId}:${target.scheduleProposal?.plannedStart ?? "saved"}`} api={api} target={target} onClose={close} onOpenWorkspace={openWorkspace} />, host) : null, [api, close, host, openWorkspace, target]);
-  return <>{children}{content}</>;
+  return children;
 }

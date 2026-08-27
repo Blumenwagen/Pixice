@@ -6,8 +6,14 @@ export function threadStatus(thread) {
   return status.type === "active" ? "running" : status.type;
 }
 
+export function stripPreviewContext(text) {
+  return String(text ?? "")
+    .replace(/\s*<pixice-preview-context>[\s\S]*?<\/pixice-preview-context>/g, "")
+    .trim();
+}
+
 export function threadTitle(thread) {
-  return thread?.name?.trim() || thread?.preview?.trim() || "Untitled task";
+  return thread?.name?.trim() || stripPreviewContext(thread?.preview) || "Untitled task";
 }
 
 export function isSidebarThread(thread) {
@@ -25,7 +31,7 @@ export function flattenItems(thread) {
 function itemFingerprint(item) {
   if (item.type === "userMessage") {
     const content = item.content ?? [];
-    const text = content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    const text = stripPreviewContext(content.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
     const imageCount = content.filter((part) => part.type === "image").length;
     return `user:${text ?? ""}:images:${imageCount}`;
   }
@@ -114,7 +120,8 @@ function turnFingerprint(turn) {
     .find((item) => item.type === "userMessage")
     ?.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n");
   const agentText = items.find((item) => item.type === "agentMessage" && item.text)?.text;
-  return userText ? `user:${userText}` : agentText ? `agent:${agentText}` : null;
+  const visibleUserText = stripPreviewContext(userText);
+  return visibleUserText ? `user:${visibleUserText}` : agentText ? `agent:${agentText}` : null;
 }
 
 export function mergeThreadSnapshot(current, incoming) {

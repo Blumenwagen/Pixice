@@ -10,11 +10,19 @@ const onEvent = (listener) => {
 contextBridge.exposeInMainWorld("pixice", Object.freeze({
   app: Object.freeze({ bootstrap: invoke("app:bootstrap"), saveSettings: invoke("app:settings:update") }),
   runtime: Object.freeze({ status: invoke("runtime:status") }),
-  providers: Object.freeze({ list: invoke("providers:list"), login: invoke("providers:login") }),
+  providers: Object.freeze({
+    list: invoke("providers:list"),
+    install: invoke("providers:install"),
+    locate: invoke("providers:locate"),
+    repair: invoke("providers:repair"),
+    checkUpdates: invoke("providers:check-updates"),
+    update: invoke("providers:update"),
+    login: invoke("providers:login"),
+    logout: invoke("providers:logout")
+  }),
   github: Object.freeze({ status: invoke("github:status"), login: invoke("github:login"), logout: invoke("github:logout") }),
   usage: Object.freeze({ summary: invoke("usage:summary"), limits: invoke("usage:limits") }),
   updates: Object.freeze({ status: invoke("updates:status"), check: invoke("updates:check"), download: invoke("updates:download"), install: invoke("updates:install") }),
-  codexUpdates: Object.freeze({ status: invoke("codex-updates:status"), check: invoke("codex-updates:check"), install: invoke("codex-updates:install") }),
   browser: Object.freeze({
     state: invoke("browser:state"),
     create: invoke("browser:create"),
@@ -26,6 +34,7 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     adopt: invoke("browser:adopt"),
     destroy: invoke("browser:destroy")
   }),
+  preview: Object.freeze({ setContext: invoke("preview:context") }),
   files: Object.freeze({ read: invoke("files:read"), write: invoke("files:write") }),
   projects: Object.freeze({
     list: invoke("projects:list"),
@@ -43,6 +52,7 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     move: invoke("board:move"),
     delete: invoke("board:delete"),
     attach: invoke("board:attach"),
+    createPhase: invoke("board:phase:create"),
     activity: invoke("board:activity"),
     readProposal: invoke("board:proposal:read"),
     applyProposal: invoke("board:proposal:apply"),

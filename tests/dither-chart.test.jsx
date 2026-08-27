@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DitherAreaChart, DitherBarChart } from "../src/components/dither-kit/DitherChart.jsx";
+import { DitherAreaChart, DitherBarChart, resampleChartValues } from "../src/components/dither-kit/DitherChart.jsx";
 
 const data = [
   { label: "Mon", cost: 1 },
@@ -90,5 +90,13 @@ describe.each([
 
     expect(context.fillRect.mock.calls.length).toBeGreaterThan(initialPaintCount);
     expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Dither area chart interpolation", () => {
+  it("slopes down to an explicit zero instead of holding the previous value", () => {
+    expect(resampleChartValues([150, 0, 100], 9)).toEqual([
+      150, 112.5, 75, 37.5, 0, 25, 50, 75, 100
+    ]);
   });
 });

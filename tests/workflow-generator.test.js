@@ -33,6 +33,22 @@ describe("workflow generation", () => {
     expect(() => parseGeneratedWorkflowGraph(JSON.stringify({ graph: { ...generatedGraph, nodes: generatedGraph.nodes.filter((node) => node.type !== "output"), edges: [] } }))).toThrow(/Output node/);
   });
 
+  it("adds deterministic ids when generated edges omit them", () => {
+    const transform = { id: "transform", type: "transform", name: "Transform", description: "Shape the result.", position: { x: 230, y: 180 }, config: {} };
+    const graph = parseGeneratedWorkflowGraph(JSON.stringify({
+      graph: {
+        ...generatedGraph,
+        nodes: [generatedGraph.nodes[0], transform, generatedGraph.nodes[1]],
+        edges: [
+          { id: "edge-2", source: "trigger", target: "transform" },
+          { source: "transform", target: "output", sourcePort: "output", targetPort: "input" }
+        ]
+      }
+    }));
+
+    expect(graph.edges.map((edge) => edge.id)).toEqual(["edge-2", "edge-2-2"]);
+  });
+
   it("runs generation in an ephemeral read-only agent thread", async () => {
     class Runtime extends EventEmitter {
       connected = true;

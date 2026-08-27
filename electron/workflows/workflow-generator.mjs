@@ -5,6 +5,16 @@ import { resolveWorkflowGenerationModel, WORKFLOW_GENERATION_AUTO } from "../run
 const GENERATION_TIMEOUT_MS = 120_000;
 
 function generationPrompt(workflow) {
+  const responseExample = {
+    graph: {
+      nodes: [
+        { id: "trigger", type: "manualTrigger", name: "Manual trigger", description: "Start the workflow.", position: { x: 80, y: 180 }, config: {} },
+        { id: "output", type: "output", name: "Workflow output", description: "Return the result.", position: { x: 380, y: 180 }, config: {} }
+      ],
+      edges: [{ id: "trigger-output", source: "trigger", target: "output", sourcePort: "output", targetPort: "input" }],
+      viewport: { x: 0, y: 0, zoom: 1 }
+    }
+  };
   return [
     "Design a complete Pixice workflow from the supplied name and description.",
     "Return only one JSON object with a graph property. Do not use Markdown fences, commentary, or tools.",
@@ -21,7 +31,7 @@ function generationPrompt(workflow) {
     JSON.stringify(WORKFLOW_NODE_GUIDE),
     "",
     "Required response shape:",
-    JSON.stringify({ graph: { nodes: [{ id: "trigger", type: "manualTrigger", name: "Manual trigger", description: "Start the workflow.", position: { x: 80, y: 180 }, config: {} }], edges: [], viewport: { x: 0, y: 0, zoom: 1 } } })
+    JSON.stringify(responseExample)
   ].join("\n");
 }
 
@@ -43,7 +53,23 @@ function parseGeneratedJson(value) {
 
 export function parseGeneratedWorkflowGraph(value) {
   const parsed = parseGeneratedJson(value);
-  const graph = validateWorkflowGraph(parsed?.graph ?? parsed);
+  const generatedGraph = parsed?.graph ?? parsed;
+  const usedEdgeIds = new Set(
+    Array.isArray(generatedGraph?.edges)
+      ? generatedGraph.edges.flatMap((edge) => typeof edge?.id === "string" && edge.id.trim() ? [edge.id.trim()] : [])
+      : []
+  );
+  const edges = Array.isArray(generatedGraph?.edges)
+    ? generatedGraph.edges.map((edge, index) => {
+      if (!edge || typeof edge !== "object" || Array.isArray(edge) || (typeof edge.id === "string" && edge.id.trim())) return edge;
+      let id = `edge-${index + 1}`;
+      let suffix = 2;
+      while (usedEdgeIds.has(id)) id = `edge-${index + 1}-${suffix++}`;
+      usedEdgeIds.add(id);
+      return { ...edge, id };
+    })
+    : generatedGraph?.edges;
+  const graph = validateWorkflowGraph({ ...generatedGraph, ...(edges ? { edges } : {}) });
   workflowExecutionLayers({ graph });
   if (!graph.nodes.some((node) => node.type === "output")) throw new Error("The generated workflow needs an Output node");
   return graph;

@@ -11,7 +11,7 @@ The lead conversation is the source of truth. Delegated agents appear as a hiera
 - **Renderer:** React presents projects, tasks, conversation history, plans, activity, approvals, agents, and Git review state. It never receives Node.js access.
 - **Preload bridge:** `window.pixice` is the only renderer-to-main boundary. Every privileged call is named and validated.
 - **Electron main:** owns dialogs, local persistence, Git access, external app actions, and the Codex runtime lifecycle.
-- **Codex runtime:** one `codex app-server` JSONL session is initialized at app startup. The installed Codex binary is used in development; signed, checksum-pinned `codex` and `codex-code-mode-host` binaries are bundled together for releases.
+- **Codex runtime:** Pixice discovers a compatible external Codex CLI and starts `codex app-server`. Release packages do not include Codex executables.
 - **Persistence:** SQLite stores Pixice-owned project metadata and view state. Codex remains authoritative for thread and turn history.
 - **Git:** Pixice reads status and diffs directly. Isolated worktrees are optional task execution environments and may only be removed when clean.
 
@@ -50,7 +50,7 @@ The lead conversation is the source of truth. Delegated agents appear as a hiera
 
 ### Phase 4 — release readiness
 
-- Generate and commit protocol bindings from the exact pinned Codex runtime version.
+- Validate protocol bindings against the oldest supported external Codex version before raising the compatibility floor.
 - Bundle and checksum runtime binaries for every supported platform.
 - Add database migrations, recovery tests, runtime compatibility tests, and Electron IPC integration tests.
 - Add signing/notarization, updater credentials, license notices, crash diagnostics, and release-channel policy.

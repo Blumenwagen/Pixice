@@ -808,10 +808,39 @@
   background: #121214;
   isolation: isolate;
 }
-:global(.browser-panel[data-workflow-preview-host="true"]) > :not(.previewOverlay) {
-  visibility: hidden;
-  pointer-events: none;
+.previewOverlay[data-tabbed="true"] {
+  position: relative;
+  inset: auto;
+  z-index: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-rows: 34px minmax(0, 1fr);
 }
+.previewContext {
+  padding: 0 11px 0 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #777780;
+  background: #19191b;
+  border-bottom: 1px solid rgba(255, 255, 255, .055);
+  font-size: 9px;
+}
+.previewContext > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.previewContext > button {
+  height: 25px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #a2a2aa;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 8.5px;
+}
+.previewContext > button:hover { color: #ececf0; background: rgba(255, 255, 255, .05); }
 .previewHeader {
   min-width: 0;
   padding: 0 9px 0 12px;

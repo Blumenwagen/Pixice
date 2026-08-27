@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ProviderRegistry } from "../electron/providers/provider-registry.mjs";
 
 class MemoryDatabase {
@@ -61,6 +61,18 @@ describe("ProviderRegistry", () => {
 
     expect(codex.instructionRefreshes).toBe(1);
     expect(claude.instructionRefreshes).toBe(1);
+  });
+
+  it("starts healthy providers when another provider is missing or broken", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", []));
+    const claude = registry.register(new FakeProvider("claude", []));
+    codex.start = vi.fn().mockRejectedValue(new Error("Codex is missing"));
+    claude.start = vi.fn().mockResolvedValue(true);
+
+    await expect(registry.start()).resolves.toBe(true);
+    expect(codex.start).toHaveBeenCalledOnce();
+    expect(claude.start).toHaveBeenCalledOnce();
   });
 
   it("qualifies models and routes a new thread and its turns to one provider", async () => {
@@ -129,6 +141,70 @@ describe("ProviderRegistry", () => {
       expect.objectContaining({ id: "claude", account: { type: "claude", email: "dev@example.com" }, authenticated: true, sessionCount: 1, loginAvailable: true })
     ]);
     await expect(registry.loginProvider("claude")).resolves.toEqual({ type: "claude", authUrl: "https://example.com/claude" });
+  });
+
+  it("honors the app-server requiresOpenaiAuth account field", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", []));
+    codex.account = async () => ({ account: null, requiresOpenaiAuth: false });
+
+    await expect(registry.listProviders()).resolves.toEqual([
+      expect.objectContaining({ id: "codex", requiresAuth: false, authenticated: true })
+    ]);
+  });
+
+  it("exposes lifecycle state and keeps provider operations isolated", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", ["gpt-5.6"]));
+    const claude = registry.register(new FakeProvider("claude", ["sonnet"]));
+    codex.lifecycle = () => ({
+      installed: true,
+      installState: { state: "idle" },
+      executablePath: "/tools/codex",
+      version: "codex-cli 1.2.3",
+      compatible: true,
+      health: { state: "healthy" },
+      updateState: { state: "available", availableVersion: "1.2.4" },
+      actions: { install: false, locate: true, repair: true, checkUpdate: true, update: true, login: true, logout: true }
+    });
+    codex.repair = vi.fn().mockResolvedValue({ installed: true, version: "codex-cli 1.2.4" });
+    codex.checkForUpdate = vi.fn().mockResolvedValue({ updateState: { state: "available", availableVersion: "1.2.4" } });
+    codex.update = vi.fn().mockResolvedValue({ updateState: { state: "succeeded" }, version: "1.2.4" });
+    claude.repair = vi.fn();
+
+    await expect(registry.listProviders()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "codex",
+        installed: true,
+        executablePath: "/tools/codex",
+        version: "codex-cli 1.2.3",
+        compatible: true,
+        repairAvailable: true,
+        checkUpdateAvailable: true,
+        updateAvailable: true
+      })
+    ]));
+    await expect(registry.repairProvider("codex")).resolves.toMatchObject({ version: "codex-cli 1.2.4" });
+    expect(codex.repair).toHaveBeenCalledOnce();
+    expect(claude.repair).not.toHaveBeenCalled();
+  });
+
+  it("checks and updates providers independently", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", []));
+    const claude = registry.register(new FakeProvider("claude", []));
+    codex.checkForUpdate = vi.fn().mockResolvedValue({ updateState: { state: "available", availableVersion: "0.151.0" } });
+    claude.checkForUpdate = vi.fn().mockRejectedValue(new Error("Claude channel unavailable"));
+    codex.update = vi.fn().mockResolvedValue({ updateState: { state: "succeeded" }, version: "0.151.0" });
+    claude.update = vi.fn();
+
+    await expect(registry.checkProviderUpdates()).resolves.toEqual([
+      expect.objectContaining({ provider: "codex", updateState: { state: "available", availableVersion: "0.151.0" } }),
+      expect.objectContaining({ provider: "claude", updateState: { state: "error", message: "Claude channel unavailable" } })
+    ]);
+    await expect(registry.updateProvider("codex")).resolves.toMatchObject({ version: "0.151.0" });
+    expect(codex.update).toHaveBeenCalledOnce();
+    expect(claude.update).not.toHaveBeenCalled();
   });
 
   it("never advertises models from a disconnected provider", async () => {

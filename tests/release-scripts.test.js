@@ -90,4 +90,9 @@ describe("release scripts", () => {
       "Pixice-0.1.0-beta.1-mac-x64.zip"
     ]);
   });
+
+  it("verifies the independently bundled GitHub CLI without requiring Codex", async () => {
+    const { stdout } = await run(process.execPath, [path.resolve("scripts/verify-github-cli.mjs"), "--current"]);
+    expect(stdout).toMatch(/Verified GitHub CLI/);
+  });
 });

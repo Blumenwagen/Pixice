@@ -158,8 +158,10 @@ describe("WorkflowHost", () => {
     await waitFor(() => expect(document.querySelector('[data-workflow-workspace="true"]')).toBeInTheDocument());
   });
 
-  it("opens an agent-requested workflow when its controlling thread is already visible", async () => {
+  it("opens an agent-requested workflow as a tab in its controlling Preview workspace", async () => {
     const onTaskClick = vi.fn();
+    const opened = vi.fn();
+    window.addEventListener("pixice:open-preview-tab", opened);
     const { api, emit } = createApi([
       { id: "thread-other", name: "Other task", parentThreadId: null },
       { id: "thread-lead", name: "Lead task", parentThreadId: null }
@@ -177,15 +179,17 @@ describe("WorkflowHost", () => {
       reason: "edit"
     });
 
-    expect(await screen.findByLabelText("Workflow preview")).toBeInTheDocument();
-    expect(screen.getByText("Agent is editing this workflow")).toBeInTheDocument();
-    expect(document.querySelector(".browser-panel")).toHaveAttribute("data-workflow-preview-host", "true");
-    expect(workflowWorkspaceCss).toMatch(/\.browser-panel\[data-workflow-preview-host="true"\][^}]*>\s*:not\(\.previewOverlay\)/);
-    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({ workspaceId: "thread-lead", visible: false }));
+    await waitFor(() => expect(opened).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining({
+      workspaceId: "thread-lead",
+      tab: expect.objectContaining({ id: "workflow:workflow-1", kind: "workflow", title: "Release workflow" })
+    }) })));
     expect(onTaskClick).not.toHaveBeenCalled();
+    window.removeEventListener("pixice:open-preview-tab", opened);
   });
 
-  it("detaches a workflow preview when the user switches to another thread", async () => {
+  it("keeps an opened workflow tab scoped to its controlling thread", async () => {
+    const opened = vi.fn();
+    window.addEventListener("pixice:open-preview-tab", opened);
     const { api, emit } = createApi([
       { id: "thread-lead", name: "Lead task", parentThreadId: null },
       { id: "thread-other", name: "Other task", parentThreadId: null }
@@ -205,7 +209,8 @@ describe("WorkflowHost", () => {
       workspaceId: "thread-lead",
       reason: "edit"
     });
-    expect(await screen.findByLabelText("Workflow preview")).toBeInTheDocument();
+    await waitFor(() => expect(opened).toHaveBeenCalledTimes(1));
+    expect(opened.mock.calls[0][0].detail.workspaceId).toBe("thread-lead");
 
     view.rerender(
       <WorkflowHost>
@@ -213,12 +218,15 @@ describe("WorkflowHost", () => {
       </WorkflowHost>
     );
 
-    await waitFor(() => expect(screen.queryByLabelText("Workflow preview")).not.toBeInTheDocument());
-    expect(document.querySelector('.browser-panel[data-preview-workspace-id="thread-other"]')).not.toHaveAttribute("data-workflow-preview-host");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(opened).toHaveBeenCalledTimes(1);
+    window.removeEventListener("pixice:open-preview-tab", opened);
   });
 
   it("does not switch threads for a foreground workflow agent", async () => {
     const onTaskClick = vi.fn();
+    const opened = vi.fn();
+    window.addEventListener("pixice:open-preview-tab", opened);
     const { api, emit } = createApi([
       { id: "thread-lead", name: "Lead task", parentThreadId: null },
       { id: "thread-foreground", name: "Foreground agent", parentThreadId: null }
@@ -238,16 +246,17 @@ describe("WorkflowHost", () => {
     });
 
     expect(onTaskClick).not.toHaveBeenCalled();
-    expect(screen.queryByLabelText("Workflow preview")).not.toBeInTheDocument();
-    expect(api.browser.setViewport).not.toHaveBeenCalledWith({ workspaceId: "thread-foreground", visible: false });
+    expect(opened).not.toHaveBeenCalled();
 
     view.rerender(
       <WorkflowHost>
         <Shell taskNames={["Lead task", "Foreground agent"]} activeThreadId="thread-foreground" onTaskClick={onTaskClick} />
       </WorkflowHost>
     );
-    expect(await screen.findByLabelText("Workflow preview")).toBeInTheDocument();
-    expect(screen.getByText("Agent is running this workflow")).toBeInTheDocument();
-    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({ workspaceId: "thread-foreground", visible: false }));
+    await waitFor(() => expect(opened).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining({
+      workspaceId: "thread-foreground",
+      tab: expect.objectContaining({ id: "workflow:workflow-1", kind: "workflow", payload: expect.objectContaining({ reason: "run" }) })
+    }) })));
+    window.removeEventListener("pixice:open-preview-tab", opened);
   });
 });

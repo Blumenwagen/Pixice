@@ -19,9 +19,16 @@ import {
 } from "./runtime/prompt-attachments.mjs";
 import { AGENT_BEHAVIOR_IDS, agentBehaviorCatalog, composeAgentInstructions } from "./runtime/agent-behavior.mjs";
 import { CodexProvider } from "./providers/codex-provider.mjs";
-import { ClaudeProvider, resolveClaudeCodeExecutable, resolvePackagedClaudeCodeExecutable } from "./providers/claude-provider.mjs";
+import { ClaudeProvider } from "./providers/claude-provider.mjs";
 import { ProviderRegistry } from "./providers/provider-registry.mjs";
+import { ProviderRuntimeLifecycle } from "./providers/provider-runtime-lifecycle.mjs";
 import { BrowserWorkspace, browserDynamicTools } from "./browser/browser-workspace.mjs";
+import {
+  appendPreviewContextHint,
+  PIXICE_PREVIEW_NAMESPACE,
+  PreviewContextRegistry,
+  previewContextDynamicTools
+} from "./runtime/preview-context.mjs";
 import {
   isPixiceQuestionToolCall,
   PIXICE_QUESTION_METHOD,
@@ -37,7 +44,6 @@ import {
   instrumentDynamicTools
 } from "./instruments/instrument-service.mjs";
 import { PixiceAppUpdater } from "./updater/app-updater.mjs";
-import { CodexUpdater, installAndActivateCodexUpdate } from "./updater/codex-updater.mjs";
 import { PixiceDatabase } from "./persistence/database.mjs";
 import { migrateLegacyBrandData } from "./persistence/brand-data-migration.mjs";
 import {
@@ -48,6 +54,7 @@ import {
   recoverUpdateDataFromBackup
 } from "./persistence/update-data-backup.mjs";
 import { inspectRepository, readDiff } from "./git/worktrees.mjs";
+import { projectFolderDialogProperties } from "./projects/project-folder-dialog.mjs";
 import { GitHubCli, prependGitHubCliToPath } from "./github/github-cli.mjs";
 import { calculateUsageCost, listPricingCatalog, PRICING_VERIFIED_AT } from "./usage/pricing.mjs";
 import { readProviderRateLimits } from "./usage/provider-limits.mjs";
@@ -72,8 +79,8 @@ let codexProvider;
 let claudeProvider;
 let threadNamer;
 let browserWorkspace;
+let previewContextRegistry;
 let appUpdater;
-let codexUpdater;
 let githubCli;
 let pixiceBridge;
 let pixiceBoard;
@@ -94,6 +101,7 @@ const pendingTaskNames = new Set();
 const scheduledThreadNames = new Set();
 const pixiceDynamicTools = [
   ...browserDynamicTools,
+  ...previewContextDynamicTools,
   ...questionDynamicTools,
   ...pixiceBridgeDynamicTools,
   ...pixiceBoardDynamicTools,
@@ -142,6 +150,10 @@ const threadCompletionsSeenSchema = z.record(z.union([
   z.string().min(1).max(256),
   z.number().finite().nonnegative()
 ])).refine((value) => Object.keys(value).length <= 10_000, "Too many completion read records");
+const providerExecutablePathsSchema = z.object({
+  codex: z.string().trim().min(1).max(4_096).refine(path.isAbsolute, "Codex executable path must be absolute").optional(),
+  claude: z.string().trim().min(1).max(4_096).refine(path.isAbsolute, "Claude executable path must be absolute").optional()
+}).strict();
 const appDefaultsSchema = z.object({
   defaultModel: z.string().trim().min(1).max(128).optional(),
   defaultEffort: z.string().trim().regex(/^[a-z][a-z0-9_-]*$/i).max(32).optional(),
@@ -153,7 +165,8 @@ const appDefaultsSchema = z.object({
   completionNotifications: z.boolean().optional(),
   notificationSound: z.boolean().optional(),
   keepSystemAwake: z.boolean().optional(),
-  checkCodexUpdates: z.boolean().optional(),
+  checkProviderUpdates: z.boolean().optional(),
+  providerExecutablePaths: providerExecutablePathsSchema.optional(),
   threadCompletionsSeen: threadCompletionsSeenSchema.optional(),
   agentBehaviors: agentBehaviorsSchema.optional()
 }).strict().refine((value) => Object.keys(value).length > 0, "At least one default must be provided");
@@ -171,10 +184,30 @@ const promptAttachmentSchema = z.object({
   size: z.number().int().nonnegative().max(MAX_PROMPT_ATTACHMENT_BYTES),
   dataUrl: attachmentDataUrlSchema
 }).strict();
+const previewContextSchema = z.object({
+  open: z.boolean(),
+  tabCount: z.number().int().nonnegative().max(100).default(0),
+  active: z.object({
+    kind: z.enum(["browser", "file", "instrument", "task", "plan", "workflow", "new"]),
+    id: z.string().max(500).optional(),
+    title: z.string().max(500).optional(),
+    url: z.string().max(10_000).optional(),
+    path: z.string().max(10_000).optional(),
+    projectId: z.string().max(500).optional(),
+    taskId: z.string().max(500).optional(),
+    proposalId: z.string().max(500).optional(),
+    workflowId: z.string().max(500).optional(),
+    instrumentId: z.string().max(500).optional(),
+    documentVersion: z.number().int().nonnegative().optional(),
+    editable: z.boolean().optional(),
+    dirty: z.boolean().optional()
+  }).strict().nullable().default(null)
+}).strict();
 const promptInputSchema = {
   text: z.string().trim().max(100_000).default(""),
   images: z.array(imageDataUrlSchema).max(10).default([]),
-  attachments: z.array(promptAttachmentSchema).max(MAX_PROMPT_ATTACHMENTS).default([])
+  attachments: z.array(promptAttachmentSchema).max(MAX_PROMPT_ATTACHMENTS).default([]),
+  previewContext: previewContextSchema.optional()
 };
 const requirePromptInput = (value, context) => {
   if (!value.text && value.images.length === 0 && value.attachments.length === 0) {
@@ -233,6 +266,7 @@ function runtimeRoots(project) {
 }
 
 function preparePromptInput(value, project, threadId) {
+  if (value.previewContext) previewContextRegistry?.set(threadId, value.previewContext);
   const staged = stagePromptAttachments({
     attachments: value.attachments,
     userDataPath: app.getPath("userData"),
@@ -240,7 +274,10 @@ function preparePromptInput(value, project, threadId) {
     threadId
   });
   return {
-    text: appendAttachmentContext(value.text, staged.files),
+    text: appendPreviewContextHint(
+      appendAttachmentContext(value.text, staged.files),
+      previewContextRegistry?.current(threadId)
+    ),
     images: [...value.images, ...staged.images]
   };
 }
@@ -691,6 +728,21 @@ async function startProviderLogin(provider) {
   return { provider, opened: true, loginId: result.loginId ?? null };
 }
 
+async function locateProviderExecutable(provider, requestedPath = null) {
+  let executablePath = requestedPath;
+  if (!executablePath) {
+    const current = (await runtime.listProviders()).find((candidate) => candidate.id === provider);
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: `Locate ${provider === "codex" ? "Codex" : "Claude Code"}`,
+      defaultPath: current?.executablePath ? path.dirname(current.executablePath) : undefined,
+      properties: ["openFile", "showHiddenFiles"]
+    });
+    if (result.canceled || !result.filePaths[0]) return { provider, cancelled: true };
+    [executablePath] = result.filePaths;
+  }
+  return { provider, cancelled: false, ...(await runtime.locateProvider(provider, executablePath)) };
+}
+
 function canonicalProjectFolders(folders) {
   const canonical = [];
   const seen = new Set();
@@ -706,7 +758,7 @@ function canonicalProjectFolders(folders) {
 }
 
 async function pickProjectFolders({ multiple = true } = {}) {
-  const properties = multiple ? ["openDirectory", "multiSelections"] : ["openDirectory"];
+  const properties = projectFolderDialogProperties({ multiple });
   const result = await dialog.showOpenDialog(mainWindow, { properties });
   if (result.canceled) return [];
   return canonicalProjectFolders(result.filePaths);
@@ -995,9 +1047,9 @@ function registerIpc() {
   ipcMain.handle("app:settings:update", (_event, payload) => {
     const value = appDefaultsSchema.parse(payload);
     const settings = database.saveAppSettings(value);
-    if (value.checkCodexUpdates !== undefined) codexUpdater.setEnabled(value.checkCodexUpdates);
     if (value.keepSystemAwake !== undefined) systemAwakeController.setEnabled(value.keepSystemAwake);
     if (value.agentBehaviors !== undefined) runtime.refreshDeveloperInstructions();
+    if (value.checkProviderUpdates !== undefined) runtime.setProviderUpdateChecksEnabled(value.checkProviderUpdates);
     return settings;
   });
   ipcMain.handle("runtime:status", () => ({ ...runtimeStatus, connected: runtime.connected }));
@@ -1015,6 +1067,33 @@ function registerIpc() {
     const { provider } = z.object({ provider: z.string().trim().min(1).max(64) }).parse(payload);
     return startProviderLogin(provider);
   });
+  const providerActionSchema = z.object({ provider: z.enum(["codex", "claude"]) }).strict();
+  ipcMain.handle("providers:install", (_event, payload) => {
+    const { provider } = providerActionSchema.parse(payload);
+    return runtime.installProvider(provider);
+  });
+  ipcMain.handle("providers:locate", (_event, payload) => {
+    const { provider, executablePath } = providerActionSchema.extend({
+      executablePath: z.string().trim().min(1).max(4_096).optional()
+    }).parse(payload);
+    return locateProviderExecutable(provider, executablePath);
+  });
+  ipcMain.handle("providers:repair", (_event, payload) => {
+    const { provider } = providerActionSchema.parse(payload);
+    return runtime.repairProvider(provider);
+  });
+  ipcMain.handle("providers:check-updates", (_event, payload) => {
+    const { provider } = z.object({ provider: z.enum(["codex", "claude"]).optional() }).strict().parse(payload ?? {});
+    return runtime.checkProviderUpdates(provider);
+  });
+  ipcMain.handle("providers:update", (_event, payload) => {
+    const { provider } = providerActionSchema.parse(payload);
+    return runtime.updateProvider(provider);
+  });
+  ipcMain.handle("providers:logout", (_event, payload) => {
+    const { provider } = providerActionSchema.parse(payload);
+    return runtime.logoutProvider(provider);
+  });
   ipcMain.handle("github:status", () => githubCli.status());
   ipcMain.handle("github:login", () => githubCli.login());
   ipcMain.handle("github:logout", () => githubCli.logout());
@@ -1022,9 +1101,6 @@ function registerIpc() {
   ipcMain.handle("updates:check", () => appUpdater.check());
   ipcMain.handle("updates:download", () => appUpdater.download());
   ipcMain.handle("updates:install", () => appUpdater.install());
-  ipcMain.handle("codex-updates:status", () => codexUpdater.snapshot());
-  ipcMain.handle("codex-updates:check", () => codexUpdater.check({ manual: true }));
-  ipcMain.handle("codex-updates:install", () => installAndActivateCodexUpdate({ updater: codexUpdater, runtime: codexRuntime }));
   const browserScope = z.object({ workspaceId: z.string().trim().min(1) });
   ipcMain.handle("browser:state", (_event, payload) => {
     const value = browserScope.parse(payload);
@@ -1059,12 +1135,19 @@ function registerIpc() {
   });
   ipcMain.handle("browser:adopt", (_event, payload) => {
     const value = z.object({ fromWorkspaceId: z.string().trim().min(1), toWorkspaceId: z.string().trim().min(1) }).parse(payload);
-    return browserWorkspace.adoptWorkspace(value.fromWorkspaceId, value.toWorkspaceId);
+    const state = browserWorkspace.adoptWorkspace(value.fromWorkspaceId, value.toWorkspaceId);
+    previewContextRegistry.adopt(value.fromWorkspaceId, value.toWorkspaceId);
+    return state;
   });
   ipcMain.handle("browser:destroy", (_event, payload) => {
     const value = browserScope.parse(payload);
     browserWorkspace.destroyWorkspace(value.workspaceId);
+    previewContextRegistry.clear(value.workspaceId);
     return { destroyed: true, workspaceId: value.workspaceId };
+  });
+  ipcMain.handle("preview:context", (_event, payload) => {
+    const value = z.object({ threadId: z.string().trim().min(1), context: previewContextSchema }).strict().parse(payload);
+    return previewContextRegistry.set(value.threadId, value.context);
   });
 
   ipcMain.handle("projects:list", () => listProjects());
@@ -1128,7 +1211,7 @@ function registerIpc() {
   ipcMain.handle("board:list", (_event, payload) => {
     const { projectId } = idPayload.parse(payload);
     getProject(projectId);
-    return { data: database.listBoardTasks(projectId) };
+    return { data: database.listBoardTasks(projectId), phases: database.listBoardPhases(projectId) };
   });
   ipcMain.handle("board:read", (_event, payload) => {
     const value = boardTaskPayload.parse(payload);
@@ -1166,6 +1249,16 @@ function registerIpc() {
     const task = database.createBoardTask({ id: randomUUID(), ...value });
     send("BoardUpdated", { action: "created", projectId: value.projectId, task });
     return task;
+  });
+  ipcMain.handle("board:phase:create", (_event, payload) => {
+    const value = idPayload.extend({
+      title: boardTaskTitleSchema,
+      taskIds: z.array(z.string().trim().min(1).max(160)).min(2).max(100)
+    }).parse(payload);
+    getProject(value.projectId);
+    const phase = database.createBoardPhase({ id: randomUUID(), ...value, actorKind: "user" });
+    send("BoardUpdated", { action: "phase-created", projectId: value.projectId, phase });
+    return phase;
   });
   ipcMain.handle("board:update", (_event, payload) => {
     const value = boardTaskPayload.extend({
@@ -1476,6 +1569,7 @@ function registerIpc() {
     threadProjects.delete(threadId);
     turnUsageMetadata.delete(threadId);
     browserWorkspace.destroyWorkspace(threadId);
+    previewContextRegistry.clear(threadId);
     database.deleteThreadLink(threadId);
     database.deleteThreadBoardState(threadId);
     database.detachBoardTasksForThread(threadId);
@@ -1692,19 +1786,13 @@ function registerIpc() {
 app.whenReady().then(async () => {
   const userDataPath = app.getPath("userData");
   migrateLegacyBrandData(userDataPath);
-  const bundledResourcesPath = isDev ? path.join(__dirname, "../resources") : process.resourcesPath;
   const recordedDataVersion = readUpdateDataVersion(userDataPath);
   if (recordedDataVersion && recordedDataVersion !== app.getVersion()) recoverUpdateDataFromBackup({ userDataPath });
   await ensureVersionUpdateDataBackup({ userDataPath, currentVersion: app.getVersion() });
   database = new PixiceDatabase(userDataPath);
+  previewContextRegistry = new PreviewContextRegistry();
   systemAwakeController = createSystemAwakeController(powerSaveBlocker);
   systemAwakeController.setEnabled(database.getAppSettings().keepSystemAwake === true);
-  codexUpdater = new CodexUpdater({
-    bundledResourcesPath,
-    userDataPath,
-    enabled: database.getAppSettings().checkCodexUpdates !== false
-  });
-  codexUpdater.on("status", (status) => send("CodexUpdateState", status));
   developerInstructionsPath = isDev
     ? path.join(__dirname, "../resources/runtime/pixice-developer-instructions.md")
     : path.join(process.resourcesPath, "runtime/pixice-developer-instructions.md");
@@ -1714,14 +1802,14 @@ app.whenReady().then(async () => {
   githubCli = new GitHubCli({ resourcesPath: isDev ? path.join(__dirname, "../resources") : process.resourcesPath });
   prependGitHubCliToPath(process.env, githubCli.resolved);
   githubCli.on("progress", (payload) => send("GitHubAuthProgress", payload));
+  const codexRuntimeLifecycle = new ProviderRuntimeLifecycle({ provider: "codex", database });
   codexRuntime = new CodexRuntime({
-    resourcesPath: codexUpdater.activeResourcesPath(),
+    executablePath: null,
     clientVersion: app.getVersion(),
-    allowDevelopmentRuntime: !app.isPackaged,
     developerInstructionsPath
   });
   runtime = new ProviderRegistry({ database });
-  codexProvider = runtime.register(new CodexProvider(codexRuntime));
+  codexProvider = runtime.register(new CodexProvider(codexRuntime, { runtimeLifecycle: codexRuntimeLifecycle }));
   const boardThreadContext = (threadId) => {
     const binding = database.getThreadProviderBinding(threadId);
     const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
@@ -1833,6 +1921,7 @@ app.whenReady().then(async () => {
       return { id: workflow.id, name: workflow.name, enabled: workflow.enabled };
     }
   });
+  const claudeRuntimeLifecycle = new ProviderRuntimeLifecycle({ provider: "claude", database });
   claudeProvider = runtime.register(new ClaudeProvider({
     database,
     clientVersion: app.getVersion(),
@@ -1846,9 +1935,10 @@ app.whenReady().then(async () => {
         return browserWorkspace.handleToolCall(params);
       }
     },
-    pathToClaudeCodeExecutable: resolveClaudeCodeExecutable()
-      ?? (app.isPackaged ? resolvePackagedClaudeCodeExecutable({ resourcesPath: process.resourcesPath }) : undefined),
-    requireExternalExecutable: app.isPackaged
+    pixicePreview: previewContextRegistry,
+    pathToClaudeCodeExecutable: null,
+    requireExternalExecutable: true,
+    runtimeLifecycle: claudeRuntimeLifecycle
   }));
   threadNamer = new ThreadNamer(runtime, {
     models: () => listModels(),
@@ -1966,6 +2056,7 @@ app.whenReady().then(async () => {
       database.deleteThreadLink(threadId);
       database.detachBoardTasksForThread(threadId);
       browserWorkspace?.destroyWorkspace(threadId);
+      previewContextRegistry?.clear(threadId);
       if (method === "thread/deleted") database.deleteThreadName(threadId);
     }
     if (threadId && (method === "turn/started" || method === "turn/completed" || method === "thread/status/changed")) {
@@ -2009,6 +2100,12 @@ app.whenReady().then(async () => {
         .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
       return;
     }
+    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_PREVIEW_NAMESPACE) {
+      void Promise.resolve(previewContextRegistry.handleToolCall(request.params))
+        .then((response) => runtime.respond(request.id, response))
+        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
+      return;
+    }
     let displayRequest = request;
     let kind = "runtime-request";
     if (isPixiceQuestionToolCall(request)) {
@@ -2035,6 +2132,7 @@ app.whenReady().then(async () => {
     }
   });
   runtime.on("recoverable-error", (error) => send("RuntimeError", error));
+  runtime.on("provider-lifecycle", (state) => send("ProviderLifecycleState", state));
 
   createWindow();
   browserWorkspace = new BrowserWorkspace({ window: mainWindow, WebContentsView, emit: send });
@@ -2057,8 +2155,8 @@ app.whenReady().then(async () => {
   createTray();
   registerIpc();
   appUpdater.start();
-  codexUpdater.start();
   await runtime.start();
+  runtime.startProviderUpdateChecks({ enabled: database.getAppSettings().checkProviderUpdates !== false });
   await pixiceBridge.workflowReady;
   if (!pixiceBridge.workflowError) markUpdateDataVersion(userDataPath, app.getVersion());
   app.on("activate", () => mainWindow.show());
@@ -2083,7 +2181,6 @@ app.on("before-quit", async (event) => {
   }
   quitting = true;
   appUpdater?.stop();
-  codexUpdater?.stop();
   systemAwakeController?.stop();
   browserWorkspace?.destroy();
   await runtime?.stop();

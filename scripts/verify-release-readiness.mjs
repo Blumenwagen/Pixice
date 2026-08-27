@@ -12,7 +12,6 @@ const expectedIdentity = {
   owner: "Blumenwagen",
   repo: "Pixice"
 };
-const supportedTargets = new Set(["darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"]);
 const target = process.env.PIXICE_RUNTIME_TARGET || `${process.platform}-${process.arch}`;
 
 function requireValue(condition, message) {
@@ -26,7 +25,11 @@ requireValue(builderConfig.appId === expectedIdentity.appId, `appId must be ${ex
 requireValue(builderConfig.productName === expectedIdentity.productName, `productName must be ${expectedIdentity.productName}`);
 requireValue(builderConfig.publish?.[0]?.owner === expectedIdentity.owner, `publish owner must be ${expectedIdentity.owner}`);
 requireValue(builderConfig.publish?.[0]?.repo === expectedIdentity.repo, `publish repo must be ${expectedIdentity.repo}`);
-requireValue(supportedTargets.has(target), `unsupported PIXICE_RUNTIME_TARGET ${target}`);
+requireValue(builderConfig.afterPack === "scripts/after-pack-macos.cjs", "afterPack must verify packaged provider runtimes");
+requireValue(builderConfig.files?.includes("!node_modules/@anthropic-ai/claude-agent-sdk-*/**/*"), "Claude Agent SDK platform runtimes must be excluded");
+const packagedResourceSources = builderConfig.extraResources?.map((entry) => typeof entry === "string" ? entry : entry.from) ?? [];
+requireValue(!packagedResourceSources.includes("resources/runtime/manifest.json"), "the Codex runtime manifest must not be packaged");
+requireValue(!packagedResourceSources.some((source) => /resources[\\/]runtime[\\/](?:darwin|linux|win32)-/i.test(String(source))), "provider runtime directories must not be packaged");
 
 for (const relativePath of [
   "THIRD_PARTY_NOTICES.md",
@@ -34,8 +37,7 @@ for (const relativePath of [
   "SECURITY.md",
   "SUPPORT.md",
   "RELEASE.md",
-  "resources/app-update.yml",
-  "resources/runtime/manifest.json"
+  "resources/app-update.yml"
 ]) {
   try {
     await access(new URL(relativePath, repositoryRoot));
@@ -49,6 +51,20 @@ try {
   errors.push("LICENSE must remain absent until Pixice's product license is chosen");
 } catch {
   // The beta intentionally has no Pixice product license.
+}
+
+for (const staleCodexPath of [
+  "electron/updater/codex-updater.mjs",
+  "resources/runtime/manifest.json",
+  "scripts/sync-codex-runtime.mjs",
+  "scripts/verify-runtime.mjs"
+]) {
+  try {
+    await access(new URL(staleCodexPath, repositoryRoot));
+    errors.push(`${staleCodexPath} must be removed with the bundled Codex runtime`);
+  } catch {
+    // External provider installations own their own runtime lifecycle.
+  }
 }
 
 if (process.env.GITHUB_REF_TYPE === "tag") {

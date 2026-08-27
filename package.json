@@ -16,11 +16,10 @@
     "dev": "vite",
     "dev:electron": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build --mode sites && node scripts/prepare-sites-build.mjs",
-    "build:desktop": "node scripts/verify-runtime.mjs --current --require-github-cli && vite build --mode desktop && pnpm verify:desktop-renderer && electron-builder --config electron-builder.config.cjs",
+    "build:desktop": "node scripts/verify-github-cli.mjs --current && vite build --mode desktop && pnpm verify:desktop-renderer && electron-builder --config electron-builder.config.cjs",
     "install:local:macos": "node scripts/install-local-macos.mjs",
-    "runtime:sync": "node scripts/sync-codex-runtime.mjs",
     "github:sync": "node scripts/sync-github-cli.mjs",
-    "runtime:verify": "node scripts/verify-runtime.mjs",
+    "github:verify": "node scripts/verify-github-cli.mjs",
     "release:verify": "node scripts/verify-release-version.mjs",
     "release:preflight": "node scripts/verify-release-readiness.mjs",
     "verify:desktop-renderer": "node scripts/verify-desktop-renderer.cjs",
@@ -40,6 +39,7 @@
     "zod": "3.25.76"
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "@fontsource-variable/jetbrains-mono": "5.2.8",
     "@fontsource-variable/manrope": "5.2.8",
     "@testing-library/jest-dom": "6.9.1",

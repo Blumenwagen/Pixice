@@ -8,6 +8,13 @@
   color: var(--foreground);
   background: color-mix(in oklab, var(--canvas) 96%, var(--surface));
 }
+.preview[data-tabbed="true"] {
+  position: relative;
+  inset: auto;
+  z-index: 0;
+  min-height: 0;
+  flex: 1;
+}
 
 .preview > header {
   min-height: 43px;

@@ -1,48 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { TreeStructure } from "../icons/index.jsx";
-import { WorkflowPreview, WorkflowWorkspace } from "./WorkflowWorkspace.jsx";
+import { WorkflowWorkspace } from "./WorkflowWorkspace.jsx";
 import styles from "./WorkflowWorkspace.module.css";
-
-function previewPanelForWorkspace(workspaceId) {
-  return [...document.querySelectorAll(".browser-panel")]
-    .find((candidate) => candidate.dataset.previewWorkspaceId === workspaceId) ?? null;
-}
-
-function waitForPreviewPanel(workspaceId, timeoutMs = 1800) {
-  const existing = previewPanelForWorkspace(workspaceId);
-  if (existing) return Promise.resolve(existing);
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      observer.disconnect();
-      window.clearTimeout(timeout);
-      resolve(value);
-    };
-    const observer = new MutationObserver(() => {
-      const node = previewPanelForWorkspace(workspaceId);
-      if (node) finish(node);
-    });
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    const timeout = window.setTimeout(() => finish(null), timeoutMs);
-  });
-}
 
 export function WorkflowHost({ children }) {
   const api = window.pixice;
   const [navTarget, setNavTarget] = useState(null);
   const [appTarget, setAppTarget] = useState(null);
-  const [previewTarget, setPreviewTarget] = useState(null);
   const [active, setActive] = useState(false);
   const [projects, setProjects] = useState([]);
   const [models, setModels] = useState([]);
   const [projectId, setProjectId] = useState(() => localStorage.getItem("pixice.activeProjectId"));
   const [requestedWorkflowId, setRequestedWorkflowId] = useState(null);
-  const [preview, setPreview] = useState(null);
   const currentThreadIdRef = useRef(null);
-  const previewTargetRef = useRef(null);
   const pendingPreviewsRef = useRef(new Map());
 
   useEffect(() => {
@@ -59,22 +30,6 @@ export function WorkflowHost({ children }) {
     observer.observe(document.documentElement, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, []);
-
-  useEffect(() => {
-    if (!preview?.threadId) {
-      if (previewTargetRef.current) {
-        previewTargetRef.current = null;
-        setPreviewTarget(null);
-      }
-      return undefined;
-    }
-    const nextPreviewTarget = previewPanelForWorkspace(preview.threadId);
-    if (previewTargetRef.current !== nextPreviewTarget) {
-      previewTargetRef.current = nextPreviewTarget;
-      setPreviewTarget(nextPreviewTarget);
-    }
-    return undefined;
-  }, [preview?.threadId]);
 
   const refreshCatalog = useCallback(async () => {
     if (!api) return;
@@ -108,7 +63,6 @@ export function WorkflowHost({ children }) {
   useEffect(() => {
     if (projectId) void refreshCatalog();
     setRequestedWorkflowId(null);
-    setPreview(null);
     pendingPreviewsRef.current.clear();
   }, [projectId, refreshCatalog]);
 
@@ -150,41 +104,7 @@ export function WorkflowHost({ children }) {
     return () => document.removeEventListener("click", handleSidebarClick, true);
   }, []);
 
-  useEffect(() => {
-    const closeForTaskPreview = () => setPreview(null);
-    window.addEventListener("pixice:task-preview-activated", closeForTaskPreview);
-    return () => window.removeEventListener("pixice:task-preview-activated", closeForTaskPreview);
-  }, []);
-
-  const ensurePreviewOpen = useCallback(async (workspaceId) => {
-    if (!workspaceId) return null;
-    setActive(false);
-    let panel = previewPanelForWorkspace(workspaceId);
-    if (!panel) {
-      const openButton = document.querySelector('[aria-label="Open preview workspace"]');
-      openButton?.click();
-      panel = await waitForPreviewPanel(workspaceId);
-    }
-    if (panel?.dataset.previewWorkspaceId === workspaceId) {
-      previewTargetRef.current = panel;
-      setPreviewTarget(panel);
-    }
-    try {
-      await api?.browser?.setViewport?.({ workspaceId, visible: false });
-    } catch {
-      // The workflow surface does not require a browser tab to be active.
-    }
-    return panel;
-  }, [api]);
-
-  const closePreview = useCallback(() => {
-    const workspaceId = preview?.threadId;
-    setPreview(null);
-    if (workspaceId) void api?.browser?.setViewport?.({ workspaceId, visible: false }).catch(() => {});
-    window.setTimeout(() => document.querySelector('[aria-label="Close preview workspace"]')?.click(), 0);
-  }, [api, preview?.threadId]);
-
-  const presentPendingPreview = useCallback(async (workspaceId = null) => {
+  const presentPendingPreview = useCallback((workspaceId = null) => {
     const appRoot = document.querySelector(".pixice-app.view-task");
     const activeThreadId = appRoot?.dataset.activeThreadId || currentThreadIdRef.current;
     currentThreadIdRef.current = activeThreadId;
@@ -194,16 +114,25 @@ export function WorkflowHost({ children }) {
     const pending = pendingPreviewsRef.current.get(targetWorkspaceId);
     if (!pending) return false;
     pendingPreviewsRef.current.delete(targetWorkspaceId);
-    setPreview(pending);
-    await ensurePreviewOpen(targetWorkspaceId);
+    setActive(false);
+    window.dispatchEvent(new CustomEvent("pixice:open-preview-tab", {
+      detail: {
+        workspaceId: targetWorkspaceId,
+        tab: {
+          id: `workflow:${pending.workflowId}`,
+          kind: "workflow",
+          title: pending.workflowName || "Workflow",
+          payload: pending
+        }
+      }
+    }));
     return true;
-  }, [ensurePreviewOpen]);
+  }, []);
 
   useEffect(() => {
     const syncThread = (event) => {
       const nextThreadId = event?.detail ?? null;
       currentThreadIdRef.current = nextThreadId;
-      setPreview((current) => current?.threadId === nextThreadId ? current : null);
       window.setTimeout(() => void presentPendingPreview(), 0);
     };
     window.addEventListener("pixice:active-thread-changed", syncThread);
@@ -251,27 +180,13 @@ export function WorkflowHost({ children }) {
   }, [api, presentPendingPreview, refreshCatalog]);
 
   useEffect(() => {
-    if (!preview?.threadId || !api?.browser) return undefined;
-    const hideNativeBrowser = () => api.browser.setViewport({ workspaceId: preview.threadId, visible: false }).catch(() => {});
-    void hideNativeBrowser();
-    return undefined;
-  }, [api, preview?.threadId]);
-
-  useEffect(() => {
-    if (!previewTarget || !preview) return undefined;
-    const previousPosition = previewTarget.style.position;
-    const previousOverflow = previewTarget.style.overflow;
-    const previousPreviewHost = previewTarget.getAttribute("data-workflow-preview-host");
-    previewTarget.style.position = "relative";
-    previewTarget.style.overflow = "hidden";
-    previewTarget.dataset.workflowPreviewHost = "true";
-    return () => {
-      previewTarget.style.position = previousPosition;
-      previewTarget.style.overflow = previousOverflow;
-      if (previousPreviewHost === null) previewTarget.removeAttribute("data-workflow-preview-host");
-      else previewTarget.setAttribute("data-workflow-preview-host", previousPreviewHost);
+    const openWorkspace = (event) => {
+      setRequestedWorkflowId(event.detail?.workflowId ?? null);
+      setActive(true);
     };
-  }, [preview, previewTarget]);
+    window.addEventListener("pixice:open-workflow-workspace", openWorkspace);
+    return () => window.removeEventListener("pixice:open-workflow-workspace", openWorkspace);
+  }, []);
 
   const project = projects.find((candidate) => candidate.id === projectId) ?? null;
   const nav = navTarget ? createPortal(
@@ -283,8 +198,6 @@ export function WorkflowHost({ children }) {
       aria-label="Workflows"
       title="Workflows"
       onClick={() => {
-        setPreview(null);
-        document.querySelector('[aria-label="Close preview workspace"]')?.click();
         setActive(true);
       }}
     >
@@ -312,31 +225,11 @@ export function WorkflowHost({ children }) {
     appTarget
   ) : null;
 
-  const workflowPreview = preview && previewTarget ? createPortal(
-    <WorkflowPreview
-      api={api}
-      projectId={preview.projectId}
-      workflowId={preview.workflowId}
-      workflowName={preview.workflowName}
-      models={models}
-      reason={preview.reason}
-      onClose={closePreview}
-      onOpenWorkspace={(workflowId) => {
-        setRequestedWorkflowId(workflowId);
-        setPreview(null);
-        document.querySelector('[aria-label="Close preview workspace"]')?.click();
-        setActive(true);
-      }}
-    />,
-    previewTarget
-  ) : null;
-
   return (
     <>
       {children}
       {nav}
       {workspace}
-      {workflowPreview}
       {!api && <div className={styles.notice} data-tone="error">Pixice workflows require the desktop bridge.</div>}
     </>
   );

@@ -7,11 +7,30 @@ import {
   parseDiff,
   removeLocalUserMessage,
   reviewFiles,
+  stripPreviewContext,
   threadStatus,
   turnIsCompacting
 } from "../src/state/runtime.js";
 
 describe("runtime state projection", () => {
+  it("hides Preview hints and reconciles them with the visible local prompt", () => {
+    const tagged = "look at this\n\n<pixice-preview-context>Pixice Preview is open with a browser tab selected.</pixice-preview-context>";
+    expect(stripPreviewContext(tagged)).toBe("look at this");
+
+    const local = appendLocalUserMessage({ id: "lead", turns: [{ id: "turn", status: "inProgress", items: [] }] }, {
+      turnId: "turn",
+      text: "look at this"
+    });
+    const persisted = applyRuntimePayload(local, {
+      method: "item/completed",
+      threadId: "lead",
+      turnId: "turn",
+      item: { id: "persisted-user", type: "userMessage", content: [{ type: "text", text: tagged }] }
+    });
+
+    expect(persisted.turns[0].items).toHaveLength(1);
+  });
+
   it("keeps a local prompt visible and reconciles its persisted event in place", () => {
     const thread = { id: "lead", turns: [{ id: "turn", status: "inProgress", items: [] }] };
     const optimistic = appendLocalUserMessage(thread, {

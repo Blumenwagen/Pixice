@@ -1,17 +1,3 @@
-const path = require("node:path");
-
-const supportedRuntimeTargets = new Set([
-  "darwin-arm64",
-  "darwin-x64",
-  "win32-x64",
-  "linux-x64"
-]);
-const runtimeTarget = process.env.PIXICE_RUNTIME_TARGET || `${process.platform}-${process.arch}`;
-
-if (!supportedRuntimeTargets.has(runtimeTarget)) {
-  throw new Error(`Unsupported Pixice runtime target: ${runtimeTarget}`);
-}
-
 module.exports = {
   appId: "com.blumenwagen.pixice",
   productName: "Pixice",
@@ -35,7 +21,8 @@ module.exports = {
   files: [
     "dist/client/**/*",
     "electron/**/*",
-    "package.json"
+    "package.json",
+    "!node_modules/@anthropic-ai/claude-agent-sdk-*/**/*"
   ],
   extraResources: [
     { from: "build/icon.png", to: "app-icon.png" },
@@ -43,16 +30,11 @@ module.exports = {
     { from: "THIRD_PARTY_NOTICES.md", to: "THIRD_PARTY_NOTICES.md" },
     { from: "PRIVACY.md", to: "PRIVACY.md" },
     { from: "SUPPORT.md", to: "SUPPORT.md" },
-    { from: "resources/runtime/manifest.json", to: "runtime/manifest.json" },
     {
       from: "resources/runtime/pixice-developer-instructions.md",
       to: "runtime/pixice-developer-instructions.md"
     },
-    { from: "resources/runtime/agent-behaviors", to: "runtime/agent-behaviors" },
-    {
-      from: path.join("resources", "runtime", runtimeTarget),
-      to: path.join("runtime", runtimeTarget)
-    }
+    { from: "resources/runtime/agent-behaviors", to: "runtime/agent-behaviors" }
   ],
   mac: {
     target: ["dmg", "zip"],

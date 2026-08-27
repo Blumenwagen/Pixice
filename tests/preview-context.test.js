@@ -1,0 +1,46 @@
+import { describe, expect, it } from "vitest";
+import {
+  appendPreviewContextHint,
+  PreviewContextRegistry,
+  stripPreviewContextHint
+} from "../electron/runtime/preview-context.mjs";
+
+describe("Preview context", () => {
+  it("adds only a compact presence hint to the prompt", () => {
+    const text = appendPreviewContextHint("look at this", {
+      open: true,
+      tabCount: 4,
+      active: {
+        kind: "browser",
+        id: "browser-1",
+        title: "Sensitive account page",
+        url: "https://example.com/private"
+      }
+    });
+
+    expect(text).toContain("Pixice Preview is open in this thread with a browser tab selected");
+    expect(text).toContain("pixice_preview.current");
+    expect(text).not.toContain("Sensitive account page");
+    expect(text).not.toContain("example.com/private");
+    expect(stripPreviewContextHint(text)).toBe("look at this");
+  });
+
+  it("returns selected-tab metadata only when the agent asks for it", () => {
+    const registry = new PreviewContextRegistry();
+    registry.set("thread-1", {
+      open: true,
+      tabCount: 2,
+      active: { kind: "file", id: "file-1", title: "notes.md", path: "notes.md", dirty: true }
+    });
+
+    const response = registry.handleToolCall({ threadId: "thread-1", tool: "current", arguments: {} });
+
+    expect(JSON.parse(response.contentItems[0].text)).toEqual({
+      open: true,
+      tabCount: 2,
+      active: { kind: "file", id: "file-1", title: "notes.md", path: "notes.md", dirty: true },
+      inspectWith: "Read the reported project path with the available file tools"
+    });
+    expect(registry.current("thread-2")).toEqual({ open: false, tabCount: 0, active: null });
+  });
+});

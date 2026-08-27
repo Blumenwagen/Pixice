@@ -1,15 +1,14 @@
 import { EventEmitter } from "node:events";
-import { constants, existsSync, readFileSync, accessSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { constants, accessSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { JsonlClient } from "./jsonl-client.mjs";
 import { CapabilityAdapter, normalizeCodexEvent } from "./capability-adapter.mjs";
 
-export function codexAppServerArgs(developerInstructions = "", { direct = false } = {}) {
+export function codexAppServerArgs(developerInstructions = "") {
   const instructions = String(developerInstructions).trim();
   const args = instructions ? ["--config", `developer_instructions=${JSON.stringify(instructions)}`] : [];
-  if (!direct) args.push("app-server");
+  args.push("app-server");
   return args;
 }
 
@@ -22,15 +21,20 @@ export class CodexRuntime extends EventEmitter {
   #stopping = false;
   #capabilities = new CapabilityAdapter();
 
-  constructor({ resourcesPath, clientVersion, allowDevelopmentRuntime = true, developerInstructionsPath = null }) {
+  constructor({ executablePath = null, clientVersion, developerInstructionsPath = null, environment = process.env }) {
     super();
-    this.resourcesPath = resourcesPath;
+    this.executablePath = executablePath;
     this.clientVersion = clientVersion;
-    this.allowDevelopmentRuntime = allowDevelopmentRuntime;
     this.developerInstructionsPath = developerInstructionsPath;
+    this.environment = environment;
   }
 
   get connected() { return this.#initialized; }
+
+  setExecutablePath(executablePath) {
+    if (this.#process) throw new Error("Stop Codex before changing its executable");
+    this.executablePath = executablePath;
+  }
 
   async start() {
     if (this.#process) return this.connected;
@@ -38,9 +42,9 @@ export class CodexRuntime extends EventEmitter {
       clearTimeout(this.#restartTimer);
       this.#restartTimer = null;
     }
-    const resolvedRuntime = this.#resolveRuntime();
-    if (!resolvedRuntime) {
-      const error = new Error("Bundled Codex runtime is unavailable. Set PIXICE_CODEX_PATH for development.");
+    const executablePath = this.#resolveExecutable();
+    if (!executablePath) {
+      const error = new Error("Codex CLI is unavailable. Install Codex or locate an existing executable in Settings.");
       this.emit("status", { state: "unavailable", message: error.message });
       this.emit("recoverable-error", { code: "runtime_missing", message: error.message });
       return false;
@@ -49,8 +53,7 @@ export class CodexRuntime extends EventEmitter {
     let args;
     try {
       args = codexAppServerArgs(
-        this.developerInstructionsPath ? readFileSync(this.developerInstructionsPath, "utf8") : "",
-        { direct: resolvedRuntime.directAppServer }
+        this.developerInstructionsPath ? readFileSync(this.developerInstructionsPath, "utf8") : ""
       );
     } catch (error) {
       const message = `Pixice runtime instructions are unavailable: ${error.message}`;
@@ -62,7 +65,17 @@ export class CodexRuntime extends EventEmitter {
     this.#stopping = false;
     this.#initialized = false;
     this.emit("status", { state: "connecting" });
-    const child = spawn(resolvedRuntime.binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const executableDirectory = path.dirname(executablePath);
+    const inheritedPath = this.environment.PATH ?? this.environment.Path ?? this.environment.path ?? "";
+    const childEnvironment = { ...this.environment };
+    delete childEnvironment.Path;
+    delete childEnvironment.path;
+    childEnvironment.PATH = [executableDirectory, inheritedPath].filter(Boolean).join(path.delimiter);
+    const child = spawn(executablePath, args, {
+      env: childEnvironment,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true
+    });
     this.#process = child;
     this.#client = new JsonlClient({ input: child.stdin, output: child.stdout });
     this.#client.on("notification", (event) => this.emit("event", normalizeCodexEvent(event)));
@@ -130,55 +143,14 @@ export class CodexRuntime extends EventEmitter {
     this.emit("status", { state: "stopped" });
   }
 
-  #resolveRuntime() {
-    const key = `${process.platform}-${process.arch}`;
-    const filename = process.platform === "win32" ? "codex-app-server.exe" : "codex-app-server";
-    const codeModeHostFilename = process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host";
-    const runtimeRoot = path.join(this.resourcesPath, "runtime");
-    const manifestPath = path.join(runtimeRoot, "manifest.json");
-    if (existsSync(manifestPath)) {
-      try {
-        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-        const entry = manifest.platforms?.[key];
-        const expectedPath = `${key}/bin/${filename}`;
-        const expectedCodeModeHostPath = `${key}/bin/${codeModeHostFilename}`;
-        if (
-          manifest.schemaVersion === 2
-          && manifest.runtimeKind === "app-server-package"
-          && entry?.path === expectedPath
-          && entry?.codeModeHostPath === expectedCodeModeHostPath
-          && /^[a-f0-9]{64}$/.test(entry.sha256 ?? "")
-          && /^[a-f0-9]{64}$/.test(entry.codeModeHostSha256 ?? "")
-        ) {
-          const candidate = path.join(runtimeRoot, entry.path);
-          const codeModeHost = path.join(runtimeRoot, entry.codeModeHostPath);
-          if (existsSync(candidate) && existsSync(codeModeHost)) {
-            if (process.platform !== "win32") {
-              accessSync(candidate, constants.X_OK);
-              accessSync(codeModeHost, constants.X_OK);
-            }
-            const actual = createHash("sha256").update(readFileSync(candidate)).digest("hex");
-            const actualCodeModeHost = createHash("sha256").update(readFileSync(codeModeHost)).digest("hex");
-            if (actual === entry.sha256 && actualCodeModeHost === entry.codeModeHostSha256) {
-              return { binary: candidate, directAppServer: true };
-            }
-          }
-        }
-      } catch (error) {
-        this.emit("diagnostic", `Bundled runtime validation failed: ${error.message}`);
-      }
+  #resolveExecutable() {
+    if (!this.executablePath || !path.isAbsolute(this.executablePath)) return null;
+    try {
+      accessSync(this.executablePath, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+      return this.executablePath;
+    } catch {
+      return null;
     }
-    if (!this.allowDevelopmentRuntime) return null;
-    const developmentFilename = process.platform === "win32" ? "codex.exe" : "codex";
-    if (process.env.PIXICE_CODEX_PATH && existsSync(process.env.PIXICE_CODEX_PATH)) {
-      return { binary: process.env.PIXICE_CODEX_PATH, directAppServer: false };
-    }
-    for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
-      if (!directory) continue;
-      const installed = path.join(directory, developmentFilename);
-      if (existsSync(installed)) return { binary: installed, directAppServer: false };
-    }
-    return null;
   }
 
   #handleSpawnError(child, error) {

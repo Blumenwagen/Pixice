@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { WorkflowWorkspace } from "../src/components/workflows/WorkflowWorkspace.jsx";
+import { WorkflowPreview, WorkflowWorkspace } from "../src/components/workflows/WorkflowWorkspace.jsx";
 
 const workflow = {
   id: "workflow-1",
@@ -61,6 +61,18 @@ function createApi() {
 }
 
 describe("WorkflowWorkspace", () => {
+  it("opens a tabbed workflow from list data when the bridge has no read method", async () => {
+    const api = createApi();
+    delete api.workflows.read;
+    api.workflows.list.mockResolvedValueOnce({ data: [{ ...workflow, graph: undefined }] });
+
+    render(<WorkflowPreview api={api} projectId="project-1" workflowId="workflow-1" workflowName="Release workflow" tabbed />);
+
+    expect(await screen.findByRole("button", { name: "Workflow settings" })).toBeInTheDocument();
+    expect(api.workflows.list).toHaveBeenCalled();
+    expect(screen.queryByText(/workflow unavailable/i)).not.toBeInTheDocument();
+  });
+
   it("uses a settings-style workflow sidebar with a back action", async () => {
     const api = createApi();
     const onBack = vi.fn();

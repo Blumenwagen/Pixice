@@ -94,6 +94,44 @@ describe("workflow preload bridge", () => {
     expect(invoke).toHaveBeenNthCalledWith(3, "github:logout", undefined);
   });
 
+  it("exposes thread-scoped Preview context updates", async () => {
+    const { api, invoke } = loadPreload();
+    const payload = {
+      threadId: "thread-1",
+      context: { open: true, tabCount: 1, active: { kind: "browser", id: "browser-1" } }
+    };
+
+    await api.preview.setContext(payload);
+
+    expect(invoke).toHaveBeenCalledWith("preview:context", payload);
+  });
+
+  it("exposes independent provider lifecycle actions", async () => {
+    const { api, invoke } = loadPreload();
+    const codex = { provider: "codex" };
+    const claude = { provider: "claude" };
+
+    await api.providers.list();
+    await api.providers.install(codex);
+    await api.providers.locate({ ...codex, executablePath: "/tools/codex" });
+    await api.providers.repair(claude);
+    await api.providers.checkUpdates();
+    await api.providers.checkUpdates(codex);
+    await api.providers.update(claude);
+    await api.providers.login(claude);
+    await api.providers.logout(claude);
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "providers:list", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(2, "providers:install", codex);
+    expect(invoke).toHaveBeenNthCalledWith(3, "providers:locate", { ...codex, executablePath: "/tools/codex" });
+    expect(invoke).toHaveBeenNthCalledWith(4, "providers:repair", claude);
+    expect(invoke).toHaveBeenNthCalledWith(5, "providers:check-updates", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(6, "providers:check-updates", codex);
+    expect(invoke).toHaveBeenNthCalledWith(7, "providers:update", claude);
+    expect(invoke).toHaveBeenNthCalledWith(8, "providers:login", claude);
+    expect(invoke).toHaveBeenNthCalledWith(9, "providers:logout", claude);
+  });
+
   it("exposes the Instrument Preview bridge", async () => {
     const { api, invoke } = loadPreload();
 

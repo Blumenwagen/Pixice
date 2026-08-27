@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CodexRuntime, codexAppServerArgs } from "../electron/runtime/codex-runtime.mjs";
@@ -25,12 +24,12 @@ describe("CodexRuntime lifecycle", () => {
     expect(codexAppServerArgs()).toEqual(["app-server"]);
   });
 
-  it("does not append a subcommand for the packaged app-server entrypoint", () => {
-    expect(codexAppServerArgs("Stay focused.", { direct: true })).toEqual([
+  it("always launches the external Codex CLI through its app-server subcommand", () => {
+    expect(codexAppServerArgs("Stay focused.")).toEqual([
       "--config",
-      `developer_instructions=${JSON.stringify("Stay focused.")}`
+      `developer_instructions=${JSON.stringify("Stay focused.")}`,
+      "app-server"
     ]);
-    expect(codexAppServerArgs("", { direct: true })).toEqual([]);
   });
 
   it("reports missing Pixice guidance instead of silently dropping it", async () => {
@@ -38,13 +37,9 @@ describe("CodexRuntime lifecycle", () => {
     temporaryDirectories.push(directory);
     const binary = path.join(directory, process.platform === "win32" ? "codex.exe" : "codex");
     await writeFile(binary, "fake codex", { mode: 0o755 });
-    const previous = process.env.PIXICE_CODEX_PATH;
-    process.env.PIXICE_CODEX_PATH = binary;
-
     const runtime = new CodexRuntime({
-      resourcesPath: directory,
+      executablePath: binary,
       clientVersion: "test",
-      allowDevelopmentRuntime: true,
       developerInstructionsPath: path.join(directory, "missing-instructions.md")
     });
     const errors = [];
@@ -53,36 +48,14 @@ describe("CodexRuntime lifecycle", () => {
       await expect(runtime.start()).resolves.toBe(false);
       expect(errors).toEqual([expect.objectContaining({ code: "developer_instructions_unavailable" })]);
     } finally {
-      if (previous === undefined) delete process.env.PIXICE_CODEX_PATH;
-      else process.env.PIXICE_CODEX_PATH = previous;
       await runtime.stop();
     }
   });
 
-  it("rejects a packaged runtime that is missing the code-mode host", async () => {
+  it("does not resolve a bundled runtime or a relative executable", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "pixice-runtime-"));
     temporaryDirectories.push(directory);
-    const key = `${process.platform}-${process.arch}`;
-    const filename = process.platform === "win32" ? "codex-app-server.exe" : "codex-app-server";
-    const runtimeDirectory = path.join(directory, "runtime", key, "bin");
-    const binary = path.join(runtimeDirectory, filename);
-    const bytes = Buffer.from("fake codex");
-    await mkdir(runtimeDirectory, { recursive: true });
-    await writeFile(binary, bytes, { mode: 0o755 });
-    await writeFile(path.join(directory, "runtime", "manifest.json"), JSON.stringify({
-      schemaVersion: 2,
-      runtimeKind: "app-server-package",
-      platforms: {
-        [key]: {
-          path: `${key}/bin/${filename}`,
-          sha256: createHash("sha256").update(bytes).digest("hex"),
-          codeModeHostPath: `${key}/bin/${process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host"}`,
-          codeModeHostSha256: "0".repeat(64)
-        }
-      }
-    }));
-
-    const runtime = new CodexRuntime({ resourcesPath: directory, clientVersion: "test", allowDevelopmentRuntime: false });
+    const runtime = new CodexRuntime({ executablePath: "codex", clientVersion: "test" });
     const errors = [];
     runtime.on("recoverable-error", (error) => errors.push(error));
     await expect(runtime.start()).resolves.toBe(false);
@@ -93,11 +66,8 @@ describe("CodexRuntime lifecycle", () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "pixice-runtime-"));
     temporaryDirectories.push(directory);
     const binary = path.join(directory, process.platform === "win32" ? "codex.exe" : "codex");
-    await writeFile(binary, "not executable", { mode: 0o600 });
-    const previous = process.env.PIXICE_CODEX_PATH;
-    process.env.PIXICE_CODEX_PATH = binary;
-
-    const runtime = new CodexRuntime({ resourcesPath: directory, clientVersion: "test", allowDevelopmentRuntime: true });
+    await writeFile(binary, "#!/definitely/missing/interpreter\n", { mode: 0o755 });
+    const runtime = new CodexRuntime({ executablePath: binary, clientVersion: "test" });
     const errors = [];
     runtime.on("recoverable-error", (error) => errors.push(error));
     try {
@@ -105,8 +75,6 @@ describe("CodexRuntime lifecycle", () => {
       expect(errors).toEqual([expect.objectContaining({ code: "runtime_spawn_failed" })]);
       await expect(runtime.stop()).resolves.toBeUndefined();
     } finally {
-      if (previous === undefined) delete process.env.PIXICE_CODEX_PATH;
-      else process.env.PIXICE_CODEX_PATH = previous;
       await runtime.stop();
     }
   });

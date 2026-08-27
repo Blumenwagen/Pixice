@@ -36,13 +36,13 @@ pnpm install:local:macos
 
 The installer stages the new bundle, waits for the current Pixice process to quit, preserves the installed app as a timestamped backup, swaps the bundle atomically, and relaunches Pixice once. It uses a detached one-shot worker; do not replace it with `launchctl submit`, because macOS can infer `KeepAlive` for submitted script jobs and create a permanent relaunch loop.
 
-## Codex runtime release gate
+## Provider runtime release gate
 
-Development UI works without a bundled runtime and reports a recoverable runtime-unavailable state. Production builds use OpenAI's pinned Codex app-server packages under `resources/runtime/<platform>/`. The manifest records the official archive URL and digest plus hashes for the app-server and code-mode host. Run `pnpm runtime:verify` before packaging. Run `node scripts/sync-codex-runtime.mjs` only when intentionally updating the pinned release.
+Pixice does not bundle Codex or Claude Code. Desktop builds discover external provider executables, persist their absolute paths, and keep a missing or broken provider isolated from the rest of the app. Release packages retain the Claude Agent SDK JavaScript files but exclude its platform runtime packages. Clean-machine release testing must cover provider installation, locate, repair, authentication, and startup with neither provider present.
 
 ## Claude runtime
 
-Packaged Pixice builds can sign in to Anthropic from **Settings → Providers** or directly from the Claude tab in the model picker. Pixice also reuses credentials from an installed Claude Code CLI. It resolves `claude` from `PATH` and the usual macOS and per-user install locations; `PIXICE_CLAUDE_PATH` selects an explicit executable. When no external CLI is present, Pixice falls back to the platform executable bundled and unpacked with the Claude Agent SDK.
+Packaged Pixice builds can sign in to Anthropic from **Settings → Providers** or directly from the Claude tab in the model picker. Pixice reuses an external Claude Code installation and its credentials. It checks a saved absolute path, `PIXICE_CLAUDE_PATH`, per-user and package-manager locations, then the inherited `PATH`. Pixice does not fall back to the platform executable shipped as an optional Claude Agent SDK dependency.
 
 ## GitHub access
 

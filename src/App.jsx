@@ -15,6 +15,8 @@ import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
 import { InlineVisualization, parseVisualizationSpec } from "./components/InlineVisualization.jsx";
 import { InstrumentHost } from "./components/instruments/InstrumentHost.jsx";
 import { ProjectToolsSidebar, ProjectToolsWorkspace } from "./components/instruments/ProjectToolsWorkspace.jsx";
+import { TaskPreviewContent } from "./components/TaskPreviewHost.jsx";
+import { WorkflowPreview } from "./components/workflows/WorkflowWorkspace.jsx";
 import { DitherAreaChart, DitherBarChart } from "./components/dither-kit/DitherChart.jsx";
 import { UsageHeatMap } from "./components/dither-kit/UsageHeatMap.jsx";
 import { NumberTicker } from "./components/NumberTicker.jsx";
@@ -37,6 +39,7 @@ import {
   projectCollabAgents,
   removeLocalUserMessage,
   reviewFiles,
+  stripPreviewContext,
   turnIsCompacting,
   threadStatus,
   threadTitle
@@ -44,9 +47,8 @@ import {
 
 const EMPTY_EXTENSIONS = { skills: [], apps: [], mcp: [], errors: [] };
 const EMPTY_BROWSER_STATE = { native: false, activeTabId: null, tabs: [] };
-const EMPTY_PREVIEW_WORKSPACE = { open: false, browserState: EMPTY_BROWSER_STATE, fileTabs: [], instrumentTabs: [], activeTabId: null };
+const EMPTY_PREVIEW_WORKSPACE = { open: false, browserState: EMPTY_BROWSER_STATE, fileTabs: [], instrumentTabs: [], customTabs: [], activeTabId: null };
 const EMPTY_UPDATE_STATUS = { supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." };
-const EMPTY_CODEX_UPDATE_STATUS = { supported: false, enabled: true, state: "unsupported", currentVersion: "unknown", availableVersion: null, installedVersion: null, restartRequired: false, prompt: false, message: "Codex update status is unavailable." };
 const EMPTY_GITHUB_STATUS = { available: false, authenticated: false, source: null, version: null, account: null, message: "Checking GitHub connection…" };
 const EMPTY_AGENT_BEHAVIORS = [];
 const WorkspaceOpenContext = createContext(null);
@@ -60,7 +62,7 @@ const PREVIEW_SPLIT_GAP = 8;
 const PREVIEW_CHAT_WIDTH_KEY = "pixice.previewChatWidth";
 const MAX_COMPOSER_ATTACHMENTS = 10;
 const MAX_COMPOSER_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-const MIN_COMPOSER_TEXTAREA_HEIGHT = 54;
+const MIN_COMPOSER_TEXTAREA_HEIGHT = 24;
 const MAX_COMPOSER_TEXTAREA_HEIGHT = 240;
 const MAX_RETAINED_PREVIEW_WORKSPACES = 2;
 const THREAD_COMPLETIONS_SEEN_KEY = "pixice.threadCompletionsSeen";
@@ -107,6 +109,43 @@ const MOTION_EASE = [0.22, 1, 0.36, 1];
 const PREVIEW_TAB_SPRING = { type: "spring", stiffness: 460, damping: 38, mass: 0.72 };
 const NewTaskIcon = APP_ICONS.newTask;
 const BoardIcon = APP_ICONS.board;
+let previewTabSequence = 0;
+
+function newPreviewChooserTab() {
+  previewTabSequence += 1;
+  return { id: `new:${Date.now()}:${previewTabSequence}`, kind: "new", title: "New tab", payload: {} };
+}
+
+export function previewContextForWorkspace(workspace) {
+  const browserTabs = workspace?.browserState?.tabs ?? [];
+  const fileTabs = workspace?.fileTabs ?? [];
+  const instrumentTabs = workspace?.instrumentTabs ?? [];
+  const customTabs = workspace?.customTabs ?? [];
+  const tabCount = browserTabs.length + fileTabs.length + instrumentTabs.length + customTabs.length;
+  if (!workspace?.open) return { open: false, tabCount, active: null };
+  const activeId = workspace.activeTabId;
+  const browser = browserTabs.find((tab) => tab.id === activeId);
+  if (browser) return { open: true, tabCount, active: { kind: "browser", id: browser.id, title: browser.title, url: browser.url } };
+  const file = fileTabs.find((tab) => tab.id === activeId);
+  if (file) return { open: true, tabCount, active: { kind: "file", id: file.id, title: file.title, path: file.path, editable: file.editable, dirty: file.dirty } };
+  const instrument = instrumentTabs.find((tab) => `instrument:${tab.id}` === activeId);
+  if (instrument) return { open: true, tabCount, active: { kind: "instrument", id: activeId, title: instrument.document?.title, instrumentId: instrument.id, documentVersion: instrument.documentVersion } };
+  const custom = customTabs.find((tab) => tab.id === activeId);
+  if (custom) return {
+    open: true,
+    tabCount,
+    active: {
+      kind: custom.kind,
+      id: custom.id,
+      title: custom.title,
+      projectId: custom.payload?.projectId,
+      taskId: custom.payload?.taskId,
+      proposalId: custom.payload?.proposalId,
+      workflowId: custom.payload?.workflowId
+    }
+  };
+  return { open: true, tabCount, active: null };
+}
 
 export function horizontalPopoverShift(popoverRect, boundaryRect, gutter = 8) {
   const popoverWidth = popoverRect.width ?? popoverRect.right - popoverRect.left;
@@ -1007,13 +1046,99 @@ function PreviewTabSurface({ workspaceId, reduceMotion }) {
   );
 }
 
-function BrowserPanel({ api, workspaceId, state, onState, onClose, onBrowserClose, projectId, fileTabs, instrumentTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource }) {
+function PreviewCustomTabIcon({ kind }) {
+  if (kind === "workflow") return <TreeStructure size={12} />;
+  if (kind === "task") return <Circle size={12} />;
+  if (kind === "plan") return <Gauge size={12} />;
+  if (kind === "new") return <Plus size={12} />;
+  return <File size={12} />;
+}
+
+function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChooseCustom }) {
+  const [mode, setMode] = useState(null);
+  const [path, setPath] = useState("");
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const loadItems = useCallback(async (nextMode) => {
+    setMode(nextMode);
+    setLoading(true);
+    setError("");
+    try {
+      const response = nextMode === "task"
+        ? await api?.board?.list?.({ projectId })
+        : await api?.workflows?.list?.({ projectId });
+      setItems(response?.data ?? []);
+    } catch (cause) {
+      setItems([]);
+      setError(cause.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [api, projectId]);
+
+  const openFile = async (event) => {
+    event.preventDefault();
+    if (!path.trim()) return;
+    setLoading(true);
+    setError("");
+    try {
+      await onChooseFile(path.trim());
+    } catch (cause) {
+      setError(cause.message);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="preview-new-tab">
+      <div className="preview-new-tab-inner">
+        <div className="preview-new-tab-grid" aria-label="New preview tab options">
+          <button type="button" onClick={() => void onChooseBrowser()}><Globe size={16} /><span><strong>Browser</strong><small>Open a web page</small></span></button>
+          <button type="button" onClick={() => { setMode("file"); setItems([]); setError(""); }}><Files size={16} /><span><strong>File</strong><small>Open a project file</small></span></button>
+          <button type="button" onClick={() => void loadItems("task")}><Circle size={16} /><span><strong>Work item</strong><small>Open a Board item</small></span></button>
+          <button type="button" onClick={() => void loadItems("workflow")}><TreeStructure size={16} /><span><strong>Workflow</strong><small>Open a workflow canvas</small></span></button>
+        </div>
+        {mode === "file" && (
+          <form className="preview-new-tab-file" onSubmit={openFile}>
+            <File size={14} />
+            <input autoFocus aria-label="Project file path" placeholder="Path inside this project" value={path} onChange={(event) => setPath(event.target.value)} />
+            <button type="submit" disabled={!path.trim() || loading}>{loading ? <SpinnerGap className="spin-icon" size={13} /> : "Open"}</button>
+          </form>
+        )}
+        {(mode === "task" || mode === "workflow") && (
+          <div className="preview-new-tab-list" aria-label={mode === "task" ? "Work items" : "Workflows"}>
+            {loading ? <span><SpinnerGap className="spin-icon" size={14} />Loading</span> : items.map((item) => (
+              <button type="button" key={item.id} onClick={() => onChooseCustom({
+                id: `${mode}:${item.id}`,
+                kind: mode,
+                title: item.title ?? item.name ?? (mode === "task" ? "Work item" : "Workflow"),
+                payload: mode === "task"
+                  ? { projectId, taskId: item.id, reason: "edit", actorKind: "user" }
+                  : { projectId, workflowId: item.id, workflowName: item.name, reason: "open" }
+              })}>
+                {mode === "task" ? <Circle size={13} /> : <TreeStructure size={13} />}
+                <span>{item.title ?? item.name}</span>
+              </button>
+            ))}
+            {!loading && !items.length && !error && <span>No {mode === "task" ? "work items" : "workflows"} yet.</span>}
+          </div>
+        )}
+        {error && <p className="preview-new-tab-error"><Warning size={13} />{error}</p>}
+      </div>
+    </div>
+  );
+}
+
+function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onClose, onBrowserClose, projectId, fileTabs, instrumentTabs, customTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onCustomTabOpen, onCustomTabUpdate, onCustomTabClose, onNewTab, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource }) {
   const viewportRef = useRef(null);
   const systemReducedMotion = useReducedMotion();
   const isPresent = useIsPresent();
   const activeFile = fileTabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeInstrument = instrumentTabs.find((tab) => `instrument:${tab.id}` === activeTabId) ?? null;
-  const activeTab = activeFile || activeInstrument ? null : state.tabs.find((tab) => tab.id === activeTabId) ?? state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
+  const activeCustomTab = customTabs.find((tab) => tab.id === activeTabId) ?? null;
+  const activeTab = activeFile || activeInstrument || activeCustomTab ? null : state.tabs.find((tab) => tab.id === activeTabId) ?? state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
   const [address, setAddress] = useState(activeTab?.url ?? "");
 
   useEffect(() => setAddress(activeTab?.url ?? ""), [activeTab?.id, activeTab?.url]);
@@ -1023,11 +1148,6 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, onBrowserClos
       return undefined;
     }
     const updateBounds = () => {
-      const previewHost = viewportRef.current?.closest(".browser-panel");
-      if (previewHost?.dataset.workflowPreviewHost === "true" || previewHost?.dataset.previewOverlayHost === "true") {
-        void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
-        return;
-      }
       const rect = viewportRef.current?.getBoundingClientRect();
       if (!rect) return;
       void api.browser.setViewport({
@@ -1039,15 +1159,9 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, onBrowserClos
     updateBounds();
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(updateBounds) : null;
     observer?.observe(viewportRef.current);
-    const previewHost = viewportRef.current.closest(".browser-panel");
-    const previewObserver = typeof MutationObserver === "function" && previewHost
-      ? new MutationObserver(updateBounds)
-      : null;
-    previewObserver?.observe(previewHost, { attributes: true, attributeFilter: ["data-workflow-preview-host", "data-preview-overlay-host"] });
     window.addEventListener("resize", updateBounds);
     return () => {
       observer?.disconnect();
-      previewObserver?.disconnect();
       window.removeEventListener("resize", updateBounds);
       void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
     };
@@ -1131,11 +1245,21 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, onBrowserClos
               <IconButton label={`Close ${instrument.document.title}`} onClick={() => onInstrumentClose(instrument.id)}><X size={11} /></IconButton>
             </div>
           ))}
-          <IconButton label="New browser tab" className="browser-new-tab" onClick={() => void run(() => api.browser.create({ workspaceId }), true)}><Plus size={15} /></IconButton>
+          {customTabs.map((tab) => (
+            <div className={`browser-tab custom-tab${tab.id === activeTabId ? " active" : ""}`} role="presentation" key={tab.id}>
+              {tab.id === activeTabId && <PreviewTabSurface workspaceId={workspaceId} reduceMotion={systemReducedMotion} />}
+              <button role="tab" aria-selected={tab.id === activeTabId} onClick={() => onActiveTabChange(tab.id)}>
+                <PreviewCustomTabIcon kind={tab.kind} />
+                <span>{tab.title || "Preview"}</span>
+              </button>
+              <IconButton label={`Close ${tab.title || "preview"}`} onClick={() => onCustomTabClose(tab.id)}><X size={11} /></IconButton>
+            </div>
+          ))}
+          <IconButton label="New preview tab" className="browser-new-tab" onClick={onNewTab}><Plus size={15} /></IconButton>
         </div>
         <IconButton label="Close preview workspace" className="browser-close" onClick={onClose}><X size={15} /></IconButton>
       </div>
-      {activeInstrument ? (
+      {activeCustomTab ? null : activeInstrument ? (
         <div className="file-navigation instrument-navigation">
           <span className="file-breadcrumb"><Gauge size={14} /><span>Native Instrument</span></span>
           <div className="file-actions"><span>v{activeInstrument.documentVersion}</span></div>
@@ -1161,7 +1285,45 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, onBrowserClos
         </div>
       )}
       {activeTab?.error && <div className="browser-error"><Warning size={13} />{activeTab.error}</div>}
-      {activeInstrument ? (
+      {activeCustomTab?.kind === "new" ? (
+        <PreviewNewTab
+          api={api}
+          projectId={projectId}
+          onChooseBrowser={async () => {
+            const next = await api.browser.create({ workspaceId });
+            onBrowserCreated(activeCustomTab.id, next);
+          }}
+          onChooseFile={async (path) => {
+            await onOpenResource(path);
+            onCustomTabClose(activeCustomTab.id, { ensureTab: false });
+          }}
+          onChooseCustom={(tab) => {
+            onCustomTabClose(activeCustomTab.id, { ensureTab: false });
+            onCustomTabOpen(tab);
+          }}
+        />
+      ) : activeCustomTab?.kind === "workflow" ? (
+        <WorkflowPreview
+          api={api}
+          projectId={activeCustomTab.payload.projectId}
+          workflowId={activeCustomTab.payload.workflowId}
+          workflowName={activeCustomTab.payload.workflowName ?? activeCustomTab.title}
+          reason={activeCustomTab.payload.reason}
+          tabbed
+          onTitleChange={(title) => onCustomTabUpdate(activeCustomTab.id, { title })}
+          onOpenWorkspace={(workflowId) => window.dispatchEvent(new CustomEvent("pixice:open-workflow-workspace", { detail: { workflowId } }))}
+          onClose={() => onCustomTabClose(activeCustomTab.id)}
+        />
+      ) : activeCustomTab?.kind === "task" || activeCustomTab?.kind === "plan" ? (
+        <TaskPreviewContent
+          api={api}
+          target={activeCustomTab.payload}
+          tabbed
+          onTitleChange={(title) => onCustomTabUpdate(activeCustomTab.id, { title })}
+          onOpenWorkspace={() => window.dispatchEvent(new CustomEvent("pixice:open-board-workspace", { detail: activeCustomTab.payload }))}
+          onClose={() => onCustomTabClose(activeCustomTab.id)}
+        />
+      ) : activeInstrument ? (
         <InstrumentHost
           instrument={activeInstrument}
           onOpenResource={onOpenResource}
@@ -1182,7 +1344,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onClose, onBrowserClos
             </div>
           )}
         </div>
-      ) : <div className="file-empty"><PreviewIcon size={28} /><strong>Open something</strong><small>Use + for a browser tab or select a file link in the conversation.</small></div>}
+      ) : <div className="file-empty"><PreviewIcon size={28} /><strong>Open something</strong><small>Use + to open a browser, file, work item, or Workflow.</small></div>}
     </motion.section>
   );
 }
@@ -1642,7 +1804,7 @@ function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sen
 
 function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds, imagePrompt = null, imageResolution = null, promptAnchorId = null, openedByAgent = false, sentToMain = false, timestamp = null, showTimestamp = true, onImageRevision = null, imageRevisionDisabled = false }) {
   if (item.type === "userMessage") {
-    const text = item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    const text = stripPreviewContext(item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
     const images = item.content?.filter((part) => part.type === "image" && part.url) ?? [];
     if (!text && images.length === 0) return null;
     return (
@@ -1709,11 +1871,10 @@ function promptAnchorId(turn, item, index) {
 }
 
 function userMessageText(item) {
-  return (item.content ?? [])
+  return stripPreviewContext((item.content ?? [])
     .filter((part) => part.type === "text" && part.text)
     .map((part) => part.text)
-    .join("\n")
-    .trim();
+    .join("\n"));
 }
 
 function compactPreviewText(text) {
@@ -2748,14 +2909,20 @@ function ConversationWorkspace({
   previewWorkspaceId,
   browserState,
   onBrowserState,
+  onPreviewBrowserCreated,
   previewFileTabs,
   previewInstrumentTabs,
+  previewCustomTabs,
   previewActiveTabId,
   onPreviewActiveTabChange,
   onPreviewBrowserClose,
   onPreviewFileUpdate,
   onPreviewFileClose,
   onPreviewInstrumentClose,
+  onPreviewCustomTabOpen,
+  onPreviewCustomTabUpdate,
+  onPreviewCustomTabClose,
+  onPreviewNewTab,
   onPreviewInstrumentRefresh,
   onPreviewInstrumentEvent,
   onPreviewInstrumentInvoke,
@@ -2995,16 +3162,22 @@ function ConversationWorkspace({
             workspaceId={previewWorkspaceId}
             state={browserState}
             onState={onBrowserState}
+            onBrowserCreated={onPreviewBrowserCreated}
             onClose={onPreviewToggle}
             projectId={project?.id}
             fileTabs={previewFileTabs}
             instrumentTabs={previewInstrumentTabs}
+            customTabs={previewCustomTabs}
             activeTabId={previewActiveTabId}
             onActiveTabChange={onPreviewActiveTabChange}
             onBrowserClose={onPreviewBrowserClose}
             onFileUpdate={onPreviewFileUpdate}
             onFileClose={onPreviewFileClose}
             onInstrumentClose={onPreviewInstrumentClose}
+            onCustomTabOpen={onPreviewCustomTabOpen}
+            onCustomTabUpdate={onPreviewCustomTabUpdate}
+            onCustomTabClose={onPreviewCustomTabClose}
+            onNewTab={onPreviewNewTab}
             onInstrumentRefresh={onPreviewInstrumentRefresh}
             onInstrumentEvent={onPreviewInstrumentEvent}
             onInstrumentInvoke={onPreviewInstrumentInvoke}
@@ -3276,14 +3449,20 @@ function FileDiff({ file }) {
 }
 
 function ReviewWorkspace({ project, review, loading, onRefresh, onExternal }) {
+  const currentReview = review?.projectId === project?.id ? review : null;
   const files = useMemo(
-    () => reviewFiles(review?.diff, review?.repository?.dirtyPaths),
-    [review?.diff, review?.repository?.dirtyPaths]
+    () => reviewFiles(currentReview?.diff, currentReview?.repository?.dirtyPaths),
+    [currentReview?.diff, currentReview?.repository?.dirtyPaths]
   );
   const [selectedPath, setSelectedPath] = useState(null);
-  useEffect(() => setSelectedPath(files[0]?.path ?? null), [files]);
+  useEffect(() => {
+    setSelectedPath((current) => current && files.some((file) => file.path === current)
+      ? current
+      : files[0]?.path ?? null);
+  }, [files]);
   const selected = files.find((file) => file.path === selectedPath) ?? files[0];
-  const dirtyCount = review?.repository?.dirtyPaths?.length ?? 0;
+  const dirtyCount = currentReview?.repository?.dirtyPaths?.length ?? 0;
+  const blockingLoad = loading && !currentReview;
 
   return (
     <main className="main-canvas workspace">
@@ -3292,16 +3471,16 @@ function ReviewWorkspace({ project, review, loading, onRefresh, onExternal }) {
         <div>
           <span>Working tree</span>
           <h1>{project?.displayName ?? "Review"}</h1>
-          <p>{loading ? "Refreshing Git state…" : `${dirtyCount} changed file${dirtyCount === 1 ? "" : "s"}`}</p>
+          <p>{`${dirtyCount} changed file${dirtyCount === 1 ? "" : "s"}`}</p>
         </div>
         <div>
           <button onClick={() => onExternal("terminal")}><TerminalWindow size={16} />Terminal</button>
           <button onClick={() => onExternal("editor", selected?.path)}><Desktop size={16} />Editor</button>
           <button onClick={() => onExternal("reveal")}><FolderOpen size={16} />Reveal</button>
-          <IconButton label="Refresh review" onClick={onRefresh}><ArrowClockwise size={17} /></IconButton>
+          <IconButton label="Refresh review" onClick={onRefresh}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
         </div>
       </div>
-      {loading ? <div className="loading-state"><SpinnerGap className="spin-icon" size={20} />Reading Git changes…</div> : files.length === 0 ? (
+      {blockingLoad ? <div className="loading-state"><SpinnerGap className="spin-icon" size={20} />Reading Git changes…</div> : files.length === 0 ? (
         <div className="empty-state compact"><CheckCircle size={28} weight="fill" /><h2>Working tree is clean</h2><p>Changes made by Codex will appear here.</p></div>
       ) : (
         <div className="review-layout">
@@ -3465,79 +3644,179 @@ function providerAccountDetail(provider) {
 
 function providerIsAuthenticated(provider) {
   if (!provider) return false;
-  return provider.authenticated ?? (Boolean(provider.account) || !provider.requiresAuth);
+  return provider.authenticated ?? (Boolean(provider.account) || provider.requiresAuth === false);
 }
 
-function ProvidersSettings({ providers, models, loading, onRefresh, onLogin }) {
-  const [busyProvider, setBusyProvider] = useState(null);
+const PROVIDER_SETTINGS_DEFINITIONS = [
+  { id: "codex", label: "OpenAI Codex", runtimeLabel: "Codex", model: "gpt" },
+  { id: "claude", label: "Anthropic Claude", runtimeLabel: "Claude Code", model: "claude" }
+];
+
+function providerLifecycle(provider) {
+  const installed = provider.installed ?? Boolean(provider.executablePath || provider.connected);
+  const healthState = provider.health?.state;
+  const installBusy = Boolean(provider.installState?.operation && !["failed", "succeeded", "idle"].includes(provider.installState?.state));
+  const updateBusy = ["checking", "updating"].includes(provider.updateState?.state);
+  const busy = installBusy || updateBusy;
+  const requiresRepair = healthState === "broken" || (provider.compatible === false && healthState !== "missing" && (installed || healthState === undefined));
+  const missing = healthState === "missing" || (!installed && !requiresRepair);
+  const actionAvailable = (action, fallback) => provider.actions?.[action] ?? provider[`${action}Available`] ?? fallback;
+  return {
+    installed,
+    missing,
+    requiresRepair,
+    busy,
+    updateAvailable: provider.updateState?.state === "available" && Boolean(provider.updateState?.availableVersion),
+    detail: provider.updateState?.error || provider.updateState?.message || provider.installState?.error || provider.installState?.progress || provider.installState?.message || provider.health?.message || provider.status?.message || null,
+    actions: {
+      install: actionAvailable("install", missing && !busy),
+      locate: actionAvailable("locate", !busy),
+      repair: actionAvailable("repair", requiresRepair && !busy),
+      checkUpdate: actionAvailable("checkUpdate", installed && !requiresRepair && !busy),
+      update: actionAvailable("update", provider.updateState?.state === "available" && !busy),
+      login: actionAvailable("login", installed && !requiresRepair && !busy),
+      logout: actionAvailable("logout", installed && !requiresRepair && !busy)
+    }
+  };
+}
+
+function providerStatusLabel(provider, lifecycle, connected) {
+  if (provider.updateState?.state === "checking") return "Checking updates";
+  if (provider.updateState?.state === "updating") return "Updating";
+  if (lifecycle.busy) return provider.installState?.message || "Working";
+  if (lifecycle.missing) return "Not installed";
+  if (lifecycle.requiresRepair) return "Needs repair";
+  if (lifecycle.updateAvailable) return "Update available";
+  if (provider.externallyManagedAuth) return "Managed externally";
+  if (connected) return "Connected";
+  if (provider.status?.state === "unavailable") return "Unavailable";
+  return "Sign in required";
+}
+
+function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onAction }) {
+  const [providerOperations, setProviderOperations] = useState({});
   const [pendingProvider, setPendingProvider] = useState(null);
+  const [actionErrors, setActionErrors] = useState({});
   const bridgeModels = models.filter((model) => model.bridge?.eligible);
+  const providerById = new Map(providers.map((provider) => [provider.id, provider]));
+  const providerRows = PROVIDER_SETTINGS_DEFINITIONS.map((definition) => ({
+    ...definition,
+    ...(providerById.get(definition.id) ?? { id: definition.id })
+  }));
 
   useEffect(() => {
-    if (pendingProvider && providers.some((provider) => provider.id === pendingProvider && provider.account)) {
+    if (pendingProvider && providers.some((provider) => provider.id === pendingProvider && providerIsAuthenticated(provider))) {
       setPendingProvider(null);
     }
   }, [pendingProvider, providers]);
 
   useEffect(() => {
-    if (!pendingProvider) return undefined;
-    const refreshOnFocus = () => onRefresh();
+    const refreshOnFocus = () => { void onRefresh(); };
     window.addEventListener("focus", refreshOnFocus);
     return () => window.removeEventListener("focus", refreshOnFocus);
-  }, [onRefresh, pendingProvider]);
+  }, [onRefresh]);
 
   const startLogin = async (providerId) => {
     if (pendingProvider === providerId) {
       await onRefresh();
       return;
     }
-    setBusyProvider(providerId);
+    if (providerOperations[providerId]) return;
+    setProviderOperations((current) => ({ ...current, [providerId]: "login" }));
     try {
       const opened = await onLogin(providerId);
       if (opened !== false) setPendingProvider(providerId);
     } finally {
-      setBusyProvider(null);
+      setProviderOperations((current) => {
+        const next = { ...current };
+        delete next[providerId];
+        return next;
+      });
+    }
+  };
+
+  const runAction = async (providerId, action) => {
+    if (!onAction || providerOperations[providerId]) return;
+    setProviderOperations((current) => ({ ...current, [providerId]: action }));
+    setActionErrors((current) => ({ ...current, [providerId]: null }));
+    try {
+      await onAction(providerId, action);
+    } catch (cause) {
+      setActionErrors((current) => ({ ...current, [providerId]: cause.message || "Provider action failed." }));
+    } finally {
+      setProviderOperations((current) => {
+        const next = { ...current };
+        delete next[providerId];
+        return next;
+      });
     }
   };
 
   return (
     <div className="providers-pane">
       <div className="settings-controls">
-        <p className="providers-intro">Accounts stay with the provider. Pixice only opens its sign-in flow and reads the resulting account status.</p>
+        <p className="providers-intro">Set up each runtime separately. Accounts stay with the provider, and Pixice only reads the resulting connection status.</p>
         <IconButton label="Refresh providers" onClick={onRefresh} disabled={loading}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
       </div>
       <div className="provider-list" aria-label="AI providers">
         {loading && providers.length === 0 && <LoadingSkeleton label="Loading providers" rows={2} />}
-        {providers.map((provider) => {
+        {providerRows.map((provider) => {
           const providerModels = models.filter((model) => modelProvider(model) === provider.id).length;
           const connected = providerIsAuthenticated(provider);
           const waiting = pendingProvider === provider.id;
-          const busy = busyProvider === provider.id;
-          const label = provider.id === "codex" ? "OpenAI Codex" : provider.id === "claude" ? "Anthropic Claude" : provider.id;
+          const lifecycle = providerLifecycle(provider);
+          const busyOperation = providerOperations[provider.id] ?? null;
+          const busyAction = Boolean(busyOperation && busyOperation !== "login");
+          const busyLogin = busyOperation === "login";
+          const status = providerStatusLabel(provider, lifecycle, connected);
+          const actionError = actionErrors[provider.id];
+          const statusTone = lifecycle.missing || lifecycle.requiresRepair ? "offline" : connected || provider.externallyManagedAuth ? "ready" : "";
           return (
-            <article className="provider-card" aria-label={`${label} provider`} key={provider.id}>
-              <span className="provider-brand"><ModelBrandIcon model={provider.id === "claude" ? "claude" : "gpt"} provider={provider.id} /></span>
+            <article className="provider-card" aria-label={`${provider.label} provider`} key={provider.id} aria-busy={busyAction || lifecycle.busy || undefined}>
+              <span className="provider-brand"><ModelBrandIcon model={provider.model} provider={provider.id} /></span>
               <div className="provider-copy">
                 <div className="provider-heading">
-                  <h2>{label}</h2>
-                  <span className={`settings-status ${connected ? "ready" : "offline"}`}><i />{connected ? "Connected" : provider.status?.state === "unavailable" ? "Unavailable" : "Sign in required"}</span>
+                  <h2>{provider.label}</h2>
+                  <span className={`settings-status ${statusTone}`}><i />{status}</span>
                 </div>
-                <p>{providerAccountDetail(provider)}</p>
+                <p>{provider.externallyManagedAuth ? "Credentials are supplied by the environment." : providerAccountDetail(provider)}</p>
                 <div className="provider-meta">
-                  <span>{providerModels} model{providerModels === 1 ? "" : "s"}</span>
-                  <span>{provider.sessionCount} previous session{provider.sessionCount === 1 ? "" : "s"}</span>
-                  {provider.status?.message && <span>{provider.status.message}</span>}
+                  {lifecycle.installed && <span>{provider.version ? `Version ${provider.version}` : "Version unknown"}</span>}
+                  {lifecycle.updateAvailable && <span>Version {provider.updateState.availableVersion} available</span>}
+                  {provider.executablePath && <span className="provider-path" title={provider.executablePath}>{provider.executablePath}</span>}
+                  {Number.isFinite(providerModels) && <span>{providerModels} model{providerModels === 1 ? "" : "s"}</span>}
+                  {Number.isFinite(provider.sessionCount) && <span>{provider.sessionCount} previous session{provider.sessionCount === 1 ? "" : "s"}</span>}
+                  {lifecycle.detail && <span>{lifecycle.detail}</span>}
+                  {actionError && <span className="provider-error" role="alert">{actionError}</span>}
                 </div>
               </div>
-              {!connected && provider.loginAvailable && (
-                <button className="settings-action primary provider-login" disabled={busy || provider.status?.state === "unavailable"} onClick={() => startLogin(provider.id)}>
-                  {busy ? <><SpinnerGap className="spin-icon" size={15} />Opening…</> : waiting ? "Check sign-in" : "Sign in"}
-                </button>
-              )}
+              <div className="provider-actions">
+                {lifecycle.missing && <>
+                  <button className="settings-action primary" disabled={!lifecycle.actions.install || Boolean(busyOperation)} onClick={() => runAction(provider.id, "install")}>{busyOperation === "install" ? <><SpinnerGap className="spin-icon" size={14} />Installing…</> : "Install"}</button>
+                  <button className="settings-action" disabled={!lifecycle.actions.locate || Boolean(busyOperation)} onClick={() => runAction(provider.id, "locate")}>Locate</button>
+                </>}
+                {lifecycle.requiresRepair && <>
+                  <button className="settings-action primary" disabled={!lifecycle.actions.repair || Boolean(busyOperation)} onClick={() => runAction(provider.id, "repair")}>{busyOperation === "repair" ? <><SpinnerGap className="spin-icon" size={14} />Repairing…</> : "Repair"}</button>
+                  <button className="settings-action" disabled={!lifecycle.actions.locate || Boolean(busyOperation)} onClick={() => runAction(provider.id, "locate")}>Locate</button>
+                </>}
+                {!lifecycle.missing && !lifecycle.requiresRepair && lifecycle.updateAvailable && (
+                  <button className="settings-action primary" disabled={!lifecycle.actions.update || Boolean(busyOperation)} onClick={() => runAction(provider.id, "update")}>{busyOperation === "update" || provider.updateState?.state === "updating" ? <><SpinnerGap className="spin-icon" size={14} />Updating…</> : `Update to ${provider.updateState.availableVersion}`}</button>
+                )}
+                {!lifecycle.missing && !lifecycle.requiresRepair && !lifecycle.updateAvailable && lifecycle.actions.checkUpdate && (
+                  <button className="settings-action" disabled={Boolean(busyOperation) || lifecycle.busy} onClick={() => runAction(provider.id, "checkUpdates")}>{busyOperation === "checkUpdates" || provider.updateState?.state === "checking" ? <><SpinnerGap className="spin-icon" size={14} />Checking…</> : "Check update"}</button>
+                )}
+                {!lifecycle.missing && !lifecycle.requiresRepair && !provider.externallyManagedAuth && connected && lifecycle.actions.logout && (
+                  <button className="settings-action" disabled={busyAction || lifecycle.busy} onClick={() => runAction(provider.id, "logout")}>{busyOperation === "logout" ? <><SpinnerGap className="spin-icon" size={14} />Signing out…</> : "Sign out"}</button>
+                )}
+                {!lifecycle.missing && !lifecycle.requiresRepair && !provider.externallyManagedAuth && !connected && lifecycle.actions.login && (
+                  <button className="settings-action primary provider-login" disabled={busyLogin || lifecycle.busy} onClick={() => startLogin(provider.id)}>
+                    {busyLogin ? <><SpinnerGap className="spin-icon" size={15} />Opening…</> : waiting ? "Check sign-in" : "Sign in"}
+                  </button>
+                )}
+              </div>
             </article>
           );
         })}
-        {!loading && providers.length === 0 && <p className="settings-empty">No providers are available.</p>}
       </div>
       {bridgeModels.length > 0 && (
         <section className="bridge-model-overview" aria-labelledby="bridge-model-title">
@@ -3980,6 +4259,10 @@ function SettingsWorkspace({
   providersLoading,
   onRefreshProviders,
   onProviderLogin,
+  onProviderAction,
+  providerUpdateChecksEnabled,
+  onProviderUpdateChecksEnabledChange,
+  onCheckProviderUpdates,
   githubStatus,
   githubLoading,
   githubProgress,
@@ -4000,12 +4283,7 @@ function SettingsWorkspace({
   updateStatus,
   onCheckForUpdates,
   onDownloadUpdate,
-  onInstallUpdate,
-  codexUpdateStatus,
-  checkCodexUpdates,
-  onCheckCodexUpdatesChange,
-  onCheckForCodexUpdates,
-  onInstallCodexUpdate
+  onInstallUpdate
 }) {
   const selectedPage = SETTINGS_PAGES.find((candidate) => candidate.id === page) ?? SETTINGS_PAGES[0];
   const systemReducedMotion = useReducedMotion();
@@ -4261,6 +4539,7 @@ function SettingsWorkspace({
     );
   } else if (page === "updates") {
     const updateBusy = ["checking", "downloading", "protecting-data"].includes(updateStatus.state);
+    const providerUpdateBusy = providers.some((provider) => ["checking", "updating"].includes(provider.updateState?.state));
     const action = updateStatus.state === "available"
       ? { label: `Download ${updateStatus.availableVersion}`, run: onDownloadUpdate }
       : updateStatus.state === "downloaded" || updateStatus.state === "install-error"
@@ -4283,26 +4562,38 @@ function SettingsWorkspace({
             </div>
           )}
         </SettingsGroup>
-        <SettingsGroup title="Codex updates" description="Pixice uses the official OpenAI Codex release channel and verifies the downloaded runtime before installing it.">
-          <SettingsRow title="Current runtime" description={`Codex ${codexUpdateStatus.currentVersion}`}>
-            <span className="settings-value">{codexUpdateStatus.state === "available" ? `${codexUpdateStatus.availableVersion} available` : "Active"}</span>
+        <SettingsGroup title="Provider updates" description="Pixice checks each installed provider independently and uses that provider's official update path.">
+          <SettingsRow title="Automatic checks" description="Check quietly after startup and every six hours. Updates still require a click.">
+            <SettingsToggle label="Check provider updates automatically" checked={providerUpdateChecksEnabled} onChange={onProviderUpdateChecksEnabledChange} />
           </SettingsRow>
-          <SettingsRow title="Check when Pixice opens" description="Run a silent background check and show a toast only when a newer Codex runtime is available.">
-            <SettingsToggle label="Check for Codex updates when Pixice opens" checked={checkCodexUpdates} onChange={onCheckCodexUpdatesChange} />
+          <SettingsRow title="Check installed providers" description="Codex and Claude checks run independently. A failed provider does not block the other.">
+            <button className="settings-action" disabled={providersLoading || providerUpdateBusy} onClick={onCheckProviderUpdates}>
+              {(providersLoading || providerUpdateBusy) && <SpinnerGap className="spin-icon" size={14} />}Check all providers
+            </button>
           </SettingsRow>
-          <SettingsRow title="Update status" description={codexUpdateStatus.message}>
-            {codexUpdateStatus.state === "available" ? (
-              <button className="settings-action primary" onClick={onInstallCodexUpdate}>Update Codex</button>
-            ) : codexUpdateStatus.state === "updating" || codexUpdateStatus.state === "applying" ? (
-              <button className="settings-action" disabled><SpinnerGap className="spin-icon" size={14} />{codexUpdateStatus.state === "applying" ? "Restarting Codex…" : "Updating…"}</button>
-            ) : (
-              <button className="settings-action" disabled={!codexUpdateStatus.supported || codexUpdateStatus.state === "checking"} onClick={onCheckForCodexUpdates}>
-                {codexUpdateStatus.state === "checking" && <SpinnerGap className="spin-icon" size={14} />}{codexUpdateStatus.state === "checking" ? "Checking…" : "Check now"}
-              </button>
-            )}
-          </SettingsRow>
+          {PROVIDER_SETTINGS_DEFINITIONS.map((definition) => {
+            const provider = providers.find((candidate) => candidate.id === definition.id) ?? { id: definition.id };
+            const lifecycle = providerLifecycle(provider);
+            const updateState = provider.updateState ?? {};
+            const description = lifecycle.missing
+              ? `${definition.runtimeLabel} is not installed.`
+              : updateState.message || `${provider.version ? `Installed ${provider.version}` : "Installed version unknown"}.`;
+            return (
+              <SettingsRow key={definition.id} title={definition.label} description={description}>
+                {lifecycle.updateAvailable ? (
+                  <button className="settings-action primary" disabled={!lifecycle.actions.update || lifecycle.busy} onClick={() => onProviderAction(provider.id, "update")}>
+                    {updateState.state === "updating" && <SpinnerGap className="spin-icon" size={14} />}Update to {updateState.availableVersion}
+                  </button>
+                ) : (
+                  <button className="settings-action" disabled={!lifecycle.actions.checkUpdate || lifecycle.busy} onClick={() => onProviderAction(provider.id, "checkUpdates")}>
+                    {updateState.state === "checking" && <SpinnerGap className="spin-icon" size={14} />}{lifecycle.missing ? "Not installed" : "Check update"}
+                  </button>
+                )}
+              </SettingsRow>
+            );
+          })}
         </SettingsGroup>
-        <p className="settings-footnote">Pixice checks stay silent unless an update exists. Updating restarts only Codex, but running tasks and workflows may be interrupted.</p>
+        <p className="settings-footnote">Pixice app updates and provider updates remain separate. There is no Update all action.</p>
       </>
     );
   } else if (page === "runtime") {
@@ -4323,7 +4614,7 @@ function SettingsWorkspace({
       </>
     );
   } else if (page === "providers") {
-    pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} />;
+    pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} />;
   } else if (page === "github") {
     pageContent = <GitHubSettings status={githubStatus} loading={githubLoading} progress={githubProgress} onRefresh={onRefreshGitHub} onLogin={onGitHubLogin} onLogout={onGitHubLogout} />;
   } else if (page === "usage") {
@@ -4369,7 +4660,7 @@ function AttentionWorkspace({ attention, onResolve }) {
   );
 }
 
-function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate, onUpdate, onMove, onDelete, onOpenThread, onOpenTask, onScheduleMove, onStartTask }) {
+function BoardWorkspace({ project, threads, tasks, phases, attention, loading, onCreate, onCreatePhase, onUpdate, onMove, onDelete, onOpenThread, onOpenTask, onScheduleMove, onStartTask }) {
   return (
     <main className="main-canvas workspace">
       <AppToolbar icon={BoardIcon} title="Board" subtitle={project?.displayName} />
@@ -4377,9 +4668,11 @@ function BoardWorkspace({ project, threads, tasks, attention, loading, onCreate,
         project={project}
         threads={threads}
         tasks={tasks}
+        phases={phases}
         attention={attention}
         loading={loading}
         onCreate={onCreate}
+        onCreatePhase={onCreatePhase}
         onUpdate={onUpdate}
         onMove={onMove}
         onDelete={onDelete}
@@ -4425,8 +4718,9 @@ export function App() {
   const [thread, setThread] = useState(null);
   const [plan, setPlan] = useState([]);
   const [attention, setAttention] = useState([]);
-  const [review, setReview] = useState({ repository: null, diff: "" });
+  const [review, setReview] = useState({ projectId: null, repository: null, diff: "" });
   const [boardTasks, setBoardTasks] = useState([]);
+  const [boardPhases, setBoardPhases] = useState([]);
   const [proactiveSuggestions, setProactiveSuggestions] = useState([]);
   const [projectTools, setProjectTools] = useState([]);
   const [selectedProjectToolId, setSelectedProjectToolId] = useState(null);
@@ -4467,13 +4761,11 @@ export function App() {
   const [previewWorkspaces, setPreviewWorkspaces] = useState({});
   const previewWorkspaceSequenceRef = useRef(0);
   const [updateStatus, setUpdateStatus] = useState(EMPTY_UPDATE_STATUS);
-  const [codexUpdateStatus, setCodexUpdateStatus] = useState(EMPTY_CODEX_UPDATE_STATUS);
-  const [checkCodexUpdates, setCheckCodexUpdates] = useState(true);
   const [attentionNotifications, setAttentionNotifications] = useState(true);
   const [completionNotifications, setCompletionNotifications] = useState(false);
   const [notificationSound, setNotificationSound] = useState(true);
   const [keepSystemAwake, setKeepSystemAwake] = useState(false);
-  const [codexUpdateToastOpen, setCodexUpdateToastOpen] = useState(false);
+  const [providerUpdateChecksEnabled, setProviderUpdateChecksEnabled] = useState(true);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number.parseInt(localStorage.getItem("pixice.sidebarWidth") ?? "", 10);
@@ -4509,7 +4801,23 @@ export function App() {
   const browserState = previewWorkspace.browserState;
   const previewFileTabs = previewWorkspace.fileTabs;
   const previewInstrumentTabs = previewWorkspace.instrumentTabs ?? [];
+  const previewCustomTabs = previewWorkspace.customTabs ?? [];
   const previewActiveTabId = previewWorkspace.activeTabId;
+  const currentPreviewContext = useMemo(
+    () => previewContextForWorkspace({
+      open: previewOpen,
+      browserState,
+      fileTabs: previewFileTabs,
+      instrumentTabs: previewInstrumentTabs,
+      customTabs: previewCustomTabs,
+      activeTabId: previewActiveTabId
+    }),
+    [browserState, previewActiveTabId, previewCustomTabs, previewFileTabs, previewInstrumentTabs, previewOpen]
+  );
+  useEffect(() => {
+    if (!api?.preview?.setContext || !previewWorkspaceId) return;
+    void api.preview.setContext({ threadId: previewWorkspaceId, context: currentPreviewContext }).catch(() => {});
+  }, [api, currentPreviewContext, previewWorkspaceId]);
   const updatePreviewWorkspace = useCallback((workspaceId, updater) => {
     if (!workspaceId) return;
     setPreviewWorkspaces((current) => {
@@ -4543,6 +4851,12 @@ export function App() {
       instrumentTabs: typeof value === "function" ? value(workspace.instrumentTabs ?? []) : value
     }));
   }, [previewWorkspaceId, updatePreviewWorkspace]);
+  const setPreviewCustomTabs = useCallback((value) => {
+    updatePreviewWorkspace(previewWorkspaceId, (workspace) => ({
+      ...workspace,
+      customTabs: typeof value === "function" ? value(workspace.customTabs ?? []) : value
+    }));
+  }, [previewWorkspaceId, updatePreviewWorkspace]);
   const setPreviewActiveTabId = useCallback((value) => {
     updatePreviewWorkspace(previewWorkspaceId, (workspace) => ({
       ...workspace,
@@ -4567,11 +4881,35 @@ export function App() {
       setPreviewOpen(false);
       setActiveView("board");
     };
+    const openTab = (event) => {
+      const detail = event.detail ?? {};
+      const workspaceId = detail.workspaceId ?? detail.threadId;
+      const tab = detail.tab;
+      if (!workspaceId || !tab?.id || !tab.kind) return;
+      updatePreviewWorkspace(workspaceId, (workspace) => {
+        const current = workspace.customTabs ?? [];
+        return {
+          ...workspace,
+          open: true,
+          activeTabId: tab.id,
+          customTabs: current.some((candidate) => candidate.id === tab.id)
+            ? current.map((candidate) => candidate.id === tab.id ? { ...candidate, ...tab } : candidate)
+            : [...current, tab]
+        };
+      });
+      const activeWorkspaceId = selectedThreadIdRef.current ?? (selectedProjectIdRef.current ? `draft:${selectedProjectIdRef.current}` : null);
+      if (workspaceId === activeWorkspaceId) {
+        setInspectorOpen(false);
+        setActiveView("task");
+      }
+    };
     window.addEventListener("pixice:request-task-preview", openPreview);
     window.addEventListener("pixice:open-board-workspace", openBoard);
+    window.addEventListener("pixice:open-preview-tab", openTab);
     return () => {
       window.removeEventListener("pixice:request-task-preview", openPreview);
       window.removeEventListener("pixice:open-board-workspace", openBoard);
+      window.removeEventListener("pixice:open-preview-tab", openTab);
     };
   }, [setPreviewOpen, updatePreviewWorkspace]);
 
@@ -4630,7 +4968,7 @@ export function App() {
     })
     .map(({ candidate }) => candidate);
   const selectedThreadCompletionRevision = threadCompletionRevision(sidebarThreads.find((candidate) => candidate.id === selectedThreadId));
-  const changedCount = review.repository?.dirtyPaths?.length ?? 0;
+  const changedCount = review.projectId === selectedProjectId ? review.repository?.dirtyPaths?.length ?? 0 : 0;
 
   useEffect(() => {
     if (!selectedThreadId || !selectedThreadCompletionRevision) return;
@@ -4856,12 +5194,12 @@ export function App() {
     try {
       const result = await api.review.read({ projectId });
       if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
-      setReview(result);
+      setReview({ ...result, projectId });
       setProjects((current) => current.map((project) => project.id === projectId ? { ...project, repository: result.repository } : project));
     } catch (cause) {
       if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setError(cause.message);
-      setReview({ repository: null, diff: "" });
+      setReview({ projectId, repository: null, diff: "" });
     } finally {
       if (requestId === reviewLoadRequestRef.current) setLoading((state) => ({ ...state, review: false }));
     }
@@ -4870,6 +5208,7 @@ export function App() {
   const loadBoard = useCallback(async (projectId) => {
     if (!api?.board || !projectId) {
       setBoardTasks([]);
+      setBoardPhases([]);
       return;
     }
     const requestId = ++boardLoadRequestRef.current;
@@ -4878,10 +5217,12 @@ export function App() {
       const result = await api.board.list({ projectId });
       if (requestId !== boardLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setBoardTasks(result.data ?? []);
+      setBoardPhases(result.phases ?? []);
     } catch (cause) {
       if (requestId !== boardLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setError(cause.message);
       setBoardTasks([]);
+      setBoardPhases([]);
     } finally {
       if (requestId === boardLoadRequestRef.current) setLoading((state) => ({ ...state, board: false }));
     }
@@ -4958,6 +5299,16 @@ export function App() {
     await loadProviders();
     await loadModels();
   }, [loadModels, loadProviders]);
+
+  const checkAllProviderUpdates = useCallback(async () => {
+    if (!api?.providers?.checkUpdates) return;
+    try {
+      await api.providers.checkUpdates();
+      await loadProviders();
+    } catch (cause) {
+      setError(cause.message);
+    }
+  }, [api, loadProviders]);
 
   const loadGitHubStatus = useCallback(async () => {
     if (!api?.github) return;
@@ -5094,11 +5445,11 @@ export function App() {
       setPermissionMode(resolvedPermission);
       setAgentBehaviorCatalog(behaviorCatalog);
       setAgentBehaviors(resolvedBehaviors);
-      setCheckCodexUpdates(persisted.checkCodexUpdates !== false);
       setAttentionNotifications(persisted.attentionNotifications !== false);
       setCompletionNotifications(persisted.completionNotifications === true);
       setNotificationSound(persisted.notificationSound !== false);
       setKeepSystemAwake(persisted.keepSystemAwake === true);
+      setProviderUpdateChecksEnabled(persisted.checkProviderUpdates !== false);
       setDefaultsHydrated(true);
       setRuntime(result.runtime ?? { state: "unavailable", connected: false });
       if (Object.entries(resolvedDefaults).some(([key, value]) => persisted[key] !== value)) {
@@ -5150,11 +5501,18 @@ export function App() {
     let cancelled = false;
     api.browser.state({ workspaceId: previewWorkspaceId }).then((state) => {
       if (!cancelled) {
-        updatePreviewWorkspace(previewWorkspaceId, (workspace) => ({
-          ...workspace,
-          browserState: state,
-          activeTabId: workspace.activeTabId ?? state.activeTabId ?? null
-        }));
+        updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
+          const currentBrowserTabs = workspace.browserState?.tabs ?? [];
+          const incomingBrowserIds = new Set((state.tabs ?? []).map((tab) => tab.id));
+          const activeBrowserWasCreatedWhileLoading = currentBrowserTabs.some((tab) => tab.id === workspace.activeTabId)
+            && !incomingBrowserIds.has(workspace.activeTabId);
+          if (activeBrowserWasCreatedWhileLoading) return workspace;
+          return {
+            ...workspace,
+            browserState: state,
+            activeTabId: workspace.activeTabId ?? state.activeTabId ?? null
+          };
+        });
       }
     }).catch(() => {});
     return () => { cancelled = true; };
@@ -5178,17 +5536,6 @@ export function App() {
     let cancelled = false;
     api.updates.status().then((status) => {
       if (!cancelled) setUpdateStatus(status);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [api]);
-
-  useEffect(() => {
-    if (!api?.codexUpdates) return;
-    let cancelled = false;
-    api.codexUpdates.status().then((status) => {
-      if (cancelled) return;
-      setCodexUpdateStatus(status);
-      if (status.prompt) setCodexUpdateToastOpen(true);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [api]);
@@ -5254,11 +5601,12 @@ export function App() {
     if (!selectedProjectId) {
       setThreads([]);
       setBoardTasks([]);
+      setBoardPhases([]);
       setProactiveSuggestions([]);
       selectedThreadIdRef.current = null;
       setSelectedThreadId(null);
       setThread(null);
-      setReview({ repository: null, diff: "" });
+      setReview({ projectId: null, repository: null, diff: "" });
       return;
     }
     localStorage.setItem("pixice.activeProjectId", selectedProjectId);
@@ -5374,6 +5722,17 @@ export function App() {
         setError(event.payload.message);
         return;
       }
+      if (event.type === "ProviderLifecycleState") {
+        const providerId = event.payload?.provider ?? event.payload?.id;
+        if (!providerId) return;
+        setProviders((current) => {
+          const lifecycle = { ...event.payload, id: providerId };
+          const existing = current.find((provider) => provider.id === providerId);
+          if (!existing) return [...current, lifecycle];
+          return current.map((provider) => provider.id === providerId ? { ...provider, ...lifecycle } : provider);
+        });
+        return;
+      }
       if (event.type === "GitHubAuthProgress") {
         setGithubProgress(event.payload);
         if (event.payload.state === "complete") loadGitHubStatus();
@@ -5396,15 +5755,17 @@ export function App() {
         updatePreviewWorkspace(workspaceId, (workspace) => {
           const fileTabs = workspace.fileTabs ?? [];
           const instrumentTabs = workspace.instrumentTabs ?? [];
+          const customTabs = workspace.customTabs ?? [];
           const browserTabs = event.payload.tabs ?? [];
           const availableIds = new Set([
             ...browserTabs.map((tab) => tab.id),
             ...fileTabs.map((tab) => tab.id),
-            ...instrumentTabs.map((tab) => `instrument:${tab.id}`)
+            ...instrumentTabs.map((tab) => `instrument:${tab.id}`),
+            ...customTabs.map((tab) => tab.id)
           ]);
           const activeTabId = availableIds.has(workspace.activeTabId)
             ? workspace.activeTabId
-            : event.payload.activeTabId ?? fileTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? null;
+            : event.payload.activeTabId ?? customTabs.at(-1)?.id ?? fileTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? null;
           return {
             ...workspace,
             browserState: event.payload,
@@ -5441,7 +5802,7 @@ export function App() {
               ...workspace,
               instrumentTabs: nextTabs,
               activeTabId: workspace.activeTabId === instrumentTabId
-                ? nextTabs.length ? `instrument:${nextTabs[0].id}` : workspace.browserState?.activeTabId ?? workspace.fileTabs?.at(-1)?.id ?? null
+                ? nextTabs.length ? `instrument:${nextTabs[0].id}` : workspace.customTabs?.at(-1)?.id ?? workspace.browserState?.activeTabId ?? workspace.fileTabs?.at(-1)?.id ?? null
                 : workspace.activeTabId
             };
           }
@@ -5491,12 +5852,6 @@ export function App() {
       }
       if (event.type === "UpdateState") {
         setUpdateStatus(event.payload);
-        return;
-      }
-      if (event.type === "CodexUpdateState") {
-        setCodexUpdateStatus(event.payload);
-        if (event.payload.prompt) setCodexUpdateToastOpen(true);
-        if (event.payload.enabled === false) setCodexUpdateToastOpen(false);
         return;
       }
       if (event.type === "UsageUpdated") {
@@ -5764,6 +6119,20 @@ export function App() {
     }
   };
 
+  const createBoardPhase = async ({ title, taskIds }) => {
+    if (!api?.board?.createPhase || !selectedProjectId) return;
+    const projectId = selectedProjectId;
+    try {
+      const phase = await api.board.createPhase({ projectId, title, taskIds });
+      if (selectedProjectIdRef.current === projectId) await loadBoard(projectId);
+      setError(null);
+      return phase;
+    } catch (cause) {
+      setError(cause.message);
+      throw cause;
+    }
+  };
+
   const openBoardTaskPreview = useCallback((task) => {
     if (!task || !selectedProjectId || !previewWorkspaceId) return;
     window.dispatchEvent(new CustomEvent("pixice:task-preview-requested", {
@@ -5954,6 +6323,11 @@ export function App() {
     savePersistentDefaults({ keepSystemAwake: enabled });
   };
 
+  const changeProviderUpdateChecksEnabled = (enabled) => {
+    setProviderUpdateChecksEnabled(enabled);
+    savePersistentDefaults({ checkProviderUpdates: enabled });
+  };
+
   const togglePreview = useCallback(async () => {
     if (!previewWorkspaceId) return;
     if (previewOpen) {
@@ -5963,20 +6337,62 @@ export function App() {
     setInspectorOpen(false);
     setPreviewOpen(true);
     if (previewActiveTabId) return;
+    if (previewCustomTabs.length) {
+      setPreviewActiveTabId(previewCustomTabs.at(-1).id);
+      return;
+    }
     if (previewInstrumentTabs.length) {
       setPreviewActiveTabId(`instrument:${previewInstrumentTabs[0].id}`);
       return;
     }
-    if (!api?.browser) return;
-    try {
-      const current = await api.browser.state({ workspaceId: previewWorkspaceId });
-      const next = current.tabs?.length ? current : await api.browser.create({ workspaceId: previewWorkspaceId });
-      setBrowserState(next);
-      setPreviewActiveTabId(next.activeTabId ?? null);
-    } catch (cause) {
-      setError(cause.message);
+    if (browserState.tabs?.length) {
+      setPreviewActiveTabId(browserState.activeTabId ?? browserState.tabs[0].id);
+      return;
     }
-  }, [api, previewActiveTabId, previewInstrumentTabs, previewOpen, previewWorkspaceId, setBrowserState, setPreviewActiveTabId, setPreviewOpen]);
+    const chooser = newPreviewChooserTab();
+    setPreviewCustomTabs([chooser]);
+    setPreviewActiveTabId(chooser.id);
+  }, [browserState, previewActiveTabId, previewCustomTabs, previewInstrumentTabs, previewOpen, previewWorkspaceId, setPreviewActiveTabId, setPreviewCustomTabs, setPreviewOpen]);
+
+  const openPreviewCustomTab = useCallback((tab) => {
+    if (!tab?.id) return;
+    updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
+      const customTabs = workspace.customTabs ?? [];
+      return {
+        ...workspace,
+        open: true,
+        activeTabId: tab.id,
+        customTabs: customTabs.some((candidate) => candidate.id === tab.id)
+          ? customTabs.map((candidate) => candidate.id === tab.id ? { ...candidate, ...tab } : candidate)
+          : [...customTabs, tab]
+      };
+    });
+  }, [previewWorkspaceId, updatePreviewWorkspace]);
+
+  const updatePreviewCustomTab = useCallback((tabId, patch) => {
+    setPreviewCustomTabs((current) => current.map((tab) => tab.id === tabId ? { ...tab, ...patch } : tab));
+  }, [setPreviewCustomTabs]);
+
+  const openNewPreviewTab = useCallback(() => {
+    openPreviewCustomTab(newPreviewChooserTab());
+  }, [openPreviewCustomTab]);
+
+  const replacePreviewChooserWithBrowser = useCallback((chooserId, nextBrowserState) => {
+    updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
+      const customTabs = (workspace.customTabs ?? []).filter((tab) => tab.id !== chooserId);
+      return {
+        ...workspace,
+        browserState: nextBrowserState,
+        customTabs,
+        activeTabId: nextBrowserState.activeTabId
+          ?? customTabs.at(-1)?.id
+          ?? workspace.fileTabs?.at(-1)?.id
+          ?? (workspace.instrumentTabs?.[0] ? `instrument:${workspace.instrumentTabs[0].id}` : null)
+          ?? null,
+        open: true
+      };
+    });
+  }, [previewWorkspaceId, updatePreviewWorkspace]);
 
   const updatePreviewFile = useCallback((tabId, patch) => {
     setPreviewFileTabs((current) => current.map((tab) => tab.id === tabId ? { ...tab, ...patch } : tab));
@@ -5989,20 +6405,26 @@ export function App() {
       updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
         const fileTabs = workspace.fileTabs ?? [];
         const instrumentTabs = workspace.instrumentTabs ?? [];
+        const customTabs = workspace.customTabs ?? [];
         const browserTabs = nextBrowserState.tabs ?? [];
         const availableIds = new Set([
           ...browserTabs.map((tab) => tab.id),
           ...fileTabs.map((tab) => tab.id),
-          ...instrumentTabs.map((tab) => `instrument:${tab.id}`)
+          ...instrumentTabs.map((tab) => `instrument:${tab.id}`),
+          ...customTabs.map((tab) => tab.id)
         ]);
         const activeTabId = availableIds.has(workspace.activeTabId)
           ? workspace.activeTabId
-          : nextBrowserState.activeTabId ?? fileTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? null;
+          : nextBrowserState.activeTabId ?? customTabs.at(-1)?.id ?? fileTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? null;
+        if (!availableIds.size) {
+          const chooser = newPreviewChooserTab();
+          return { ...workspace, browserState: nextBrowserState, customTabs: [chooser], activeTabId: chooser.id };
+        }
         return {
           ...workspace,
           browserState: nextBrowserState,
           activeTabId,
-          open: availableIds.size ? workspace.open : false
+          open: workspace.open
         };
       });
     } catch (cause) {
@@ -6016,16 +6438,22 @@ export function App() {
     updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
       const fileTabs = (workspace.fileTabs ?? []).filter((tab) => tab.id !== tabId);
       const instrumentTabs = workspace.instrumentTabs ?? [];
+      const customTabs = workspace.customTabs ?? [];
       const browserTabs = workspace.browserState?.tabs ?? [];
       const availableIds = new Set([
         ...browserTabs.map((tab) => tab.id),
         ...fileTabs.map((tab) => tab.id),
-        ...instrumentTabs.map((tab) => `instrument:${tab.id}`)
+        ...instrumentTabs.map((tab) => `instrument:${tab.id}`),
+        ...customTabs.map((tab) => tab.id)
       ]);
       const activeTabId = workspace.activeTabId === tabId
-        ? fileTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? workspace.browserState?.activeTabId ?? browserTabs[0]?.id ?? null
+        ? fileTabs.at(-1)?.id ?? customTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? workspace.browserState?.activeTabId ?? browserTabs[0]?.id ?? null
         : workspace.activeTabId;
-      return { ...workspace, fileTabs, activeTabId: availableIds.size ? activeTabId : null, open: availableIds.size ? workspace.open : false };
+      if (!availableIds.size) {
+        const chooser = newPreviewChooserTab();
+        return { ...workspace, fileTabs, customTabs: [chooser], activeTabId: chooser.id };
+      }
+      return { ...workspace, fileTabs, activeTabId, open: workspace.open };
     });
   }, [previewFileTabs, previewWorkspaceId, updatePreviewWorkspace]);
 
@@ -6034,16 +6462,48 @@ export function App() {
     updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
       const instrumentTabs = (workspace.instrumentTabs ?? []).filter((instrument) => instrument.id !== instrumentId);
       const fileTabs = workspace.fileTabs ?? [];
+      const customTabs = workspace.customTabs ?? [];
       const browserTabs = workspace.browserState?.tabs ?? [];
       const availableIds = new Set([
         ...browserTabs.map((tab) => tab.id),
         ...fileTabs.map((tab) => tab.id),
-        ...instrumentTabs.map((tab) => `instrument:${tab.id}`)
+        ...instrumentTabs.map((tab) => `instrument:${tab.id}`),
+        ...customTabs.map((tab) => tab.id)
       ]);
       const activeTabId = workspace.activeTabId === tabId
-        ? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? fileTabs.at(-1)?.id ?? workspace.browserState?.activeTabId ?? browserTabs[0]?.id ?? null
+        ? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? customTabs.at(-1)?.id ?? fileTabs.at(-1)?.id ?? workspace.browserState?.activeTabId ?? browserTabs[0]?.id ?? null
         : workspace.activeTabId;
-      return { ...workspace, instrumentTabs, activeTabId: availableIds.size ? activeTabId : null, open: availableIds.size ? workspace.open : false };
+      if (!availableIds.size) {
+        const chooser = newPreviewChooserTab();
+        return { ...workspace, instrumentTabs, customTabs: [chooser], activeTabId: chooser.id };
+      }
+      return { ...workspace, instrumentTabs, activeTabId, open: workspace.open };
+    });
+  }, [previewWorkspaceId, updatePreviewWorkspace]);
+
+  const closePreviewCustomTab = useCallback((tabId, { ensureTab = true } = {}) => {
+    updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
+      let customTabs = (workspace.customTabs ?? []).filter((tab) => tab.id !== tabId);
+      const browserTabs = workspace.browserState?.tabs ?? [];
+      const fileTabs = workspace.fileTabs ?? [];
+      const instrumentTabs = workspace.instrumentTabs ?? [];
+      let fallback = customTabs.at(-1)?.id
+        ?? fileTabs.at(-1)?.id
+        ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null)
+        ?? workspace.browserState?.activeTabId
+        ?? browserTabs[0]?.id
+        ?? null;
+      if (!fallback && ensureTab) {
+        const chooser = newPreviewChooserTab();
+        customTabs = [chooser];
+        fallback = chooser.id;
+      }
+      return {
+        ...workspace,
+        customTabs,
+        activeTabId: workspace.activeTabId === tabId ? fallback : workspace.activeTabId,
+        open: workspace.open
+      };
     });
   }, [previewWorkspaceId, updatePreviewWorkspace]);
 
@@ -6180,26 +6640,6 @@ export function App() {
     }
   }, [api]);
 
-  const changeCodexUpdateChecks = useCallback((enabled) => {
-    setCheckCodexUpdates(enabled);
-    if (!enabled) setCodexUpdateToastOpen(false);
-    savePersistentDefaults({ checkCodexUpdates: enabled });
-  }, [savePersistentDefaults]);
-
-  const runCodexUpdateAction = useCallback(async (action) => {
-    if (!api?.codexUpdates) return;
-    try {
-      const status = await api.codexUpdates[action]();
-      if (status?.state) {
-        setCodexUpdateStatus(status);
-        setCodexUpdateToastOpen(["available", "updating", "applying", "ready", "error"].includes(status.state));
-      }
-    } catch (cause) {
-      setCodexUpdateStatus((current) => ({ ...current, state: "error", prompt: true, message: cause.message }));
-      setCodexUpdateToastOpen(true);
-    }
-  }, [api]);
-
   const submit = async (text, attachments = []) => {
     if (!api || !selectedProjectId || !runtime.connected || submittingRef.current) return false;
     const projectId = selectedProjectId;
@@ -6256,7 +6696,7 @@ export function App() {
             messageId: optimisticMessageId
           }));
         }
-        await api.turns.steer({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, attachments });
+        await api.turns.steer({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, attachments, previewContext: currentPreviewContext });
         if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
           window.setTimeout(() => refreshThread(projectId, targetThreadId), 250);
         }
@@ -6279,6 +6719,7 @@ export function App() {
           threadId: targetThreadId,
           text,
           attachments,
+          previewContext: currentPreviewContext,
           model: selectedModel || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
           effort,
@@ -6400,6 +6841,14 @@ export function App() {
     }
   };
 
+  const runProviderAction = async (provider, action) => {
+    const operation = api?.providers?.[action];
+    if (typeof operation !== "function") throw new Error(`${action.replace(/^./, (letter) => letter.toUpperCase())} is not available for this provider.`);
+    const result = await operation({ provider });
+    await refreshProviders();
+    return result;
+  };
+
   const openExternal = async (kind, path) => {
     if (!api || !selectedProjectId) return;
     try {
@@ -6454,9 +6903,11 @@ export function App() {
         project={selectedProject}
         threads={threads}
         tasks={boardTasks}
+        phases={boardPhases}
         attention={attention}
         loading={loading.threads || loading.board}
         onCreate={createBoardTask}
+        onCreatePhase={createBoardPhase}
         onMove={moveBoardTask}
         onOpenThread={selectThread}
         onOpenTask={openBoardTaskPreview}
@@ -6523,6 +6974,10 @@ export function App() {
         providersLoading={loading.providers}
         onRefreshProviders={refreshProviders}
         onProviderLogin={loginProvider}
+        onProviderAction={runProviderAction}
+        providerUpdateChecksEnabled={providerUpdateChecksEnabled}
+        onProviderUpdateChecksEnabledChange={changeProviderUpdateChecksEnabled}
+        onCheckProviderUpdates={checkAllProviderUpdates}
         githubStatus={githubStatus}
         githubLoading={loading.github}
         githubProgress={githubProgress}
@@ -6544,11 +6999,6 @@ export function App() {
         onCheckForUpdates={() => runUpdateAction("check")}
         onDownloadUpdate={() => runUpdateAction("download")}
         onInstallUpdate={() => runUpdateAction("install")}
-        codexUpdateStatus={codexUpdateStatus}
-        checkCodexUpdates={checkCodexUpdates}
-        onCheckCodexUpdatesChange={changeCodexUpdateChecks}
-        onCheckForCodexUpdates={() => runCodexUpdateAction("check")}
-        onInstallCodexUpdate={() => runCodexUpdateAction("install")}
       />
     );
   } else if (activeView === "attention") {
@@ -6576,14 +7026,20 @@ export function App() {
         previewWorkspaceId={previewWorkspaceId}
         browserState={browserState}
         onBrowserState={setBrowserState}
+        onPreviewBrowserCreated={replacePreviewChooserWithBrowser}
         previewFileTabs={previewFileTabs}
         previewInstrumentTabs={previewInstrumentTabs}
+        previewCustomTabs={previewCustomTabs}
         previewActiveTabId={previewActiveTabId}
         onPreviewActiveTabChange={setPreviewActiveTabId}
         onPreviewBrowserClose={closePreviewBrowser}
         onPreviewFileUpdate={updatePreviewFile}
         onPreviewFileClose={closePreviewFile}
         onPreviewInstrumentClose={closePreviewInstrument}
+        onPreviewCustomTabOpen={openPreviewCustomTab}
+        onPreviewCustomTabUpdate={updatePreviewCustomTab}
+        onPreviewCustomTabClose={closePreviewCustomTab}
+        onPreviewNewTab={openNewPreviewTab}
         onPreviewInstrumentRefresh={refreshPreviewInstrument}
         onPreviewInstrumentEvent={sendPreviewInstrumentEvent}
         onPreviewInstrumentInvoke={invokePreviewInstrumentCapability}
@@ -6601,7 +7057,7 @@ export function App() {
       <div
         className={`pixice-app view-${activeView}`}
         data-sidebar-expanded={sidebarExpanded}
-        data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread)}
+        data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread) && !previewOpen}
         data-density={preferences.density}
         data-conversation-width={preferences.conversationWidth}
         data-conversation-text-size={preferences.conversationTextSize}
@@ -6660,40 +7116,6 @@ export function App() {
         <div className="workflow-workspace-slot" data-workflow-workspace-slot />
         {activeView === "task" && !previewOpen && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
       </div>
-      <AnimatePresence initial={false}>
-      {codexUpdateToastOpen && (
-        <motion.div
-          key={codexUpdateStatus.state}
-          className="codex-update-toast"
-          data-state={codexUpdateStatus.state}
-          role={codexUpdateStatus.state === "ready" ? "status" : codexUpdateStatus.state === "error" ? "alert" : "dialog"}
-          aria-label={codexUpdateStatus.state === "ready" ? "Codex updated successfully" : codexUpdateStatus.state === "error" ? "Codex update failed" : "Codex update available"}
-          style={{ "--toast-offset": error ? "76px" : "0px" }}
-          initial={systemReducedMotion ? false : { opacity: 0, y: 12, scale: 0.98, filter: "blur(2px)" }}
-          animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-          exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.99, filter: "blur(2px)" }}
-          transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }}
-        >
-          <motion.span
-            className="codex-update-mark"
-            initial={systemReducedMotion ? false : { opacity: 0, scale: 0.82 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: systemReducedMotion ? 0 : 0.2, ease: MOTION_EASE }}
-          >
-            {codexUpdateStatus.state === "ready" ? <CheckCircle size={16} weight="fill" /> : <ArrowClockwise className={["updating", "applying"].includes(codexUpdateStatus.state) ? "spin-icon" : ""} size={16} />}
-          </motion.span>
-          <span className="codex-update-copy">
-            <strong>{codexUpdateStatus.state === "available" ? `Codex ${codexUpdateStatus.availableVersion} is available` : codexUpdateStatus.state === "updating" ? "Updating Codex" : codexUpdateStatus.state === "applying" ? "Restarting Codex" : codexUpdateStatus.state === "ready" ? "Codex updated successfully" : "Codex update failed"}</strong>
-            <small>{codexUpdateStatus.state === "available" ? `Pixice is using ${codexUpdateStatus.currentVersion}. Running tasks and workflows may be interrupted while Codex restarts.` : codexUpdateStatus.message}</small>
-          </span>
-          <span className="codex-update-actions">
-            {codexUpdateStatus.state === "available" && <button type="button" onClick={() => setCodexUpdateToastOpen(false)}>Not now</button>}
-            {codexUpdateStatus.state === "available" && <button type="button" className="primary" onClick={() => runCodexUpdateAction("install")}>Update Codex</button>}
-            {["ready", "error"].includes(codexUpdateStatus.state) && <button type="button" onClick={() => setCodexUpdateToastOpen(false)}>Dismiss</button>}
-          </span>
-        </motion.div>
-      )}
-      </AnimatePresence>
       <AnimatePresence initial={false}>
       {error && (
         <motion.div

@@ -1,11 +1,12 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserDynamicTools } from "../electron/browser/browser-workspace.mjs";
-import { AsyncPromptQueue, ClaudeProvider, claudeAccountIsAuthenticated, claudePermissionSettings, claudeQueryOptions, resolveClaudeCodeExecutable, resolvePackagedClaudeCodeExecutable } from "../electron/providers/claude-provider.mjs";
+import { AsyncPromptQueue, ClaudeProvider, claudeAccountIsAuthenticated, claudeExternallyManagedAuth, claudePermissionSettings, claudeQueryOptions } from "../electron/providers/claude-provider.mjs";
 import { PixiceDatabase } from "../electron/persistence/database.mjs";
 import { pixiceBoardTools } from "../electron/runtime/pixice-board.mjs";
+import { previewContextDynamicTools } from "../electron/runtime/preview-context.mjs";
 
 const temporaryDirectories = [];
 
@@ -23,6 +24,14 @@ describe("Claude provider", () => {
     expect(claudeAccountIsAuthenticated({ apiProvider: "firstParty", email: "dev@example.com" })).toBe(true);
     expect(claudeAccountIsAuthenticated({ apiProvider: "firstParty", apiKeySource: "ANTHROPIC_API_KEY" })).toBe(true);
     expect(claudeAccountIsAuthenticated({ apiProvider: "bedrock" })).toBe(true);
+  });
+
+  it("reports credentials supplied by the environment or a cloud backend as externally managed", () => {
+    expect(claudeExternallyManagedAuth({ apiProvider: "firstParty", apiKeySource: "none" }, {})).toBe(false);
+    expect(claudeExternallyManagedAuth({ apiProvider: "firstParty", apiKeySource: "/login managed key" }, {})).toBe(false);
+    expect(claudeExternallyManagedAuth({ apiProvider: "bedrock" }, {})).toBe(true);
+    expect(claudeExternallyManagedAuth({ apiProvider: "firstParty" }, { ANTHROPIC_API_KEY: "present" })).toBe(true);
+    expect(claudeExternallyManagedAuth({ apiProvider: "firstParty" }, { CLAUDE_CODE_OAUTH_TOKEN: "present" })).toBe(true);
   });
 
   it("uses exactly the models reported by the Claude SDK", async () => {
@@ -74,35 +83,6 @@ describe("Claude provider", () => {
     database.db.close();
   });
 
-  it("prefers an installed Claude Code executable like T3's provider", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-bin-"));
-    temporaryDirectories.push(directory);
-    const executable = path.join(directory, process.platform === "win32" ? "claude.exe" : "claude");
-    writeFileSync(executable, "test");
-    if (process.platform !== "win32") chmodSync(executable, 0o755);
-
-    expect(resolveClaudeCodeExecutable({ pathValue: directory, homeDirectory: directory })).toBe(executable);
-  });
-
-  it("finds electron-builder's unpacked Claude runtime in packaged apps", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "pixice-packaged-claude-"));
-    temporaryDirectories.push(directory);
-    const packageName = `claude-agent-sdk-${process.platform === "win32" ? "win32" : process.platform}-${process.arch}`;
-    const executable = path.join(
-      directory,
-      "app.asar.unpacked",
-      "node_modules",
-      "@anthropic-ai",
-      packageName,
-      process.platform === "win32" ? "claude.exe" : "claude"
-    );
-    mkdirSync(path.dirname(executable), { recursive: true });
-    writeFileSync(executable, "test");
-    if (process.platform !== "win32") chmodSync(executable, 0o755);
-
-    expect(resolvePackagedClaudeCodeExecutable({ resourcesPath: directory })).toBe(executable);
-  });
-
   it("maps Pixice permissions to the same Claude Code modes used by T3", () => {
     expect(claudePermissionSettings("workspace-write").permissionMode).toBe("acceptEdits");
     expect(claudePermissionSettings("auto-approve").permissionMode).toBe("auto");
@@ -114,6 +94,7 @@ describe("Claude provider", () => {
     expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_board__list_tasks");
     expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_board__create_task");
     expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_instruments__create_instrument");
+    expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_preview__current");
   });
 
   it("uses the Claude Code system preset and preserves the host environment", () => {
@@ -136,6 +117,20 @@ describe("Claude provider", () => {
       appendSubagentSystemPrompt: "Pixice guidance"
     });
     expect(options.env.CLAUDE_AGENT_SDK_CLIENT_APP).toBe("pixice/1.2.3");
+  });
+
+  it("prepends an external CLI directory to the Claude child environment", () => {
+    const options = claudeQueryOptions({
+      cwd: "/workspace",
+      permissionMode: "read-only",
+      sessionId: "session-1",
+      clientVersion: "1.2.3",
+      canUseTool: vi.fn(),
+      pathToClaudeCodeExecutable: "/Users/dev/.nvm/versions/node/v22/bin/claude",
+      environment: { PATH: "/usr/bin:/bin" }
+    });
+
+    expect(options.env.PATH).toBe(`/Users/dev/.nvm/versions/node/v22/bin${path.delimiter}/usr/bin:/bin`);
   });
 
   it("reads the Claude account and starts the SDK sign-in flow", async () => {
@@ -162,7 +157,8 @@ describe("Claude provider", () => {
     await expect(provider.account()).resolves.toEqual({
       account: { type: "claude", email: "dev@example.com", subscriptionType: "pro", apiProvider: "firstParty" },
       authenticated: true,
-      requiresAuth: true
+      requiresAuth: true,
+      externallyManagedAuth: false
     });
     provider.models = [{ value: "stale", displayName: "Stale Claude" }];
     await expect(provider.login()).resolves.toMatchObject({ type: "claude", authUrl: "https://claude.ai/oauth/authorize" });
@@ -172,6 +168,36 @@ describe("Claude provider", () => {
     expect(queries[1].claudeOAuthWaitForCompletion).toHaveBeenCalled();
     expect(queries[1].close).toHaveBeenCalled();
     expect(provider.models).toBeNull();
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("logs out stored Claude credentials through the external CLI", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-logout-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const logoutCommand = vi.fn().mockResolvedValue({ code: 0 });
+    const runtimeLifecycle = {
+      on: vi.fn(),
+      discover: vi.fn().mockResolvedValue({ installed: true, compatible: true, executablePath: "/tools/claude" }),
+      snapshot: vi.fn().mockReturnValue({ installed: true, compatible: true, executablePath: "/tools/claude" }),
+      logoutCommand
+    };
+    const provider = new ClaudeProvider({
+      database,
+      clientVersion: "test",
+      environment: {},
+      runtimeLifecycle,
+      requireExternalExecutable: true,
+      queryFactory: () => ({
+        accountInfo: vi.fn().mockResolvedValue({ email: "dev@example.com", apiProvider: "firstParty", apiKeySource: "/login managed key" }),
+        close: vi.fn()
+      })
+    });
+    await provider.start();
+
+    await expect(provider.logout()).resolves.toEqual({ loggedOut: true, externallyManagedAuth: false });
+    expect(logoutCommand).toHaveBeenCalledOnce();
     await provider.stop();
     database.db.close();
   });
@@ -220,6 +246,9 @@ describe("Claude provider", () => {
     const pixiceBrowser = {
       handleToolCall: vi.fn().mockResolvedValue({ success: true, contentItems: [{ type: "inputText", text: "browser result" }] })
     };
+    const pixicePreview = {
+      handleToolCall: vi.fn().mockReturnValue({ success: true, contentItems: [{ type: "inputText", text: "preview result" }] })
+    };
     const provider = new ClaudeProvider({
       database,
       clientVersion: "test",
@@ -227,6 +256,7 @@ describe("Claude provider", () => {
       pixiceBoard,
       pixiceInstruments: { handleToolCall: vi.fn() },
       pixiceBrowser,
+      pixicePreview,
       queryFactory: (args) => { queryArguments = args; return query; }
     });
     const events = [];
@@ -253,17 +283,22 @@ describe("Claude provider", () => {
     expect(queryArguments.options.mcpServers.pixice_board).toMatchObject({ type: "sdk", name: "pixice_board" });
     expect(queryArguments.options.mcpServers.pixice_instruments).toMatchObject({ type: "sdk", name: "pixice_instruments" });
     expect(queryArguments.options.mcpServers.pixice_browser).toMatchObject({ type: "sdk", name: "pixice_browser" });
+    expect(queryArguments.options.mcpServers.pixice_preview).toMatchObject({ type: "sdk", name: "pixice_preview" });
     expect(Object.keys(queryArguments.options.mcpServers.pixice_board.instance._registeredTools)).toEqual(
       pixiceBoardTools.map((definition) => definition.name)
     );
     expect(Object.keys(queryArguments.options.mcpServers.pixice_browser.instance._registeredTools)).toEqual(
       browserDynamicTools[0].tools.map((definition) => definition.name)
     );
+    expect(Object.keys(queryArguments.options.mcpServers.pixice_preview.instance._registeredTools)).toEqual(
+      previewContextDynamicTools[0].tools.map((definition) => definition.name)
+    );
     await expect(queryArguments.options.canUseTool("mcp__pixice__request_user_input", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_bridge__spawn_thread", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_board__read_task", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_instruments__create_instrument", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_browser__navigate", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    await expect(queryArguments.options.canUseTool("mcp__pixice_preview__current", {}, {})).resolves.toMatchObject({ behavior: "allow" });
 
     await queryArguments.options.mcpServers.pixice_browser.instance._registeredTools.navigate.handler({ url: "https://apple.com" });
     expect(pixiceBrowser.handleToolCall).toHaveBeenCalledWith(expect.objectContaining({
@@ -271,6 +306,14 @@ describe("Claude provider", () => {
       tool: "navigate",
       threadId: thread.id,
       arguments: { url: "https://apple.com" },
+      source: "claude"
+    }));
+    await queryArguments.options.mcpServers.pixice_preview.instance._registeredTools.current.handler({});
+    expect(pixicePreview.handleToolCall).toHaveBeenCalledWith(expect.objectContaining({
+      namespace: "pixice_preview",
+      tool: "current",
+      threadId: thread.id,
+      arguments: {},
       source: "claude"
     }));
     await queryArguments.options.mcpServers.pixice_board.instance._registeredTools.read_task.handler({ taskId: "task-1" });

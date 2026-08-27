@@ -188,7 +188,7 @@ const toolSchemas = {
 };
 
 const descriptions = {
-  list_tasks: "Inspect the current project's work items in Board order.",
+  list_tasks: "Inspect the current project's work items and confirmed phase membership in Board order.",
   read_task: "Read one work item with its schedule, dependencies, Workflow bindings, revisions, and recent activity.",
   create_task: "Add a work item to the current project's Board without starting a new thread.",
   update_task: "Edit a work item's details, schedule, or dependencies. Protected deadlines require the user to change them in Preview.",
@@ -241,7 +241,7 @@ export class PixiceBoard {
       if (params.tool === "list_tasks") {
         const tasks = this.database.listBoardTasks(context.projectId)
           .filter((task) => !input.column || task.column === input.column);
-        return textResult({ projectId: context.projectId, tasks });
+        return textResult({ projectId: context.projectId, tasks, phases: this.database.listBoardPhases(context.projectId) });
       }
       if (params.tool === "read_task") {
         const task = this.#task(context.projectId, input.taskId);

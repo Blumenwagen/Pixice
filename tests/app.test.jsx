@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift } from "../src/App.jsx";
+import { WorkflowHost } from "../src/components/workflows/WorkflowHost.jsx";
 
 const appCss = readFileSync("src/styles.css", "utf8");
 
@@ -51,6 +52,7 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
   const eventListeners = new Set();
   const threadValues = Array.isArray(threadValue) ? threadValue : [threadValue];
   let boardTasks = [];
+  let boardPhases = [];
   let proactiveSuggestions = [...initialProactiveSuggestions];
   const browserState = {
     native: false,
@@ -71,7 +73,13 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
         { id: "codex", connected: true, status: { state: "ready", message: "Codex app server" }, account: { type: "chatgpt", email: "dev@example.com", planType: "plus" }, authenticated: true, requiresAuth: true, sessionCount: 3, loginAvailable: true },
         { id: "claude", connected: true, status: { state: "ready", message: "Claude runtime available" }, account: null, authenticated: false, requiresAuth: true, sessionCount: 0, loginAvailable: true }
       ]),
-      login: vi.fn().mockResolvedValue({ provider: "claude", opened: true })
+      install: vi.fn().mockResolvedValue({}),
+      locate: vi.fn().mockResolvedValue({}),
+      repair: vi.fn().mockResolvedValue({}),
+      checkUpdates: vi.fn().mockResolvedValue([]),
+      update: vi.fn().mockResolvedValue({}),
+      login: vi.fn().mockResolvedValue({ provider: "claude", opened: true }),
+      logout: vi.fn().mockResolvedValue({})
     },
     github: {
       status: vi.fn().mockResolvedValue({ available: true, authenticated: false, source: "bundled", version: "2.80.0", account: null, message: "Sign in to use GitHub from agents." }),
@@ -184,11 +192,6 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
       download: vi.fn(),
       install: vi.fn()
     },
-    codexUpdates: {
-      status: vi.fn().mockResolvedValue({ supported: true, enabled: true, state: "idle", currentVersion: "0.149.0", availableVersion: null, installedVersion: null, restartRequired: false, prompt: false, message: "Codex update checks are enabled." }),
-      check: vi.fn().mockResolvedValue({ supported: true, enabled: true, state: "not-available", currentVersion: "0.149.0", availableVersion: null, installedVersion: null, restartRequired: false, prompt: false, message: "Codex is up to date." }),
-      install: vi.fn().mockResolvedValue({ supported: true, enabled: true, state: "ready", currentVersion: "0.149.1", availableVersion: null, installedVersion: "0.149.1", restartRequired: false, prompt: true, message: "Codex 0.149.1 is now active. Pixice stayed open." })
-    },
     browser: {
       state: vi.fn(async (payload) => scopedBrowserState(payload)),
       create: vi.fn(async (payload) => scopedBrowserState(payload)),
@@ -200,6 +203,7 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
       adopt: vi.fn(async ({ toWorkspaceId }) => scopedBrowserState({ workspaceId: toWorkspaceId })),
       destroy: vi.fn().mockResolvedValue({ destroyed: true })
     },
+    preview: { setContext: vi.fn().mockResolvedValue({ open: false, tabCount: 0, active: null }) },
     files: {
       read: vi.fn(async ({ path }) => ({
         path: path.startsWith("/") ? path.replace(/:\d+$/, "") : `/work/aurora/${path.replace(/:\d+$/, "")}`,
@@ -232,7 +236,7 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
       delete: vi.fn().mockResolvedValue(project)
     },
     board: {
-      list: vi.fn(async () => ({ data: boardTasks })),
+      list: vi.fn(async () => ({ data: boardTasks, phases: boardPhases })),
       create: vi.fn(async (payload) => {
         const task = { id: `task-${boardTasks.length + 1}`, ...payload, description: payload.description ?? "", position: (boardTasks.length + 1) * 1024, threadId: null, createdAt: "2026-08-19T12:00:00.000Z", updatedAt: "2026-08-19T12:00:00.000Z" };
         boardTasks = [...boardTasks, task];
@@ -254,6 +258,24 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
       attach: vi.fn(async ({ taskId, threadId }) => {
         boardTasks = boardTasks.map((task) => task.id === taskId ? { ...task, threadId } : task);
         return boardTasks.find((task) => task.id === taskId);
+      }),
+      createPhase: vi.fn(async ({ projectId, title, taskIds }) => {
+        const phaseTasks = boardTasks.filter((task) => taskIds.includes(task.id));
+        const starts = phaseTasks.map((task) => Date.parse(task.schedule?.plannedStart)).filter(Number.isFinite);
+        const ends = phaseTasks.map((task) => Date.parse(task.schedule?.plannedEnd ?? task.schedule?.plannedStart)).filter(Number.isFinite);
+        const phase = {
+          id: `phase-${boardPhases.length + 1}`,
+          projectId,
+          title,
+          taskIds,
+          tasks: phaseTasks.map((task) => ({ id: task.id, title: task.title, column: task.column })),
+          plannedStart: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
+          plannedEnd: ends.length ? new Date(Math.max(...ends)).toISOString() : null,
+          completedCount: phaseTasks.filter((task) => task.column === "done").length
+        };
+        boardPhases = [...boardPhases, phase];
+        boardTasks = boardTasks.map((task) => taskIds.includes(task.id) ? { ...task, phaseId: phase.id } : task);
+        return phase;
       })
     },
     proactivity: {
@@ -555,13 +577,154 @@ describe("Pixice app shell", () => {
     expect(localStorage.getItem(`pixice.boardView.${project.id}`)).toBe("board");
 
     fireEvent.click(screen.getByRole("tab", { name: "Timeline" }));
-    expect(screen.getByLabelText("Scheduled work timeline")).toBeInTheDocument();
+    const timeline = screen.getByLabelText("Scheduled work timeline");
+    expect(timeline).toHaveAttribute("data-scale", "day");
+    expect(within(timeline).queryByRole("group", { name: "Timeline zoom" })).not.toBeInTheDocument();
+    expect(within(timeline).getByText(/scroll to zoom/)).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Timeline" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("button", { name: "Previous range" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Today" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Next range" })).not.toBeInTheDocument();
-    expect(screen.getAllByText("Schedule editor").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1 task").length).toBeGreaterThan(0);
     expect(localStorage.getItem(`pixice.boardView.${project.id}`)).toBe("board");
+  });
+
+  it("uses an intraday scale for same-day agent work", async () => {
+    const api = createApi();
+    const research = await api.board.create({
+      projectId: project.id,
+      title: "Morning research",
+      column: "done",
+      kind: "task",
+      owner: "Research agent",
+      schedule: {
+        plannedStart: new Date(2026, 7, 27, 10).toISOString(),
+        plannedEnd: new Date(2026, 7, 27, 12).toISOString(),
+        timezone: "Europe/Zurich"
+      }
+    });
+    await api.board.create({
+      projectId: project.id,
+      title: "Synthesize findings",
+      column: "active",
+      kind: "task",
+      owner: "Lead agent",
+      dependencies: [research.id],
+      schedule: {
+        plannedStart: new Date(2026, 7, 27, 12).toISOString(),
+        plannedEnd: new Date(2026, 7, 27, 14).toISOString(),
+        timezone: "Europe/Zurich"
+      }
+    });
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Timeline" }));
+
+    const timeline = screen.getByLabelText("Scheduled work timeline");
+    expect(timeline).toHaveAttribute("data-scale", "hour");
+    expect(within(timeline).getByText("after Morning research")).toBeInTheDocument();
+    const researchBar = within(timeline).getByRole("button", { name: /Morning research,/ });
+    const synthesisBar = within(timeline).getByRole("button", { name: /Synthesize findings,/ });
+    expect(parseFloat(researchBar.style.left)).toBeCloseTo(100 / 6);
+    expect(parseFloat(researchBar.style.width)).toBeCloseTo(200 / 6);
+    expect(parseFloat(synthesisBar.style.left)).toBeCloseTo(50);
+    expect(parseFloat(synthesisBar.style.width)).toBeCloseTo(200 / 6);
+  });
+
+  it("keeps ordinary wheel scrolling for rows and zooms only with a modifier", async () => {
+    const api = createApi();
+    await api.board.create({
+      projectId: project.id,
+      title: "Research window",
+      column: "done",
+      schedule: {
+        plannedStart: new Date(2026, 7, 27, 10).toISOString(),
+        plannedEnd: new Date(2026, 7, 27, 12).toISOString(),
+        timezone: "Europe/Zurich"
+      }
+    });
+    await api.board.create({
+      projectId: project.id,
+      title: "Delivery window",
+      column: "active",
+      schedule: {
+        plannedStart: new Date(2026, 7, 29, 9).toISOString(),
+        plannedEnd: new Date(2026, 7, 29, 14).toISOString(),
+        timezone: "Europe/Zurich"
+      }
+    });
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Timeline" }));
+
+    const timeline = screen.getByLabelText("Scheduled work timeline");
+    const canvas = within(timeline).getByLabelText("Zoomable timeline canvas");
+    expect(timeline).toHaveAttribute("data-scale", "day");
+    expect(within(timeline).queryByRole("button", { name: "Phase" })).not.toBeInTheDocument();
+
+    expect(fireEvent.wheel(canvas, { deltaY: 120, clientX: 560, clientY: 240 })).toBe(true);
+    expect(timeline).toHaveAttribute("data-scale", "day");
+    expect(localStorage.getItem(`pixice.timelineZoomPosition.${project.id}`)).toBeNull();
+
+    for (let index = 0; index < 3; index += 1) expect(fireEvent.wheel(canvas, { deltaY: 120, clientX: 560, clientY: 240, metaKey: true })).toBe(false);
+    expect(timeline).toHaveAttribute("data-scale", "phase");
+    expect(Number(localStorage.getItem(`pixice.timelineZoomPosition.${project.id}`))).toBeGreaterThanOrEqual(1.48);
+
+    for (let index = 0; index < 5; index += 1) fireEvent.wheel(canvas, { deltaY: -120, clientX: 560, clientY: 240, metaKey: true });
+    expect(timeline).toHaveAttribute("data-scale", "hour");
+  });
+
+  it("suggests a phase and persists it only after review and confirmation", async () => {
+    const api = createApi();
+    await api.board.create({
+      projectId: project.id,
+      title: "Provider discovery",
+      column: "done",
+      schedule: {
+        plannedStart: new Date(2026, 7, 27, 10).toISOString(),
+        plannedEnd: new Date(2026, 7, 27, 12).toISOString(),
+        timezone: "Europe/Zurich"
+      }
+    });
+    await api.board.create({
+      projectId: project.id,
+      title: "Provider implementation",
+      column: "active",
+      schedule: {
+        plannedStart: new Date(2026, 7, 28, 9).toISOString(),
+        plannedEnd: new Date(2026, 7, 28, 14).toISOString(),
+        timezone: "Europe/Zurich"
+      }
+    });
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Timeline" }));
+    const canvas = screen.getByLabelText("Zoomable timeline canvas");
+    for (let index = 0; index < 3; index += 1) fireEvent.wheel(canvas, { deltaY: 120, clientX: 560, clientY: 240, metaKey: true });
+
+    const timeline = screen.getByLabelText("Scheduled work timeline");
+    expect(timeline).toHaveAttribute("data-scale", "phase");
+    expect(api.board.createPhase).not.toHaveBeenCalled();
+    fireEvent.click(within(timeline).getByRole("button", { name: /Review suggested phase, Provider phase/ }));
+    expect(screen.getByText("Confirm suggested phase")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Phase name"), { target: { value: "Provider rollout" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm phase" }));
+
+    await waitFor(() => expect(api.board.createPhase).toHaveBeenCalledWith({
+      projectId: project.id,
+      title: "Provider rollout",
+      taskIds: ["task-1", "task-2"]
+    }));
+    expect(await within(timeline).findByRole("button", { name: "Provider rollout, confirmed phase" })).toBeInTheDocument();
+    expect(screen.queryByText("Confirm suggested phase")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    expect(screen.getAllByText("Provider rollout")).toHaveLength(2);
   });
 
   it("reloads an open Board when an agent applies a plan", async () => {
@@ -593,7 +756,7 @@ describe("Pixice app shell", () => {
     await waitFor(() => expect(api.board.list.mock.calls.length).toBeGreaterThan(boardLoadsBeforeEvent));
     expect(await screen.findByText("Agent-created roadmap item")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Timeline" }));
-    expect(screen.getAllByText("Agent-created roadmap item").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1 task").length).toBeGreaterThan(0);
   });
 
   it("shows a bridge-created Pixice thread in the sidebar like a regular task", async () => {
@@ -799,6 +962,12 @@ describe("Pixice app shell", () => {
     expect(screen.getByText("old").closest(".file-diff-row")).toHaveClass("del");
     expect(screen.getByText("new").closest(".file-diff-row")).toHaveClass("add");
     expect(document.querySelector(".file-diff-stat")).toHaveTextContent("+1−1");
+    expect(document.querySelector(".diff-panel > .file-diff")).toBeInTheDocument();
+    expect(appCss).toMatch(/\.diff-panel\s*\{[^}]*padding:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(appCss).toMatch(/\.file-browser::\-webkit-scrollbar,\s*\.file-diff-body::\-webkit-scrollbar\s*\{[^}]*width:\s*8px;/s);
+    expect(appCss).toMatch(/\.file-browser::\-webkit-scrollbar-thumb,\s*\.file-diff-body::\-webkit-scrollbar-thumb\s*\{[^}]*background-clip:\s*padding-box;[^}]*border:\s*2px solid transparent;/s);
+    expect(appCss).toMatch(/\.file-diff\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*display:\s*flex;[^}]*padding:\s*0;/s);
+    expect(appCss).toMatch(/\.file-diff-body\s*\{[^}]*min-height:\s*0;[^}]*flex:\s*1;[^}]*overflow:\s*auto;/s);
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
@@ -856,6 +1025,78 @@ describe("Pixice app shell", () => {
       projectId: "project-1",
       path: "src/session.js"
     }));
+  });
+
+  it("keeps the selected Review file and scroll positions while live changes refresh", async () => {
+    const initialReview = {
+      repository: { ...project.repository, dirtyPaths: ["src/auth.js", "src/session.js"] },
+      diff: [
+        "diff --git a/src/auth.js b/src/auth.js",
+        "--- a/src/auth.js",
+        "+++ b/src/auth.js",
+        "@@ -1 +1 @@",
+        "-old auth",
+        "+new auth",
+        "diff --git a/src/session.js b/src/session.js",
+        "--- a/src/session.js",
+        "+++ b/src/session.js",
+        "@@ -1 +1 @@",
+        "-old session",
+        "+new session"
+      ].join("\n")
+    };
+    const refreshedReview = {
+      repository: { ...project.repository, dirtyPaths: ["src/new.js", "src/auth.js", "src/session.js"] },
+      diff: [
+        "diff --git a/src/new.js b/src/new.js",
+        "--- /dev/null",
+        "+++ b/src/new.js",
+        "@@ -0,0 +1 @@",
+        "+new first file",
+        "diff --git a/src/auth.js b/src/auth.js",
+        "--- a/src/auth.js",
+        "+++ b/src/auth.js",
+        "@@ -1 +1 @@",
+        "-old auth",
+        "+new auth",
+        "diff --git a/src/session.js b/src/session.js",
+        "--- a/src/session.js",
+        "+++ b/src/session.js",
+        "@@ -1 +1 @@",
+        "-old session",
+        "+newer session"
+      ].join("\n")
+    };
+    const api = createApi();
+    api.review.read.mockResolvedValue(initialReview);
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(await screen.findByRole("button", { name: /session\.js/ }));
+    const fileBrowser = document.querySelector(".file-browser");
+    const diffBody = document.querySelector(".file-diff-body");
+    fileBrowser.scrollTop = 144;
+    diffBody.scrollTop = 96;
+    diffBody.scrollLeft = 40;
+
+    api.review.read.mockResolvedValue(refreshedReview);
+    act(() => api.emit({
+      type: "RuntimeEvent",
+      payload: { projectId: project.id, threadId: thread.id, method: "turn/completed", turn: { id: "live-turn" } }
+    }));
+
+    expect(document.querySelector(".file-browser")).toBe(fileBrowser);
+    expect(document.querySelector(".file-diff-body")).toBe(diffBody);
+    expect(screen.queryByText("Reading Git changes…")).not.toBeInTheDocument();
+    expect(await screen.findByText("newer session")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /session\.js/ })).toHaveClass("selected");
+    expect(document.querySelector(".file-browser")).toBe(fileBrowser);
+    expect(document.querySelector(".file-diff-body")).toBe(diffBody);
+    expect(fileBrowser.scrollTop).toBe(144);
+    expect(diffBody.scrollTop).toBe(96);
+    expect(diffBody.scrollLeft).toBe(40);
   });
 
   it("lets Tools replace the primary sidebar instead of adding a second rail", async () => {
@@ -1617,6 +1858,193 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("button", { name: "Check sign-in" })).toBeInTheDocument();
   });
 
+  it("keeps separate setup actions available for missing and broken providers", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    let finishCodexInstall;
+    api.providers.install.mockImplementation(() => new Promise((resolve) => { finishCodexInstall = resolve; }));
+    api.providers.list.mockResolvedValue([
+      { id: "codex", installed: false, compatible: false, health: { state: "missing", message: "Codex is not installed" }, actions: { install: true, locate: true } },
+      { id: "claude", compatible: false, health: { state: "broken", message: "Claude Code needs repair" }, actions: { repair: true, locate: true } }
+    ]);
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /^Providers/ }));
+
+    const codex = await screen.findByRole("article", { name: "OpenAI Codex provider" });
+    const claude = screen.getByRole("article", { name: "Anthropic Claude provider" });
+    expect(within(codex).getByText("Not installed")).toBeInTheDocument();
+    expect(within(codex).getByRole("button", { name: "Install" })).toBeInTheDocument();
+    expect(within(codex).getByRole("button", { name: "Locate" })).toBeInTheDocument();
+    expect(within(claude).getByText("Needs repair")).toBeInTheDocument();
+    expect(within(claude).getByRole("button", { name: "Repair" })).toBeInTheDocument();
+    expect(within(claude).getByRole("button", { name: "Locate" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /install both/i })).not.toBeInTheDocument();
+
+    await user.click(within(codex).getByRole("button", { name: "Install" }));
+    await waitFor(() => expect(api.providers.install).toHaveBeenCalledWith({ provider: "codex" }));
+    const claudeLocate = within(screen.getByRole("article", { name: "Anthropic Claude provider" })).getByRole("button", { name: "Locate" });
+    expect(claudeLocate).toBeEnabled();
+    await user.click(claudeLocate);
+    await waitFor(() => expect(api.providers.locate).toHaveBeenCalledWith({ provider: "claude" }));
+    await act(async () => finishCodexInstall({}));
+  });
+
+  it("keeps managed credentials honest and allows a connected provider to sign out", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    api.providers.list.mockResolvedValue([
+      { id: "codex", installed: true, compatible: true, connected: true, authenticated: true, externallyManagedAuth: true, executablePath: "/usr/local/bin/codex", version: "1.2.3", actions: { logout: false } },
+      { id: "claude", installed: true, compatible: true, connected: true, authenticated: true, account: { email: "dev@example.com" }, actions: { logout: true } }
+    ]);
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /^Providers/ }));
+
+    const codex = await screen.findByRole("article", { name: "OpenAI Codex provider" });
+    const claude = screen.getByRole("article", { name: "Anthropic Claude provider" });
+    expect(within(codex).getByText("Managed externally")).toBeInTheDocument();
+    expect(within(codex).queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
+    await user.click(within(claude).getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(api.providers.logout).toHaveBeenCalledWith({ provider: "claude" }));
+  });
+
+  it("does not label a missing runtime as connected just because its credentials are external", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    api.providers.list.mockResolvedValue([
+      { id: "codex", installed: false, compatible: false, externallyManagedAuth: true, health: { state: "missing", message: "Codex is not installed" }, actions: { install: true, locate: true, logout: false } },
+      { id: "claude", installed: false, compatible: false, health: { state: "missing", message: "Claude Code is not installed" }, actions: { install: true, locate: true, logout: false } }
+    ]);
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /^Providers/ }));
+
+    const codex = await screen.findByRole("article", { name: "OpenAI Codex provider" });
+    expect(within(codex).getByText("Not installed")).toBeInTheDocument();
+    expect(within(codex).queryByText("Managed externally")).not.toBeInTheDocument();
+    expect(within(codex).getByRole("button", { name: "Install" })).toBeInTheDocument();
+  });
+
+  it("keeps provider-neutral workspaces usable with zero connected providers", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [],
+      runtime: { state: "unavailable", connected: false },
+      settings: {},
+      agentBehaviors: [{ id: "verification", label: "Verification", description: "Run proportional checks.", category: "core", defaultEnabled: true }]
+    });
+    api.providers.list.mockResolvedValue([]);
+    window.pixice = api;
+    render(<WorkflowHost><App /></WorkflowHost>);
+    await screen.findByText("I traced the current flow.");
+
+    expect(screen.getAllByText("Aurora").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Board" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Workflows" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /^Providers/ }));
+    expect(await screen.findByRole("article", { name: "OpenAI Codex provider" })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Anthropic Claude provider" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Agent Behavior/ }));
+    expect(await screen.findByRole("heading", { name: "Agent Behavior" })).toBeInTheDocument();
+  });
+
+  it("updates an individual provider row from lifecycle progress events", async () => {
+    const api = createApi();
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Providers/ }));
+    await screen.findByRole("article", { name: "OpenAI Codex provider" });
+
+    act(() => api.emit({
+      type: "ProviderLifecycleState",
+      payload: {
+        provider: "codex",
+        installed: false,
+        compatible: false,
+        health: { state: "missing", message: "Codex is not installed" },
+        installState: { state: "installing", operation: "installing", message: "Installing Codex", progress: "Downloading Codex" },
+        actions: { install: false, locate: false }
+      }
+    }));
+
+    const codex = screen.getByRole("article", { name: "OpenAI Codex provider" });
+    expect(within(codex).getByText("Installing Codex")).toBeInTheDocument();
+    expect(codex).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("checks and updates Codex and Claude independently from Settings", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    api.providers.list.mockResolvedValue([
+      {
+        id: "codex",
+        installed: true,
+        compatible: true,
+        connected: true,
+        authenticated: true,
+        version: "codex-cli 0.149.0",
+        health: { state: "healthy", message: "Codex is ready" },
+        updateState: { state: "available", availableVersion: "0.151.0", message: "Codex 0.151.0 is available" },
+        actions: { checkUpdate: true, update: true, logout: true }
+      },
+      {
+        id: "claude",
+        installed: true,
+        compatible: true,
+        connected: true,
+        authenticated: true,
+        version: "2.1.234",
+        health: { state: "healthy", message: "Claude Code is ready" },
+        updateState: { state: "not-available", availableVersion: null, message: "Claude Code is up to date" },
+        actions: { checkUpdate: true, update: false, logout: true }
+      }
+    ]);
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", provider: "codex", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: { checkProviderUpdates: true }
+    });
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /^Providers/ }));
+    const codex = await screen.findByRole("article", { name: "OpenAI Codex provider" });
+    const claude = screen.getByRole("article", { name: "Anthropic Claude provider" });
+    expect(within(codex).getByText("Update available")).toBeInTheDocument();
+    await user.click(within(codex).getByRole("button", { name: "Update to 0.151.0" }));
+    await waitFor(() => expect(api.providers.update).toHaveBeenCalledWith({ provider: "codex" }));
+    expect(api.providers.update).not.toHaveBeenCalledWith({ provider: "claude" });
+    await user.click(within(claude).getByRole("button", { name: "Check update" }));
+    await waitFor(() => expect(api.providers.checkUpdates).toHaveBeenCalledWith({ provider: "claude" }));
+
+    await user.click(screen.getByRole("button", { name: /^Updates/ }));
+    expect(await screen.findByRole("heading", { name: "Provider updates" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /update all/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Check all providers" }));
+    await waitFor(() => expect(api.providers.checkUpdates).toHaveBeenCalledWith());
+    await user.click(screen.getByRole("checkbox", { name: "Check provider updates automatically" }));
+    expect(api.app.saveSettings).toHaveBeenCalledWith({ checkProviderUpdates: false });
+  });
+
   it("shows measured token usage, cost averages, charts, and the current rate card", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -1731,61 +2159,8 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
     await waitFor(() => expect(api.updates.check).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("Pixice is up to date.")).toBeInTheDocument();
-  });
-
-  it("offers a background Codex update in a small opt-in toast", async () => {
-    const api = createApi();
-    window.pixice = api;
-    const user = userEvent.setup();
-    render(<App />);
-    await screen.findByText("I traced the current flow.");
-
-    act(() => api.emit({
-      type: "CodexUpdateState",
-      payload: {
-        supported: true,
-        enabled: true,
-        state: "available",
-        currentVersion: "0.149.0",
-        availableVersion: "0.149.1",
-        installedVersion: null,
-        restartRequired: false,
-        prompt: true,
-        message: "Codex 0.149.1 is available."
-      }
-    }));
-
-    const toast = await screen.findByRole("dialog", { name: "Codex update available" });
-    expect(toast).toHaveTextContent("Pixice is using 0.149.0");
-    expect(toast).toHaveTextContent("Running tasks and workflows may be interrupted");
-    await user.click(within(toast).getByRole("button", { name: "Update Codex" }));
-    await waitFor(() => expect(api.codexUpdates.install).toHaveBeenCalledTimes(1));
-    expect(await screen.findByRole("status", { name: "Codex updated successfully" })).toHaveTextContent("Codex updated successfully");
-    expect(screen.getByText(/Pixice stayed open/)).toBeInTheDocument();
-  });
-
-  it("persists the Codex startup update-check setting", async () => {
-    const api = createApi();
-    api.app.bootstrap.mockResolvedValue({
-      projects: [project],
-      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
-      runtime: { state: "ready", connected: true },
-      settings: { checkCodexUpdates: false }
-    });
-    window.pixice = api;
-    render(<App />);
-    await screen.findByText("I traced the current flow.");
-
-    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Updates/ }));
-    const toggle = await screen.findByRole("checkbox", { name: "Check for Codex updates when Pixice opens" });
-    expect(toggle).not.toBeChecked();
-    fireEvent.click(toggle);
-    expect(api.app.saveSettings).toHaveBeenCalledWith({ checkCodexUpdates: true });
-
-    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
-    await waitFor(() => expect(api.codexUpdates.check).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText("Codex is up to date.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Codex updates" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Pixice app updates and provider updates remain separate/)).toBeInTheDocument();
   });
 
   it("restores persistent model, reasoning, and permission defaults after an app update", async () => {
@@ -2508,6 +2883,7 @@ describe("Pixice app shell", () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
     const composer = screen.getByRole("textbox", { name: "Task prompt" });
+    expect(composer).toHaveStyle({ height: "24px", overflowY: "hidden" });
     let scrollHeight = 132;
     Object.defineProperty(composer, "scrollHeight", { configurable: true, get: () => scrollHeight });
 
@@ -3074,29 +3450,73 @@ describe("Pixice app shell", () => {
     expect(app).toHaveAttribute("data-sidebar-expanded", "true");
     expect(appCss).toMatch(/\.pixice-app\[data-preview-open="true"\]\[data-sidebar-expanded="false"\]\s*\{\s*--rail-width:\s*64px;/);
 
-    fireEvent.click(screen.getByRole("button", { name: "New browser tab" }));
+    fireEvent.click(screen.getByRole("button", { name: "New preview tab" }));
+    expect(await screen.findByLabelText("New preview tab options")).toBeInTheDocument();
+    const createdBrowserState = {
+      native: false,
+      workspaceId: "thread-1",
+      activeTabId: "browser-2",
+      tabs: [
+        { id: "browser-1", title: "Existing tab", url: "https://example.com", loading: false, error: null, canGoBack: false, canGoForward: false },
+        { id: "browser-2", title: "New tab", url: "", loading: false, error: null, canGoBack: false, canGoForward: false }
+      ]
+    };
+    window.pixice.browser.create.mockResolvedValue(createdBrowserState);
+    window.pixice.browser.setViewport.mockResolvedValue(createdBrowserState);
+    fireEvent.click(screen.getByRole("button", { name: /BrowserOpen a web page/ }));
     expect(window.pixice.browser.create).toHaveBeenCalledWith({ workspaceId: "thread-1" });
+    await waitFor(() => expect(screen.queryByLabelText("New preview tab options")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("tab", { name: "New tab" })).toHaveAttribute("aria-selected", "true"));
+    expect(screen.getByRole("tab", { name: "Existing tab" })).toHaveAttribute("aria-selected", "false");
+    await waitFor(() => expect(window.pixice.preview.setContext).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      context: {
+        open: true,
+        tabCount: 2,
+        active: expect.objectContaining({ kind: "browser", id: "browser-2", title: "New tab" })
+      }
+    }));
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Task prompt" }), { target: { value: "look at this" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      text: "look at this",
+      previewContext: {
+        open: true,
+        tabCount: 2,
+        active: expect.objectContaining({ kind: "browser", id: "browser-2" })
+      }
+    })));
 
     fireEvent.click(screen.getAllByRole("button", { name: "Close preview workspace" })[0]);
     await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
     expect(sidebar).toHaveAttribute("data-expanded", "true");
   });
 
-  it("keeps the native browser viewport hidden while a workflow owns the preview panel", async () => {
+  it("keeps the native browser viewport hidden while a workflow tab is active", async () => {
     const api = window.pixice;
     render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
 
-    const panel = await screen.findByRole("region", { name: "Preview workspace" });
+    await screen.findByRole("region", { name: "Preview workspace" });
     await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: "thread-1",
       visible: true
     })));
 
     api.browser.setViewport.mockClear();
-    panel.setAttribute("data-workflow-preview-host", "true");
+    act(() => window.dispatchEvent(new CustomEvent("pixice:open-preview-tab", { detail: {
+      workspaceId: "thread-1",
+      tab: {
+        id: "workflow:workflow-1",
+        kind: "workflow",
+        title: "Release workflow",
+        payload: { projectId: "project-1", workflowId: "workflow-1", workflowName: "Release workflow", reason: "edit" }
+      }
+    } })));
 
+    expect(await screen.findByRole("tab", { name: "Release workflow" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({
       workspaceId: "thread-1",
       visible: false
@@ -3212,6 +3632,44 @@ describe("Pixice app shell", () => {
     expect(await screen.findByRole("tab", { name: "runtime.js" })).toBeInTheDocument();
   });
 
+  it("does not apply a hidden task inspector layout when restoring a thread preview", async () => {
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Second task",
+      preview: "Second task",
+      turns: [{
+        id: "turn-2",
+        status: "completed",
+        items: [{ id: "agent-2", type: "agentMessage", text: "Second task response.", phase: "final_answer" }]
+      }]
+    };
+    window.pixice = createApi([thread, secondThread]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Second task" }));
+    await screen.findByText("Second task response.");
+    act(() => window.pixice.emit({
+      type: "AttentionRequired",
+      payload: {
+        id: "approval-thread-2",
+        projectId: project.id,
+        params: { threadId: "thread-2" }
+      }
+    }));
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-inspector-open", "true");
+
+    await user.click(screen.getByRole("button", { name: "Refactor authentication" }));
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-inspector-open", "false");
+    expect(screen.queryByRole("complementary", { name: "Task inspector" })).not.toBeInTheDocument();
+  });
+
   it("discards the oldest hidden preview workspace after retaining two threads", async () => {
     const threads = [
       thread,
@@ -3253,7 +3711,7 @@ describe("Pixice app shell", () => {
     }));
   });
 
-  it("closes the first browser tab when a file tab remains, then closes Preview with the final tab", async () => {
+  it("closes the first browser tab when a file tab remains, then shows the chooser after the final tab", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -3269,10 +3727,11 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("tab", { name: "runtime.js" })).toHaveAttribute("aria-selected", "true");
 
     await user.click(screen.getByRole("button", { name: "Close runtime.js" }));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(screen.getByLabelText("New preview tab options")).toBeInTheDocument();
   });
 
-  it("closes Preview when its only browser tab closes", async () => {
+  it("shows the new-tab chooser when its only browser tab closes", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -3282,7 +3741,8 @@ describe("Pixice app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Close New tab" }));
 
-    await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(screen.getByLabelText("New preview tab options")).toBeInTheDocument();
   });
 
   it("replaces the active composer with a sequential question flow", async () => {

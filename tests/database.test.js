@@ -121,6 +121,61 @@ describe("thread runtime persistence", () => {
     database.db.close();
   });
 
+  it("persists confirmed phases and exposes membership on Board tasks", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const now = "2026-08-27T08:00:00.000Z";
+    database.createProject({
+      id: "project-phases",
+      canonicalPath: "/workspace/phases",
+      displayName: "Phases",
+      folders: ["/workspace/phases"],
+      createdAt: now,
+      updatedAt: now
+    });
+    database.createBoardTask({
+      id: "task-discovery",
+      projectId: "project-phases",
+      title: "Provider discovery",
+      column: "done",
+      schedule: { plannedStart: "2026-08-27T08:00:00.000Z", plannedEnd: "2026-08-27T10:00:00.000Z", timezone: "Europe/Zurich" }
+    });
+    database.createBoardTask({
+      id: "task-build",
+      projectId: "project-phases",
+      title: "Provider implementation",
+      column: "active",
+      schedule: { plannedStart: "2026-08-28T07:00:00.000Z", plannedEnd: "2026-08-28T12:00:00.000Z", timezone: "Europe/Zurich" }
+    });
+
+    expect(database.createBoardPhase({
+      id: "phase-provider",
+      projectId: "project-phases",
+      title: "Provider rollout",
+      taskIds: ["task-discovery", "task-build"]
+    })).toMatchObject({
+      id: "phase-provider",
+      title: "Provider rollout",
+      taskIds: ["task-discovery", "task-build"],
+      plannedStart: "2026-08-27T08:00:00.000Z",
+      plannedEnd: "2026-08-28T12:00:00.000Z",
+      completedCount: 1
+    });
+    expect(database.listBoardTasks("project-phases")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "task-discovery", phaseId: "phase-provider" }),
+      expect.objectContaining({ id: "task-build", phaseId: "phase-provider" })
+    ]));
+    database.db.close();
+
+    const reopened = new PixiceDatabase(directory);
+    expect(reopened.listBoardPhases("project-phases")).toEqual([
+      expect.objectContaining({ id: "phase-provider", title: "Provider rollout", taskIds: ["task-discovery", "task-build"] })
+    ]);
+    expect(() => reopened.createBoardPhase({ id: "phase-duplicate", projectId: "project-phases", title: "Duplicate", taskIds: ["task-discovery", "task-build"] })).toThrow("already belong to a phase");
+    reopened.db.close();
+  });
+
   it("migrates legacy projects to the structured project DTO", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);
@@ -304,7 +359,7 @@ describe("thread runtime persistence", () => {
       defaultPermissionMode: "workspace-write",
       workflowGenerationModel: "claude:claude-sonnet-5",
       keepSystemAwake: true,
-      checkCodexUpdates: false,
+      checkProviderUpdates: false,
       threadCompletionsSeen: { __baselineAt: 1_776_000_000_000, "thread-2": "turn:turn-2" },
       agentBehaviors: { structuredPlanning: true, parallelDelegation: false, verification: true }
     });
@@ -317,7 +372,7 @@ describe("thread runtime persistence", () => {
       defaultPermissionMode: "workspace-write",
       workflowGenerationModel: "claude:claude-sonnet-5",
       keepSystemAwake: true,
-      checkCodexUpdates: false,
+      checkProviderUpdates: false,
       threadCompletionsSeen: { __baselineAt: 1_776_000_000_000, "thread-2": "turn:turn-2" },
       agentBehaviors: { structuredPlanning: true, parallelDelegation: false, verification: true }
     });

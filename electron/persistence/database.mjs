@@ -183,6 +183,19 @@ export class PixiceDatabase {
       );
       CREATE INDEX IF NOT EXISTS board_tasks_project ON board_tasks(project_id, column_id, position);
       CREATE UNIQUE INDEX IF NOT EXISTS board_tasks_thread ON board_tasks(thread_id) WHERE thread_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS board_phases (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+        created_by_thread_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS board_phases_project ON board_phases(project_id, created_at);
+      CREATE TABLE IF NOT EXISTS board_phase_tasks (
+        phase_id TEXT NOT NULL, task_id TEXT NOT NULL, position INTEGER NOT NULL,
+        PRIMARY KEY(phase_id, task_id),
+        FOREIGN KEY(phase_id) REFERENCES board_phases(id) ON DELETE CASCADE,
+        FOREIGN KEY(task_id) REFERENCES board_tasks(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS board_phase_tasks_task ON board_phase_tasks(task_id);
       CREATE TABLE IF NOT EXISTS board_task_activity (
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL, project_id TEXT NOT NULL,
         thread_id TEXT, turn_id TEXT, kind TEXT NOT NULL, summary TEXT NOT NULL,
@@ -412,6 +425,7 @@ export class PixiceDatabase {
     try {
       this.db.prepare("DELETE FROM board_task_trigger_receipts WHERE task_id IN (SELECT id FROM board_tasks WHERE project_id = ?)").run(projectId);
       this.db.prepare("DELETE FROM board_task_activity WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM board_phases WHERE project_id = ?").run(projectId);
       this.db.prepare("DELETE FROM board_tasks WHERE project_id = ?").run(projectId);
       this.db.prepare("DELETE FROM board_plan_proposals WHERE project_id = ?").run(projectId);
       this.db.prepare("DELETE FROM work_pattern_occurrences WHERE project_id = ?").run(projectId);
@@ -592,6 +606,57 @@ export class PixiceDatabase {
       WHERE b.id = ?
     `).get(taskId));
     return this.#enrichBoardTask(task);
+  }
+
+  listBoardPhases(projectId) {
+    const tasksById = new Map(this.listBoardTasks(projectId).map((task) => [task.id, task]));
+    return this.db.prepare("SELECT * FROM board_phases WHERE project_id = ? ORDER BY created_at ASC").all(projectId).map((row) => {
+      const taskIds = this.db.prepare("SELECT task_id FROM board_phase_tasks WHERE phase_id = ? ORDER BY position ASC").all(row.id).map((entry) => entry.task_id);
+      const tasks = taskIds.map((taskId) => tasksById.get(taskId)).filter(Boolean);
+      const starts = tasks.map((task) => Date.parse(task.schedule?.plannedStart)).filter(Number.isFinite);
+      const ends = tasks.map((task) => Date.parse(task.schedule?.plannedEnd ?? task.schedule?.plannedStart)).filter(Number.isFinite);
+      return {
+        id: row.id,
+        projectId: row.project_id,
+        title: row.title,
+        taskIds,
+        tasks: tasks.map((task) => ({ id: task.id, title: task.title, column: task.column })),
+        plannedStart: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
+        plannedEnd: ends.length ? new Date(Math.max(...ends)).toISOString() : null,
+        completedCount: tasks.filter((task) => task.column === "done").length,
+        createdByThreadId: row.created_by_thread_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      };
+    });
+  }
+
+  createBoardPhase({ id, projectId, title, taskIds, createdByThreadId = null, actorKind = "user", actorId = null }) {
+    const normalizedTaskIds = [...new Set(taskIds ?? [])];
+    if (normalizedTaskIds.length < 2) throw new Error("A phase needs at least two work items");
+    const tasks = normalizedTaskIds.map((taskId) => this.getBoardTask(taskId));
+    if (tasks.some((task) => !task || task.projectId !== projectId)) throw new Error("A phase cannot include work from another project");
+    const occupied = this.db.prepare(`SELECT task_id FROM board_phase_tasks WHERE task_id IN (${normalizedTaskIds.map(() => "?").join(",")})`).all(...normalizedTaskIds);
+    if (occupied.length) throw new Error("One or more work items already belong to a phase");
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("INSERT INTO board_phases (id, project_id, title, created_by_thread_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, projectId, title, createdByThreadId, now, now);
+      const membership = this.db.prepare("INSERT INTO board_phase_tasks (phase_id, task_id, position) VALUES (?, ?, ?)");
+      normalizedTaskIds.forEach((taskId, index) => membership.run(id, taskId, (index + 1) * 1024));
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    for (const task of tasks) this.recordBoardTaskActivity({
+      id: randomUUID(), taskId: task.id, projectId, threadId: actorKind === "agent" ? actorId : null,
+      kind: "phase-assigned", summary: `Added to phase "${title}".`, dedupeKey: `phase:${id}:${task.id}`,
+      actorKind, actorId
+    });
+    const phase = this.listBoardPhases(projectId).find((candidate) => candidate.id === id);
+    this.#emitBoardEvent({ action: "phase-created", projectId, phase, sourceActor: { kind: actorKind, id: actorId } });
+    return phase;
   }
 
   createBoardTask({
@@ -879,7 +944,8 @@ export class PixiceDatabase {
       lagMinutes: row.lag_minutes, createdAt: row.created_at
     }));
     const dependents = this.db.prepare("SELECT task_id FROM board_task_dependencies WHERE depends_on_task_id = ? ORDER BY created_at ASC").all(task.id).map((row) => row.task_id);
-    return { ...task, schedule, dependencies, dependents, workflowBindings: this.listBoardTaskWorkflowBindings(task.id) };
+    const phaseId = this.db.prepare("SELECT phase_id FROM board_phase_tasks WHERE task_id = ?").get(task.id)?.phase_id ?? null;
+    return { ...task, phaseId, schedule, dependencies, dependents, workflowBindings: this.listBoardTaskWorkflowBindings(task.id) };
   }
 
   #writeBoardTaskSchedule(taskId, patch, { actorKind = "user", actorId = null, now = new Date().toISOString(), expectedRevision } = {}) {

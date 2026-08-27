@@ -15,7 +15,7 @@ export class CapabilityAdapter {
   }
 
   request(client, method, params) {
-    if (!this.supports(method)) throw new Error(`The bundled Codex runtime does not advertise ${method}`);
+    if (!this.supports(method)) throw new Error(`The connected Codex app-server does not advertise ${method}`);
     return client.request(method, params);
   }
 }

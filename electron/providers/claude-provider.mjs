@@ -1,7 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { constants, accessSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   PIXICE_BROWSER_MCP_TOOLS,
@@ -10,6 +9,13 @@ import {
   browserToolShapes
 } from "../browser/browser-workspace.mjs";
 import { buildClaudeUserMessage } from "../runtime/user-input.mjs";
+import {
+  PIXICE_PREVIEW_MCP_TOOLS,
+  PIXICE_PREVIEW_NAMESPACE,
+  previewContextDynamicTools,
+  previewContextToolShapes,
+  stripPreviewContextHint
+} from "../runtime/preview-context.mjs";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { normalizePixiceQuestions, pixiceQuestionToolShape } from "../runtime/question-tool.mjs";
 import { PIXICE_BRIDGE_MCP_TOOLS, pixiceBridgeDynamicTools, pixiceBridgeToolShapes } from "../runtime/pixice-bridge.mjs";
@@ -54,58 +60,24 @@ export function claudeAccountIsAuthenticated(account) {
   return Boolean(account.tokenSource && account.tokenSource !== "none");
 }
 
+export function claudeExternallyManagedAuth(account, environment = process.env) {
+  if (
+    environment.ANTHROPIC_API_KEY
+    || environment.ANTHROPIC_AUTH_TOKEN
+    || environment.CLAUDE_CODE_OAUTH_TOKEN
+    || environment.CLAUDE_CODE_USE_BEDROCK
+    || environment.CLAUDE_CODE_USE_VERTEX
+    || environment.CLAUDE_CODE_USE_FOUNDRY
+  ) return true;
+  if (account?.apiProvider && account.apiProvider !== "firstParty") return true;
+  const apiKeySource = String(account?.apiKeySource ?? "none").toLowerCase();
+  if (["anthropic_api_key", "apikeyhelper", "user", "project", "org", "temporary"].includes(apiKeySource)) return true;
+  const tokenSource = String(account?.tokenSource ?? "none").toLowerCase();
+  return tokenSource !== "none" && !tokenSource.includes("oauth") && !tokenSource.includes("claude.ai");
+}
+
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "WebSearch", "WebFetch"]);
 const PIXICE_QUESTION_MCP_TOOL = "mcp__pixice__request_user_input";
-
-export function resolveClaudeCodeExecutable({
-  explicitPath = process.env.PIXICE_CLAUDE_PATH,
-  pathValue = process.env.PATH,
-  homeDirectory = homedir(),
-  platform = process.platform
-} = {}) {
-  const filename = platform === "win32" ? "claude.exe" : "claude";
-  const candidates = [
-    explicitPath,
-    ...(pathValue ?? "").split(path.delimiter).filter(Boolean).map((directory) => path.join(directory, filename)),
-    ...(platform === "darwin" ? ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"] : []),
-    path.join(homeDirectory, ".local", "bin", filename),
-    path.join(homeDirectory, ".claude", "local", filename)
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    try {
-      accessSync(candidate, platform === "win32" ? constants.F_OK : constants.X_OK);
-      return candidate;
-    } catch {
-      // Continue through the same executable locations used by CLI-first providers.
-    }
-  }
-  return null;
-}
-
-export function resolvePackagedClaudeCodeExecutable({
-  resourcesPath = process.resourcesPath,
-  platform = process.platform,
-  architecture = process.arch
-} = {}) {
-  if (!resourcesPath) return null;
-  const suffix = platform === "win32" ? "win32" : platform;
-  const packageName = `claude-agent-sdk-${suffix}-${architecture}`;
-  const filename = platform === "win32" ? "claude.exe" : "claude";
-  const candidate = path.join(
-    resourcesPath,
-    "app.asar.unpacked",
-    "node_modules",
-    "@anthropic-ai",
-    packageName,
-    filename
-  );
-  try {
-    accessSync(candidate, platform === "win32" ? constants.F_OK : constants.X_OK);
-    return candidate;
-  } catch {
-    return null;
-  }
-}
 
 export class AsyncPromptQueue {
   constructor() {
@@ -159,7 +131,8 @@ export function claudePermissionSettings(mode) {
       ...PIXICE_BRIDGE_MCP_TOOLS,
       ...PIXICE_BOARD_MCP_TOOLS,
       ...PIXICE_INSTRUMENTS_MCP_TOOLS,
-      ...PIXICE_BROWSER_MCP_TOOLS
+      ...PIXICE_BROWSER_MCP_TOOLS,
+      ...PIXICE_PREVIEW_MCP_TOOLS
     ]
   };
 }
@@ -176,9 +149,18 @@ export function claudeQueryOptions({
   clientVersion,
   canUseTool,
   mcpServers,
-  pathToClaudeCodeExecutable
+  pathToClaudeCodeExecutable,
+  environment = process.env
 }) {
   const permissions = claudePermissionSettings(permissionMode);
+  const executableDirectory = pathToClaudeCodeExecutable ? path.dirname(pathToClaudeCodeExecutable) : null;
+  const inheritedPath = environment.PATH ?? environment.Path ?? environment.path ?? "";
+  const childEnvironment = { ...environment };
+  delete childEnvironment.Path;
+  delete childEnvironment.path;
+  if (executableDirectory || inheritedPath) {
+    childEnvironment.PATH = [executableDirectory, inheritedPath].filter(Boolean).join(path.delimiter);
+  }
   return {
     cwd,
     additionalDirectories: [...new Set([cwd, ...(runtimeWorkspaceRoots ?? [])])],
@@ -198,7 +180,7 @@ export function claudeQueryOptions({
     canUseTool,
     mcpServers,
     env: {
-      ...process.env,
+      ...childEnvironment,
       CLAUDE_AGENT_SDK_CLIENT_APP: `pixice/${clientVersion}`
     },
     pathToClaudeCodeExecutable: pathToClaudeCodeExecutable || undefined,
@@ -235,7 +217,7 @@ function toolItem(block) {
   }
   if (block.name.startsWith("mcp__")) {
     const [, server, ...tool] = block.name.split("__");
-    return { ...common, type: server === "pixice_browser" ? "dynamicToolCall" : "mcpToolCall", server, tool: tool.join("__"), arguments: block.input };
+    return { ...common, type: [PIXICE_BROWSER_NAMESPACE, PIXICE_PREVIEW_NAMESPACE].includes(server) ? "dynamicToolCall" : "mcpToolCall", server, tool: tool.join("__"), arguments: block.input };
   }
   return { ...common, type: "mcpToolCall", server: "claude", tool: block.name, arguments: block.input };
 }
@@ -276,8 +258,11 @@ export class ClaudeProvider extends EventEmitter {
     pixiceBoard = null,
     pixiceInstruments = null,
     pixiceBrowser = null,
-    pathToClaudeCodeExecutable = resolveClaudeCodeExecutable(),
-    requireExternalExecutable = false
+    pixicePreview = null,
+    pathToClaudeCodeExecutable = null,
+    requireExternalExecutable = false,
+    runtimeLifecycle = null,
+    environment = process.env
   }) {
     super();
     this.id = "claude";
@@ -290,13 +275,17 @@ export class ClaudeProvider extends EventEmitter {
     this.pixiceBoard = pixiceBoard;
     this.pixiceInstruments = pixiceInstruments;
     this.pixiceBrowser = pixiceBrowser;
+    this.pixicePreview = pixicePreview;
     this.pathToClaudeCodeExecutable = pathToClaudeCodeExecutable;
     this.requireExternalExecutable = requireExternalExecutable;
+    this.runtimeLifecycle = runtimeLifecycle;
+    this.environment = environment;
     this.sessions = new Map();
     this.pendingRequests = new Map();
     this.models = null;
     this.started = false;
     this.authSession = null;
+    this.runtimeLifecycle?.on("state", (state) => this.emit("lifecycle", state));
   }
 
   get connected() {
@@ -305,8 +294,13 @@ export class ClaudeProvider extends EventEmitter {
 
   async start() {
     try {
-      if (this.requireExternalExecutable && !this.pathToClaudeCodeExecutable) {
-        throw new Error("Claude Code is unavailable. Install `claude`, set PIXICE_CLAUDE_PATH, or reinstall Pixice with its Claude runtime.");
+      let lifecycle = null;
+      if (this.runtimeLifecycle) {
+        lifecycle = await this.runtimeLifecycle.discover();
+        this.pathToClaudeCodeExecutable = lifecycle.executablePath;
+      }
+      if (this.requireExternalExecutable && (!this.pathToClaudeCodeExecutable || lifecycle?.compatible === false)) {
+        throw new Error(lifecycle?.health?.message ?? "Claude Code is unavailable. Install Claude Code or locate an existing executable in Settings.");
       }
       if (!this.queryFactory) this.queryFactory = (await import("@anthropic-ai/claude-agent-sdk")).query;
       this.started = true;
@@ -363,7 +357,8 @@ export class ClaudeProvider extends EventEmitter {
       return {
         account: authenticated ? { type: "claude", ...account } : null,
         authenticated,
-        requiresAuth: true
+        requiresAuth: true,
+        externallyManagedAuth: claudeExternallyManagedAuth(account, this.environment)
       };
     } finally {
       queue.close();
@@ -419,6 +414,76 @@ export class ClaudeProvider extends EventEmitter {
       return { ...response, type: "claude", authUrl };
     } catch (error) {
       this.#closeAuthSession(query);
+      throw error;
+    }
+  }
+
+  async logout() {
+    if (!this.started) throw new Error("Claude provider is not available");
+    const account = await this.account();
+    if (account.externallyManagedAuth) {
+      return {
+        loggedOut: false,
+        externallyManagedAuth: true,
+        message: "Claude credentials are managed by an environment variable or external cloud provider and must be cleared there."
+      };
+    }
+    if (!this.runtimeLifecycle) throw new Error("Claude logout requires an external Claude Code executable");
+    this.#closeAuthSession();
+    await this.runtimeLifecycle.logoutCommand();
+    this.models = null;
+    this.emit("status", { state: "ready", message: "Claude account disconnected" });
+    return { loggedOut: true, externallyManagedAuth: false };
+  }
+
+  lifecycle() {
+    return this.runtimeLifecycle?.snapshot() ?? {};
+  }
+
+  externallyManagedAuth() {
+    return claudeExternallyManagedAuth(null, this.environment);
+  }
+
+  install() {
+    return this.#replaceRuntime(() => this.runtimeLifecycle.install());
+  }
+
+  locate(executablePath) {
+    return this.#replaceRuntime(() => this.runtimeLifecycle.locate(executablePath));
+  }
+
+  repair() {
+    return this.#replaceRuntime(() => this.runtimeLifecycle.repair());
+  }
+
+  checkForUpdate() {
+    if (!this.runtimeLifecycle) throw new Error("Claude update checks are unavailable");
+    return this.runtimeLifecycle.checkForUpdate();
+  }
+
+  update() {
+    return this.#replaceRuntime(() => this.runtimeLifecycle.update());
+  }
+
+  async refreshLifecycle() {
+    const lifecycle = await this.runtimeLifecycle.discover();
+    this.pathToClaudeCodeExecutable = lifecycle.executablePath;
+    return { ...lifecycle, connected: this.connected };
+  }
+
+  async #replaceRuntime(operation) {
+    if (!this.runtimeLifecycle) throw new Error("Claude runtime management is unavailable");
+    const previousExecutablePath = this.pathToClaudeCodeExecutable;
+    const wasConnected = this.connected;
+    await this.stop();
+    try {
+      const lifecycle = await operation();
+      this.pathToClaudeCodeExecutable = lifecycle.executablePath;
+      const connected = await this.start();
+      return { ...this.runtimeLifecycle.snapshot(), connected };
+    } catch (error) {
+      this.pathToClaudeCodeExecutable = previousExecutablePath;
+      if (wasConnected && previousExecutablePath) await this.start();
       throw error;
     }
   }
@@ -479,7 +544,8 @@ export class ClaudeProvider extends EventEmitter {
           developerInstructions: this.#developerInstructions(),
           clientVersion: this.clientVersion,
           canUseTool: async () => ({ behavior: "deny", message: "Model discovery cannot run tools" }),
-          pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable
+          pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable,
+          environment: this.environment
         })
       });
       const discovered = await Promise.race([
@@ -507,7 +573,8 @@ export class ClaudeProvider extends EventEmitter {
       developerInstructions: this.#developerInstructions(),
       clientVersion: this.clientVersion,
       canUseTool: async () => ({ behavior: "deny", message: "Account discovery cannot run tools" }),
-      pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable
+      pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable,
+      environment: this.environment
     });
   }
 
@@ -608,7 +675,7 @@ export class ClaudeProvider extends EventEmitter {
     };
     context.currentTurn = turn;
     context.thread.turns.push(turn);
-    context.thread.preview ||= message.message.content.find((part) => part.type === "text")?.text?.slice(0, 180) ?? "Image task";
+    context.thread.preview ||= stripPreviewContextHint(message.message.content.find((part) => part.type === "text")?.text).slice(0, 180) || "Image task";
     context.thread.status = threadStatus("active");
     context.thread.updatedAt = now();
     this.#persist(context);
@@ -660,9 +727,11 @@ export class ClaudeProvider extends EventEmitter {
         ...(this.pixiceBridge ? { pixice_bridge: this.#pixiceBridgeServer(context) } : {}),
         ...(this.pixiceBoard ? { pixice_board: this.#pixiceBoardServer(context) } : {}),
         ...(this.pixiceInstruments ? { pixice_instruments: this.#pixiceInstrumentsServer(context) } : {}),
-        ...(this.pixiceBrowser ? { [PIXICE_BROWSER_NAMESPACE]: this.#pixiceBrowserServer(context) } : {})
+        ...(this.pixiceBrowser ? { [PIXICE_BROWSER_NAMESPACE]: this.#pixiceBrowserServer(context) } : {}),
+        ...(this.pixicePreview ? { [PIXICE_PREVIEW_NAMESPACE]: this.#pixicePreviewServer(context) } : {})
       },
-      pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable
+      pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable,
+      environment: this.environment
     });
     options.abortController = context.abortController;
     const query = this.queryFactory({ prompt: context.queue, options });
@@ -920,6 +989,7 @@ export class ClaudeProvider extends EventEmitter {
       || PIXICE_BOARD_MCP_TOOLS.has(toolName)
       || PIXICE_INSTRUMENTS_MCP_TOOLS.has(toolName)
       || PIXICE_BROWSER_MCP_TOOLS.has(toolName)
+      || PIXICE_PREVIEW_MCP_TOOLS.has(toolName)
     ) {
       return Promise.resolve({ behavior: "allow", updatedInput: input });
     }
@@ -1067,6 +1137,31 @@ export class ClaudeProvider extends EventEmitter {
         definition.name,
         definition.description,
         browserToolShapes[definition.name],
+        run(definition.name)
+      ))
+    });
+  }
+
+  #pixicePreviewServer(context) {
+    const run = (name) => async (input) => {
+      const result = await this.pixicePreview.handleToolCall({
+        namespace: PIXICE_PREVIEW_NAMESPACE,
+        tool: name,
+        threadId: context.thread.id,
+        turnId: context.currentTurn?.id,
+        arguments: input,
+        source: "claude"
+      });
+      return claudeMcpResult(result);
+    };
+    return createSdkMcpServer({
+      name: PIXICE_PREVIEW_NAMESPACE,
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: previewContextDynamicTools[0].tools.map((definition) => tool(
+        definition.name,
+        definition.description,
+        previewContextToolShapes[definition.name],
         run(definition.name)
       ))
     });

@@ -16,6 +16,7 @@ import { cloneWorkflow, workflowStatusLabel } from "./workflow-utils.js";
 import styles from "./WorkflowWorkspace.module.css";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancelling"]);
+const EMPTY_WORKFLOW_LIST = [];
 
 function WorkflowSkeleton({ label = "Loading workflow", rows = 3 }) {
   return (
@@ -73,7 +74,20 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
     setLoading(true);
     setGeneration({ state: "idle" });
     try {
-      const result = await callWithBridgeRetry(() => api.workflows.read({ projectId, workflowId }));
+      const result = typeof api.workflows.read === "function"
+        ? await callWithBridgeRetry(() => api.workflows.read({ projectId, workflowId }))
+        : await callWithBridgeRetry(async () => {
+            const listed = await api.workflows.list({ projectId });
+            const workflow = (listed.data ?? []).find((candidate) => candidate.id === workflowId);
+            if (!workflow) throw new Error("The workflow could not be found.");
+            return {
+              workflow: {
+                ...workflow,
+                graph: workflow.graph ?? { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } }
+              },
+              runs: workflow.latestRun ? [workflow.latestRun] : []
+            };
+          });
       const next = cloneWorkflow(result.workflow);
       const latest = (result.runs ?? []).find((candidate) => ACTIVE_RUN_STATUSES.has(candidate.status)) ?? result.runs?.[0] ?? null;
       persistedRef.current = next;
@@ -285,7 +299,7 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
   };
 }
 
-function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, compact = false, onSaved, onDeleted, onDelete }) {
+function WorkflowEditor({ api, projectId, workflowId, workflows = EMPTY_WORKFLOW_LIST, models, compact = false, onSaved, onDeleted, onDelete }) {
   const editor = useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted });
   const [loadedWorkflows, setLoadedWorkflows] = useState(workflows);
 
@@ -335,7 +349,7 @@ function WorkflowEditor({ api, projectId, workflowId, workflows = [], models, co
   );
 }
 
-export function WorkflowWorkspace({ api = window.pixice, projectId, projectName, models = [], requestedWorkflowId = null, onWorkflowSelected, onBack }) {
+export function WorkflowWorkspace({ api = window.pixice, projectId, projectName, models = EMPTY_WORKFLOW_LIST, requestedWorkflowId = null, onWorkflowSelected, onBack }) {
   const [workflows, setWorkflows] = useState([]);
   const [selectedId, setSelectedId] = useState(requestedWorkflowId);
   const selectedIdRef = useRef(requestedWorkflowId);
@@ -527,23 +541,28 @@ export function WorkflowWorkspace({ api = window.pixice, projectId, projectName,
   );
 }
 
-export function WorkflowPreview({ api = window.pixice, projectId, workflowId, workflowName = "Workflow", models = [], reason = "open", onOpenWorkspace, onClose }) {
+export function WorkflowPreview({ api = window.pixice, projectId, workflowId, workflowName = "Workflow", models = EMPTY_WORKFLOW_LIST, reason = "open", onOpenWorkspace, onClose, onTitleChange, tabbed = false }) {
   const [title, setTitle] = useState(workflowName || "Workflow");
+  const handleSaved = useCallback((saved) => setTitle(saved.name), []);
 
   useEffect(() => {
     setTitle(workflowName || "Workflow");
   }, [workflowId, workflowName]);
+  useEffect(() => {
+    onTitleChange?.(title);
+  }, [title]);
 
   return (
-    <section className={styles.previewOverlay} aria-label="Workflow preview" data-workflow-preview="true">
-      <header className={styles.previewHeader}>
+    <section className={styles.previewOverlay} aria-label="Workflow preview" data-workflow-preview="true" data-tabbed={tabbed}>
+      {!tabbed && <header className={styles.previewHeader}>
         <span className={styles.previewTab}><TreeStructure size={13} /><span>{title}</span></span>
         <small>{reason === "run" ? "Agent is running this workflow" : reason === "edit" ? "Agent is editing this workflow" : "Pixice workflow canvas"}</small>
         <div className={styles.previewActions}>
           <button type="button" onClick={() => onOpenWorkspace?.(workflowId)}><Eye size={13} />Open full workspace</button>
           <button type="button" className={styles.iconButton} aria-label="Close workflow preview" title="Close workflow preview" onClick={onClose}><X size={13} /></button>
         </div>
-      </header>
+      </header>}
+      {tabbed && <div className={styles.previewContext}><span>{reason === "run" ? "Running workflow" : reason === "edit" ? "Editing workflow" : "Workflow canvas"}</span><button type="button" onClick={() => onOpenWorkspace?.(workflowId)}><Eye size={13} />Open Workflows</button></div>}
       <div className={styles.previewBody}>
         <WorkflowEditor
           api={api}
@@ -551,7 +570,7 @@ export function WorkflowPreview({ api = window.pixice, projectId, workflowId, wo
           workflowId={workflowId}
           models={models}
           compact
-          onSaved={(saved) => setTitle(saved.name)}
+          onSaved={handleSaved}
           onDeleted={onClose}
         />
       </div>
