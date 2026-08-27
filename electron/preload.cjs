@@ -10,6 +10,7 @@ const onEvent = (listener) => {
 contextBridge.exposeInMainWorld("pixice", Object.freeze({
   app: Object.freeze({ bootstrap: invoke("app:bootstrap"), saveSettings: invoke("app:settings:update") }),
   runtime: Object.freeze({ status: invoke("runtime:status") }),
+  git: Object.freeze({ status: invoke("git:status"), installCommandLineTools: invoke("git:install-command-line-tools") }),
   providers: Object.freeze({
     list: invoke("providers:list"),
     install: invoke("providers:install"),

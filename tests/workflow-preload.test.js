@@ -94,6 +94,16 @@ describe("workflow preload bridge", () => {
     expect(invoke).toHaveBeenNthCalledWith(3, "github:logout", undefined);
   });
 
+  it("exposes local Git discovery and explicit Command Line Tools installation", async () => {
+    const { api, invoke } = loadPreload();
+
+    await api.git.status();
+    await api.git.installCommandLineTools();
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "git:status", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(2, "git:install-command-line-tools", undefined);
+  });
+
   it("exposes thread-scoped Preview context updates", async () => {
     const { api, invoke } = loadPreload();
     const payload = {

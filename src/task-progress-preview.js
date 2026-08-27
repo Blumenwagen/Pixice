@@ -226,7 +226,14 @@ const releaseTool = {
   lastOpenedAt: "2026-08-23T09:30:00.000Z"
 };
 
-export function createTaskProgressPreviewApi() {
+export function createTaskProgressPreviewApi({ gitUnavailable = false } = {}) {
+  const gitStatus = gitUnavailable
+    ? { state: "command-line-tools-missing", available: false, installSupported: true, executablePath: null, version: null, message: "Apple Command Line Tools are not installed. Pixice can still work with folders, but Git features are unavailable." }
+    : { state: "ready", available: true, installSupported: false, executablePath: "/usr/bin/git", version: "git version 2.50.1", message: "git version 2.50.1 is ready." };
+  let currentGitStatus = gitStatus;
+  const previewProject = gitUnavailable
+    ? { ...project, repository: { kind: "folder", root: project.canonicalPath, baseCommit: null, dirtyPaths: [], git: gitStatus } }
+    : { ...project, repository: { ...project.repository, git: gitStatus } };
   let previewTools = [releaseTool];
   let boardTasks = structuredClone(previewScheduleTasks);
   let boardPhases = [];
@@ -250,8 +257,15 @@ export function createTaskProgressPreviewApi() {
     tabs: [{ id: "preview-browser-tab", title: "New tab", url: "", loading: false, error: null, canGoBack: false, canGoForward: false }]
   };
   return {
-    app: { bootstrap: async () => ({ projects: [project], models, runtime: { state: "ready", connected: true, userAgent: "Preview runtime" } }) },
+    app: { bootstrap: async () => ({ projects: [previewProject], models, runtime: { state: "ready", connected: true, userAgent: "Preview runtime" } }) },
     runtime: { status: async () => ({ state: "ready", connected: true }) },
+    git: {
+      status: async () => currentGitStatus,
+      installCommandLineTools: async () => {
+        currentGitStatus = { ...gitStatus, state: "install-requested", installRequested: true, message: "Finish the Apple Command Line Tools installation, then choose Check again." };
+        return currentGitStatus;
+      }
+    },
     updates: {
       status: async () => ({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." }),
       check: async () => ({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." }),
@@ -318,7 +332,7 @@ export function createTaskProgressPreviewApi() {
       events: async () => ({ data: [] }),
       delete: async () => null
     },
-    projects: { list: async () => [project], open: async () => project },
+    projects: { list: async () => [previewProject], open: async () => previewProject },
     threads: {
       list: async () => ({ data: threads, nextCursor: null }),
       read: async ({ threadId }) => threadId === secondaryThread.id ? { thread: secondaryThread, plan: [] } : { thread: rootThread, plan },
@@ -329,7 +343,7 @@ export function createTaskProgressPreviewApi() {
     turns: { start: async () => ({ turn: rootThread.turns[0] }), steer: async () => ({}), interrupt: async () => ({}) },
     approvals: { resolve: async () => ({ ok: true }) },
     requests: { respond: async () => ({ ok: true }) },
-    review: { read: async () => ({ repository: project.repository, diff: "" }) },
+    review: { read: async () => ({ repository: previewProject.repository, diff: "" }) },
     proactivity: {
       list: async ({ threadId }) => ({ data: proactiveSuggestions.filter((suggestion) => !threadId || suggestion.threadId === threadId) }),
       resolve: async ({ suggestionId, decision }) => {

@@ -14,9 +14,10 @@ for (let index = 0; index < localStorage.length; index += 1) {
   if (localStorage.getItem(pixiceKey) === null) localStorage.setItem(pixiceKey, localStorage.getItem(legacyKey));
 }
 
-if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("task-progress-preview")) {
+const previewParameters = new URLSearchParams(window.location.search);
+if (import.meta.env.DEV && (previewParameters.has("task-progress-preview") || previewParameters.has("git-setup-preview"))) {
   const { createTaskProgressPreviewApi } = await import("./task-progress-preview.js");
-  window.pixice = createTaskProgressPreviewApi();
+  window.pixice = createTaskProgressPreviewApi({ gitUnavailable: previewParameters.has("git-setup-preview") });
 }
 
 createRoot(document.getElementById("root")).render(

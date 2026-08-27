@@ -50,6 +50,7 @@ const EMPTY_BROWSER_STATE = { native: false, activeTabId: null, tabs: [] };
 const EMPTY_PREVIEW_WORKSPACE = { open: false, browserState: EMPTY_BROWSER_STATE, fileTabs: [], instrumentTabs: [], customTabs: [], activeTabId: null };
 const EMPTY_UPDATE_STATUS = { supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." };
 const EMPTY_GITHUB_STATUS = { available: false, authenticated: false, source: null, version: null, account: null, message: "Checking GitHub connection…" };
+const EMPTY_GIT_STATUS = { state: "checking", available: false, installSupported: false, executablePath: null, version: null, message: "Checking local Git…" };
 const RUNTIME_RECOVERY_SILENCE_MS = 12_000;
 const EMPTY_AGENT_BEHAVIORS = [];
 const WorkspaceOpenContext = createContext(null);
@@ -3470,7 +3471,7 @@ function FileDiff({ file }) {
   );
 }
 
-function ReviewWorkspace({ project, review, loading, fileLoadingPath, onLoadFile, onRefresh, onExternal }) {
+function ReviewWorkspace({ project, review, loading, fileLoadingPath, gitStatus, gitBusy, onLoadFile, onRefresh, onInstallGit, onExternal }) {
   const currentReview = review?.projectId === project?.id ? review : null;
   const legacyFiles = useMemo(
     () => reviewFiles(currentReview?.diff, currentReview?.repository?.dirtyPaths),
@@ -3491,6 +3492,9 @@ function ReviewWorkspace({ project, review, loading, fileLoadingPath, onLoadFile
   const selected = selectedManifest ? { ...selectedManifest, ...selectedParsed } : null;
   const dirtyCount = currentReview?.repository?.dirtyPaths?.length ?? 0;
   const blockingLoad = loading && !currentReview;
+  const repositoryGit = currentReview?.repository?.git;
+  const effectiveGit = gitStatus?.installRequested ? gitStatus : repositoryGit;
+  const gitUnavailable = Boolean(effectiveGit && effectiveGit.available === false);
 
   useEffect(() => {
     if (!selectedManifest || !Array.isArray(currentReview?.files) || selectedPatch !== undefined || fileLoadingPath === selectedManifest.path) return;
@@ -3504,7 +3508,7 @@ function ReviewWorkspace({ project, review, loading, fileLoadingPath, onLoadFile
         <div>
           <span>Working tree</span>
           <h1>{project?.displayName ?? "Review"}</h1>
-          <p>{`${dirtyCount} changed file${dirtyCount === 1 ? "" : "s"}`}</p>
+          <p>{gitUnavailable ? "Git features unavailable" : `${dirtyCount} changed file${dirtyCount === 1 ? "" : "s"}`}</p>
         </div>
         <div>
           <button onClick={() => onExternal("terminal")}><TerminalWindow size={16} />Terminal</button>
@@ -3513,7 +3517,17 @@ function ReviewWorkspace({ project, review, loading, fileLoadingPath, onLoadFile
           <IconButton label="Refresh review" onClick={onRefresh}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
         </div>
       </div>
-      {blockingLoad ? <div className="loading-state"><SpinnerGap className="spin-icon" size={20} />Reading Git changes…</div> : files.length === 0 ? (
+      {blockingLoad ? <div className="loading-state"><SpinnerGap className="spin-icon" size={20} />Reading Git changes…</div> : gitUnavailable ? (
+        <div className="empty-state compact git-unavailable-state">
+          <GitBranch size={28} />
+          <h2>{effectiveGit.state === "install-requested" ? "Finish installing Git" : "Git is not available yet"}</h2>
+          <p>{effectiveGit.message} File editing, agents, Preview, Board, and Workflows remain available.</p>
+          <div className="git-empty-actions">
+            {effectiveGit.installSupported && effectiveGit.state !== "install-requested" && <button className="settings-action primary" disabled={gitBusy} onClick={onInstallGit}>{gitBusy ? <SpinnerGap className="spin-icon" size={14} /> : null}Install Apple Command Line Tools</button>}
+            <button className="settings-action" disabled={gitBusy} onClick={onRefresh}><ArrowClockwise className={gitBusy ? "spin-icon" : ""} size={14} />Check again</button>
+          </div>
+        </div>
+      ) : files.length === 0 ? (
         <div className="empty-state compact"><CheckCircle size={28} weight="fill" /><h2>Working tree is clean</h2><p>Changes made by Codex will appear here.</p></div>
       ) : (
         <div className="review-layout">
@@ -3968,6 +3982,31 @@ function GitHubSettings({ status, loading, progress, onRefresh, onLogin, onLogou
   );
 }
 
+function GitSettings({ status, loading, onRefresh, onInstall }) {
+  const ready = status.available;
+  const installRequested = status.state === "install-requested";
+  const stateLabel = ready ? "Ready" : installRequested ? "Installer open" : status.state === "checking" ? "Checking" : "Unavailable";
+  const actionLabel = status.installSupported && !installRequested ? "Install Command Line Tools" : "Check again";
+  const action = status.installSupported && !installRequested ? onInstall : onRefresh;
+  return (
+    <div className="git-settings-pane">
+      <div className="settings-controls">
+        <p className="providers-intro">Pixice can open ordinary folders without Git. Review, worktrees, checkpoints, and Git Workflow nodes require a working Git installation.</p>
+        <IconButton label="Refresh local Git" onClick={onRefresh} disabled={loading}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
+      </div>
+      <article className="github-account-card git-runtime-card" aria-label="Local Git">
+        <span className="github-account-brand"><GitBranch size={22} /></span>
+        <span className="github-account-copy">
+          <span className="github-account-heading"><strong>Local Git</strong><span className={`settings-status ${ready ? "ready" : "offline"}`}><i />{stateLabel}</span></span>
+          <span>{status.message}</span>
+          <small>{status.executablePath ? status.executablePath : "No executable selected"}{status.version ? ` · ${status.version}` : ""}</small>
+        </span>
+        <button className={`settings-action${status.installSupported && !installRequested ? " primary" : ""}`} disabled={loading} onClick={action}>{loading ? <SpinnerGap className="spin-icon" size={14} /> : null}{actionLabel}</button>
+      </article>
+    </div>
+  );
+}
+
 function formatUsd(value, compact = false) {
   const amount = Number(value) || 0;
   if (compact && amount >= 1_000) return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(amount);
@@ -4350,6 +4389,10 @@ function SettingsWorkspace({
   onRefreshGitHub,
   onGitHubLogin,
   onGitHubLogout,
+  gitStatus,
+  gitLoading,
+  onRefreshGit,
+  onInstallGit,
   usageSummary,
   usageLoading,
   usageError,
@@ -4648,6 +4691,10 @@ function SettingsWorkspace({
     pageContent = (
       <>
         <section className="settings-combined-section">
+          <header><h2>Local development</h2><p>Manage the Git executable used for projects and local review.</p></header>
+          <GitSettings status={gitStatus} loading={gitLoading} onRefresh={onRefreshGit} onInstall={onInstallGit} />
+        </section>
+        <section className="settings-combined-section">
           <header><h2>GitHub</h2><p>Connect the GitHub CLI account used by agents and release operations.</p></header>
           <GitHubSettings status={githubStatus} loading={githubLoading} progress={githubProgress} onRefresh={onRefreshGitHub} onLogin={onGitHubLogin} onLogout={onGitHubLogout} />
         </section>
@@ -4757,6 +4804,7 @@ export function App() {
   const [selectedProjectToolId, setSelectedProjectToolId] = useState(null);
   const [extensions, setExtensions] = useState(EMPTY_EXTENSIONS);
   const [providers, setProviders] = useState([]);
+  const [gitStatus, setGitStatus] = useState(EMPTY_GIT_STATUS);
   const [githubStatus, setGithubStatus] = useState(EMPTY_GITHUB_STATUS);
   const [githubProgress, setGithubProgress] = useState(null);
   const [usageSummary, setUsageSummary] = useState(null);
@@ -4814,7 +4862,7 @@ export function App() {
   }, []);
   const [draftMode, setDraftMode] = useState(false);
   const draftModeRef = useRef(false);
-  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, reviewFile: null, board: false, tools: false, extensions: false, providers: false, github: false, usage: false, usageLimits: false });
+  const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, reviewFile: null, board: false, tools: false, extensions: false, providers: false, git: false, github: false, usage: false, usageLimits: false });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -5231,6 +5279,7 @@ export function App() {
       const result = await api.review.read({ projectId });
       if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setReview({ ...result, projectId, fileDiffs: {} });
+      if (result.repository?.git) setGitStatus(result.repository.git);
       setProjects((current) => current.map((project) => project.id === projectId ? { ...project, repository: result.repository } : project));
     } catch (cause) {
       if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
@@ -5368,6 +5417,30 @@ export function App() {
       setError(cause.message);
     } finally {
       setLoading((state) => ({ ...state, github: false }));
+    }
+  }, [api]);
+
+  const loadGitStatus = useCallback(async () => {
+    if (!api?.git) return;
+    setLoading((state) => ({ ...state, git: true }));
+    try {
+      setGitStatus(await api.git.status());
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setLoading((state) => ({ ...state, git: false }));
+    }
+  }, [api]);
+
+  const installCommandLineTools = useCallback(async () => {
+    if (!api?.git) return;
+    setLoading((state) => ({ ...state, git: true }));
+    try {
+      setGitStatus(await api.git.installCommandLineTools());
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setLoading((state) => ({ ...state, git: false }));
     }
   }, [api]);
 
@@ -5735,11 +5808,14 @@ export function App() {
   useEffect(() => {
     if (activeView === "settings") loadExtensions();
     if (activeView === "settings" && settingsPage === "providers") loadProviders();
-    if (activeView === "settings" && settingsPage === "capabilities") loadGitHubStatus();
+    if (activeView === "settings" && settingsPage === "capabilities") {
+      loadGitStatus();
+      loadGitHubStatus();
+    }
     if (activeView === "settings" && settingsPage === "usage") loadUsage(usageRangeDays);
     if (activeView === "settings" && settingsPage === "usage") loadUsageLimits();
     if (activeView === "tools" && selectedProjectId) loadProjectTools(selectedProjectId);
-  }, [activeView, loadExtensions, loadGitHubStatus, loadProjectTools, loadProviders, loadReview, loadUsage, loadUsageLimits, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey, usageLimitsRefreshKey]);
+  }, [activeView, loadExtensions, loadGitHubStatus, loadGitStatus, loadProjectTools, loadProviders, loadReview, loadUsage, loadUsageLimits, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey, usageLimitsRefreshKey]);
 
   const refreshEventInstrumentSources = useCallback((capabilities, eventProjectId) => {
     if (!api?.instruments || !selectedProjectId || !selectedThreadId || eventProjectId && eventProjectId !== selectedProjectId) return;
@@ -7004,7 +7080,7 @@ export function App() {
       />
     );
   } else if (activeView === "review") {
-    content = <ReviewWorkspace project={selectedProject} review={review} loading={loading.review} fileLoadingPath={loading.reviewFile} onLoadFile={(filePath) => loadReviewFile(selectedProjectId, filePath)} onRefresh={() => loadReview(selectedProjectId)} onExternal={openExternal} />;
+    content = <ReviewWorkspace project={selectedProject} review={review} loading={loading.review} fileLoadingPath={loading.reviewFile} gitStatus={gitStatus} gitBusy={loading.git} onLoadFile={(filePath) => loadReviewFile(selectedProjectId, filePath)} onRefresh={async () => { await loadGitStatus(); await loadReview(selectedProjectId); }} onInstallGit={installCommandLineTools} onExternal={openExternal} />;
   } else if (activeView === "settings") {
     content = (
       <SettingsWorkspace
@@ -7050,6 +7126,10 @@ export function App() {
         onRefreshGitHub={loadGitHubStatus}
         onGitHubLogin={loginGitHub}
         onGitHubLogout={logoutGitHub}
+        gitStatus={gitStatus}
+        gitLoading={loading.git}
+        onRefreshGit={loadGitStatus}
+        onInstallGit={installCommandLineTools}
         usageSummary={usageSummary}
         usageLoading={loading.usage}
         usageError={usageError}

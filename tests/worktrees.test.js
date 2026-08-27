@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -14,6 +14,41 @@ afterEach(async () => {
 });
 
 describe("Git review scoping", () => {
+  it("opens a folder when Git is unavailable", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pixice-folder-"));
+    temporaryDirectories.push(root);
+    const canonicalRoot = await realpath(root);
+    const gitRuntime = {
+      state: "command-line-tools-missing",
+      available: false,
+      installSupported: true,
+      executablePath: null,
+      version: null,
+      message: "Apple Command Line Tools are not installed."
+    };
+
+    await expect(inspectRepository(root, { gitRuntime, platform: "darwin" })).resolves.toMatchObject({
+      kind: "folder",
+      root: canonicalRoot,
+      baseCommit: null,
+      dirtyPaths: [],
+      git: gitRuntime
+    });
+  });
+
+  it("degrades to a folder if Git disappears after discovery", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pixice-folder-"));
+    temporaryDirectories.push(root);
+
+    await expect(inspectRepository(root, {
+      platform: "linux",
+      gitRuntime: { state: "ready", available: true, executablePath: "/missing/pixice-git", version: "git version 2.50.1" }
+    })).resolves.toMatchObject({
+      kind: "folder",
+      git: { state: "missing", available: false }
+    });
+  });
+
   it("excludes parent-repository changes outside a nested project", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "pixice-git-"));
     temporaryDirectories.push(root);
@@ -33,6 +68,7 @@ describe("Git review scoping", () => {
     await writeFile(path.join(nested, "inside-new.txt"), "inside new\n");
 
     const repository = await inspectRepository(nested);
+    expect(repository.git).toMatchObject({ state: "ready", available: true, executablePath: expect.any(String) });
     const diff = await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: nested });
     const manifest = await readDiffManifest({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: nested });
     const selectedDiff = await readFileDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: nested, filePath: "inside.txt" });

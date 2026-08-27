@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { promisify } from "node:util";
 import path from "node:path";
+import { detectGitRuntime, gitRuntimeFromError } from "./git-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const REVIEW_FILTER_OVERRIDES = [
@@ -11,14 +12,14 @@ const REVIEW_FILTER_OVERRIDES = [
   "-c", "filter.lfs.required=false"
 ];
 
-async function git(cwd, args) {
-  const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+async function git(cwd, args, executablePath = "git") {
+  const { stdout } = await execFileAsync(executablePath, args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   return stdout.trim();
 }
 
-async function gitUntrackedDiff(cwd, args) {
+async function gitUntrackedDiff(cwd, args, executablePath = "git") {
   try {
-    return await git(cwd, [...REVIEW_FILTER_OVERRIDES, ...args]);
+    return await git(cwd, [...REVIEW_FILTER_OVERRIDES, ...args], executablePath);
   } catch (error) {
     if (error.code === 1 && typeof error.stdout === "string") return error.stdout.trim();
     throw error;
@@ -48,20 +49,29 @@ function parseNumstat(output) {
   return stats;
 }
 
-export async function inspectRepository(folder) {
+function folderRepository(root, gitRuntime) {
+  return { kind: "folder", root, baseCommit: null, dirtyPaths: [], git: gitRuntime };
+}
+
+export async function inspectRepository(folder, { gitRuntime = null, platform = process.platform } = {}) {
+  const canonicalFolder = await realpath(folder);
+  const runtime = gitRuntime ?? await detectGitRuntime({ platform });
+  if (!runtime.available) return folderRepository(canonicalFolder, runtime);
   try {
-    const canonicalFolder = await realpath(folder);
-    const root = await git(folder, ["rev-parse", "--show-toplevel"]);
+    const executablePath = runtime.executablePath;
+    const root = await git(canonicalFolder, ["rev-parse", "--show-toplevel"], executablePath);
     const pathspec = path.relative(root, canonicalFolder) || ".";
     if (pathspec.startsWith("..") || path.isAbsolute(pathspec)) throw new Error("Project path is outside its Git repository");
-    const baseCommit = await git(root, ["rev-parse", "HEAD"]);
-    const status = await git(root, ["status", "--porcelain=v1", "--", pathspec]);
-    return { kind: "git", root, baseCommit, dirtyPaths: status ? status.split("\n").map((line) => line.slice(3)) : [] };
+    const baseCommit = await git(root, ["rev-parse", "HEAD"], executablePath);
+    const status = await git(root, ["status", "--porcelain=v1", "--", pathspec], executablePath);
+    return { kind: "git", root, baseCommit, dirtyPaths: status ? status.split("\n").map((line) => line.slice(3)) : [], git: runtime };
   } catch (error) {
     const diagnostic = `${error.stderr ?? ""}\n${error.message ?? ""}`;
     if (/not a git repository/i.test(diagnostic)) {
-      return { kind: "folder", root: path.resolve(folder), baseCommit: null, dirtyPaths: [] };
+      return folderRepository(canonicalFolder, runtime);
     }
+    const unavailable = gitRuntimeFromError(error, { platform });
+    if (unavailable) return folderRepository(canonicalFolder, unavailable);
     throw error;
   }
 }
@@ -77,13 +87,13 @@ export async function removeCleanWorktree({ root, worktreePath }) {
   await git(root, ["worktree", "remove", worktreePath]);
 }
 
-export async function readDiff({ workingPath, baseCommit, scopePath = workingPath }) {
+export async function readDiff({ workingPath, baseCommit, scopePath = workingPath, gitExecutablePath = "git" }) {
   const { pathspec } = await diffScope(workingPath, scopePath);
   const args = baseCommit
     ? ["diff", "--no-ext-diff", baseCommit, "--", pathspec]
     : ["diff", "--no-ext-diff", "--", pathspec];
-  const tracked = await git(workingPath, args);
-  const untrackedOutput = await git(workingPath, ["ls-files", "--others", "--exclude-standard", "-z", "--", pathspec]);
+  const tracked = await git(workingPath, args, gitExecutablePath);
+  const untrackedOutput = await git(workingPath, ["ls-files", "--others", "--exclude-standard", "-z", "--", pathspec], gitExecutablePath);
   const untracked = untrackedOutput.split("\0").filter(Boolean);
   const additions = new Array(untracked.length);
   let nextIndex = 0;
@@ -91,20 +101,20 @@ export async function readDiff({ workingPath, baseCommit, scopePath = workingPat
     while (nextIndex < untracked.length) {
       const index = nextIndex;
       nextIndex += 1;
-      additions[index] = await gitUntrackedDiff(workingPath, ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", untracked[index]]);
+      additions[index] = await gitUntrackedDiff(workingPath, ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", untracked[index]], gitExecutablePath);
     }
   }));
   return [tracked, ...additions].filter(Boolean).join("\n");
 }
 
-export async function readDiffManifest({ workingPath, baseCommit, scopePath = workingPath }) {
+export async function readDiffManifest({ workingPath, baseCommit, scopePath = workingPath, gitExecutablePath = "git" }) {
   const { pathspec } = await diffScope(workingPath, scopePath);
   const trackedArgs = baseCommit
     ? ["diff", "--no-ext-diff", "--no-renames", "--numstat", baseCommit, "--", pathspec]
     : ["diff", "--no-ext-diff", "--no-renames", "--numstat", "--", pathspec];
   const [trackedOutput, untrackedOutput] = await Promise.all([
-    git(workingPath, trackedArgs),
-    git(workingPath, ["ls-files", "--others", "--exclude-standard", "-z", "--", pathspec])
+    git(workingPath, trackedArgs, gitExecutablePath),
+    git(workingPath, ["ls-files", "--others", "--exclude-standard", "-z", "--", pathspec], gitExecutablePath)
   ]);
   const stats = parseNumstat(trackedOutput);
   const untracked = untrackedOutput.split("\0").filter(Boolean);
@@ -114,7 +124,7 @@ export async function readDiffManifest({ workingPath, baseCommit, scopePath = wo
       const index = nextIndex;
       nextIndex += 1;
       const filePath = untracked[index];
-      const output = await gitUntrackedDiff(workingPath, ["diff", "--no-ext-diff", "--no-index", "--numstat", "--", "/dev/null", filePath]);
+      const output = await gitUntrackedDiff(workingPath, ["diff", "--no-ext-diff", "--no-index", "--numstat", "--", "/dev/null", filePath], gitExecutablePath);
       const candidate = [...parseNumstat(output).values()][0] ?? { plus: 0, minus: 0, binary: false };
       stats.set(filePath, candidate);
     }
@@ -126,7 +136,7 @@ export async function readDiffManifest({ workingPath, baseCommit, scopePath = wo
   });
 }
 
-export async function readFileDiff({ workingPath, baseCommit, scopePath = workingPath, filePath }) {
+export async function readFileDiff({ workingPath, baseCommit, scopePath = workingPath, filePath, gitExecutablePath = "git" }) {
   const { canonicalWorkingPath, canonicalScopePath } = await diffScope(workingPath, scopePath);
   const absoluteFilePath = path.resolve(canonicalScopePath, filePath);
   const relativeToScope = path.relative(canonicalScopePath, absoluteFilePath);
@@ -137,7 +147,7 @@ export async function readFileDiff({ workingPath, baseCommit, scopePath = workin
   const args = baseCommit
     ? ["diff", "--no-ext-diff", ...relativeArgs, baseCommit, "--", pathspec]
     : ["diff", "--no-ext-diff", ...relativeArgs, "--", pathspec];
-  const tracked = await git(workingPath, args);
+  const tracked = await git(workingPath, args, gitExecutablePath);
   if (tracked) return tracked;
   try {
     const metadata = await lstat(absoluteFilePath);
@@ -145,5 +155,5 @@ export async function readFileDiff({ workingPath, baseCommit, scopePath = workin
   } catch {
     return "";
   }
-  return gitUntrackedDiff(canonicalScopePath, ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", filePath]);
+  return gitUntrackedDiff(canonicalScopePath, ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", filePath], gitExecutablePath);
 }

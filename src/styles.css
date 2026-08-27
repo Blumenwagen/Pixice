@@ -2215,6 +2215,9 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   text-align: center;
 }
 .empty-state.compact { min-height: 300px; padding: 30px; }
+.empty-state.git-unavailable-state > :is(svg, .animated-icon) { color: var(--muted); }
+.git-unavailable-state > p { max-width: 540px; }
+.git-empty-actions { margin-top: 9px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .empty-state > :is(svg, .animated-icon) { color: var(--green); }
 .empty-mark { width: 52px; height: 52px; display: grid; place-items: center; color: var(--primary); background: var(--primary-soft); border-radius: 18px; }
 .empty-state h1,
@@ -2724,6 +2727,8 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   border: 1px solid var(--border);
   border-radius: 15px;
 }
+.git-settings-pane { margin-top: -2px; }
+.git-runtime-card { margin-top: 18px; }
 .github-account-brand { width: 42px; height: 42px; display: grid; place-items: center; color: var(--foreground); background: var(--surface-raised); border-radius: 12px; }
 .github-account-copy { min-width: 0; display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 10.5px; }
 .github-account-copy > small { color: var(--quiet); font-size: 9.5px; }

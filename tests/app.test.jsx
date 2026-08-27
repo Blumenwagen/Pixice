@@ -81,6 +81,10 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
       login: vi.fn().mockResolvedValue({ provider: "claude", opened: true }),
       logout: vi.fn().mockResolvedValue({})
     },
+    git: {
+      status: vi.fn().mockResolvedValue({ state: "ready", available: true, installSupported: false, executablePath: "/usr/bin/git", version: "git version 2.50.1", message: "git version 2.50.1 is ready." }),
+      installCommandLineTools: vi.fn().mockResolvedValue({ state: "install-requested", available: false, installSupported: true, installRequested: true, executablePath: null, version: null, message: "Finish the Apple Command Line Tools installation, then choose Check again." })
+    },
     github: {
       status: vi.fn().mockResolvedValue({ available: true, authenticated: false, source: "bundled", version: "2.80.0", account: null, message: "Sign in to use GitHub from agents." }),
       login: vi.fn().mockResolvedValue({ available: true, authenticated: true, source: "bundled", version: "2.80.0", account: { login: "octocat", name: "The Octocat" }, message: "Signed in as octocat." }),
@@ -985,7 +989,40 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Capabilities/ }));
     expect(screen.queryByRole("heading", { name: "General" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Capabilities" })).toBeInTheDocument();
+    expect(window.pixice.git.status).toHaveBeenCalled();
     expect(window.pixice.extensions.list).toHaveBeenCalled();
+  });
+
+  it("keeps a plain folder usable when Git is missing and offers explicit macOS setup", async () => {
+    const api = createApi();
+    const missingGit = {
+      state: "command-line-tools-missing",
+      available: false,
+      installSupported: true,
+      executablePath: null,
+      version: null,
+      message: "Apple Command Line Tools are not installed. Pixice can still work with folders, but Git features are unavailable."
+    };
+    api.review.read.mockResolvedValue({
+      repository: { kind: "folder", root: "/work/aurora", baseCommit: null, dirtyPaths: [], git: missingGit },
+      files: []
+    });
+    api.git.status.mockResolvedValue(missingGit);
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(await screen.findByRole("heading", { name: "Git is not available yet" })).toBeInTheDocument();
+    expect(screen.getByText(/File editing, agents, Preview, Board, and Workflows remain available/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Install Apple Command Line Tools" }));
+    await waitFor(() => expect(api.git.installCommandLineTools).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("heading", { name: "Finish installing Git" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(api.git.status).toHaveBeenCalled());
+    expect(api.review.read).toHaveBeenCalled();
   });
 
   it("shows status-only Review items instead of a clean working tree", async () => {

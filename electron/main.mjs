@@ -54,6 +54,7 @@ import {
   recoverUpdateDataFromBackup
 } from "./persistence/update-data-backup.mjs";
 import { inspectRepository, readDiff, readDiffManifest, readFileDiff } from "./git/worktrees.mjs";
+import { detectGitRuntime, requestCommandLineToolsInstall } from "./git/git-runtime.mjs";
 import { projectRendererThread, projectRuntimePayloadForRenderer } from "./runtime/renderer-thread-projection.mjs";
 import { projectFolderDialogProperties } from "./projects/project-folder-dialog.mjs";
 import { GitHubCli, prependGitHubCliToPath } from "./github/github-cli.mjs";
@@ -819,6 +820,7 @@ function compactRepository(repository) {
   const dirtyPaths = (repository.dirtyPaths ?? []).slice(0, 1_000);
   return {
     kind: repository.kind,
+    git: repository.git,
     baseCommit: repository.baseCommit,
     dirtyPaths,
     dirtyCount: repository.dirtyPaths?.length ?? 0,
@@ -852,7 +854,7 @@ async function readInstrumentCapability({ projectId, threadId, capability, argum
     const primaryRoot = projectPrimaryRoot(project);
     const repository = await inspectRepository(primaryRoot);
     const diff = repository.kind === "git"
-      ? await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: primaryRoot })
+      ? await readDiff({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: primaryRoot, gitExecutablePath: repository.git?.executablePath })
       : "";
     return { ...boundedTextResult(diff, value.maxBytes), baseCommit: repository.baseCommit };
   }
@@ -1086,6 +1088,8 @@ function registerIpc() {
     return settings;
   });
   ipcMain.handle("runtime:status", () => ({ ...runtimeStatus, connected: runtime.connected }));
+  ipcMain.handle("git:status", () => detectGitRuntime());
+  ipcMain.handle("git:install-command-line-tools", () => requestCommandLineToolsInstall());
   ipcMain.handle("providers:list", () => runtime.listProviders());
   ipcMain.handle("usage:summary", (_event, payload) => {
     const { days } = z.object({ days: z.number().int().min(7).max(365).default(30) }).parse(payload ?? {});
@@ -1755,7 +1759,7 @@ function registerIpc() {
     const primaryRoot = projectPrimaryRoot(project);
     const repository = await inspectRepository(primaryRoot);
     const files = repository.kind === "git"
-      ? await readDiffManifest({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: primaryRoot })
+      ? await readDiffManifest({ workingPath: repository.root, baseCommit: repository.baseCommit, scopePath: primaryRoot, gitExecutablePath: repository.git?.executablePath })
       : [];
     return { repository, files };
   });
@@ -1769,7 +1773,8 @@ function registerIpc() {
       workingPath: repository.root,
       baseCommit: repository.baseCommit,
       scopePath: primaryRoot,
-      filePath: value.path
+      filePath: value.path,
+      gitExecutablePath: repository.git?.executablePath
     });
     return { path: value.path, diff, baseCommit: repository.baseCommit };
   });
