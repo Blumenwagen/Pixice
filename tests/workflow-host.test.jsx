@@ -58,14 +58,19 @@ function createApi(threads = [{ id: "thread-lead", name: "Lead task", parentThre
   };
 }
 
-function Shell({ taskNames = ["Lead task"], activeThreadId = "thread-lead", onTaskClick = () => {} }) {
+function Shell({ taskNames = ["Lead task"], activeThreadId = "thread-lead", onTaskClick = () => {}, sidebarExpanded = true }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [navigationVersion, setNavigationVersion] = useState(0);
   useEffect(() => {
     window.dispatchEvent(new CustomEvent("pixice:active-thread-changed", { detail: activeThreadId }));
   }, [activeThreadId]);
   return (
-    <div className="pixice-app view-task" data-active-thread-id={activeThreadId} style={{ "--rail-width": "264px" }}>
+    <div
+      className="pixice-app view-task"
+      data-active-thread-id={activeThreadId}
+      data-sidebar-expanded={sidebarExpanded}
+      style={{ "--rail-width": sidebarExpanded ? "264px" : "64px" }}
+    >
       <aside className="sidebar">
         <div className="rail-group" key={navigationVersion}><div data-workflow-nav-slot /></div>
         <div className="task-tree">
@@ -115,13 +120,35 @@ describe("WorkflowHost", () => {
     const { api } = createApi();
     window.pixice = api;
     const { container } = render(<WorkflowHost><Shell /></WorkflowHost>);
+    const coveredSurface = screen.getByRole("button", { name: "Open preview workspace" });
 
     fireEvent.click(await screen.findByRole("button", { name: "Workflows" }));
     await waitFor(() => expect(document.querySelector('[data-workflow-workspace="true"]')).toBeInTheDocument());
+    expect(coveredSurface).toHaveStyle({ visibility: "hidden" });
 
     fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
     expect(document.querySelector('[data-workflow-workspace="true"]')).not.toBeInTheDocument();
     expect(container.querySelector(".pixice-app")).not.toHaveAttribute("data-workflows-active");
+    expect(coveredSurface).not.toHaveStyle({ visibility: "hidden" });
+  });
+
+  it("hides a thread Preview under Workflows when the sidebar is collapsed", async () => {
+    const { api } = createApi();
+    window.pixice = api;
+    render(<WorkflowHost><Shell sidebarExpanded={false} /></WorkflowHost>);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    const preview = document.querySelector(".browser-panel");
+    const sidebar = document.querySelector(".sidebar");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Workflows" }));
+    await waitFor(() => expect(document.querySelector('[data-workflow-workspace="true"]')).toBeInTheDocument());
+    expect(preview).toHaveStyle({ visibility: "hidden" });
+    expect(sidebar).toHaveStyle({ visibility: "hidden" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    expect(preview).not.toHaveStyle({ visibility: "hidden" });
+    expect(sidebar).not.toHaveStyle({ visibility: "hidden" });
   });
 
   it("takes over the primary sidebar like the Settings workspace", () => {

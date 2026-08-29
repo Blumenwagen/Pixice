@@ -81,16 +81,19 @@ export function WorkflowHost({ children }) {
     const previous = covered.map((node) => ({
       node,
       inert: node.inert,
-      ariaHidden: node.getAttribute("aria-hidden")
+      ariaHidden: node.getAttribute("aria-hidden"),
+      visibility: node.style.visibility
     }));
     covered.forEach((node) => {
       node.inert = true;
       node.setAttribute("aria-hidden", "true");
+      node.style.visibility = "hidden";
     });
-    return () => previous.forEach(({ node, inert, ariaHidden }) => {
+    return () => previous.forEach(({ node, inert, ariaHidden, visibility }) => {
       node.inert = inert;
       if (ariaHidden === null) node.removeAttribute("aria-hidden");
       else node.setAttribute("aria-hidden", ariaHidden);
+      node.style.visibility = visibility;
     });
   }, [active, appTarget]);
 

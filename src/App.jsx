@@ -354,6 +354,10 @@ function threadIsRunning(candidate) {
   return status === "active" || status === "running" || status === "inprogress" || status === "attention";
 }
 
+function isBridgeThread(candidate) {
+  return candidate?.bridge?.kind === "pixiceBridge" || Boolean(candidate?.bridgeModel);
+}
+
 function summarizeProjectThreads(project, candidates, { seen = false } = {}) {
   const seenAt = seen ? Number.POSITIVE_INFINITY : timestampMillis(project?.lastUsedAt ?? project?.updatedAt ?? project?.createdAt);
   const runningThreadIds = [];
@@ -364,6 +368,7 @@ function summarizeProjectThreads(project, candidates, { seen = false } = {}) {
       runningThreadIds.push(candidate.id);
       continue;
     }
+    if (isBridgeThread(candidate) && !threadCompletionRevision(candidate)) continue;
     if (timestampMillis(candidate.updatedAt) > seenAt) unseenThreadIds.push(candidate.id);
   }
   return { runningThreadIds, unseenThreadIds };
@@ -376,6 +381,7 @@ function threadCompletionRevision(candidate) {
   }
   const latestTurn = candidate.turns?.at(-1);
   if (latestTurn?.status === "completed") return `turn:${latestTurn.id ?? candidate.updatedAt ?? "completed"}`;
+  if (isBridgeThread(candidate)) return null;
   const status = threadStatus(candidate);
   if (status !== "completed" && status !== "idle") return null;
   return String(candidate.updatedAt ?? `status:${status}`);
@@ -1111,14 +1117,14 @@ function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChoose
       <div className="preview-new-tab-inner">
         <div className="preview-new-tab-grid" aria-label="New preview tab options">
           <button type="button" onClick={() => void onChooseBrowser()}><Globe size={16} /><span><strong>Browser</strong><small>Open a web page</small></span></button>
-          <button type="button" onClick={() => { setMode("file"); setItems([]); setError(""); }}><Files size={16} /><span><strong>File</strong><small>Open a project file</small></span></button>
+          <button type="button" onClick={() => { setMode("file"); setItems([]); setError(""); }}><Files size={16} /><span><strong>File</strong><small>Open a local file</small></span></button>
           <button type="button" onClick={() => void loadItems("task")}><Circle size={16} /><span><strong>Work item</strong><small>Open a Board item</small></span></button>
           <button type="button" onClick={() => void loadItems("workflow")}><TreeStructure size={16} /><span><strong>Workflow</strong><small>Open a workflow canvas</small></span></button>
         </div>
         {mode === "file" && (
           <form className="preview-new-tab-file" onSubmit={openFile}>
             <File size={14} />
-            <input autoFocus aria-label="Project file path" placeholder="Path inside this project" value={path} onChange={(event) => setPath(event.target.value)} />
+            <input autoFocus aria-label="Local file path" placeholder="Project-relative or absolute path" value={path} onChange={(event) => setPath(event.target.value)} />
             <button type="submit" disabled={!path.trim() || loading}>{loading ? <SpinnerGap className="spin-icon" size={13} /> : "Open"}</button>
           </form>
         )}
@@ -1162,7 +1168,12 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
       if (workspaceId) void api?.browser?.setViewport({ workspaceId, visible: false }).catch(() => {});
       return undefined;
     }
+    const appRoot = viewportRef.current.closest(".pixice-app");
     const updateBounds = () => {
+      if (appRoot?.dataset.workflowsActive === "true") {
+        void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
+        return;
+      }
       const rect = viewportRef.current?.getBoundingClientRect();
       if (!rect) return;
       void api.browser.setViewport({
@@ -1174,9 +1185,14 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
     updateBounds();
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(updateBounds) : null;
     observer?.observe(viewportRef.current);
+    const takeoverObserver = appRoot && typeof MutationObserver === "function"
+      ? new MutationObserver(updateBounds)
+      : null;
+    takeoverObserver?.observe(appRoot, { attributes: true, attributeFilter: ["data-workflows-active"] });
     window.addEventListener("resize", updateBounds);
     return () => {
       observer?.disconnect();
+      takeoverObserver?.disconnect();
       window.removeEventListener("resize", updateBounds);
       void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
     };
@@ -4776,6 +4792,7 @@ export function App() {
   const [threads, setThreads] = useState([]);
   const [selectedThreadId, setSelectedThreadId] = useState(null);
   const selectedThreadIdRef = useRef(null);
+  const bridgeThreadIdsRef = useRef(new Set());
   const lastRuntimeActivityAtRef = useRef(Date.now());
   const optimisticThreadsRef = useRef(new Map());
   const threadLoadRequestRef = useRef(0);
@@ -4873,6 +4890,14 @@ export function App() {
     if (!api?.app?.saveSettings) return;
     void api.app.saveSettings(patch).catch((cause) => setError(cause.message));
   }, [api]);
+
+  useEffect(() => {
+    if (!defaultsHydrated) return;
+    savePersistentDefaults({
+      accentColor: preferences.accentColor,
+      reduceTransparency: preferences.reduceTransparency
+    });
+  }, [defaultsHydrated, preferences.accentColor, preferences.reduceTransparency, savePersistentDefaults]);
 
   const previewWorkspaceId = selectedThreadId ?? (selectedProjectId ? `draft:${selectedProjectId}` : null);
   const previewWorkspace = previewWorkspaces[previewWorkspaceId] ?? EMPTY_PREVIEW_WORKSPACE;
@@ -5164,6 +5189,7 @@ export function App() {
       const response = await api.threads.list({ projectId });
       if (requestId !== threadsLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       const next = response.data ?? [];
+      next.filter(isBridgeThread).forEach((candidate) => bridgeThreadIdsRef.current.add(candidate.id));
       setThreads(next);
       setProjectActivity((current) => ({
         ...current,
@@ -5599,7 +5625,9 @@ export function App() {
     Promise.all(projectSnapshot.map(async (project) => {
       try {
         const response = await api.threads.list({ projectId: project.id });
-        return [project.id, summarizeProjectThreads(project, response.data ?? [], {
+        const candidates = response.data ?? [];
+        candidates.filter(isBridgeThread).forEach((candidate) => bridgeThreadIdsRef.current.add(candidate.id));
+        return [project.id, summarizeProjectThreads(project, candidates, {
           seen: project.id === selectedProjectIdRef.current
         })];
       } catch {
@@ -5927,6 +5955,22 @@ export function App() {
         }
         return;
       }
+      if (event.type === "FilePreviewOpenRequested") {
+        const workspaceId = event.payload.workspaceId ?? event.payload.threadId;
+        const file = event.payload.file;
+        if (!workspaceId || !file) return;
+        const tab = fileTabFromPayload(file);
+        updatePreviewWorkspace(workspaceId, (workspace) => ({
+          ...workspace,
+          open: true,
+          activeTabId: tab.id,
+          fileTabs: (workspace.fileTabs ?? []).some((candidate) => candidate.id === tab.id)
+            ? (workspace.fileTabs ?? []).map((candidate) => candidate.id === tab.id ? tab : candidate)
+            : [...(workspace.fileTabs ?? []), tab]
+        }));
+        if (workspaceId === selectedThreadIdRef.current && document.querySelector(".pixice-app.view-task")) setInspectorOpen(false);
+        return;
+      }
       if (event.type === "InstrumentUpdated") {
         const workspaceId = event.payload.workspaceId ?? event.payload.threadId;
         const instrument = event.payload.instrument;
@@ -5998,6 +6042,25 @@ export function App() {
         setUpdateStatus(event.payload);
         return;
       }
+      if (event.type === "TrayNavigate") {
+        if (event.payload?.settingsPage) setSettingsPage(event.payload.settingsPage);
+        if (event.payload?.projectId) {
+          localStorage.setItem("pixice.activeProjectId", event.payload.projectId);
+          selectedProjectIdRef.current = event.payload.projectId;
+          setSelectedProjectId(event.payload.projectId);
+        }
+        if (event.payload?.threadId) {
+          selectedThreadIdRef.current = event.payload.threadId;
+          setSelectedThreadId(event.payload.threadId);
+          setDraftMode(false);
+        }
+        setActiveView(event.payload?.view ?? "task");
+        return;
+      }
+      if (event.type === "TraySettingsUpdated") {
+        if (typeof event.payload?.keepSystemAwake === "boolean") setKeepSystemAwake(event.payload.keepSystemAwake);
+        return;
+      }
       if (event.type === "UsageUpdated") {
         setUsageRefreshKey((value) => value + 1);
         return;
@@ -6010,6 +6073,11 @@ export function App() {
       const payload = event.payload ?? {};
       const activityProjectId = payload.projectId;
       const activityThreadId = payload.threadId ?? payload.thread?.id;
+      if (isBridgeThread(payload.thread)) bridgeThreadIdsRef.current.add(payload.thread.id);
+      if (payload.item?.bridge) {
+        [...(payload.item.receiverThreadIds ?? []), ...Object.keys(payload.item.agentsStates ?? {})]
+          .forEach((threadId) => bridgeThreadIdsRef.current.add(threadId));
+      }
       if (activityThreadId && activityThreadId === selectedThreadIdRef.current) lastRuntimeActivityAtRef.current = Date.now();
       if (activityProjectId && activityThreadId && ["thread/started", "thread/status/changed", "turn/started", "turn/completed"].includes(payload.method)) {
         setProjectActivity((current) => {
@@ -6026,7 +6094,8 @@ export function App() {
             unseenThreadIds.delete(activityThreadId);
           } else if (payload.method === "turn/completed" || payload.method === "thread/status/changed") {
             runningThreadIds.delete(activityThreadId);
-            if (activityProjectId !== selectedProjectId && (payload.method === "turn/completed" || wasRunning)) {
+            const bridgeCompletionPending = bridgeThreadIdsRef.current.has(activityThreadId) && payload.method !== "turn/completed";
+            if (!bridgeCompletionPending && activityProjectId !== selectedProjectId && (payload.method === "turn/completed" || wasRunning)) {
               unseenThreadIds.add(activityThreadId);
             }
           }
@@ -6766,7 +6835,7 @@ export function App() {
         setPreviewActiveTabId(next.activeTabId ?? null);
         return;
       }
-      const file = await api.files.read({ projectId: selectedProjectId, path: target });
+      const file = await (api.files.preview ?? api.files.read)({ projectId: selectedProjectId, path: target });
       const tab = fileTabFromPayload(file);
       setPreviewFileTabs((current) => current.some((candidate) => candidate.id === tab.id) ? current : [...current, tab]);
       setPreviewActiveTabId(tab.id);

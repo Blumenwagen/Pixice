@@ -36,7 +36,7 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     destroy: invoke("browser:destroy")
   }),
   preview: Object.freeze({ setContext: invoke("preview:context") }),
-  files: Object.freeze({ read: invoke("files:read"), write: invoke("files:write") }),
+  files: Object.freeze({ read: invoke("files:read"), preview: invoke("files:preview"), write: invoke("files:write") }),
   projects: Object.freeze({
     list: invoke("projects:list"),
     touch: invoke("projects:touch"),

@@ -37,6 +37,7 @@ function createBridge(models) {
   const database = new MemoryDatabase();
   const activities = [];
   const onThreadCreated = vi.fn();
+  const onCompletion = vi.fn();
   const bridge = new PixiceBridge({
     runtime,
     database,
@@ -54,9 +55,10 @@ function createBridge(models) {
       })
     }),
     onThreadCreated,
+    onCompletion,
     onActivity: (activity) => activities.push(activity)
   });
-  return { bridge, runtime, database, activities, onThreadCreated };
+  return { bridge, runtime, database, activities, onThreadCreated, onCompletion };
 }
 
 describe("Pixice bridge", () => {
@@ -96,7 +98,7 @@ describe("Pixice bridge", () => {
   });
 
   it("spawns a cross-provider thread and relays its final answer", async () => {
-    const { bridge, runtime, database, activities, onThreadCreated } = createBridge();
+    const { bridge, runtime, database, activities, onThreadCreated, onCompletion } = createBridge();
     const resultPromise = bridge.handleToolCall({
       threadId: "parent-1",
       turnId: "parent-turn",
@@ -148,6 +150,23 @@ describe("Pixice bridge", () => {
       answer: "Use more whitespace."
     });
     expect(activities.at(-1).item.agentsStates["child-1"]).toMatchObject({ status: "completed", message: "Use more whitespace." });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      parentThreadId: "parent-1",
+      parentTurnId: "parent-turn",
+      childThreadId: "child-1",
+      answer: "Use more whitespace."
+    }));
+
+    runtime.emit("event", {
+      payload: {
+        method: "turn/completed",
+        threadId: "child-1",
+        turn: { id: "turn-1", status: "completed", items: [] }
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onCompletion).toHaveBeenCalledTimes(1);
   });
 
   it("delivers child progress updates to the parent activity stream", async () => {

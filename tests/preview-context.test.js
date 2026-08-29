@@ -25,7 +25,7 @@ describe("Preview context", () => {
     expect(stripPreviewContextHint(text)).toBe("look at this");
   });
 
-  it("returns selected-tab metadata only when the agent asks for it", () => {
+  it("returns selected-tab metadata only when the agent asks for it", async () => {
     const registry = new PreviewContextRegistry();
     registry.set("thread-1", {
       open: true,
@@ -33,7 +33,7 @@ describe("Preview context", () => {
       active: { kind: "file", id: "file-1", title: "notes.md", path: "notes.md", dirty: true }
     });
 
-    const response = registry.handleToolCall({ threadId: "thread-1", tool: "current", arguments: {} });
+    const response = await registry.handleToolCall({ threadId: "thread-1", tool: "current", arguments: {} });
 
     expect(JSON.parse(response.contentItems[0].text)).toEqual({
       open: true,
@@ -42,5 +42,24 @@ describe("Preview context", () => {
       inspectWith: "Read the reported project path with the available file tools"
     });
     expect(registry.current("thread-2")).toEqual({ open: false, tabCount: 0, active: null });
+  });
+
+  it("opens a requested local file in the controlling thread", async () => {
+    const openFile = async (request) => ({ opened: true, path: request.path, editable: true });
+    const registry = new PreviewContextRegistry({ openFile });
+
+    const response = await registry.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tool: "open_file",
+      source: "codex",
+      arguments: { path: "/Users/me/.codex/skills/openai-docs/SKILL.md" }
+    });
+
+    expect(JSON.parse(response.contentItems[0].text)).toEqual({
+      opened: true,
+      path: "/Users/me/.codex/skills/openai-docs/SKILL.md",
+      editable: true
+    });
   });
 });

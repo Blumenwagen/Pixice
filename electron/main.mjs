@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, shell, Tray, WebContentsView } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, screen, shell, Tray, WebContentsView } from "electron";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -37,6 +37,7 @@ import {
   questionDynamicTools
 } from "./runtime/question-tool.mjs";
 import { PixiceBridge, PIXICE_BRIDGE_NAMESPACE, pixiceBridgeDynamicTools } from "./runtime/pixice-bridge.mjs";
+import { BridgeParentContinuation } from "./runtime/bridge-parent-continuation.mjs";
 import { PixiceBoard, PIXICE_BOARD_NAMESPACE, pixiceBoardDynamicTools } from "./runtime/pixice-board.mjs";
 import {
   InstrumentService,
@@ -64,6 +65,8 @@ import { reconcileThreadActivity, withStableCompletionRevision } from "./runtime
 import { createSystemAwakeController } from "./runtime/system-awake.mjs";
 import { ProactiveStewardship } from "./runtime/proactive-stewardship.mjs";
 import { createDefaultWorkflow } from "./workflows/workflow-model.mjs";
+import { MAX_EDITABLE_BYTES, previewFileTarget, readPreviewFile } from "./runtime/preview-files.mjs";
+import { createTrayViewModel, createTrayWorkItems } from "./tray/tray-view-model.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -75,6 +78,10 @@ const threadSourceKinds = [
 
 let mainWindow;
 let tray;
+let trayWindow;
+let trayLimits;
+let trayRefreshPromise;
+let trayIconDataUrl;
 let runtime;
 let codexRuntime;
 let codexProvider;
@@ -85,6 +92,7 @@ let previewContextRegistry;
 let appUpdater;
 let githubCli;
 let pixiceBridge;
+let bridgeParentContinuation;
 let pixiceBoard;
 let pixiceInstruments;
 let proactiveStewardship;
@@ -96,6 +104,7 @@ const activeTurns = new Map();
 const turnUsageMetadata = new Map();
 const threadSessions = new ThreadSessionRegistry();
 const threadPlans = new Map();
+const trayCompletionRevisions = new Map();
 const threadMonitorCache = new Map();
 const threadProjects = new Map();
 const pendingRequests = new Map();
@@ -156,6 +165,7 @@ const providerExecutablePathsSchema = z.object({
   codex: z.string().trim().min(1).max(4_096).refine(path.isAbsolute, "Codex executable path must be absolute").optional(),
   claude: z.string().trim().min(1).max(4_096).refine(path.isAbsolute, "Claude executable path must be absolute").optional()
 }).strict();
+const accentColorSchema = z.enum(["coral", "rose", "amber", "green", "teal", "blue", "violet", "graphite"]);
 const appDefaultsSchema = z.object({
   defaultModel: z.string().trim().min(1).max(128).optional(),
   defaultEffort: z.string().trim().regex(/^[a-z][a-z0-9_-]*$/i).max(32).optional(),
@@ -168,6 +178,8 @@ const appDefaultsSchema = z.object({
   notificationSound: z.boolean().optional(),
   keepSystemAwake: z.boolean().optional(),
   checkProviderUpdates: z.boolean().optional(),
+  accentColor: accentColorSchema.optional(),
+  reduceTransparency: z.boolean().optional(),
   providerExecutablePaths: providerExecutablePathsSchema.optional(),
   threadCompletionsSeen: threadCompletionsSeenSchema.optional(),
   agentBehaviors: agentBehaviorsSchema.optional()
@@ -348,76 +360,17 @@ function projectTarget(projectId, target) {
   return resolved;
 }
 
-const IMAGE_MIME_TYPES = new Map([
-  [".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"],
-  [".gif", "image/gif"], [".webp", "image/webp"], [".avif", "image/avif"],
-  [".svg", "image/svg+xml"], [".bmp", "image/bmp"], [".ico", "image/x-icon"]
-]);
-const MARKDOWN_EXTENSIONS = new Set([".md", ".mdx", ".markdown"]);
-const HTML_EXTENSIONS = new Set([".html", ".htm"]);
-const MAX_PREVIEW_BYTES = 25 * 1024 * 1024;
-const MAX_EDITABLE_BYTES = 4 * 1024 * 1024;
-
-function cleanFileReference(reference) {
-  let value = String(reference ?? "").trim();
-  if (value.startsWith("<") && value.endsWith(">")) value = value.slice(1, -1);
-  if (value.startsWith("file://")) value = fileURLToPath(value);
-  try { value = decodeURIComponent(value); } catch { /* Keep the original path when it is not URI encoded. */ }
-  value = value.replace(/#L\d+(?:-L?\d+)?$/i, "").replace(/:(\d+)(?::\d+)?$/, "");
-  return value;
-}
-
-function projectFileTarget(projectId, reference) {
+function previewFileOptions(projectId, reference, allowExternal = false) {
   const project = getProject(projectId);
-  const cleaned = cleanFileReference(reference);
-  if (!cleaned) throw new Error("File path is required");
-  const candidate = path.isAbsolute(cleaned) ? path.resolve(cleaned) : path.resolve(projectPrimaryRoot(project), cleaned);
-  const resolved = realpathSync(candidate);
-  if (!isWithinProject(project, resolved)) throw new Error("File is outside the selected project");
-  const metadata = statSync(resolved);
-  if (!metadata.isFile()) throw new Error("The selected path is not a file");
-  return { project, resolved, metadata };
+  return { reference, primaryRoot: projectPrimaryRoot(project), roots: projectRoots(project), allowExternal };
 }
 
 function readProjectFile(projectId, reference) {
-  const { project, resolved, metadata } = projectFileTarget(projectId, reference);
-  const folderPath = projectRootForTarget(project, resolved) ?? projectPrimaryRoot(project);
-  if (metadata.size > MAX_PREVIEW_BYTES) throw new Error("File is too large to open in Pixice");
-  const extension = path.extname(resolved).toLowerCase();
-  const buffer = readFileSync(resolved);
-  const imageMime = IMAGE_MIME_TYPES.get(extension);
-  const isPdf = extension === ".pdf";
-  if (imageMime || isPdf) {
-    const mimeType = imageMime || "application/pdf";
-    return {
-      path: resolved,
-      relativePath: path.relative(folderPath, resolved),
-      folderPath,
-      name: path.basename(resolved),
-      extension,
-      kind: imageMime ? "image" : "pdf",
-      mimeType,
-      dataUrl: `data:${mimeType};base64,${buffer.toString("base64")}`,
-      editable: false,
-      size: metadata.size,
-      mtimeMs: metadata.mtimeMs
-    };
-  }
-  const content = buffer.toString("utf8");
-  const binary = content.includes("\u0000");
-  const editable = !binary && metadata.size <= MAX_EDITABLE_BYTES;
-  return {
-    path: resolved,
-    relativePath: path.relative(folderPath, resolved),
-    folderPath,
-    name: path.basename(resolved),
-    extension,
-    kind: binary ? "unsupported" : MARKDOWN_EXTENSIONS.has(extension) ? "markdown" : HTML_EXTENSIONS.has(extension) ? "html" : "text",
-    content: binary ? null : content,
-    editable,
-    size: metadata.size,
-    mtimeMs: metadata.mtimeMs
-  };
+  return readPreviewFile(previewFileOptions(projectId, reference));
+}
+
+function readLocalPreviewFile(projectId, reference) {
+  return readPreviewFile(previewFileOptions(projectId, reference, true));
 }
 
 function requestKey(id) {
@@ -547,15 +500,132 @@ function summarizeThreadPlan(plan) {
   };
 }
 
-function updateTrayMenu() {
-  if (!tray) return;
+function nativeTrayMenu() {
   const count = activeTurns.size;
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "Open Pixice", click: () => mainWindow.show() },
+  return Menu.buildFromTemplate([
+    { label: "Open Pixice", click: () => openMainWindow() },
     { label: count ? `${count} active turn${count === 1 ? "" : "s"}` : "No active turns", enabled: false },
     { type: "separator" },
     { label: "Quit", click: () => app.quit() }
-  ]));
+  ]);
+}
+
+function trayProjectForThread(threadId, cwd = null) {
+  const projectId = threadProjects.get(threadId);
+  return projectId ? database.getProject(projectId) : projectForPath(cwd ?? database.getThreadProviderBinding(threadId)?.cwd);
+}
+
+function currentTrayWorkItems() {
+  const byId = new Map(database.listProviderThreadSummaries().map((thread) => [thread.id, thread]));
+  for (const [threadId] of activeTurns) {
+    if (byId.has(threadId)) continue;
+    const binding = database.getThreadProviderBinding(threadId);
+    byId.set(threadId, database.getProviderThreadSummary(threadId) ?? {
+      id: threadId,
+      cwd: binding?.cwd ?? "",
+      provider: binding?.provider ?? runtime?.providerForThread?.(threadId) ?? "codex",
+      updatedAt: new Date().toISOString()
+    });
+  }
+  const threads = [...byId.values()].map((thread) => {
+    const project = trayProjectForThread(thread.id, thread.cwd);
+    const link = database.getThreadLink?.(thread.id);
+    return {
+      ...thread,
+      ...(trayCompletionRevisions.get(thread.id) ?? {}),
+      name: database.getThreadName(thread.id) ?? thread.name,
+      projectId: project?.id ?? null,
+      projectName: project?.displayName ?? "Unknown project",
+      plan: threadPlans.get(thread.id) ?? database.getThreadPlan(thread.id) ?? [],
+      bridgeThread: link?.kind === "pixiceBridge"
+    };
+  });
+  return createTrayWorkItems({
+    threads,
+    activeTurns: [...activeTurns],
+    seenCompletions: database.getAppSettings().threadCompletionsSeen ?? {}
+  });
+}
+
+function currentTrayState() {
+  const workItems = currentTrayWorkItems();
+  const settings = database?.getAppSettings() ?? {};
+  return createTrayViewModel({
+    limits: trayLimits,
+    summary: database?.getUsageSummary({ days: 7 }),
+    activeTurns: activeTurns.size,
+    workItems,
+    keepSystemAwake: settings.keepSystemAwake === true,
+    appearance: {
+      accentColor: settings.accentColor,
+      reduceTransparency: settings.reduceTransparency
+    },
+    appIconDataUrl: trayIconDataUrl
+  });
+}
+
+function sendTrayState() {
+  if (!trayWindow || trayWindow.isDestroyed() || trayWindow.webContents.isLoading()) return;
+  trayWindow.webContents.send("tray:state", currentTrayState());
+}
+
+function updateTrayMenu() {
+  if (!tray) return;
+  const count = activeTurns.size;
+  const unread = currentTrayWorkItems().filter((item) => item.status === "unread").length;
+  tray.setToolTip([
+    "Pixice",
+    count ? `${count} active` : null,
+    unread ? `${unread} unread` : null
+  ].filter(Boolean).join(" · "));
+  if (process.platform !== "darwin") tray.setContextMenu(nativeTrayMenu());
+  sendTrayState();
+}
+
+async function refreshTrayState() {
+  if (trayRefreshPromise) return trayRefreshPromise;
+  trayRefreshPromise = readProviderRateLimits({ codexProvider, claudeProvider })
+    .then((limits) => {
+      trayLimits = limits;
+      sendTrayState();
+      return currentTrayState();
+    })
+    .finally(() => { trayRefreshPromise = null; });
+  return trayRefreshPromise;
+}
+
+function positionTrayWindow() {
+  if (!trayWindow || trayWindow.isDestroyed() || !tray) return;
+  const trayBounds = tray.getBounds();
+  const windowBounds = trayWindow.getBounds();
+  const display = screen.getDisplayNearestPoint({ x: Math.round(trayBounds.x), y: Math.round(trayBounds.y) });
+  const workArea = display.workArea;
+  const x = Math.min(
+    workArea.x + workArea.width - windowBounds.width - 8,
+    Math.max(workArea.x + 8, Math.round(trayBounds.x + trayBounds.width / 2 - windowBounds.width / 2))
+  );
+  const y = Math.min(workArea.y + workArea.height - windowBounds.height - 8, Math.round(trayBounds.y + trayBounds.height + 5));
+  trayWindow.setPosition(x, y, false);
+}
+
+function openMainWindow(destination = null) {
+  trayWindow?.hide();
+  mainWindow.show();
+  mainWindow.focus();
+  if (destination) send("TrayNavigate", destination);
+}
+
+function toggleTrayWindow() {
+  if (!trayWindow || trayWindow.isDestroyed()) return;
+  if (trayWindow.isVisible()) {
+    trayWindow.hide();
+    return;
+  }
+  positionTrayWindow();
+  sendTrayState();
+  trayWindow.show();
+  trayWindow.focus();
+  void refreshTrayState();
 }
 
 function monitorStatus(thread) {
@@ -630,13 +700,55 @@ function createWindow() {
   });
 }
 
+function createTrayWindow() {
+  trayWindow = new BrowserWindow({
+    width: 382,
+    height: 480,
+    minWidth: 382,
+    maxWidth: 382,
+    minHeight: 180,
+    maxHeight: 620,
+    show: false,
+    frame: false,
+    resizable: false,
+    fullscreenable: false,
+    movable: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    vibrancy: "popover",
+    visualEffectState: "active",
+    roundedCorners: true,
+    hasShadow: true,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    webPreferences: {
+      preload: path.join(__dirname, "tray/preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  trayWindow.loadFile(path.join(__dirname, "tray/tray.html"));
+  trayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  trayWindow.webContents.once("did-finish-load", sendTrayState);
+  trayWindow.on("blur", () => trayWindow?.hide());
+  trayWindow.on("closed", () => { trayWindow = null; });
+}
+
 function createTray() {
   const iconPath = isDev ? path.join(__dirname, "../build/icon.png") : path.join(process.resourcesPath, "app-icon.png");
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
+  trayIconDataUrl = nativeImage.createFromPath(iconPath).resize({ width: 64, height: 64 }).toDataURL();
   tray = new Tray(icon);
   tray.setToolTip("Pixice");
   updateTrayMenu();
-  tray.on("click", () => mainWindow.show());
+  if (process.platform === "darwin") {
+    createTrayWindow();
+    tray.on("click", toggleTrayWindow);
+    tray.on("right-click", () => tray.popUpContextMenu(nativeTrayMenu()));
+  } else {
+    tray.on("click", () => openMainWindow());
+  }
 }
 
 function launchDetached(command, args) {
@@ -1065,13 +1177,112 @@ async function deliverInstrumentAgentEvent({ instrument, event, runtimeOptions }
     turnId: response.turn.id,
     model,
     serviceTier,
+    effort,
+    permissionMode,
     provider: runtime.providerForThread(instrument.threadId)
   });
   updateTrayMenu();
   return response;
 }
 
+async function startBridgeParentTurn(parentThreadId, input) {
+  const project = trayProjectForThread(parentThreadId);
+  if (!project) throw new Error("The bridge parent is not linked to a Pixice project");
+  const cwd = await ensureThreadLoaded(project, parentThreadId);
+  const defaults = database.getAppSettings();
+  const previous = turnUsageMetadata.get(parentThreadId) ?? {};
+  const permissionMode = previous.permissionMode ?? defaults.defaultPermissionMode ?? "workspace-write";
+  const permissions = permissionSettings(permissionMode, project);
+  const model = previous.model ?? defaults.defaultModel ?? null;
+  const effort = previous.effort ?? defaults.defaultEffort ?? null;
+  const serviceTier = previous.serviceTier ?? null;
+  const response = await runtime.request("turn/start", {
+    threadId: parentThreadId,
+    input,
+    cwd,
+    runtimeWorkspaceRoots: runtimeRoots(project),
+    model,
+    serviceTier,
+    effort,
+    permissionMode,
+    approvalPolicy: permissions.approvalPolicy,
+    approvalsReviewer: permissions.approvalsReviewer,
+    sandboxPolicy: permissions.sandboxPolicy
+  });
+  activeTurns.set(parentThreadId, response.turn.id);
+  turnUsageMetadata.set(parentThreadId, {
+    ...previous,
+    turnId: response.turn.id,
+    model,
+    serviceTier,
+    effort,
+    permissionMode,
+    provider: runtime.providerForThread(parentThreadId)
+  });
+  updateTrayMenu();
+  return response.turn;
+}
+
+async function steerBridgeParentTurn(parentThreadId, turnId, input) {
+  const project = trayProjectForThread(parentThreadId);
+  if (!project) throw new Error("The bridge parent is not linked to a Pixice project");
+  await ensureThreadLoaded(project, parentThreadId);
+  return runtime.request("turn/steer", {
+    threadId: parentThreadId,
+    expectedTurnId: turnId,
+    input
+  });
+}
+
 function registerIpc() {
+  ipcMain.handle("tray:action", async (event, payload) => {
+    if (!trayWindow || event.sender !== trayWindow.webContents) throw new Error("Tray action rejected");
+    const value = z.object({
+      action: z.enum(["open", "open-thread", "usage", "refresh", "follow-up", "keep-awake", "resize", "dismiss", "quit"]),
+      value: z.unknown().optional()
+    }).strict().parse(payload);
+    if (value.action === "open") openMainWindow();
+    if (value.action === "open-thread") {
+      const { threadId } = z.object({ threadId: z.string().trim().min(1).max(160) }).strict().parse(value.value);
+      const project = trayProjectForThread(threadId);
+      if (!project) throw new Error("This thread is not linked to a Pixice project");
+      openMainWindow({ view: "task", projectId: project.id, threadId });
+    }
+    if (value.action === "usage") openMainWindow({ view: "settings", settingsPage: "usage" });
+    if (value.action === "refresh") return refreshTrayState();
+    if (value.action === "follow-up") {
+      const followUp = z.object({
+        threadId: z.string().trim().min(1).max(160),
+        text: z.string().trim().min(1).max(100_000)
+      }).strict().parse(value.value);
+      const turnId = activeTurns.get(followUp.threadId);
+      if (!turnId) throw new Error("This turn finished before the follow-up could be queued.");
+      const project = trayProjectForThread(followUp.threadId);
+      if (!project) throw new Error("This thread is not linked to a Pixice project");
+      await ensureThreadLoaded(project, followUp.threadId);
+      await runtime.request("turn/steer", {
+        threadId: followUp.threadId,
+        expectedTurnId: turnId,
+        input: buildCodexUserInput(followUp.text, [])
+      });
+      return { queued: true, threadId: followUp.threadId, turnId };
+    }
+    if (value.action === "keep-awake") {
+      const enabled = value.value === true;
+      database.saveAppSettings({ keepSystemAwake: enabled });
+      systemAwakeController.setEnabled(enabled);
+      send("TraySettingsUpdated", { keepSystemAwake: enabled });
+      sendTrayState();
+    }
+    if (value.action === "resize") {
+      const height = Math.max(180, Math.min(620, Math.round(Number(value.value) || 480)));
+      trayWindow.setSize(382, height, false);
+      positionTrayWindow();
+    }
+    if (value.action === "dismiss") trayWindow.hide();
+    if (value.action === "quit") app.quit();
+    return currentTrayState();
+  });
   ipcMain.handle("app:bootstrap", async () => ({
     projects: await listProjects(),
     models: await listModels().catch(() => []),
@@ -1085,6 +1296,7 @@ function registerIpc() {
     if (value.keepSystemAwake !== undefined) systemAwakeController.setEnabled(value.keepSystemAwake);
     if (value.agentBehaviors !== undefined) runtime.refreshDeveloperInstructions();
     if (value.checkProviderUpdates !== undefined) runtime.setProviderUpdateChecksEnabled(value.checkProviderUpdates);
+    sendTrayState();
     return settings;
   });
   ipcMain.handle("runtime:status", () => ({ ...runtimeStatus, connected: runtime.connected }));
@@ -1643,6 +1855,8 @@ function registerIpc() {
       turnId: response.turn.id,
       model: value.model || null,
       serviceTier: value.serviceTier ?? null,
+      effort: value.effort || null,
+      permissionMode: value.permissionMode,
       provider: runtime.providerForThread(value.threadId)
     });
     updateTrayMenu();
@@ -1782,21 +1996,25 @@ function registerIpc() {
     const value = idPayload.extend({ path: z.string().trim().min(1) }).parse(payload);
     return readProjectFile(value.projectId, value.path);
   });
+  ipcMain.handle("files:preview", (_event, payload) => {
+    const value = idPayload.extend({ path: z.string().trim().min(1).max(10_000) }).parse(payload);
+    return readLocalPreviewFile(value.projectId, value.path);
+  });
   ipcMain.handle("files:write", (_event, payload) => {
     const value = idPayload.extend({
       path: z.string().trim().min(1),
       content: z.string(),
       expectedMtimeMs: z.number().nonnegative().optional()
     }).parse(payload);
-    const current = projectFileTarget(value.projectId, value.path);
-    const file = readProjectFile(value.projectId, current.resolved);
+    const current = previewFileTarget(previewFileOptions(value.projectId, value.path, true));
+    const file = readLocalPreviewFile(value.projectId, current.resolved);
     if (!file.editable) throw new Error("This file cannot be edited in Pixice");
     if (Buffer.byteLength(value.content, "utf8") > MAX_EDITABLE_BYTES) throw new Error("Edited file is too large to save in Pixice");
     if (value.expectedMtimeMs !== undefined && Math.abs(current.metadata.mtimeMs - value.expectedMtimeMs) > 1) {
       throw new Error("This file changed on disk. Reopen it before saving so those changes are not overwritten.");
     }
     writeFileSync(current.resolved, value.content, "utf8");
-    return readProjectFile(value.projectId, current.resolved);
+    return readLocalPreviewFile(value.projectId, current.resolved);
   });
   ipcMain.handle("external:editor", async (_event, payload) => {
     const value = idPayload.extend({ path: z.string().optional() }).parse(payload);
@@ -1842,7 +2060,20 @@ app.whenReady().then(async () => {
   if (recordedDataVersion && recordedDataVersion !== app.getVersion()) recoverUpdateDataFromBackup({ userDataPath });
   await ensureVersionUpdateDataBackup({ userDataPath, currentVersion: app.getVersion() });
   database = new PixiceDatabase(userDataPath);
-  previewContextRegistry = new PreviewContextRegistry();
+  const previewThreadContext = (threadId) => {
+    const binding = database.getThreadProviderBinding(threadId);
+    const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
+    return project ? { projectId: project.id, cwd: binding?.cwd || projectPrimaryRoot(project) } : null;
+  };
+  previewContextRegistry = new PreviewContextRegistry({
+    openFile: ({ threadId, path: filePath, source }) => {
+      const context = previewThreadContext(threadId);
+      if (!context) throw new Error("The controlling thread is not linked to a Pixice project");
+      const file = readLocalPreviewFile(context.projectId, filePath);
+      send("FilePreviewOpenRequested", { workspaceId: threadId, threadId, projectId: context.projectId, source, file });
+      return { opened: true, path: file.path, name: file.name, external: file.external, editable: file.editable };
+    }
+  });
   systemAwakeController = createSystemAwakeController(powerSaveBlocker);
   systemAwakeController.setEnabled(database.getAppSettings().keepSystemAwake === true);
   developerInstructionsPath = isDev
@@ -1862,11 +2093,7 @@ app.whenReady().then(async () => {
   });
   runtime = new ProviderRegistry({ database });
   codexProvider = runtime.register(new CodexProvider(codexRuntime, { runtimeLifecycle: codexRuntimeLifecycle }));
-  const boardThreadContext = (threadId) => {
-    const binding = database.getThreadProviderBinding(threadId);
-    const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
-    return project ? { projectId: project.id, cwd: binding?.cwd || projectPrimaryRoot(project) } : null;
-  };
+  const boardThreadContext = previewThreadContext;
   pixiceBoard = new PixiceBoard({
     database,
     threadContext: boardThreadContext,
@@ -1900,6 +2127,15 @@ app.whenReady().then(async () => {
     onOpen: (payload) => send("InstrumentOpenRequested", payload),
     onEventChange: (payload) => send("InstrumentInteractionUpdated", payload)
   });
+  bridgeParentContinuation = new BridgeParentContinuation({
+    activeTurnId: (threadId) => activeTurns.get(threadId) ?? null,
+    startTurn: startBridgeParentTurn,
+    steerTurn: steerBridgeParentTurn,
+    onError: (error, completion) => codexRuntime.emit(
+      "diagnostic",
+      `Bridge completion delivery failed for ${completion.parentThreadId}: ${error.message}`
+    )
+  });
   pixiceBridge = new PixiceBridge({
     runtime,
     database,
@@ -1923,6 +2159,7 @@ app.whenReady().then(async () => {
       turnUsageMetadata.set(thread.id, { turnId: null, model: model.id, serviceTier: null, provider: model.provider });
       scheduleThreadName({ project, threadId: thread.id, source: prompt, kind: "thread" });
     },
+    onCompletion: (completion) => bridgeParentContinuation.notify(completion),
     onActivity: (payload) => send("AgentUpdated", {
       ...payload,
       projectId: threadProjects.get(payload.threadId)
@@ -1999,6 +2236,7 @@ app.whenReady().then(async () => {
   threadNamer.on("failure", (error) => codexRuntime.emit("diagnostic", `Automatic thread naming failed: ${error.message}`));
   threadNamer.on("named", ({ threadId, name }) => {
     database.saveThreadName(threadId, name);
+    updateTrayMenu();
     send("TaskUpdated", {
       method: "thread/name/updated",
       threadId,
@@ -2026,7 +2264,11 @@ app.whenReady().then(async () => {
     const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
     event.payload = { ...event.payload, receivedAt };
     const { method, threadId, turn } = event.payload ?? {};
-    if (method === "account/rateLimits/updated") send("CodexLimitsUpdated", { receivedAt });
+    if (method === "account/rateLimits/updated") {
+      trayLimits = null;
+      send("CodexLimitsUpdated", { receivedAt });
+      if (trayWindow?.isVisible()) void refreshTrayState();
+    }
     if (threadNamer.rememberInternalThread(event.payload?.thread) || threadNamer.isInternalThread(threadId)) return;
     proactiveStewardship.observeActivity(event.payload ?? {});
     const collabItem = event.payload?.item;
@@ -2037,12 +2279,17 @@ app.whenReady().then(async () => {
           turnId: null,
           model: collabItem.model ?? parentUsage.model ?? null,
           serviceTier: parentUsage.serviceTier ?? null,
+          effort: collabItem.effort ?? parentUsage.effort ?? null,
+          permissionMode: parentUsage.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write",
           provider: event.payload?.provider ?? parentUsage.provider ?? "codex"
         });
       }
     }
     try {
-      if (recordUsage(event.payload ?? {})) send("UsageUpdated", { recordedAt: new Date().toISOString() });
+      if (recordUsage(event.payload ?? {})) {
+        send("UsageUpdated", { recordedAt: new Date().toISOString() });
+        updateTrayMenu();
+      }
     } catch (error) {
       codexRuntime.emit("diagnostic", `Usage recording failed: ${error.message}`);
     }
@@ -2094,10 +2341,12 @@ app.whenReady().then(async () => {
       const plan = event.payload.plan ?? [];
       threadPlans.set(threadId, plan);
       database.saveThreadPlan(threadId, plan);
+      updateTrayMenu();
     }
     if ((method === "thread/deleted" || method === "thread/archived") && threadId) {
       pixiceInstruments.removeEphemeralForThread(threadId);
       threadPlans.delete(threadId);
+      trayCompletionRevisions.delete(threadId);
       threadMonitorCache.delete(threadId);
       threadSessions.delete(threadId);
       threadProjects.delete(threadId);
@@ -2118,8 +2367,17 @@ app.whenReady().then(async () => {
       const project = projectForPath(event.payload.thread.cwd);
       if (project) rememberThread(project, event.payload.thread, { loaded: true });
     }
-    if (method === "turn/started" && threadId && turn?.id) activeTurns.set(threadId, turn.id);
-    if (method === "turn/completed" && threadId) activeTurns.delete(threadId);
+    if (method === "turn/started" && threadId && turn?.id) {
+      activeTurns.set(threadId, turn.id);
+      trayCompletionRevisions.delete(threadId);
+    }
+    if (method === "turn/completed" && threadId) {
+      activeTurns.delete(threadId);
+      trayCompletionRevisions.set(threadId, {
+        completionRevision: `turn:${turn?.id ?? event.payload?.turnId ?? receivedAt}`,
+        updatedAt: turn?.completedAt ?? receivedAt
+      });
+    }
     if (method === "turn/started" || method === "turn/completed") updateTrayMenu();
     scheduleDelegatedThreadNames(event);
     sendRuntimeEvent(event.type, {
@@ -2204,8 +2462,8 @@ app.whenReady().then(async () => {
       new Notification({ title: "Pixice update ready", body: "Restart Pixice when you are ready to install it." }).show();
     }
   });
-  createTray();
   registerIpc();
+  createTray();
   appUpdater.start();
   await runtime.start();
   runtime.startProviderUpdateChecks({ enabled: database.getAppSettings().checkProviderUpdates !== false });

@@ -118,13 +118,14 @@ function completionStatus(status) {
 }
 
 export class PixiceBridge {
-  constructor({ runtime, database, threadContext, dynamicTools, onThreadCreated, onActivity }) {
+  constructor({ runtime, database, threadContext, dynamicTools, onThreadCreated, onActivity, onCompletion }) {
     this.runtime = runtime;
     this.database = database;
     this.threadContext = threadContext;
     this.dynamicTools = dynamicTools;
     this.onThreadCreated = onThreadCreated;
     this.onActivity = onActivity;
+    this.onCompletion = onCompletion;
     this.pending = new Map();
     this.workflowIntegration = null;
     this.workflowError = null;
@@ -248,6 +249,7 @@ export class PixiceBridge {
     const completion = new Promise((resolve) => this.pending.set(child.id, {
       resolve,
       parentThreadId: params.threadId,
+      parentTurnId: params.turnId ?? null,
       model: selected.id,
       effort: input.effort ?? null,
       prompt: input.prompt
@@ -323,14 +325,24 @@ export class PixiceBridge {
       status: completionStatus(status),
       message
     });
-    pending.resolve({
+    const result = {
       threadId: payload.threadId,
       status,
       model: pending.model,
       effort: pending.effort,
       answer,
       error: turn?.error?.message ?? null
-    });
+    };
+    pending.resolve(result);
+    const completionTimer = setTimeout(() => {
+      void Promise.resolve(this.onCompletion?.({
+        parentThreadId: pending.parentThreadId,
+        parentTurnId: pending.parentTurnId,
+        childThreadId: payload.threadId,
+        ...result
+      })).catch(() => {});
+    }, 0);
+    completionTimer.unref?.();
   }
 
   #publishAgentState({ parentThreadId, childThreadId, prompt, model, effort, status, message }) {

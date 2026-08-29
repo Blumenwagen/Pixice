@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'" />
+    <title>Pixice status</title>
+    <link rel="stylesheet" href="./tray.css" />
+  </head>
+  <body>
+    <main class="popover" id="popover" aria-label="Pixice status">
+      <section class="tray-view" id="summary-view">
+        <header class="topbar">
+          <div class="brand">
+            <img id="app-icon" alt="" />
+            <span><strong>Pixice</strong><small id="activity-label">Checking status</small></span>
+          </div>
+          <button class="quiet-button" id="refresh" type="button">Refresh</button>
+        </header>
+
+        <section class="section limits-section" aria-labelledby="limits-title">
+          <div class="section-heading">
+            <span><strong id="limits-title">Weekly limits</strong><small id="updated-at">Live provider allowance</small></span>
+          </div>
+          <div class="provider-list" id="providers">
+            <div class="skeleton provider-skeleton"></div>
+            <div class="skeleton provider-skeleton short"></div>
+          </div>
+        </section>
+
+        <section class="section spend-section" aria-labelledby="spend-title">
+          <div class="section-heading">
+            <span><strong id="spend-title">Usage cost</strong><small>API-equivalent estimate</small></span>
+            <button class="text-button" id="open-usage" type="button">Details</button>
+          </div>
+          <div class="cost-grid">
+            <article><small>This week</small><strong id="week-cost">$0.00</strong></article>
+            <article><small>Total recorded</small><strong id="total-cost">$0.00</strong></article>
+          </div>
+        </section>
+
+        <section class="utility-row" aria-label="Quick controls">
+          <button class="activity-button" id="open-active" type="button">
+            <span class="live-dot" id="live-dot"></span>
+            <span><strong id="active-count">No active turns</strong><small id="active-detail">Pixice is standing by</small></span>
+            <b id="unread-badge" hidden>0</b>
+          </button>
+          <label class="awake-control">
+            <span><strong>Keep awake</strong><small>Prevent idle sleep</small></span>
+            <input id="keep-awake" type="checkbox" />
+            <i aria-hidden="true"></i>
+          </label>
+        </section>
+
+        <footer>
+          <button class="primary-button" id="open-pixice" type="button">Open Pixice</button>
+          <button class="quit-button" id="quit" type="button">Quit</button>
+        </footer>
+      </section>
+
+      <section class="tray-view work-view" id="work-view" hidden>
+        <header class="work-header">
+          <button class="back-button" id="work-back" type="button">Back</button>
+          <span><strong>Work in Pixice</strong><small id="work-summary">Active and unread threads</small></span>
+          <button class="quiet-button" id="open-all-work" type="button">Open</button>
+        </header>
+        <div class="work-list" id="work-list" aria-live="polite"></div>
+      </section>
+    </main>
+    <script src="./tray.js?v=2"></script>
+  </body>
+</html>

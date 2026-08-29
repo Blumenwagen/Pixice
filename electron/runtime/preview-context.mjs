@@ -5,28 +5,32 @@ export const PREVIEW_CONTEXT_START = "<pixice-preview-context>";
 export const PREVIEW_CONTEXT_END = "</pixice-preview-context>";
 
 export const previewContextToolShapes = {
-  current: z.object({}).strict()
+  current: z.object({}).strict(),
+  open_file: z.object({ path: z.string().trim().min(1).max(10_000) }).strict()
 };
 
-function functionTool(name, description, properties = {}) {
+function functionTool(name, description, properties = {}, required = []) {
   return {
     type: "function",
     name,
     description,
-    inputSchema: { type: "object", properties, required: [], additionalProperties: false }
+    inputSchema: { type: "object", properties, required, additionalProperties: false }
   };
 }
 
 export const previewContextDynamicTools = [{
   type: "namespace",
   name: PIXICE_PREVIEW_NAMESPACE,
-  description: "Inspect what is selected in the current thread's Pixice Preview workspace. Pixice only gives the prompt a small presence hint; use this namespace to resolve what 'this' refers to before asking the user.",
+  description: "Inspect or open content in the current thread's Pixice Preview workspace.",
   tools: [
-    functionTool("current", "Return metadata for the selected Preview tab without reading its page or file contents. Use the resource-specific tool named in the result when deeper inspection is relevant.")
+    functionTool("current", "Return metadata for the selected Preview tab without reading its page or file contents. Use the resource-specific tool named in the result when deeper inspection is relevant."),
+    functionTool("open_file", "Open a local file in this thread's Preview. Use this when the user explicitly asks to open or show a file. Absolute paths outside the project are allowed.", {
+      path: { type: "string", description: "Project-relative path, absolute local path, or file URL requested by the user." }
+    }, ["path"])
   ]
 }];
 
-export const PIXICE_PREVIEW_MCP_TOOLS = new Set(["mcp__pixice_preview__current"]);
+export const PIXICE_PREVIEW_MCP_TOOLS = new Set(["mcp__pixice_preview__current", "mcp__pixice_preview__open_file"]);
 
 function textResult(value, success = true) {
   return {
@@ -72,6 +76,11 @@ export function stripPreviewContextHint(text) {
 
 export class PreviewContextRegistry {
   #contexts = new Map();
+  #openFile;
+
+  constructor({ openFile = null } = {}) {
+    this.#openFile = openFile;
+  }
 
   set(threadId, context) {
     if (!threadId) throw new Error("A thread-scoped Preview workspace is required");
@@ -99,13 +108,25 @@ export class PreviewContextRegistry {
     this.#contexts.delete(threadId);
   }
 
-  handleToolCall(params) {
+  async handleToolCall(params) {
     if (!params.threadId) return textResult("Pixice Preview tools require a thread-scoped call.", false);
-    if (params.tool !== "current") return textResult(`Unknown Pixice Preview tool: ${params.tool}`, false);
-    const context = this.current(params.threadId);
-    return textResult({
-      ...context,
-      ...(context.active?.kind ? { inspectWith: inspectionToolFor(context.active.kind) } : {})
-    });
+    if (params.tool === "current") {
+      const context = this.current(params.threadId);
+      return textResult({
+        ...context,
+        ...(context.active?.kind ? { inspectWith: inspectionToolFor(context.active.kind) } : {})
+      });
+    }
+    if (params.tool === "open_file") {
+      if (!this.#openFile) return textResult("Opening files in Preview is unavailable.", false);
+      const value = previewContextToolShapes.open_file.parse(params.arguments ?? {});
+      return textResult(await this.#openFile({
+        threadId: params.threadId,
+        turnId: params.turnId,
+        source: params.source,
+        path: value.path
+      }));
+    }
+    return textResult(`Unknown Pixice Preview tool: ${params.tool}`, false);
   }
 }

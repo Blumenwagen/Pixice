@@ -220,6 +220,17 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
         size: 27,
         mtimeMs: 1
       })),
+      preview: vi.fn(async ({ path }) => ({
+        path: path.startsWith("/") ? path.replace(/:\d+$/, "") : `/work/aurora/${path.replace(/:\d+$/, "")}`,
+        relativePath: path.replace(/:\d+$/, ""),
+        name: path.replace(/:\d+$/, "").split("/").at(-1),
+        extension: `.${path.replace(/:\d+$/, "").split(".").at(-1)}`,
+        kind: path.endsWith(".md") ? "markdown" : "text",
+        content: "export const ready = true;\n",
+        editable: true,
+        size: 27,
+        mtimeMs: 1
+      })),
       write: vi.fn(async ({ path, content }) => ({
         path,
         relativePath: path.replace("/work/aurora/", ""),
@@ -795,7 +806,8 @@ describe("Pixice app shell", () => {
     expect(bridgeTask).toHaveAttribute("aria-current", "page");
   });
 
-  it("adds a newly spawned bridge thread to the sidebar immediately", async () => {
+  it("adds a bridge thread immediately but only marks it unseen after its final answer", async () => {
+    localStorage.setItem("pixice.threadCompletionsSeen", JSON.stringify({ __baselineAt: 0 }));
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -818,11 +830,49 @@ describe("Pixice app shell", () => {
       }
     }));
 
-    expect(await screen.findByRole("button", { name: "Review the interface hierarchy" })).toBeInTheDocument();
+    const bridgeButton = await screen.findByRole("button", { name: "Review the interface hierarchy" });
+    expect(bridgeButton).toBeInTheDocument();
     expect(Array.from(document.querySelectorAll(".task-tree .task-select"), (button) => button.textContent)).toEqual([
       "Refactor authentication",
       "Review the interface hierarchy"
     ]);
+
+    act(() => window.pixice.emit({
+      type: "AgentUpdated",
+      payload: {
+        method: "pixice/bridge/updated",
+        projectId: project.id,
+        threadId: thread.id,
+        item: {
+          type: "collabAgentToolCall",
+          tool: "pixiceBridge",
+          bridge: true,
+          senderThreadId: thread.id,
+          receiverThreadIds: ["bridge-thread"],
+          prompt: "Review the interface hierarchy",
+          model: "claude:claude-sonnet-4-6",
+          agentsStates: { "bridge-thread": { status: "completed", message: "Increase the spacing between sections." } }
+        }
+      }
+    }));
+
+    expect(bridgeButton.closest(".task-row")).not.toHaveClass("finished");
+
+    act(() => window.pixice.emit({
+      type: "ThreadUpdated",
+      payload: {
+        method: "turn/completed",
+        projectId: project.id,
+        threadId: "bridge-thread",
+        turn: {
+          id: "bridge-turn",
+          status: "completed",
+          items: [{ id: "bridge-answer", type: "agentMessage", text: "Increase the spacing between sections.", phase: "final_answer" }]
+        }
+      }
+    }));
+
+    await waitFor(() => expect(bridgeButton.closest(".task-row")).toHaveClass("finished"));
   });
 
   it("only promotes a bridge-created thread after the user messages it", async () => {
@@ -1279,6 +1329,10 @@ describe("Pixice app shell", () => {
       expandTaskProgress: false,
       threadCleanupAgeDays: 9
     });
+    await waitFor(() => expect(api.app.saveSettings).toHaveBeenCalledWith({
+      accentColor: "teal",
+      reduceTransparency: true
+    }));
 
     fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
     const prompt = await screen.findByRole("textbox", { name: "Task prompt" });
@@ -1863,6 +1917,66 @@ describe("Pixice app shell", () => {
 
     fireEvent.click(borealis);
     await waitFor(() => expect(screen.getByRole("button", { name: "Borealis" })).toHaveAttribute("title", "Borealis"));
+  });
+
+  it("does not mark a background bridge thread unseen before its final answer", async () => {
+    const secondProject = {
+      ...project,
+      id: "project-2",
+      displayName: "Borealis",
+      canonicalPath: "/work/borealis",
+      folders: ["/work/borealis"],
+      lastUsedAt: "2026-08-20T10:00:00.000Z"
+    };
+    const bridgeThread = {
+      ...thread,
+      id: "bridge-thread",
+      name: "Review Borealis",
+      cwd: "/work/borealis",
+      parentThreadId: "borealis-parent",
+      bridge: { kind: "pixiceBridge", parentThreadId: "borealis-parent", model: "claude:claude-sonnet-4-6" },
+      status: { type: "active", activeFlags: [] },
+      turns: [],
+      updatedAt: "2026-08-22T10:00:00.000Z"
+    };
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [{ ...project, lastUsedAt: "2026-08-22T11:00:00.000Z" }, secondProject],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    api.threads.list.mockImplementation(async ({ projectId }) => ({
+      data: projectId === secondProject.id ? [bridgeThread] : [thread],
+      nextCursor: null
+    }));
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    const borealis = screen.getByRole("button", { name: "Borealis" });
+    await waitFor(() => expect(borealis).toHaveAttribute("title", "Borealis · 1 running"));
+
+    act(() => api.emit({
+      type: "ThreadUpdated",
+      payload: { method: "thread/status/changed", projectId: secondProject.id, threadId: bridgeThread.id, status: "idle" }
+    }));
+    await waitFor(() => expect(borealis).toHaveAttribute("title", "Borealis"));
+
+    act(() => api.emit({
+      type: "ThreadUpdated",
+      payload: {
+        method: "turn/completed",
+        projectId: secondProject.id,
+        threadId: bridgeThread.id,
+        turn: {
+          id: "bridge-turn",
+          status: "completed",
+          items: [{ id: "bridge-answer", type: "agentMessage", text: "Borealis is ready.", phase: "final_answer" }]
+        }
+      }
+    }));
+    await waitFor(() => expect(borealis).toHaveAttribute("title", "Borealis · 1 finished, unseen"));
   });
 
   it("persists agent behavior packs for every Pixice agent", async () => {
@@ -3638,6 +3752,35 @@ describe("Pixice app shell", () => {
     expect(api.browser.setViewport).not.toHaveBeenCalledWith(expect.objectContaining({ visible: true }));
   });
 
+  it("hides the native browser viewport while the Workflows workspace covers Preview", async () => {
+    const api = window.pixice;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
+
+    await screen.findByRole("region", { name: "Preview workspace" });
+    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: "thread-1",
+      visible: true
+    })));
+
+    const app = document.querySelector(".pixice-app");
+    api.browser.setViewport.mockClear();
+    act(() => app.setAttribute("data-workflows-active", "true"));
+    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({
+      workspaceId: "thread-1",
+      visible: false
+    }));
+    expect(api.browser.setViewport).not.toHaveBeenCalledWith(expect.objectContaining({ visible: true }));
+
+    api.browser.setViewport.mockClear();
+    act(() => app.removeAttribute("data-workflows-active"));
+    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: "thread-1",
+      visible: true
+    })));
+  });
+
   it("resizes and resets the chat-preview split", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -3710,6 +3853,39 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refactor authentication" }));
     expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
     expect(sidebar).toHaveAttribute("data-expanded", "false");
+  });
+
+  it("opens an agent-requested external file in its thread Preview", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    act(() => window.pixice.emit({
+      type: "FilePreviewOpenRequested",
+      payload: {
+        threadId: "thread-1",
+        workspaceId: "thread-1",
+        projectId: "project-1",
+        source: "codex",
+        file: {
+          path: "/Users/me/.codex/skills/openai-docs/SKILL.md",
+          relativePath: "/Users/me/.codex/skills/openai-docs/SKILL.md",
+          folderPath: "/Users/me/.codex/skills/openai-docs",
+          name: "SKILL.md",
+          extension: ".md",
+          kind: "markdown",
+          content: "# OpenAI docs skill\n",
+          external: true,
+          editable: true,
+          size: 20,
+          mtimeMs: 1
+        }
+      }
+    }));
+
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "SKILL.md" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "OpenAI docs skill" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
   });
 
   it("keeps preview and editor state isolated per thread", async () => {

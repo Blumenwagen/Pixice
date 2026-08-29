@@ -23,6 +23,8 @@ type PixiceEvent = {
     | "WorkflowTriggersUpdated"
     | "WorkflowCredentialsUpdated"
     | "UpdateState"
+    | "TrayNavigate"
+    | "TraySettingsUpdated"
     | "UsageUpdated"
     | "CodexLimitsUpdated"
     | "ProjectDeleted";
@@ -232,7 +234,7 @@ declare global {
     pixice?: {
       app: {
         bootstrap(): Promise<{ projects: PixiceProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; category: "core" | "pixice-native"; defaultEnabled: boolean }> }>;
-        saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; defaultFastMode?: boolean; threadNamingModel?: "auto" | "off" | `codex:${string}` | `claude:${string}`; workflowGenerationModel?: "auto" | `codex:${string}` | `claude:${string}`; attentionNotifications?: boolean; completionNotifications?: boolean; notificationSound?: boolean; checkProviderUpdates?: boolean; threadCompletionsSeen?: Record<string, string | number>; agentBehaviors?: Record<string, boolean> }): Promise<any>;
+        saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; defaultFastMode?: boolean; threadNamingModel?: "auto" | "off" | `codex:${string}` | `claude:${string}`; workflowGenerationModel?: "auto" | `codex:${string}` | `claude:${string}`; attentionNotifications?: boolean; completionNotifications?: boolean; notificationSound?: boolean; keepSystemAwake?: boolean; checkProviderUpdates?: boolean; threadCompletionsSeen?: Record<string, string | number>; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };
       providers: {
@@ -320,6 +322,7 @@ declare global {
       };
       files: {
         read(payload: ProjectScope & { path: string }): Promise<any>;
+        preview(payload: ProjectScope & { path: string }): Promise<any>;
         write(payload: ProjectScope & { path: string; content: string; expectedMtimeMs?: number }): Promise<any>;
       };
       projects: {
