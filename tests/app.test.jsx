@@ -2881,6 +2881,33 @@ describe("Pixice app shell", () => {
     expect(traces[1]).toHaveTextContent("Checking the generated result");
   });
 
+  it("renders legacy Claude file changes without crashing the conversation", async () => {
+    const legacyThread = {
+      ...thread,
+      turns: [{
+        id: "turn-legacy-file-change",
+        status: "completed",
+        items: [
+          { id: "user-legacy-file-change", type: "userMessage", content: [{ type: "text", text: "Update the view" }] },
+          {
+            id: "file-legacy-file-change",
+            type: "fileChange",
+            status: "completed",
+            path: "src/App.jsx",
+            changes: { file_path: "src/App.jsx", old_string: "before", new_string: "after" }
+          },
+          { id: "final-legacy-file-change", type: "agentMessage", text: "Updated the view.", phase: "final_answer" }
+        ]
+      }]
+    };
+    window.pixice = createApi(legacyThread);
+
+    render(<App />);
+
+    expect(await screen.findByText("Updated the view.")).toBeInTheDocument();
+    expect(screen.getByText("1 file")).toBeInTheDocument();
+  });
+
   it("applies saved conversation and orchestration disclosure defaults", async () => {
     const detailedThread = {
       ...thread,

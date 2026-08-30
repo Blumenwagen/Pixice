@@ -40,6 +40,51 @@ body {
   -webkit-user-select: none;
   user-select: none;
 }
+.renderer-recovery {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 48px;
+  color: var(--foreground);
+  background: var(--chrome-glass);
+}
+.renderer-recovery-card {
+  width: min(540px, 100%);
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .3);
+}
+.renderer-recovery-kicker {
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.renderer-recovery h1 { margin: 8px 0; font-size: 24px; }
+.renderer-recovery p { margin: 0; color: var(--muted); line-height: 1.55; }
+.renderer-recovery pre {
+  max-height: 120px;
+  margin: 20px 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--red);
+  background: var(--canvas);
+  border-radius: var(--radius-sm);
+  font: 12px/1.5 "JetBrains Mono Variable", monospace;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.renderer-recovery button {
+  padding: 10px 14px;
+  color: #fff;
+  background: var(--primary);
+  border-radius: 10px;
+  cursor: pointer;
+}
 button, input, textarea, select { font: inherit; }
 button { border: 0; }
 button:focus-visible,

@@ -218,7 +218,14 @@ function toolItem(block) {
   const common = { id: block.id, status: "inProgress" };
   if (block.name === "Bash") return { ...common, type: "commandExecution", command: block.input?.command ?? "", cwd: block.input?.cwd };
   if (["Write", "Edit", "NotebookEdit"].includes(block.name)) {
-    return { ...common, type: "fileChange", path: block.input?.file_path ?? block.input?.notebook_path, changes: block.input };
+    const filePath = block.input?.file_path ?? block.input?.notebook_path;
+    return {
+      ...common,
+      type: "fileChange",
+      path: filePath,
+      changes: filePath ? [{ path: filePath }] : [],
+      arguments: block.input
+    };
   }
   if (block.name === "Agent" || block.name === "Task") {
     return { ...common, type: "collabAgentToolCall", tool: "spawnAgent", prompt: block.input?.prompt, senderThreadId: null, receiverThreadIds: [], agentsStates: {} };
@@ -285,6 +292,77 @@ function appendItem(turn, item) {
   return turn.items[index === -1 ? turn.items.length - 1 : index];
 }
 
+function contentText(content) {
+  if (typeof content === "string") return content;
+  return (content ?? []).map((block) => block?.type === "text" ? block.text ?? "" : "").join("");
+}
+
+function toolResultBlocks(message) {
+  const content = message.message?.content;
+  return (Array.isArray(content) ? content : []).filter((block) => block?.type === "tool_result");
+}
+
+function usageDelta(current = {}, previous = {}) {
+  const value = (camel, snake) => Number(current[camel] ?? current[snake] ?? 0);
+  const before = (camel, snake) => Number(previous[camel] ?? previous[snake] ?? 0);
+  return {
+    inputTokens: Math.max(0, value("inputTokens", "input_tokens") - before("inputTokens", "input_tokens")),
+    cachedInputTokens: Math.max(0, value("cacheReadInputTokens", "cache_read_input_tokens") - before("cacheReadInputTokens", "cache_read_input_tokens")),
+    cacheWriteInputTokens: Math.max(0, value("cacheCreationInputTokens", "cache_creation_input_tokens") - before("cacheCreationInputTokens", "cache_creation_input_tokens")),
+    outputTokens: Math.max(0, value("outputTokens", "output_tokens") - before("outputTokens", "output_tokens")),
+    reasoningOutputTokens: 0
+  };
+}
+
+function taskStatus(status) {
+  if (status === "completed") return "completed";
+  if (status === "failed") return "errored";
+  if (status === "stopped" || status === "killed") return "interrupted";
+  return "running";
+}
+
+const TOOL_ITEM_TYPES = new Set(["commandExecution", "fileChange", "collabAgentToolCall", "mcpToolCall", "dynamicToolCall", "contextCompaction"]);
+
+function normalizeStoredClaudeThread(thread) {
+  let changed = false;
+  const turns = (thread.turns ?? []).map((turn) => {
+    const terminal = turn.status && turn.status !== "inProgress";
+    const items = (turn.items ?? []).flatMap((original) => {
+      let item = original;
+      if (item.type === "reasoning") {
+        const text = [item.text, item.content, ...(item.summary ?? []).map((part) => part?.text)].filter((value) => typeof value === "string").join("").trim();
+        if (!text) {
+          changed = true;
+          return [];
+        }
+      }
+      if (item.type === "agentMessage" && !String(item.text ?? "").trim()) {
+        changed = true;
+        return [];
+      }
+      if (item.type === "fileChange" && !Array.isArray(item.changes)) {
+        const legacy = item.changes && typeof item.changes === "object" ? item.changes : {};
+        const filePath = legacy.path ?? legacy.filePath ?? legacy.file_path ?? legacy.notebook_path ?? item.path ?? item.filePath;
+        item = { ...item, changes: filePath ? [{ ...legacy, path: filePath }] : [] };
+        changed = true;
+      }
+      if (terminal && TOOL_ITEM_TYPES.has(item.type) && (!item.status || item.status === "inProgress")) {
+        const completed = turn.status === "completed";
+        item = {
+          ...item,
+          status: completed ? "completed" : "failed",
+          completedAt: item.completedAt ?? turn.completedAt,
+          ...(!completed && !item.failure ? { failure: { message: turn.error?.message ?? `Claude turn ${turn.status}` } } : {})
+        };
+        changed = true;
+      }
+      return [item];
+    });
+    return items === turn.items ? turn : { ...turn, items };
+  });
+  return { thread: changed ? { ...thread, turns } : thread, changed };
+}
+
 export class ClaudeProvider extends EventEmitter {
   constructor({
     database,
@@ -348,6 +426,7 @@ export class ClaudeProvider extends EventEmitter {
       }
       if (!this.queryFactory) this.queryFactory = (await import("@anthropic-ai/claude-agent-sdk")).query;
       this.started = true;
+      this.#repairStoredThreads();
       this.emit("status", { state: "ready", message: "Claude runtime available" });
       return true;
     } catch (error) {
@@ -624,6 +703,20 @@ export class ClaudeProvider extends EventEmitter {
     });
   }
 
+  #repairStoredThreads() {
+    if (!this.database.listThreadProviderBindings) return;
+    let repaired = 0;
+    for (const binding of this.database.listThreadProviderBindings({ provider: this.id })) {
+      const stored = this.database.getProviderThreadSnapshot(binding.threadId);
+      if (!stored || stored.status?.type === "active") continue;
+      const normalized = normalizeStoredClaudeThread(stored);
+      if (!normalized.changed) continue;
+      this.database.saveProviderThreadSnapshot(binding.threadId, normalized.thread);
+      repaired += 1;
+    }
+    if (repaired) this.emit("diagnostic", `Claude repaired ${repaired} stored task${repaired === 1 ? "" : "s"}.`);
+  }
+
   #closeAuthSession(expectedQuery) {
     if (!this.authSession || (expectedQuery && this.authSession.query !== expectedQuery)) return;
     this.authSession.queue.close();
@@ -679,7 +772,12 @@ export class ClaudeProvider extends EventEmitter {
       abortController: null,
       currentTurn: null,
       compactionItem: null,
-      toolItems: new Map()
+      toolItems: new Map(),
+      taskItems: new Map(),
+      streamResponses: new Map(),
+      activeResponseByLane: new Map(),
+      usageBaseline: new Map(),
+      terminalError: null
     };
     this.sessions.set(threadId, context);
     this.#persist(context);
@@ -711,6 +809,7 @@ export class ClaudeProvider extends EventEmitter {
   async #startTurn(params) {
     const context = this.#context(params.threadId);
     if (context.currentTurn) throw new Error("Claude already has an active turn in this thread");
+    if (context.query && params.effort && context.effort && params.effort !== context.effort) this.#disposeQuery(context);
     context.model = params.model || context.model;
     context.effort = params.effort || context.effort;
     context.permissionMode = params.permissionMode || context.permissionMode;
@@ -724,6 +823,11 @@ export class ClaudeProvider extends EventEmitter {
       createdAt: now()
     };
     context.currentTurn = turn;
+    context.compactionItem = null;
+    context.toolItems.clear();
+    context.streamResponses.clear();
+    context.activeResponseByLane.clear();
+    context.terminalError = null;
     context.thread.turns.push(turn);
     context.thread.preview ||= stripPreviewContextHint(message.message.content.find((part) => part.type === "text")?.text).slice(0, 180) || "Image task";
     context.thread.status = threadStatus("active");
@@ -731,10 +835,16 @@ export class ClaudeProvider extends EventEmitter {
     this.#persist(context);
     this.#emitEvent("TaskUpdated", { method: "turn/started", threadId: context.thread.id, turn });
 
-    await this.#ensureQuery(context);
-    if (context.query?.setModel && params.model) await context.query.setModel(params.model);
-    if (context.query?.setPermissionMode) await context.query.setPermissionMode(claudePermissionSettings(context.permissionMode).permissionMode);
-    context.queue.push(message);
+    try {
+      await this.#ensureQuery(context);
+      if (context.query?.setModel && params.model) await context.query.setModel(params.model);
+      if (context.query?.setPermissionMode) await context.query.setPermissionMode(claudePermissionSettings(context.permissionMode).permissionMode);
+      context.queue.push(message);
+    } catch (error) {
+      this.#completeTurn(context, "failed", error.message);
+      this.#disposeQuery(context);
+      throw error;
+    }
     return { turn };
   }
 
@@ -753,7 +863,7 @@ export class ClaudeProvider extends EventEmitter {
     const context = this.#context(threadId);
     if (context.currentTurn?.id !== turnId) return { turnId };
     await context.query?.interrupt?.();
-    this.#completeTurn(context, "interrupted");
+    this.#completeTurn(context, "interrupted", "Claude was interrupted");
     return { turnId };
   }
 
@@ -786,6 +896,7 @@ export class ClaudeProvider extends EventEmitter {
     });
     options.abortController = context.abortController;
     const query = this.queryFactory({ prompt: context.queue, options });
+    context.usageBaseline.clear();
     context.query = query;
     context.runner = this.#consume(context, query).catch((error) => {
       if (context.query === query) this.#handleQueryError(context, error);
@@ -800,6 +911,9 @@ export class ClaudeProvider extends EventEmitter {
     context.queue = null;
     context.runner = null;
     context.abortController = null;
+    context.usageBaseline.clear();
+    context.streamResponses.clear();
+    context.activeResponseByLane.clear();
   }
 
   async #consume(context, query) {
@@ -820,21 +934,22 @@ export class ClaudeProvider extends EventEmitter {
       this.#persist(context);
       return;
     }
+    if (message.type === "system" && ["task_started", "task_progress", "task_updated", "task_notification"].includes(message.subtype)) {
+      this.#handleTaskEvent(context, message);
+      return;
+    }
     if (!context.currentTurn) return;
     if (message.type === "system" && message.subtype === "status") this.#handleStatus(context, message);
     else if (message.type === "stream_event") this.#handleStreamEvent(context, message);
     else if (message.type === "assistant") this.#handleAssistant(context, message);
+    else if (message.type === "user") this.#handleToolResults(context, message);
     else if (message.type === "tool_progress") this.#handleToolProgress(context, message);
+    else if (message.type === "tool_use_summary") this.#handleToolSummary(context, message);
     else if (message.type === "result") this.#handleResult(context, message);
-    else if (message.type === "system" && message.subtype === "permission_denied") {
-      this.#emitEvent("ActivityReceived", {
-        method: "item/tool/permissionDenied",
-        threadId: context.thread.id,
-        turnId: context.currentTurn.id,
-        toolName: message.tool_name,
-        message: message.message
-      });
-    }
+    else if (message.type === "system" && message.subtype === "permission_denied") this.#handlePermissionDenied(context, message);
+    else if (message.type === "system" && message.subtype === "api_retry") this.#handleApiRetry(context, message);
+    else if (message.type === "system" && message.subtype === "model_refusal_fallback") this.#handleRefusalFallback(context, message);
+    else if (message.type === "system" && message.subtype === "model_refusal_no_fallback") this.#handleRefusalFailure(context, message);
   }
 
   #handleStatus(context, message) {
@@ -882,43 +997,84 @@ export class ClaudeProvider extends EventEmitter {
 
   #handleStreamEvent(context, message) {
     const event = message.event;
-    if (event?.type !== "content_block_delta") return;
+    const lane = message.parent_tool_use_id || "root";
+    if (event?.type === "message_start") {
+      const responseId = event.message?.id ?? message.uuid;
+      context.activeResponseByLane.set(lane, responseId);
+      if (!context.streamResponses.has(responseId)) context.streamResponses.set(responseId, { blocks: new Map(), nextIndex: 0 });
+      return;
+    }
+    if (lane !== "root") return;
+    if (!["content_block_start", "content_block_delta", "content_block_stop"].includes(event?.type)) return;
     const turn = context.currentTurn;
-    const itemId = `claude-message:${message.uuid}`;
-    if (event.delta?.type === "text_delta") {
+    const responseId = context.activeResponseByLane.get(lane) ?? message.uuid;
+    const response = context.streamResponses.get(responseId) ?? { blocks: new Map(), nextIndex: 0 };
+    context.streamResponses.set(responseId, response);
+    const index = Number.isInteger(event.index) ? event.index : 0;
+    response.nextIndex = Math.max(response.nextIndex, index + 1);
+    const blockType = event.content_block?.type ?? (event.delta?.type === "thinking_delta" ? "thinking" : event.delta?.type === "text_delta" ? "text" : null);
+    if (blockType) response.blocks.set(index, { ...(response.blocks.get(index) ?? {}), type: blockType });
+    if (event.delta?.type === "text_delta" && event.delta.text) {
+      const itemId = `claude-message:${responseId}:${index}`;
       const item = turn.items.find((candidate) => candidate.id === itemId)
-        ?? appendItem(turn, { id: itemId, type: "agentMessage", text: "", phase: "commentary" });
-      item.text += event.delta.text ?? "";
+        ?? appendItem(turn, { id: itemId, type: "agentMessage", text: "", phase: "commentary", sourceUuid: message.uuid });
+      item.text += event.delta.text;
       this.#emitEvent("TaskUpdated", {
         method: "item/agentMessage/delta",
         threadId: context.thread.id,
         turnId: turn.id,
         itemId,
-        delta: event.delta.text ?? ""
+        delta: event.delta.text
       });
     }
-    if (event.delta?.type === "thinking_delta") {
-      const reasoningId = `claude-reasoning:${message.uuid}`;
+    if (event.delta?.type === "thinking_delta" && event.delta.thinking) {
+      const reasoningId = `claude-reasoning:${responseId}:${index}`;
       const existing = turn.items.find((candidate) => candidate.id === reasoningId)
-        ?? appendItem(turn, { id: reasoningId, type: "reasoning", summary: [] });
+        ?? appendItem(turn, { id: reasoningId, type: "reasoning", summary: [], sourceUuid: message.uuid });
       existing.summary = [{ type: "summary_text", text: `${existing.summary?.[0]?.text ?? ""}${event.delta.thinking ?? ""}` }];
+      this.#emitEvent("TaskUpdated", { method: "item/started", threadId: context.thread.id, turnId: turn.id, item: existing });
     }
     this.#persist(context, { deferred: true });
   }
 
   #handleAssistant(context, message) {
-    const turn = context.currentTurn;
-    const text = (message.message?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("");
-    if (text) {
-      const id = `claude-message:${message.uuid}`;
-      const item = appendItem(turn, { id, type: "agentMessage", text, phase: "commentary" });
-      this.#emitEvent("TaskUpdated", { method: "item/completed", threadId: context.thread.id, turnId: turn.id, item });
+    this.#evictSuperseded(context, message.supersedes);
+    if (message.error) context.terminalError = `Claude assistant error: ${message.error}`;
+    if (message.parent_tool_use_id) {
+      const record = context.toolItems.get(message.parent_tool_use_id);
+      if (record) {
+        record.item.latestMessage = contentText(message.message?.content) || record.item.latestMessage;
+        this.#emitEvent("AgentUpdated", { method: "item/started", threadId: context.thread.id, turnId: record.turnId, item: record.item });
+      }
+      return;
     }
+    const turn = context.currentTurn;
+    const responseId = message.message?.id ?? context.activeResponseByLane.get("root") ?? message.uuid;
+    const response = context.streamResponses.get(responseId) ?? { blocks: new Map(), nextIndex: 0 };
+    context.streamResponses.set(responseId, response);
     for (const block of message.message?.content ?? []) {
+      if (block.type === "text" && block.text) {
+        const match = [...response.blocks].find(([, meta]) => meta.type === "text" && !meta.completed);
+        const index = match?.[0] ?? response.nextIndex++;
+        response.blocks.set(index, { type: "text", completed: true });
+        const id = `claude-message:${responseId}:${index}`;
+        const item = appendItem(turn, { id, type: "agentMessage", text: block.text, phase: "commentary", sourceUuid: message.uuid });
+        this.#emitEvent("TaskUpdated", { method: "item/completed", threadId: context.thread.id, turnId: turn.id, item });
+        continue;
+      }
+      if (block.type === "thinking" && block.thinking) {
+        const match = [...response.blocks].find(([, meta]) => meta.type === "thinking" && !meta.completed);
+        const index = match?.[0] ?? response.nextIndex++;
+        response.blocks.set(index, { type: "thinking", completed: true });
+        const item = appendItem(turn, { id: `claude-reasoning:${responseId}:${index}`, type: "reasoning", summary: [{ type: "summary_text", text: block.thinking }], sourceUuid: message.uuid });
+        this.#emitEvent("TaskUpdated", { method: "item/completed", threadId: context.thread.id, turnId: turn.id, item });
+        continue;
+      }
       if (block.type !== "tool_use") continue;
       const item = toolItem(block);
       item.senderThreadId ||= context.thread.id;
-      context.toolItems.set(block.id, item);
+      item.sourceUuid = message.uuid;
+      context.toolItems.set(block.id, { item, turnId: turn.id });
       appendItem(turn, item);
       this.#emitEvent(item.type === "collabAgentToolCall" ? "AgentUpdated" : "TaskUpdated", {
         method: "item/started",
@@ -931,42 +1087,226 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   #handleToolProgress(context, message) {
-    const item = context.toolItems.get(message.tool_use_id);
-    if (!item) return;
+    const record = context.toolItems.get(message.tool_use_id);
+    if (!record) return;
+    const item = record.item;
     item.elapsedTimeMs = message.elapsed_time_seconds ? Math.round(message.elapsed_time_seconds * 1000) : item.elapsedTimeMs;
-    this.#emitEvent("ActivityReceived", {
+    this.#emitEvent(item.type === "collabAgentToolCall" ? "AgentUpdated" : "TaskUpdated", {
       method: "item/tool/progress",
       threadId: context.thread.id,
-      turnId: context.currentTurn.id,
+      turnId: record.turnId,
       item
     });
+    this.#persist(context, { deferred: true });
+  }
+
+  #handleToolResults(context, message) {
+    for (const block of toolResultBlocks(message)) {
+      const record = context.toolItems.get(block.tool_use_id);
+      if (!record) continue;
+      const item = record.item;
+      const result = message.tool_use_result;
+      const failed = block.is_error === true || result?.status === "failed" || result?.status === "error" || result?.interrupted === true;
+      item.status = failed ? "failed" : result?.backgroundTaskId ? "inProgress" : "completed";
+      item.result = result ?? contentText(block.content);
+      if (item.type === "commandExecution") {
+        item.aggregatedOutput = [result?.stdout, result?.stderr].filter(Boolean).join("\n") || contentText(block.content);
+      } else if (item.type === "fileChange") {
+        item.path = result?.filePath ?? item.path;
+        item.changes = result?.structuredPatch?.length
+          ? [{ path: item.path, patch: result.structuredPatch }]
+          : item.path ? [{ path: item.path }] : [];
+      } else if (item.type === "collabAgentToolCall" && result?.agentId) {
+        item.receiverThreadIds = [...new Set([...(item.receiverThreadIds ?? []), result.agentId])];
+        item.agentsStates = { ...(item.agentsStates ?? {}), [result.agentId]: { status: taskStatus(result.status), message: contentText(result.content) } };
+      }
+      if (result?.backgroundTaskId) context.taskItems.set(result.backgroundTaskId, record);
+      if (failed) item.failure = { message: contentText(block.content) || result?.error || "Claude tool execution failed" };
+      if (item.status !== "inProgress") item.completedAt = now();
+      this.#emitEvent(item.type === "collabAgentToolCall" ? "AgentUpdated" : "TaskUpdated", {
+        method: item.status === "inProgress" ? "item/started" : "item/completed",
+        threadId: context.thread.id,
+        turnId: record.turnId,
+        item
+      });
+      if (item.status !== "inProgress") context.toolItems.delete(block.tool_use_id);
+    }
+    this.#persist(context);
+  }
+
+  #handleToolSummary(context, message) {
+    for (const toolUseId of message.preceding_tool_use_ids ?? []) {
+      const record = context.toolItems.get(toolUseId);
+      if (!record) continue;
+      record.item.summary = message.summary;
+      this.#emitEvent(record.item.type === "collabAgentToolCall" ? "AgentUpdated" : "TaskUpdated", {
+        method: "item/started",
+        threadId: context.thread.id,
+        turnId: record.turnId,
+        item: record.item
+      });
+    }
+    this.#persist(context, { deferred: true });
+  }
+
+  #handlePermissionDenied(context, message) {
+    const record = context.toolItems.get(message.tool_use_id);
+    if (record) {
+      record.item.status = "failed";
+      record.item.completedAt = now();
+      record.item.failure = { message: message.message || message.decision_reason || "Claude tool permission was denied" };
+      this.#emitEvent(record.item.type === "collabAgentToolCall" ? "AgentUpdated" : "TaskUpdated", {
+        method: "item/completed",
+        threadId: context.thread.id,
+        turnId: record.turnId,
+        item: record.item
+      });
+      context.toolItems.delete(message.tool_use_id);
+      this.#persist(context);
+    }
+    this.#emitEvent("ActivityReceived", {
+      method: "item/tool/permissionDenied",
+      threadId: context.thread.id,
+      turnId: context.currentTurn.id,
+      toolName: message.tool_name,
+      toolUseId: message.tool_use_id,
+      message: message.message
+    });
+  }
+
+  #handleTaskEvent(context, message) {
+    let record = message.tool_use_id ? context.toolItems.get(message.tool_use_id) : null;
+    if (!record && message.task_id) record = context.taskItems.get(message.task_id);
+    if (!record && context.currentTurn && !message.skip_transcript) {
+      const item = {
+        id: message.tool_use_id ?? `claude-task:${message.task_id}`,
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        prompt: message.prompt ?? message.description,
+        senderThreadId: context.thread.id,
+        receiverThreadIds: [],
+        agentsStates: {},
+        status: "inProgress"
+      };
+      appendItem(context.currentTurn, item);
+      record = { item, turnId: context.currentTurn.id };
+      if (message.tool_use_id) context.toolItems.set(message.tool_use_id, record);
+    }
+    if (!record) return;
+    const item = record.item;
+    if (message.task_id && item.type === "collabAgentToolCall") {
+      context.taskItems.set(message.task_id, record);
+      item.receiverThreadIds = [...new Set([...(item.receiverThreadIds ?? []), message.task_id])];
+      const status = message.subtype === "task_notification" ? taskStatus(message.status) : taskStatus(message.patch?.status);
+      item.agentsStates = {
+        ...(item.agentsStates ?? {}),
+        [message.task_id]: {
+          ...(item.agentsStates?.[message.task_id] ?? {}),
+          status,
+          message: message.summary ?? message.description ?? message.patch?.error ?? item.agentsStates?.[message.task_id]?.message,
+          subagentType: message.subagent_type
+        }
+      };
+    }
+    if (message.task_id && item.type !== "collabAgentToolCall") item.taskId = message.task_id;
+    if (message.description) item.description = message.description;
+    if (message.summary) item.summary = message.summary;
+    if (message.usage) item.usage = message.usage;
+    if (message.subtype === "task_notification") {
+      item.status = message.status === "completed" ? "completed" : "failed";
+      item.completedAt = now();
+      if (message.status !== "completed") item.failure = { message: message.summary || `Claude task ${message.status}` };
+      context.taskItems.delete(message.task_id);
+      if (message.tool_use_id) context.toolItems.delete(message.tool_use_id);
+    }
+    this.#emitEvent(item.type === "collabAgentToolCall" ? "AgentUpdated" : "TaskUpdated", {
+      method: message.subtype === "task_notification" ? "item/completed" : "item/started",
+      threadId: context.thread.id,
+      turnId: record.turnId,
+      item
+    });
+    this.#persist(context);
+  }
+
+  #handleApiRetry(context, message) {
+    const item = appendItem(context.currentTurn, {
+      id: `claude-api-retry:${context.currentTurn.id}`,
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: `Claude request failed (${message.error}); retrying ${message.attempt}/${message.max_retries}.` }]
+    });
+    this.#emitEvent("TaskUpdated", { method: "item/started", threadId: context.thread.id, turnId: context.currentTurn.id, item });
+    this.#persist(context);
+  }
+
+  #handleRefusalFallback(context, message) {
+    this.#evictSuperseded(context, message.retracted_message_uuids);
+    const item = appendItem(context.currentTurn, {
+      id: `claude-refusal-fallback:${message.uuid}`,
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: message.content || `Claude switched from ${message.original_model} to ${message.fallback_model}.` }]
+    });
+    this.#emitEvent("TaskUpdated", { method: "item/completed", threadId: context.thread.id, turnId: context.currentTurn.id, item });
+    this.#persist(context);
+  }
+
+  #handleRefusalFailure(context, message) {
+    context.terminalError = message.content || message.api_refusal_explanation || "Claude refused the request and no fallback model was available.";
+  }
+
+  #evictSuperseded(context, uuids = []) {
+    if (!uuids?.length || !context.currentTurn) return;
+    const removed = context.currentTurn.items.filter((item) => uuids.includes(item.sourceUuid));
+    context.currentTurn.items = context.currentTurn.items.filter((item) => !uuids.includes(item.sourceUuid));
+    for (const item of removed) {
+      context.toolItems.delete(item.id);
+      this.#emitEvent("TaskUpdated", { method: "item/removed", threadId: context.thread.id, turnId: context.currentTurn.id, itemId: item.id });
+    }
+  }
+
+  #finishPendingTools(context, status, error) {
+    for (const [toolUseId, record] of context.toolItems) {
+      if ([...context.taskItems.values()].includes(record)) continue;
+      record.item.status = status === "completed" ? "completed" : "failed";
+      record.item.completedAt = now();
+      if (status !== "completed") record.item.failure = { message: error || `Claude turn ${status}` };
+      this.#emitEvent(record.item.type === "collabAgentToolCall" ? "AgentUpdated" : "TaskUpdated", {
+        method: "item/completed",
+        threadId: context.thread.id,
+        turnId: record.turnId,
+        item: record.item
+      });
+      context.toolItems.delete(toolUseId);
+    }
   }
 
   #handleResult(context, message) {
     const turn = context.currentTurn;
-    if (context.compactionItem) this.#finishCompaction(context, message.is_error, message.errors?.join("\n"));
+    const error = message.errors?.join("\n") || (message.is_error ? message.result : null) || context.terminalError || null;
+    if (context.compactionItem) this.#finishCompaction(context, message.is_error, error);
     const modelUsage = message.modelUsage ?? message.model_usage ?? {};
     const usageEntries = Object.entries(modelUsage);
     if (usageEntries.length) {
       for (const [model, usage] of usageEntries) {
+        const previous = context.usageBaseline.get(model) ?? {};
+        const delta = usageDelta(usage, previous);
+        const costUsd = Math.max(0, Number(usage.costUSD ?? 0) - Number(previous.costUSD ?? 0));
+        context.usageBaseline.set(model, { ...usage });
+        if (!Object.values(delta).some(Boolean) && !costUsd) continue;
         this.#emitEvent("ActivityReceived", {
           method: "provider/usage/recorded",
           threadId: context.thread.id,
           turnId: turn.id,
-          responseId: `${message.uuid}:${model}`,
+          responseId: `${message.uuid}:${model}:delta`,
           model,
-          usage: {
-            inputTokens: usage.inputTokens ?? 0,
-            cachedInputTokens: usage.cacheReadInputTokens ?? 0,
-            cacheWriteInputTokens: usage.cacheCreationInputTokens ?? 0,
-            outputTokens: usage.outputTokens ?? 0,
-            reasoningOutputTokens: 0
-          },
-          costUsd: usage.costUSD,
+          usage: delta,
+          costUsd,
           costSource: "provider-reported"
         });
       }
     } else if (message.usage) {
+      const previousCost = Number(context.usageBaseline.get("__total_cost__") ?? 0);
+      const totalCost = Number(message.total_cost_usd ?? 0);
+      context.usageBaseline.set("__total_cost__", totalCost);
       this.#emitEvent("ActivityReceived", {
         method: "provider/usage/recorded",
         threadId: context.thread.id,
@@ -980,36 +1320,32 @@ export class ClaudeProvider extends EventEmitter {
           outputTokens: message.usage.output_tokens ?? 0,
           reasoningOutputTokens: 0
         },
-        costUsd: message.total_cost_usd,
+        costUsd: Math.max(0, totalCost - previousCost),
         costSource: "provider-reported"
       });
     }
-    for (const item of context.toolItems.values()) {
-      item.status = message.is_error ? "failed" : "completed";
-      this.#emitEvent(item.type === "collabAgentToolCall" ? "AgentUpdated" : "TaskUpdated", {
-        method: "item/completed",
-        threadId: context.thread.id,
-        turnId: turn.id,
-        item
-      });
-    }
-    context.toolItems.clear();
+    for (const denial of message.permission_denials ?? []) this.#handlePermissionDenied(context, { ...denial, message: `Permission denied for ${denial.tool_name}` });
+    this.#finishPendingTools(context, message.is_error ? "failed" : "completed", error);
     const agentItems = turn.items.filter((item) => item.type === "agentMessage");
-    const finalItem = agentItems.at(-1);
+    const resultText = String(message.result ?? "").trim();
+    const finalItem = !message.is_error && resultText
+      ? [...agentItems].reverse().find((item) => item.text?.trim() === resultText)
+      : !message.is_error ? agentItems.at(-1) : null;
     if (finalItem) {
       finalItem.phase = "final_answer";
       this.#emitEvent("TaskUpdated", { method: "item/completed", threadId: context.thread.id, turnId: turn.id, item: finalItem });
-    } else if (message.subtype === "success" && message.result) {
-      const item = { id: `claude-result:${message.uuid}`, type: "agentMessage", text: message.result, phase: "final_answer" };
+    } else if (resultText || error) {
+      const item = { id: `claude-result:${message.uuid}`, type: "agentMessage", text: resultText || error, phase: "final_answer", ...(message.is_error ? { error: true } : {}) };
       appendItem(turn, item);
       this.#emitEvent("TaskUpdated", { method: "item/completed", threadId: context.thread.id, turnId: turn.id, item });
     }
-    this.#completeTurn(context, message.is_error ? "failed" : "completed", message.errors?.join("\n"));
+    this.#completeTurn(context, message.is_error ? "failed" : "completed", error);
   }
 
   #completeTurn(context, status, error) {
     const turn = context.currentTurn;
     if (!turn) return;
+    this.#finishPendingTools(context, status, error);
     if (context.compactionItem) this.#finishCompaction(context, status !== "completed", error);
     turn.status = status;
     turn.completedAt = now();
@@ -1017,6 +1353,9 @@ export class ClaudeProvider extends EventEmitter {
     context.thread.status = threadStatus("idle");
     context.thread.updatedAt = now();
     context.currentTurn = null;
+    context.streamResponses.clear();
+    context.activeResponseByLane.clear();
+    context.terminalError = null;
     this.#persist(context);
     this.#emitEvent("TaskUpdated", { method: "turn/completed", threadId: context.thread.id, turn });
     if (context.refreshInstructionsAfterTurn) {
@@ -1298,7 +1637,12 @@ export class ClaudeProvider extends EventEmitter {
       abortController: null,
       currentTurn: null,
       compactionItem: null,
-      toolItems: new Map()
+      toolItems: new Map(),
+      taskItems: new Map(),
+      streamResponses: new Map(),
+      activeResponseByLane: new Map(),
+      usageBaseline: new Map(),
+      terminalError: null
     };
     this.sessions.set(threadId, context);
     return context;

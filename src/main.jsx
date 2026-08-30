@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.jsx";
 import { WorkflowHost } from "./components/workflows/WorkflowHost.jsx";
 import { TaskPreviewHost } from "./components/TaskPreviewHost.jsx";
+import { RendererErrorBoundary } from "./components/RendererErrorBoundary.jsx";
 import "./styles.css";
 import "./components/workflows/WorkflowHost.css";
 
@@ -22,10 +23,12 @@ if (import.meta.env.DEV && (previewParameters.has("task-progress-preview") || pr
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <WorkflowHost>
-      <TaskPreviewHost>
-        <App />
-      </TaskPreviewHost>
-    </WorkflowHost>
+    <RendererErrorBoundary>
+      <WorkflowHost>
+        <TaskPreviewHost>
+          <App />
+        </TaskPreviewHost>
+      </WorkflowHost>
+    </RendererErrorBoundary>
   </React.StrictMode>,
 );

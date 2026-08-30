@@ -388,6 +388,15 @@ export function applyRuntimePayload(thread, payload) {
     };
     return updateTurn(thread, payload.turnId, (turn) => upsertItem(turn, item));
   }
+  if (method === "item/tool/progress" && payload.item) {
+    return updateTurn(thread, payload.turnId, (turn) => upsertItem(turn, payload.item));
+  }
+  if (method === "item/removed" && payload.itemId) {
+    return updateTurn(thread, payload.turnId, (turn) => ({
+      ...turn,
+      items: (turn.items ?? []).filter((item) => item.id !== payload.itemId)
+    }));
+  }
   if (method === "item/agentMessage/delta" && payload.itemId) {
     return updateTurn(thread, payload.turnId, (turn) => {
       const existing = (turn.items ?? []).find((item) => item.id === payload.itemId);

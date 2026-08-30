@@ -84,6 +84,32 @@ describe("Claude provider", () => {
     database.db.close();
   });
 
+  it("repairs legacy Claude snapshots without touching active work", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-snapshot-repair-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const threadId = "legacy-thread";
+    database.saveThreadProviderBinding({ threadId, provider: "claude", providerThreadId: "session", resumeCursor: "session", cwd: directory });
+    database.saveProviderThreadSnapshot(threadId, {
+      id: threadId,
+      cwd: directory,
+      status: { type: "idle" },
+      turns: [{ id: "turn", status: "completed", completedAt: "2026-08-30T12:00:00.000Z", items: [
+        { id: "empty-thought", type: "reasoning", summary: [] },
+        { id: "empty-message", type: "agentMessage", text: "" },
+        { id: "legacy-edit", type: "fileChange", path: "src/App.jsx", changes: { file_path: "src/App.jsx", content: "new" }, status: "inProgress" }
+      ] }]
+    });
+    const provider = new ClaudeProvider({ database, queryFactory: vi.fn() });
+    await provider.start();
+
+    expect(database.getProviderThreadSnapshot(threadId).turns[0].items).toEqual([
+      expect.objectContaining({ id: "legacy-edit", status: "completed", changes: [expect.objectContaining({ path: "src/App.jsx" })] })
+    ]);
+    await provider.stop();
+    database.db.close();
+  });
+
   it("maps Pixice permissions to the same Claude Code modes used by T3", () => {
     expect(claudePermissionSettings("workspace-write").permissionMode).toBe("acceptEdits");
     expect(claudePermissionSettings("auto-approve").permissionMode).toBe("auto");
@@ -387,7 +413,10 @@ describe("Claude provider", () => {
       type: "assistant",
       session_id: thread.providerThreadId,
       uuid: "assistant-1",
-      message: { content: [{ type: "text", text: "Done" }] }
+      message: { content: [
+        { type: "text", text: "Done" },
+        { type: "tool_use", id: "write-1", name: "Write", input: { file_path: "src/App.jsx", content: "updated" } }
+      ] }
     });
     output.push({
       type: "result",
@@ -410,6 +439,12 @@ describe("Claude provider", () => {
     expect((await provider.request("thread/read", { threadId: thread.id })).thread.turns[0].items)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ type: "contextCompaction", status: "completed" }),
+        expect.objectContaining({
+          type: "fileChange",
+          path: "src/App.jsx",
+          changes: [{ path: "src/App.jsx" }],
+          arguments: { file_path: "src/App.jsx", content: "updated" }
+        }),
         expect.objectContaining({ type: "agentMessage", text: "Done", phase: "final_answer" })
       ]));
 
@@ -574,6 +609,203 @@ describe("Claude provider", () => {
     await expect(queryArguments.options.canUseTool("mcp__pixice_bridge__spawn_thread", {}, {})).resolves.toMatchObject({ behavior: "deny" });
     expect(database.getThreadProviderBinding(thread.id)).toBeNull();
 
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("coalesces real Claude block streams by API response id without empty reasoning or duplicate messages", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-real-stream-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    const provider = new ClaudeProvider({
+      database,
+      queryFactory: () => ({ [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](), close: vi.fn() })
+    });
+    await provider.start();
+    const { thread } = await provider.request("thread/start", { cwd: directory, model: "sonnet" });
+    await provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "Think and answer" }], model: "sonnet" });
+
+    output.push({ type: "stream_event", session_id: thread.providerThreadId, uuid: "partial-start", parent_tool_use_id: null, event: { type: "message_start", message: { id: "msg-api-1" } } });
+    output.push({ type: "stream_event", session_id: thread.providerThreadId, uuid: "partial-thinking", parent_tool_use_id: null, event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Carefully" } } });
+    output.push({ type: "assistant", session_id: thread.providerThreadId, uuid: "completed-thinking", parent_tool_use_id: null, message: { id: "msg-api-1", content: [{ type: "thinking", thinking: "Carefully" }] } });
+    output.push({ type: "stream_event", session_id: thread.providerThreadId, uuid: "partial-text", parent_tool_use_id: null, event: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Final answer" } } });
+    output.push({ type: "assistant", session_id: thread.providerThreadId, uuid: "completed-text", parent_tool_use_id: null, message: { id: "msg-api-1", content: [{ type: "text", text: "Final answer" }] } });
+    output.push({ type: "result", subtype: "success", session_id: thread.providerThreadId, uuid: "result", is_error: false, result: "Final answer", modelUsage: {} });
+    await tick();
+
+    const items = (await provider.request("thread/read", { threadId: thread.id })).thread.turns[0].items;
+    expect(items.filter((item) => item.type === "agentMessage")).toEqual([
+      expect.objectContaining({ id: "claude-message:msg-api-1:1", text: "Final answer", phase: "final_answer" })
+    ]);
+    expect(items.filter((item) => item.type === "reasoning")).toEqual([
+      expect.objectContaining({ id: "claude-reasoning:msg-api-1:0", summary: [{ type: "summary_text", text: "Carefully" }] })
+    ]);
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("uses structured tool results and denial events as the authority for tool status", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-tool-results-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    const provider = new ClaudeProvider({
+      database,
+      queryFactory: () => ({ [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](), close: vi.fn() })
+    });
+    await provider.start();
+    const { thread } = await provider.request("thread/start", { cwd: directory });
+    await provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "Run tools" }] });
+
+    output.push({ type: "assistant", session_id: thread.providerThreadId, uuid: "tools", parent_tool_use_id: null, message: { id: "tools-response", content: [
+      { type: "tool_use", id: "bash-ok", name: "Bash", input: { command: "printf ok" } },
+      { type: "tool_use", id: "edit-ok", name: "Edit", input: { file_path: "src/a.js", old_string: "a", new_string: "b" } },
+      { type: "tool_use", id: "bash-denied", name: "Bash", input: { command: "unsafe" } }
+    ] } });
+    output.push({ type: "user", session_id: thread.providerThreadId, uuid: "bash-result", parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id: "bash-ok", content: "ok" }] }, tool_use_result: { stdout: "ok", stderr: "", interrupted: false } });
+    output.push({ type: "user", session_id: thread.providerThreadId, uuid: "edit-result", parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id: "edit-ok", content: "edited" }] }, tool_use_result: { filePath: "src/a.js", structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-a", "+b"] }] } });
+    output.push({ type: "system", subtype: "permission_denied", session_id: thread.providerThreadId, uuid: "denied", tool_use_id: "bash-denied", tool_name: "Bash", message: "Blocked by policy" });
+    output.push({ type: "result", subtype: "success", session_id: thread.providerThreadId, uuid: "result", is_error: false, result: "Tools handled", modelUsage: {} });
+    await tick();
+
+    const items = (await provider.request("thread/read", { threadId: thread.id })).thread.turns[0].items;
+    expect(items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "bash-ok", status: "completed", aggregatedOutput: "ok" }),
+      expect.objectContaining({ id: "edit-ok", status: "completed", path: "src/a.js", changes: [expect.objectContaining({ path: "src/a.js", patch: expect.any(Array) })] }),
+      expect.objectContaining({ id: "bash-denied", status: "failed", failure: { message: "Blocked by policy" } }),
+      expect.objectContaining({ type: "agentMessage", text: "Tools handled", phase: "final_answer" })
+    ]));
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("records only cumulative usage deltas and recreates the query when effort changes", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-usage-delta-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const outputs = [];
+    const queries = [];
+    const provider = new ClaudeProvider({
+      database,
+      queryFactory: ({ options }) => {
+        const output = new AsyncPromptQueue();
+        outputs.push(output);
+        const query = { options, [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](), close: vi.fn() };
+        queries.push(query);
+        return query;
+      }
+    });
+    const events = [];
+    provider.on("event", (event) => events.push(event));
+    await provider.start();
+    const { thread } = await provider.request("thread/start", { cwd: directory, model: "sonnet" });
+    await provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "One" }], effort: "high" });
+    outputs[0].push({ type: "result", subtype: "success", session_id: thread.providerThreadId, uuid: "r1", is_error: false, result: "One", modelUsage: { sonnet: { inputTokens: 10, outputTokens: 5, costUSD: 0.01 } } });
+    await tick();
+    await provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "Two" }], effort: "high" });
+    expect(queries).toHaveLength(1);
+    outputs[0].push({ type: "result", subtype: "success", session_id: thread.providerThreadId, uuid: "r2", is_error: false, result: "Two", modelUsage: { sonnet: { inputTokens: 15, outputTokens: 8, costUSD: 0.016 } } });
+    await tick();
+    await provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "Three" }], effort: "low" });
+    expect(queries).toHaveLength(2);
+    expect(queries[0].close).toHaveBeenCalled();
+    expect(queries.map((query) => query.options.effort)).toEqual(["high", "low"]);
+    outputs[1].push({ type: "result", subtype: "success", session_id: thread.providerThreadId, uuid: "r3", is_error: false, result: "Three", modelUsage: { sonnet: { inputTokens: 3, outputTokens: 2, costUSD: 0.004 } } });
+    await tick();
+
+    const usage = events.filter((event) => event.payload.method === "provider/usage/recorded").map((event) => event.payload);
+    expect(usage.map((event) => event.usage)).toEqual([
+      expect.objectContaining({ inputTokens: 10, outputTokens: 5 }),
+      expect.objectContaining({ inputTokens: 5, outputTokens: 3 }),
+      expect.objectContaining({ inputTokens: 3, outputTokens: 2 })
+    ]);
+    expect(usage.map((event) => Number(event.costUsd.toFixed(3)))).toEqual([0.01, 0.006, 0.004]);
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("fails pending tools on interruption and never carries them into the next turn", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-interrupt-tools-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    const query = { [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](), interrupt: vi.fn(), close: vi.fn() };
+    const provider = new ClaudeProvider({ database, queryFactory: () => query });
+    await provider.start();
+    const { thread } = await provider.request("thread/start", { cwd: directory });
+    const { turn } = await provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "Long command" }] });
+    output.push({ type: "assistant", session_id: thread.providerThreadId, uuid: "tool", parent_tool_use_id: null, message: { id: "response", content: [{ type: "tool_use", id: "stale", name: "Bash", input: { command: "sleep" } }] } });
+    await tick();
+    await provider.request("turn/interrupt", { threadId: thread.id, turnId: turn.id });
+    await provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "Next" }] });
+    output.push({ type: "result", subtype: "success", session_id: thread.providerThreadId, uuid: "next-result", is_error: false, result: "Next", modelUsage: {} });
+    await tick();
+
+    const turns = (await provider.request("thread/read", { threadId: thread.id })).thread.turns;
+    expect(turns[0]).toMatchObject({ status: "interrupted", items: expect.arrayContaining([expect.objectContaining({ id: "stale", status: "failed" })]) });
+    expect(turns[1].items.some((item) => item.id === "stale")).toBe(false);
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("routes Claude task lifecycle events and retracts refusal output without leaking subagent text", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-task-events-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    const provider = new ClaudeProvider({ database, queryFactory: () => ({ [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](), close: vi.fn() }) });
+    await provider.start();
+    const { thread } = await provider.request("thread/start", { cwd: directory });
+    await provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "Delegate" }] });
+
+    output.push({ type: "assistant", session_id: thread.providerThreadId, uuid: "refused-frame", parent_tool_use_id: null, message: { id: "refused-response", content: [{ type: "text", text: "Refused partial" }] } });
+    output.push({ type: "system", subtype: "model_refusal_fallback", session_id: thread.providerThreadId, uuid: "fallback", original_model: "opus", fallback_model: "sonnet", content: "Retrying with Sonnet", retracted_message_uuids: ["refused-frame"] });
+    output.push({ type: "system", subtype: "api_retry", session_id: thread.providerThreadId, uuid: "retry", attempt: 1, max_retries: 3, error: "overloaded", retry_delay_ms: 10, error_status: 529 });
+    output.push({ type: "assistant", session_id: thread.providerThreadId, uuid: "agent-tool", parent_tool_use_id: null, message: { id: "agent-response", content: [{ type: "tool_use", id: "agent-use", name: "Agent", input: { prompt: "Investigate" } }] } });
+    output.push({ type: "system", subtype: "task_started", session_id: thread.providerThreadId, uuid: "task-start", task_id: "agent-42", tool_use_id: "agent-use", description: "Investigating", subagent_type: "Explore" });
+    output.push({ type: "assistant", session_id: thread.providerThreadId, uuid: "subagent-text", parent_tool_use_id: "agent-use", message: { id: "sub-response", content: [{ type: "text", text: "private subagent transcript" }] } });
+    output.push({ type: "system", subtype: "task_progress", session_id: thread.providerThreadId, uuid: "task-progress", task_id: "agent-42", tool_use_id: "agent-use", description: "Reading files", summary: "Found the handler", usage: { total_tokens: 20, tool_uses: 2, duration_ms: 50 } });
+    output.push({ type: "tool_use_summary", session_id: thread.providerThreadId, uuid: "summary", summary: "Investigation complete", preceding_tool_use_ids: ["agent-use"] });
+    output.push({ type: "result", subtype: "success", session_id: thread.providerThreadId, uuid: "result", is_error: false, result: "Delegated", modelUsage: {} });
+    await tick();
+    output.push({ type: "system", subtype: "task_notification", session_id: thread.providerThreadId, uuid: "task-end", task_id: "agent-42", tool_use_id: "agent-use", status: "completed", summary: "All done", output_file: "/tmp/result" });
+    await tick();
+
+    const items = (await provider.request("thread/read", { threadId: thread.id })).thread.turns[0].items;
+    expect(items.some((item) => item.text === "Refused partial" || item.text === "private subagent transcript")).toBe(false);
+    expect(items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "reasoning", summary: [expect.objectContaining({ text: "Retrying with Sonnet" })] }),
+      expect.objectContaining({ type: "reasoning", summary: [expect.objectContaining({ text: expect.stringContaining("retrying 1/3") })] }),
+      expect.objectContaining({ id: "agent-use", status: "completed", receiverThreadIds: ["agent-42"], agentsStates: { "agent-42": expect.objectContaining({ status: "completed", message: "All done" }) } })
+    ]));
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("surfaces success-shaped Claude API errors and recovers cleanly from query creation failure", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-visible-errors-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    const factory = vi.fn()
+      .mockImplementationOnce(() => { throw new Error("Claude executable failed to start"); })
+      .mockImplementation(() => ({ [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](), close: vi.fn() }));
+    const provider = new ClaudeProvider({ database, queryFactory: factory });
+    await provider.start();
+    const { thread } = await provider.request("thread/start", { cwd: directory });
+    await expect(provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "First" }] })).rejects.toThrow("Claude executable failed to start");
+    await provider.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "Second" }] });
+    output.push({ type: "result", subtype: "success", session_id: thread.providerThreadId, uuid: "api-error", is_error: true, result: "Authentication expired", modelUsage: {} });
+    await tick();
+
+    const turns = (await provider.request("thread/read", { threadId: thread.id })).thread.turns;
+    expect(turns[0]).toMatchObject({ status: "failed", error: { message: "Claude executable failed to start" } });
+    expect(turns[1]).toMatchObject({
+      status: "failed",
+      error: { message: "Authentication expired" },
+      items: expect.arrayContaining([expect.objectContaining({ type: "agentMessage", text: "Authentication expired", phase: "final_answer", error: true })])
+    });
     await provider.stop();
     database.db.close();
   });

@@ -326,6 +326,20 @@ function formatMessageDateTime(value) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(timestamp);
 }
 
+export function normalizedFileChanges(item) {
+  const changes = item?.changes;
+  if (Array.isArray(changes)) return changes.filter((change) => change && typeof change === "object");
+
+  const legacyChange = changes && typeof changes === "object" ? changes : {};
+  const filePath = legacyChange.path
+    ?? legacyChange.filePath
+    ?? legacyChange.file_path
+    ?? legacyChange.notebook_path
+    ?? item?.path
+    ?? item?.filePath;
+  return filePath ? [{ ...legacyChange, path: filePath }] : [];
+}
+
 function useLiveNow(running) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -1561,7 +1575,7 @@ function ActivityItem({ item }) {
     );
   }
   if (item.type === "fileChange") {
-    const count = item.changes?.length ?? 0;
+    const count = normalizedFileChanges(item).length;
     return <div className="trace-entry"><Files size={14} /><span className="trace-entry-copy"><strong>Updated files</strong><small>{count} file{count === 1 ? "" : "s"}</small></span><StatusDot status={item.status === "completed" ? "complete" : "running"} /></div>;
   }
   if (item.type === "contextCompaction") {
@@ -1972,7 +1986,7 @@ function projectConversationTurn(turn) {
   for (const item of turn.items ?? []) {
     if (item.type === "plan") latestPlanText = item.text ?? latestPlanText;
     if (item.type !== "fileChange") continue;
-    const paths = (item.changes ?? []).map((change) => change.path || change.filePath).filter(Boolean);
+    const paths = normalizedFileChanges(item).map((change) => change.path || change.filePath).filter(Boolean);
     if (paths.length) paths.forEach((path) => touchedPaths.add(path));
     else if (item.path || item.filePath) touchedPaths.add(item.path || item.filePath);
   }
@@ -2288,7 +2302,7 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
       return { label: latestAction.status === "completed" ? "Ran command" : "Running command", detail: command };
     }
     if (latestAction.type === "fileChange") {
-      const count = latestAction.changes?.length ?? 0;
+      const count = normalizedFileChanges(latestAction).length;
       return { label: latestAction.status === "completed" ? "Updated files" : "Updating files", detail: `${count} file${count === 1 ? "" : "s"}` };
     }
     if (latestAction.type === "contextCompaction") {

@@ -159,6 +159,28 @@ describe("runtime state projection", () => {
     expect(second.turns[0].items[0]).toMatchObject({ type: "agentMessage", text: "Hello world" });
   });
 
+  it("applies tool progress updates and refusal-fallback removals", () => {
+    const thread = { id: "lead", turns: [{ id: "turn", status: "inProgress", items: [
+      { id: "tool", type: "commandExecution", command: "build", status: "inProgress" },
+      { id: "retracted", type: "agentMessage", text: "refused partial" }
+    ] }] };
+    const progressed = applyRuntimePayload(thread, {
+      method: "item/tool/progress",
+      threadId: "lead",
+      turnId: "turn",
+      item: { id: "tool", type: "commandExecution", command: "build", status: "inProgress", elapsedTimeMs: 2500 }
+    });
+    const cleaned = applyRuntimePayload(progressed, {
+      method: "item/removed",
+      threadId: "lead",
+      turnId: "turn",
+      itemId: "retracted"
+    });
+    expect(cleaned.turns[0].items).toEqual([
+      expect.objectContaining({ id: "tool", elapsedTimeMs: 2500 })
+    ]);
+  });
+
   it("keeps streamed deltas when a late turn-start response has no items", () => {
     const thread = { id: "lead", turns: [] };
     const streamed = applyRuntimePayload(thread, {
