@@ -12,6 +12,18 @@ afterEach(() => {
 });
 
 describe("thread runtime persistence", () => {
+  it("treats missing project ids as absent instead of binding invalid SQLite values", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+
+    expect(database.getProject()).toBeNull();
+    expect(database.getProject(null)).toBeNull();
+    expect(database.getProject("  ")).toBeNull();
+    expect(database.getProject({ id: "project-1" })).toBeNull();
+    database.db.close();
+  });
+
   it("round-trips project appearance and multiple folders", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);

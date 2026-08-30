@@ -1,0 +1,8 @@
+interface:
+  display_name: "Proof Before Done"
+  short_description: "Set repository rules and completion checks"
+  brand_color: "#E45D4F"
+  default_prompt: "Use $proof-before-done to configure reliable agent guidance for this repository."
+policy:
+  allow_implicit_invocation: true
+

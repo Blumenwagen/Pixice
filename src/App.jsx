@@ -14,6 +14,7 @@ import { ThinkingState } from "./components/ThinkingState.jsx";
 import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
 import { InlineVisualization, parseVisualizationSpec } from "./components/InlineVisualization.jsx";
 import { InstrumentHost } from "./components/instruments/InstrumentHost.jsx";
+import { IosSimulatorPreview } from "./components/ios/IosSimulatorPreview.jsx";
 import { ProjectToolsSidebar, ProjectToolsWorkspace } from "./components/instruments/ProjectToolsWorkspace.jsx";
 import { TaskPreviewContent } from "./components/TaskPreviewHost.jsx";
 import { WorkflowPreview } from "./components/workflows/WorkflowWorkspace.jsx";
@@ -143,7 +144,10 @@ export function previewContextForWorkspace(workspace) {
       projectId: custom.payload?.projectId,
       taskId: custom.payload?.taskId,
       proposalId: custom.payload?.proposalId,
-      workflowId: custom.payload?.workflowId
+      workflowId: custom.payload?.workflowId,
+      simulatorUdid: custom.payload?.session?.simulatorUdid,
+      sessionId: custom.payload?.session?.id,
+      status: custom.payload?.session?.status
     }
   };
   return { open: true, tabCount, active: null };
@@ -549,6 +553,7 @@ function SidebarNavItem({ icon: Icon, label, active, badge, badgeVisible = true,
       <span className="rail-icon"><Icon size={17} weight={active ? "fill" : "regular"} /></span>
       <span className="rail-label">{label}</span>
       {shortcut && <kbd className="rail-shortcut">{shortcut}</kbd>}
+      {tone === "new-task" && <span className="new-task-hover-plus" aria-hidden="true"><Plus size={18} /></span>}
       {badgeVisible && (
         <AnimatePresence initial={false}>
           {badge > 0 && (
@@ -1072,10 +1077,11 @@ function PreviewCustomTabIcon({ kind }) {
   if (kind === "task") return <Circle size={12} />;
   if (kind === "plan") return <Gauge size={12} />;
   if (kind === "new") return <Plus size={12} />;
+  if (kind === "simulator") return <Desktop size={12} />;
   return <File size={12} />;
 }
 
-function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChooseCustom }) {
+function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChooseCustom, onChooseSimulator }) {
   const [mode, setMode] = useState(null);
   const [path, setPath] = useState("");
   const [items, setItems] = useState([]);
@@ -1120,6 +1126,7 @@ function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChoose
           <button type="button" onClick={() => { setMode("file"); setItems([]); setError(""); }}><Files size={16} /><span><strong>File</strong><small>Open a local file</small></span></button>
           <button type="button" onClick={() => void loadItems("task")}><Circle size={16} /><span><strong>Work item</strong><small>Open a Board item</small></span></button>
           <button type="button" onClick={() => void loadItems("workflow")}><TreeStructure size={16} /><span><strong>Workflow</strong><small>Open a workflow canvas</small></span></button>
+          <button type="button" onClick={onChooseSimulator}><Desktop size={16} /><span><strong>iOS Simulator</strong><small>Build and run SwiftUI</small></span></button>
         </div>
         {mode === "file" && (
           <form className="preview-new-tab-file" onSubmit={openFile}>
@@ -1168,9 +1175,17 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
       if (workspaceId) void api?.browser?.setViewport({ workspaceId, visible: false }).catch(() => {});
       return undefined;
     }
-    const appRoot = viewportRef.current.closest(".pixice-app");
+    const occluderSelector = '[aria-modal="true"], [data-native-preview-occluder="true"]';
+    const previewOccluded = () => Boolean(document.querySelector(occluderSelector));
+    const mutationChangesOcclusion = (mutation) => {
+      if (mutation.type === "attributes") return true;
+      return [...mutation.addedNodes, ...mutation.removedNodes].some((node) => (
+        typeof node.matches === "function"
+        && (node.matches(occluderSelector) || node.querySelector?.(occluderSelector))
+      ));
+    };
     const updateBounds = () => {
-      if (appRoot?.dataset.workflowsActive === "true") {
+      if (previewOccluded()) {
         void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
         return;
       }
@@ -1185,14 +1200,21 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
     updateBounds();
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(updateBounds) : null;
     observer?.observe(viewportRef.current);
-    const takeoverObserver = appRoot && typeof MutationObserver === "function"
-      ? new MutationObserver(updateBounds)
+    const occlusionObserver = document.body && typeof MutationObserver === "function"
+      ? new MutationObserver((mutations) => {
+        if (mutations.some(mutationChangesOcclusion)) updateBounds();
+      })
       : null;
-    takeoverObserver?.observe(appRoot, { attributes: true, attributeFilter: ["data-workflows-active"] });
+    occlusionObserver?.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["aria-modal", "data-native-preview-occluder"],
+      childList: true,
+      subtree: true
+    });
     window.addEventListener("resize", updateBounds);
     return () => {
       observer?.disconnect();
-      takeoverObserver?.disconnect();
+      occlusionObserver?.disconnect();
       window.removeEventListener("resize", updateBounds);
       void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
     };
@@ -1332,6 +1354,27 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
             onCustomTabClose(activeCustomTab.id, { ensureTab: false });
             onCustomTabOpen(tab);
           }}
+          onChooseSimulator={() => {
+            onCustomTabClose(activeCustomTab.id, { ensureTab: false });
+            onCustomTabOpen({
+              id: `simulator:${workspaceId}`,
+              kind: "simulator",
+              title: "iOS Simulator",
+              payload: { projectId }
+            });
+          }}
+        />
+      ) : activeCustomTab?.kind === "simulator" ? (
+        <IosSimulatorPreview
+          api={api}
+          projectId={activeCustomTab.payload.projectId ?? projectId}
+          workspaceId={workspaceId}
+          initialSession={activeCustomTab.payload.session ?? null}
+          onTitleChange={(title) => onCustomTabUpdate(activeCustomTab.id, { title })}
+          onSessionChange={(session) => onCustomTabUpdate(activeCustomTab.id, {
+            payload: { ...activeCustomTab.payload, session }
+          })}
+          onOpenResource={onOpenResource}
         />
       ) : activeCustomTab?.kind === "workflow" ? (
         <WorkflowPreview
@@ -3461,6 +3504,7 @@ function Inspector({ open, thread, threads, plan, attention, onResolve }) {
 
 function FileDiff({ file }) {
   if (!file) return null;
+  const rows = Array.isArray(file.rows) ? file.rows : [];
   return (
     <div className="file-diff">
       <div className="file-diff-head">
@@ -3474,7 +3518,7 @@ function FileDiff({ file }) {
         </span>
       </div>
       <div className="file-diff-body">
-        {file.rows.length ? file.rows.map((row, index) => (
+        {rows.length ? rows.map((row, index) => (
           <div className={`file-diff-row ${row.type}`} key={`${index}-${row.old ?? ""}-${row.cur ?? ""}`}>
             <span className="line-number old-line">{row.old ?? ""}</span>
             <span className="line-number new-line">{row.cur ?? ""}</span>
@@ -3506,6 +3550,7 @@ function ReviewWorkspace({ project, review, loading, fileLoadingPath, gitStatus,
     ? legacyFiles.find((file) => file.path === selectedManifest?.path)
     : reviewFiles(selectedPatch, [selectedManifest.path])[0];
   const selected = selectedManifest ? { ...selectedManifest, ...selectedParsed } : null;
+  const selectedDiffPending = Boolean(selectedManifest && Array.isArray(currentReview?.files) && selectedPatch === undefined);
   const dirtyCount = currentReview?.repository?.dirtyPaths?.length ?? 0;
   const blockingLoad = loading && !currentReview;
   const repositoryGit = currentReview?.repository?.git;
@@ -3561,7 +3606,7 @@ function ReviewWorkspace({ project, review, loading, fileLoadingPath, gitStatus,
             })}
           </aside>
           <section className="diff-panel">
-            {fileLoadingPath === selected?.path && selectedPatch === undefined
+            {selectedDiffPending
               ? <div className="loading-state"><SpinnerGap className="spin-icon" size={18} />Reading file diff…</div>
               : <FileDiff file={selected} />}
           </section>
@@ -6023,6 +6068,47 @@ export function App() {
         if (workspaceId === selectedThreadIdRef.current && document.querySelector(".pixice-app.view-task")) setInspectorOpen(false);
         return;
       }
+      if (event.type === "IosPreviewOpenRequested") {
+        const workspaceId = event.payload.workspaceId ?? event.payload.threadId;
+        if (!workspaceId) return;
+        const tabId = `simulator:${workspaceId}`;
+        updatePreviewWorkspace(workspaceId, (workspace) => {
+          const current = workspace.customTabs ?? [];
+          const tab = {
+            id: tabId,
+            kind: "simulator",
+            title: event.payload.session?.deviceName || "iOS Simulator",
+            payload: { projectId: event.payload.projectId, session: event.payload.session ?? null }
+          };
+          return {
+            ...workspace,
+            open: true,
+            activeTabId: tabId,
+            customTabs: current.some((candidate) => candidate.id === tabId)
+              ? current.map((candidate) => candidate.id === tabId ? { ...candidate, ...tab } : candidate)
+              : [...current, tab]
+          };
+        });
+        if (workspaceId === selectedThreadIdRef.current && document.querySelector(".pixice-app.view-task")) setInspectorOpen(false);
+        return;
+      }
+      if (event.type === "IosSessionUpdated") {
+        const workspaceId = event.payload.workspaceId;
+        const session = event.payload.session;
+        if (!workspaceId || !session) return;
+        const tabId = `simulator:${workspaceId}`;
+        updatePreviewWorkspace(workspaceId, (workspace) => ({
+          ...workspace,
+          customTabs: (workspace.customTabs ?? []).map((candidate) => candidate.id === tabId
+            ? {
+              ...candidate,
+              title: `${session.deviceName || "iOS Simulator"} · ${session.status}`,
+              payload: { ...candidate.payload, projectId: session.projectId ?? candidate.payload?.projectId, session }
+            }
+            : candidate)
+        }));
+        return;
+      }
       if (event.type === "BoardUpdated") {
         if (!event.payload?.projectId || event.payload.projectId === selectedProjectId) loadBoard(selectedProjectId);
         refreshEventInstrumentSources(["board.list"], event.payload?.projectId);
@@ -6696,6 +6782,10 @@ export function App() {
   }, [previewWorkspaceId, updatePreviewWorkspace]);
 
   const closePreviewCustomTab = useCallback((tabId, { ensureTab = true } = {}) => {
+    const target = previewCustomTabs.find((tab) => tab.id === tabId);
+    if (target?.kind === "simulator") {
+      void api?.ios?.stop?.({ workspaceId: previewWorkspaceId }).catch(() => {});
+    }
     updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
       let customTabs = (workspace.customTabs ?? []).filter((tab) => tab.id !== tabId);
       const browserTabs = workspace.browserState?.tabs ?? [];
@@ -6719,7 +6809,7 @@ export function App() {
         open: workspace.open
       };
     });
-  }, [previewWorkspaceId, updatePreviewWorkspace]);
+  }, [api, previewCustomTabs, previewWorkspaceId, updatePreviewWorkspace]);
 
   const refreshPreviewInstrument = useCallback(async (instrumentId, source) => {
     if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Instrument data refresh is unavailable");

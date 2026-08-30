@@ -36,6 +36,16 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     destroy: invoke("browser:destroy")
   }),
   preview: Object.freeze({ setContext: invoke("preview:context") }),
+  ios: Object.freeze({
+    environment: invoke("ios:environment"),
+    discover: invoke("ios:discover"),
+    createStarter: invoke("ios:create-starter"),
+    start: invoke("ios:start"),
+    state: invoke("ios:state"),
+    stop: invoke("ios:stop"),
+    action: invoke("ios:action"),
+    adopt: invoke("ios:adopt")
+  }),
   files: Object.freeze({ read: invoke("files:read"), preview: invoke("files:preview"), write: invoke("files:write") }),
   projects: Object.freeze({
     list: invoke("projects:list"),

@@ -47,7 +47,7 @@
   mask-size: 72% 62%, 52% 52%;
   -webkit-mask-position: 16% 20%, 30% 32%;
   mask-position: 16% 20%, 30% 32%;
-  animation: igMorph 8s steps(4, end) infinite, igBreathe 6s steps(3, end) infinite;
+  animation: igMorph 4.2s cubic-bezier(.35, 1.55, .65, 1) infinite, igBreathe 1.9s cubic-bezier(.66, 0, .34, 1) infinite;
 }
 
 @keyframes igMorph {
@@ -133,7 +133,7 @@
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: igShine 6s steps(4, end) infinite;
+  animation: igShine 2.25s cubic-bezier(.25, .1, .25, 1) infinite;
   font-size: 14px;
   font-weight: 550;
 }
@@ -150,7 +150,7 @@
 [data-state="failed"] .igGlow { display: none; }
 
 @keyframes igShine {
-  0%, 72% { background-position: 100% 0; }
+  0%, 18% { background-position: 100% 0; }
   82%, 100% { background-position: 0% 0; }
 }
 

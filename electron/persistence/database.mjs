@@ -393,6 +393,7 @@ export class PixiceDatabase {
   }
 
   getProject(id) {
+    if (typeof id !== "string" || !id.trim()) return null;
     return this.#mapProject(this.db.prepare("SELECT * FROM projects WHERE id = ?").get(id));
   }
 

@@ -213,7 +213,7 @@ export function WorkflowHost({ children }) {
 
   const workspace = appTarget ? createPortal(
     active ? (
-      <div className={styles.workflowTakeover}>
+      <div className={styles.workflowTakeover} data-native-preview-occluder="true">
         <WorkflowWorkspace
           api={api}
           projectId={projectId}

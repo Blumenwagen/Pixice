@@ -67,6 +67,10 @@ import { ProactiveStewardship } from "./runtime/proactive-stewardship.mjs";
 import { createDefaultWorkflow } from "./workflows/workflow-model.mjs";
 import { MAX_EDITABLE_BYTES, previewFileTarget, readPreviewFile } from "./runtime/preview-files.mjs";
 import { createTrayViewModel, createTrayWorkItems } from "./tray/tray-view-model.mjs";
+import { containListenerErrors } from "./runtime/contained-listener.mjs";
+import { resolveThreadProject } from "./runtime/thread-project-context.mjs";
+import { IosRuntimeService } from "./ios/ios-runtime-service.mjs";
+import { IosTools, PIXICE_IOS_NAMESPACE, iosDynamicTools, iosToolSchemas } from "./ios/ios-tools.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -95,6 +99,8 @@ let pixiceBridge;
 let bridgeParentContinuation;
 let pixiceBoard;
 let pixiceInstruments;
+let iosRuntimeService;
+let iosTools;
 let proactiveStewardship;
 let systemAwakeController;
 let database;
@@ -116,7 +122,8 @@ const pixiceDynamicTools = [
   ...questionDynamicTools,
   ...pixiceBridgeDynamicTools,
   ...pixiceBoardDynamicTools,
-  ...instrumentDynamicTools
+  ...instrumentDynamicTools,
+  ...iosDynamicTools
 ];
 let runtimeGeneration = 0;
 let developerInstructionsPath;
@@ -202,7 +209,7 @@ const previewContextSchema = z.object({
   open: z.boolean(),
   tabCount: z.number().int().nonnegative().max(100).default(0),
   active: z.object({
-    kind: z.enum(["browser", "file", "instrument", "task", "plan", "workflow", "new"]),
+    kind: z.enum(["browser", "file", "instrument", "task", "plan", "workflow", "simulator", "new"]),
     id: z.string().max(500).optional(),
     title: z.string().max(500).optional(),
     url: z.string().max(10_000).optional(),
@@ -214,7 +221,10 @@ const previewContextSchema = z.object({
     instrumentId: z.string().max(500).optional(),
     documentVersion: z.number().int().nonnegative().optional(),
     editable: z.boolean().optional(),
-    dirty: z.boolean().optional()
+    dirty: z.boolean().optional(),
+    simulatorUdid: z.string().max(200).optional(),
+    sessionId: z.string().max(500).optional(),
+    status: z.string().max(100).optional()
   }).strict().nullable().default(null)
 }).strict();
 const promptInputSchema = {
@@ -1382,21 +1392,84 @@ function registerIpc() {
     }).parse(payload);
     return browserWorkspace.setViewport(value);
   });
-  ipcMain.handle("browser:adopt", (_event, payload) => {
+  ipcMain.handle("browser:adopt", async (_event, payload) => {
     const value = z.object({ fromWorkspaceId: z.string().trim().min(1), toWorkspaceId: z.string().trim().min(1) }).parse(payload);
     const state = browserWorkspace.adoptWorkspace(value.fromWorkspaceId, value.toWorkspaceId);
     previewContextRegistry.adopt(value.fromWorkspaceId, value.toWorkspaceId);
+    await iosRuntimeService?.adopt(value.fromWorkspaceId, value.toWorkspaceId);
     return state;
   });
-  ipcMain.handle("browser:destroy", (_event, payload) => {
+  ipcMain.handle("browser:destroy", async (_event, payload) => {
     const value = browserScope.parse(payload);
     browserWorkspace.destroyWorkspace(value.workspaceId);
     previewContextRegistry.clear(value.workspaceId);
+    await iosRuntimeService?.stop(value.workspaceId, "Preview workspace closed");
     return { destroyed: true, workspaceId: value.workspaceId };
   });
   ipcMain.handle("preview:context", (_event, payload) => {
     const value = z.object({ threadId: z.string().trim().min(1), context: previewContextSchema }).strict().parse(payload);
     return previewContextRegistry.set(value.threadId, value.context);
+  });
+
+  const iosWorkspaceScope = z.object({ workspaceId: z.string().trim().min(1).max(200) }).strict();
+  const iosProjectContext = (projectId) => {
+    const project = getProject(projectId);
+    return {
+      projectId: project.id,
+      cwd: projectPrimaryRoot(project),
+      roots: projectRoots(project)
+    };
+  };
+  ipcMain.handle("ios:environment", () => iosRuntimeService.environment());
+  ipcMain.handle("ios:discover", async (_event, payload) => {
+    const value = idPayload.strict().parse(payload);
+    const result = await iosRuntimeService.discover(iosProjectContext(value.projectId));
+    return result.containers ?? result;
+  });
+  ipcMain.handle("ios:create-starter", (_event, payload) => {
+    const value = idPayload.extend({
+      name: z.string().trim().min(1).max(80),
+      relativeDirectory: z.string().trim().min(1).max(1_000).optional()
+    }).strict().parse(payload);
+    return iosRuntimeService.createStarter(iosProjectContext(value.projectId), {
+      name: value.name,
+      productName: value.name,
+      displayName: value.name,
+      relativeDirectory: value.relativeDirectory,
+      directory: value.relativeDirectory
+    });
+  });
+  ipcMain.handle("ios:start", (_event, payload) => {
+    const value = iosWorkspaceScope.extend({
+      projectId: z.string().trim().min(1),
+      containerPath: z.string().trim().min(1).max(10_000),
+      scheme: z.string().trim().min(1).max(500),
+      simulatorUdid: z.string().trim().min(1).max(200),
+      configuration: z.string().trim().min(1).max(200).default("Debug")
+    }).parse(payload);
+    return iosRuntimeService.start({ ...iosProjectContext(value.projectId), ...value, source: "user" });
+  });
+  ipcMain.handle("ios:state", (_event, payload) => {
+    const value = iosWorkspaceScope.parse(payload);
+    return iosRuntimeService.status(value.workspaceId);
+  });
+  ipcMain.handle("ios:stop", (_event, payload) => {
+    const value = iosWorkspaceScope.parse(payload);
+    return iosRuntimeService.stop(value.workspaceId, "Stopped from Preview");
+  });
+  ipcMain.handle("ios:action", (_event, payload) => {
+    const value = iosWorkspaceScope.extend({
+      action: z.enum(["inspect", "tap", "type", "swipe", "button", "rotate", "appearance", "screenshot", "logs"])
+    }).passthrough().parse(payload);
+    const { workspaceId, action, ...argumentsValue } = value;
+    return iosRuntimeService.action(workspaceId, action, iosToolSchemas[action].parse(argumentsValue));
+  });
+  ipcMain.handle("ios:adopt", (_event, payload) => {
+    const value = z.object({
+      fromWorkspaceId: z.string().trim().min(1).max(200),
+      toWorkspaceId: z.string().trim().min(1).max(200)
+    }).strict().parse(payload);
+    return iosRuntimeService.adopt(value.fromWorkspaceId, value.toWorkspaceId);
   });
 
   ipcMain.handle("projects:list", () => listProjects());
@@ -1819,6 +1892,7 @@ function registerIpc() {
     turnUsageMetadata.delete(threadId);
     browserWorkspace.destroyWorkspace(threadId);
     previewContextRegistry.clear(threadId);
+    await iosRuntimeService.stop(threadId, "Thread archived");
     database.deleteThreadLink(threadId);
     database.deleteThreadBoardState(threadId);
     database.detachBoardTasksForThread(threadId);
@@ -2062,8 +2136,17 @@ app.whenReady().then(async () => {
   database = new PixiceDatabase(userDataPath);
   const previewThreadContext = (threadId) => {
     const binding = database.getThreadProviderBinding(threadId);
-    const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
-    return project ? { projectId: project.id, cwd: binding?.cwd || projectPrimaryRoot(project) } : null;
+    const project = resolveThreadProject({
+      database,
+      projectId: threadProjects.get(threadId),
+      cwd: binding?.cwd,
+      projectForPath
+    });
+    return project ? {
+      projectId: project.id,
+      cwd: binding?.cwd || projectPrimaryRoot(project),
+      roots: projectRoots(project)
+    } : null;
   };
   previewContextRegistry = new PreviewContextRegistry({
     openFile: ({ threadId, path: filePath, source }) => {
@@ -2072,6 +2155,17 @@ app.whenReady().then(async () => {
       const file = readLocalPreviewFile(context.projectId, filePath);
       send("FilePreviewOpenRequested", { workspaceId: threadId, threadId, projectId: context.projectId, source, file });
       return { opened: true, path: file.path, name: file.name, external: file.external, editable: file.editable };
+    }
+  });
+  iosRuntimeService = new IosRuntimeService({ scratchRoot: path.join(userDataPath, "ios-sessions") });
+  iosRuntimeService.on("updated", (session) => {
+    send("IosSessionUpdated", { workspaceId: session.workspaceId, projectId: session.projectId, session });
+  });
+  iosTools = new IosTools({
+    service: iosRuntimeService,
+    threadContext: previewThreadContext,
+    onOpen: ({ workspaceId, projectId, session, source }) => {
+      send("IosPreviewOpenRequested", { workspaceId, threadId: workspaceId, projectId, session, source });
     }
   });
   systemAwakeController = createSystemAwakeController(powerSaveBlocker);
@@ -2142,7 +2236,12 @@ app.whenReady().then(async () => {
     dynamicTools: () => pixiceDynamicTools,
     threadContext: (threadId) => {
       const binding = database.getThreadProviderBinding(threadId);
-      const project = database.getProject(threadProjects.get(threadId)) ?? projectForPath(binding?.cwd);
+      const project = resolveThreadProject({
+        database,
+        projectId: threadProjects.get(threadId),
+        cwd: binding?.cwd,
+        projectForPath
+      });
       if (!project) return null;
       return {
         projectId: project.id,
@@ -2225,6 +2324,7 @@ app.whenReady().then(async () => {
       }
     },
     pixicePreview: previewContextRegistry,
+    pixiceIos: iosTools,
     pathToClaudeCodeExecutable: null,
     requireExternalExecutable: true,
     runtimeLifecycle: claudeRuntimeLifecycle
@@ -2260,7 +2360,7 @@ app.whenReady().then(async () => {
     runtimeStatus = status;
     send("RuntimeStatus", { ...status, connected: runtime.connected });
   });
-  runtime.on("event", (event) => {
+  runtime.on("event", containListenerErrors((event) => {
     const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
     event.payload = { ...event.payload, receivedAt };
     const { method, threadId, turn } = event.payload ?? {};
@@ -2384,7 +2484,10 @@ app.whenReady().then(async () => {
       ...event.payload,
       projectId: threadProjects.get(threadId ?? event.payload?.thread?.id)
     });
-  });
+  }, (error, event) => {
+    const method = event?.payload?.method ?? event?.type ?? "unknown";
+    codexRuntime.emit("diagnostic", `Runtime event ${method} failed: ${error.message}`);
+  }));
   runtime.on("server-request", (request) => {
     if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_BOARD_NAMESPACE) {
       void pixiceBoard.handleToolCall(request.params)
@@ -2412,6 +2515,12 @@ app.whenReady().then(async () => {
     }
     if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_PREVIEW_NAMESPACE) {
       void Promise.resolve(previewContextRegistry.handleToolCall(request.params))
+        .then((response) => runtime.respond(request.id, response))
+        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
+      return;
+    }
+    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_IOS_NAMESPACE) {
+      void iosTools.handleToolCall(request.params)
         .then((response) => runtime.respond(request.id, response))
         .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
       return;
@@ -2493,6 +2602,7 @@ app.on("before-quit", async (event) => {
   appUpdater?.stop();
   systemAwakeController?.stop();
   browserWorkspace?.destroy();
+  await iosRuntimeService?.destroy();
   await runtime?.stop();
   pixiceInstruments?.close();
   app.quit();

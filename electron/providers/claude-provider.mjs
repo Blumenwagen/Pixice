@@ -25,6 +25,12 @@ import {
   instrumentToolShapes,
   instrumentTools
 } from "../instruments/instrument-service.mjs";
+import {
+  PIXICE_IOS_MCP_TOOLS,
+  PIXICE_IOS_NAMESPACE,
+  iosDynamicTools
+} from "../ios/ios-tools.mjs";
+import { z } from "zod";
 
 const FALLBACK_MODELS = [
   { value: "default", displayName: "Claude (recommended)", description: "Use Claude Code's recommended model." }
@@ -133,7 +139,8 @@ export function claudePermissionSettings(mode) {
       ...PIXICE_BOARD_MCP_TOOLS,
       ...PIXICE_INSTRUMENTS_MCP_TOOLS,
       ...PIXICE_BROWSER_MCP_TOOLS,
-      ...PIXICE_PREVIEW_MCP_TOOLS
+      ...PIXICE_PREVIEW_MCP_TOOLS,
+      ...PIXICE_IOS_MCP_TOOLS
     ]
   };
 }
@@ -218,7 +225,7 @@ function toolItem(block) {
   }
   if (block.name.startsWith("mcp__")) {
     const [, server, ...tool] = block.name.split("__");
-    return { ...common, type: [PIXICE_BROWSER_NAMESPACE, PIXICE_PREVIEW_NAMESPACE].includes(server) ? "dynamicToolCall" : "mcpToolCall", server, tool: tool.join("__"), arguments: block.input };
+    return { ...common, type: [PIXICE_BROWSER_NAMESPACE, PIXICE_PREVIEW_NAMESPACE, PIXICE_IOS_NAMESPACE].includes(server) ? "dynamicToolCall" : "mcpToolCall", server, tool: tool.join("__"), arguments: block.input };
   }
   return { ...common, type: "mcpToolCall", server: "claude", tool: block.name, arguments: block.input };
 }
@@ -241,6 +248,36 @@ function claudeMcpResult(result) {
   };
 }
 
+function zodTypeFromJsonSchema(schema = {}) {
+  let shape;
+  if (Array.isArray(schema.enum) && schema.enum.length) shape = z.enum(schema.enum);
+  else if (schema.type === "string") shape = z.string();
+  else if (schema.type === "integer") shape = z.number().int();
+  else if (schema.type === "number") shape = z.number();
+  else if (schema.type === "boolean") shape = z.boolean();
+  else shape = z.unknown();
+
+  if (schema.type === "string") {
+    if (schema.minLength !== undefined) shape = shape.min(schema.minLength);
+    if (schema.maxLength !== undefined) shape = shape.max(schema.maxLength);
+  }
+  if (schema.type === "integer" || schema.type === "number") {
+    if (schema.minimum !== undefined) shape = shape.min(schema.minimum);
+    if (schema.maximum !== undefined) shape = shape.max(schema.maximum);
+  }
+  if (schema.description) shape = shape.describe(schema.description);
+  if (schema.default !== undefined) shape = shape.default(schema.default);
+  return shape;
+}
+
+function zodShapeFromDynamicTool(definition) {
+  const required = new Set(definition.inputSchema?.required ?? []);
+  return Object.fromEntries(Object.entries(definition.inputSchema?.properties ?? {}).map(([name, schema]) => {
+    const shape = zodTypeFromJsonSchema(schema);
+    return [name, required.has(name) || schema.default !== undefined ? shape : shape.optional()];
+  }));
+}
+
 function appendItem(turn, item) {
   const index = turn.items.findIndex((candidate) => candidate.id === item.id);
   if (index === -1) turn.items.push(item);
@@ -260,6 +297,7 @@ export class ClaudeProvider extends EventEmitter {
     pixiceInstruments = null,
     pixiceBrowser = null,
     pixicePreview = null,
+    pixiceIos = null,
     pathToClaudeCodeExecutable = null,
     requireExternalExecutable = false,
     runtimeLifecycle = null,
@@ -278,6 +316,7 @@ export class ClaudeProvider extends EventEmitter {
     this.pixiceInstruments = pixiceInstruments;
     this.pixiceBrowser = pixiceBrowser;
     this.pixicePreview = pixicePreview;
+    this.pixiceIos = pixiceIos;
     this.pathToClaudeCodeExecutable = pathToClaudeCodeExecutable;
     this.requireExternalExecutable = requireExternalExecutable;
     this.runtimeLifecycle = runtimeLifecycle;
@@ -739,7 +778,8 @@ export class ClaudeProvider extends EventEmitter {
         ...(this.pixiceBoard ? { pixice_board: this.#pixiceBoardServer(context) } : {}),
         ...(this.pixiceInstruments ? { pixice_instruments: this.#pixiceInstrumentsServer(context) } : {}),
         ...(this.pixiceBrowser ? { [PIXICE_BROWSER_NAMESPACE]: this.#pixiceBrowserServer(context) } : {}),
-        ...(this.pixicePreview ? { [PIXICE_PREVIEW_NAMESPACE]: this.#pixicePreviewServer(context) } : {})
+        ...(this.pixicePreview ? { [PIXICE_PREVIEW_NAMESPACE]: this.#pixicePreviewServer(context) } : {}),
+        ...(this.pixiceIos ? { [PIXICE_IOS_NAMESPACE]: this.#pixiceIosServer(context) } : {})
       },
       pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable,
       environment: this.environment
@@ -1003,6 +1043,7 @@ export class ClaudeProvider extends EventEmitter {
       || PIXICE_INSTRUMENTS_MCP_TOOLS.has(toolName)
       || PIXICE_BROWSER_MCP_TOOLS.has(toolName)
       || PIXICE_PREVIEW_MCP_TOOLS.has(toolName)
+      || PIXICE_IOS_MCP_TOOLS.has(toolName)
     ) {
       return Promise.resolve({ behavior: "allow", updatedInput: input });
     }
@@ -1175,6 +1216,31 @@ export class ClaudeProvider extends EventEmitter {
         definition.name,
         definition.description,
         previewContextToolShapes[definition.name],
+        run(definition.name)
+      ))
+    });
+  }
+
+  #pixiceIosServer(context) {
+    const run = (name) => async (input) => {
+      const result = await this.pixiceIos.handleToolCall({
+        namespace: PIXICE_IOS_NAMESPACE,
+        tool: name,
+        threadId: context.thread.id,
+        turnId: context.currentTurn?.id,
+        arguments: input,
+        source: "claude"
+      });
+      return claudeMcpResult(result);
+    };
+    return createSdkMcpServer({
+      name: PIXICE_IOS_NAMESPACE,
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: iosDynamicTools[0].tools.map((definition) => tool(
+        definition.name,
+        definition.description,
+        zodShapeFromDynamicTool(definition),
         run(definition.name)
       ))
     });

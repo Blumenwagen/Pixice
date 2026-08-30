@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserDynamicTools } from "../electron/browser/browser-workspace.mjs";
+import { iosDynamicTools } from "../electron/ios/ios-tools.mjs";
 import { AsyncPromptQueue, ClaudeProvider, claudeAccountIsAuthenticated, claudeExternallyManagedAuth, claudePermissionSettings, claudeQueryOptions } from "../electron/providers/claude-provider.mjs";
 import { PixiceDatabase } from "../electron/persistence/database.mjs";
 import { pixiceBoardTools } from "../electron/runtime/pixice-board.mjs";
@@ -95,6 +96,7 @@ describe("Claude provider", () => {
     expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_board__create_task");
     expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_instruments__create_instrument");
     expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_preview__current");
+    expect(claudePermissionSettings("read-only").tools).toContain("mcp__pixice_ios__start");
   });
 
   it("uses the Claude Code system preset and preserves the host environment", () => {
@@ -249,6 +251,9 @@ describe("Claude provider", () => {
     const pixicePreview = {
       handleToolCall: vi.fn().mockReturnValue({ success: true, contentItems: [{ type: "inputText", text: "preview result" }] })
     };
+    const pixiceIos = {
+      handleToolCall: vi.fn().mockResolvedValue({ success: true, contentItems: [{ type: "inputText", text: "ios result" }] })
+    };
     const provider = new ClaudeProvider({
       database,
       clientVersion: "test",
@@ -257,6 +262,7 @@ describe("Claude provider", () => {
       pixiceInstruments: { handleToolCall: vi.fn() },
       pixiceBrowser,
       pixicePreview,
+      pixiceIos,
       queryFactory: (args) => { queryArguments = args; return query; }
     });
     const events = [];
@@ -284,6 +290,7 @@ describe("Claude provider", () => {
     expect(queryArguments.options.mcpServers.pixice_instruments).toMatchObject({ type: "sdk", name: "pixice_instruments" });
     expect(queryArguments.options.mcpServers.pixice_browser).toMatchObject({ type: "sdk", name: "pixice_browser" });
     expect(queryArguments.options.mcpServers.pixice_preview).toMatchObject({ type: "sdk", name: "pixice_preview" });
+    expect(queryArguments.options.mcpServers.pixice_ios).toMatchObject({ type: "sdk", name: "pixice_ios" });
     expect(Object.keys(queryArguments.options.mcpServers.pixice_board.instance._registeredTools)).toEqual(
       pixiceBoardTools.map((definition) => definition.name)
     );
@@ -293,12 +300,25 @@ describe("Claude provider", () => {
     expect(Object.keys(queryArguments.options.mcpServers.pixice_preview.instance._registeredTools)).toEqual(
       previewContextDynamicTools[0].tools.map((definition) => definition.name)
     );
+    expect(Object.keys(queryArguments.options.mcpServers.pixice_ios.instance._registeredTools)).toEqual(
+      iosDynamicTools[0].tools.map((definition) => definition.name)
+    );
+    const iosStartSchema = queryArguments.options.mcpServers.pixice_ios.instance._registeredTools.start.inputSchema;
+    expect(iosStartSchema.safeParse({}).success).toBe(false);
+    expect(iosStartSchema.safeParse({
+      containerPath: "Demo.xcodeproj",
+      scheme: "Demo",
+      simulatorUdid: "SIM-1"
+    })).toMatchObject({ success: true, data: { configuration: "Debug" } });
+    const iosTapSchema = queryArguments.options.mcpServers.pixice_ios.instance._registeredTools.tap.inputSchema;
+    expect(iosTapSchema.safeParse({ x: 1.1, y: 0.5 }).success).toBe(false);
     await expect(queryArguments.options.canUseTool("mcp__pixice__request_user_input", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_bridge__spawn_thread", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_board__read_task", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_instruments__create_instrument", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_browser__navigate", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_preview__current", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    await expect(queryArguments.options.canUseTool("mcp__pixice_ios__start", {}, {})).resolves.toMatchObject({ behavior: "allow" });
 
     await queryArguments.options.mcpServers.pixice_browser.instance._registeredTools.navigate.handler({ url: "https://apple.com" });
     expect(pixiceBrowser.handleToolCall).toHaveBeenCalledWith(expect.objectContaining({
@@ -314,6 +334,22 @@ describe("Claude provider", () => {
       tool: "current",
       threadId: thread.id,
       arguments: {},
+      source: "claude"
+    }));
+    await queryArguments.options.mcpServers.pixice_ios.instance._registeredTools.start.handler({
+      containerPath: "Demo.xcodeproj",
+      scheme: "Demo",
+      simulatorUdid: "SIM-1"
+    });
+    expect(pixiceIos.handleToolCall).toHaveBeenCalledWith(expect.objectContaining({
+      namespace: "pixice_ios",
+      tool: "start",
+      threadId: thread.id,
+      arguments: {
+        containerPath: "Demo.xcodeproj",
+        scheme: "Demo",
+        simulatorUdid: "SIM-1"
+      },
       source: "claude"
     }));
     await queryArguments.options.mcpServers.pixice_board.instance._registeredTools.read_task.handler({ taskId: "task-1" });

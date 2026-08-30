@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { browserDynamicTools, browserToolShapes } from "../electron/browser/browser-workspace.mjs";
 import { instrumentDynamicTools } from "../electron/instruments/instrument-service.mjs";
+import { iosDynamicTools } from "../electron/ios/ios-tools.mjs";
 import { claudePermissionSettings } from "../electron/providers/claude-provider.mjs";
 import { pixiceBoardDynamicTools } from "../electron/runtime/pixice-board.mjs";
 import { pixiceBridgeDynamicTools } from "../electron/runtime/pixice-bridge.mjs";
@@ -13,7 +14,8 @@ describe("Claude Pixice feature parity", () => {
       pixiceBridgeDynamicTools[0],
       pixiceBoardDynamicTools[0],
       instrumentDynamicTools[0],
-      browserDynamicTools[0]
+      browserDynamicTools[0],
+      iosDynamicTools[0]
     ];
     const readOnlyTools = claudePermissionSettings("read-only").tools;
 

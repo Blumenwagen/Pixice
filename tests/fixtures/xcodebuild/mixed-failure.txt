@@ -1,0 +1,13 @@
+Resolve Package Graph
+
+=== BUILD TARGET PixiceDemo OF PROJECT PixiceDemo WITH CONFIGURATION Debug ===
+ComputeTargetDependencyGraph
+SwiftCompile normal arm64 Compiling ContentView.swift (in target 'PixiceDemo' from project 'PixiceDemo')
+<ESC>[31m__PROJECT_ROOT__/PixiceDemo/ContentView.swift:17:9: error: cannot find 'missingValue' in scope<ESC>[0m (in target 'PixiceDemo' from project 'PixiceDemo')
+__PROJECT_ROOT__/PixiceDemo/ContentView.swift:21:5: warning: initialization of immutable value 'title' was never used; consider replacing with assignment to '_' or removing it (in target 'PixiceDemo' from project 'PixiceDemo')
+__PROJECT_ROOT__/PixiceDemo/ContentView.swift:21:5: warning: initialization of immutable value 'title' was never used; consider replacing with assignment to '_' or removing it (in target 'PixiceDemo' from project 'PixiceDemo')
+CompileC /tmp/DerivedData/Objects/AppDelegate.o __PROJECT_ROOT__/PixiceDemo/AppDelegate.m normal arm64 objective-c (in target 'PixiceDemo' from project 'PixiceDemo')
+__PROJECT_ROOT__/PixiceDemo/AppDelegate.m:8:3: error: use of undeclared identifier 'applicationState' (in target 'PixiceDemo' from project 'PixiceDemo')
+Ld /tmp/DerivedData/Build/Products/Debug-iphonesimulator/PixiceDemo.app/PixiceDemo normal (in target 'PixiceDemo' from project 'PixiceDemo')
+CodeSign /tmp/DerivedData/Build/Products/Debug-iphonesimulator/PixiceDemo.app (in target 'PixiceDemo' from project 'PixiceDemo')
+** BUILD FAILED **

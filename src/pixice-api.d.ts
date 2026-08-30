@@ -22,6 +22,8 @@ type PixiceEvent = {
     | "WorkflowForegroundRequested"
     | "WorkflowTriggersUpdated"
     | "WorkflowCredentialsUpdated"
+    | "IosSessionUpdated"
+    | "IosPreviewOpenRequested"
     | "UpdateState"
     | "TrayNavigate"
     | "TraySettingsUpdated"
@@ -303,7 +305,7 @@ declare global {
             open: boolean;
             tabCount: number;
             active: null | {
-              kind: "browser" | "file" | "instrument" | "task" | "plan" | "workflow" | "new";
+              kind: "browser" | "file" | "instrument" | "task" | "plan" | "workflow" | "simulator" | "new";
               id?: string;
               title?: string;
               url?: string;
@@ -316,9 +318,22 @@ declare global {
               documentVersion?: number;
               editable?: boolean;
               dirty?: boolean;
+              simulatorUdid?: string;
+              sessionId?: string;
+              status?: string;
             };
           };
         }): Promise<any>;
+      };
+      ios: {
+        environment(): Promise<any>;
+        discover(payload: ProjectScope): Promise<any[]>;
+        createStarter(payload: ProjectScope & { name: string; relativeDirectory?: string }): Promise<any>;
+        start(payload: ProjectScope & { workspaceId: string; containerPath: string; scheme: string; simulatorUdid: string; configuration?: string }): Promise<any>;
+        state(payload: { workspaceId: string }): Promise<any | null>;
+        stop(payload: { workspaceId: string }): Promise<any | null>;
+        action(payload: { workspaceId: string; action: "inspect" | "tap" | "type" | "swipe" | "button" | "rotate" | "appearance" | "screenshot" | "logs"; [key: string]: unknown }): Promise<any>;
+        adopt(payload: { fromWorkspaceId: string; toWorkspaceId: string }): Promise<any | null>;
       };
       files: {
         read(payload: ProjectScope & { path: string }): Promise<any>;

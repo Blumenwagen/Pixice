@@ -95,4 +95,11 @@ describe("release scripts", () => {
     const { stdout } = await run(process.execPath, [path.resolve("scripts/verify-github-cli.mjs"), "--current"]);
     expect(stdout).toMatch(/Verified GitHub CLI/);
   });
+
+  it("validates the generated SwiftUI starter without full Xcode", async () => {
+    const { stdout } = await run(process.execPath, [path.resolve("scripts/verify-ios-preview.mjs")]);
+    expect(stdout).toMatch(process.platform === "darwin"
+      ? /Verified generated SwiftUI starter/
+      : /Skipped generated SwiftUI starter verification/);
+  });
 });

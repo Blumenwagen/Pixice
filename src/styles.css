@@ -391,7 +391,74 @@ body.preview-resizing .task-workspace { transition: none; }
   transition: opacity 180ms var(--ease), transform 180ms var(--ease);
 }
 .rail-nav-item > .rail-label { display: block; overflow: hidden; font-size: 12.5px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
+.rail-nav-item.new-task {
+  --new-task-hover-fill: color-mix(in oklab, var(--primary) 52%, #f4f0ed);
+  --new-task-hover-ink: color-mix(in oklab, var(--primary) 26%, #181818);
+  isolation: isolate;
+  transition: color 180ms var(--ease), background-color 180ms ease, box-shadow 260ms var(--ease), transform 260ms var(--ease);
+}
+.rail-nav-item.new-task::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  content: "";
+  background: var(--new-task-hover-fill);
+  border: 1px solid color-mix(in oklab, white 28%, var(--new-task-hover-fill));
+  border-radius: inherit;
+  opacity: 0;
+  transform: scaleX(.15);
+  transform-origin: 20px 50%;
+  transition: opacity 150ms ease, transform 320ms var(--ease), background-color 220ms var(--ease);
+}
 .rail-nav-item.new-task .rail-icon { color: var(--foreground); background: rgba(255, 255, 255, .045); }
+.rail-nav-item.new-task > :is(.rail-icon, .rail-label, .rail-shortcut) {
+  transition: opacity 130ms ease, transform 260ms var(--ease);
+}
+.new-task-hover-plus {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  color: var(--new-task-hover-ink);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(.5) rotate(-38deg);
+  transition: color 220ms var(--ease), opacity 150ms ease 30ms, transform 320ms var(--ease);
+}
+.new-task-hover-plus > .animated-icon { display: grid; place-items: center; }
+.rail-nav-item.new-task:not(:disabled):is(:hover, :focus-visible) {
+  color: var(--new-task-hover-ink);
+  background: transparent;
+  box-shadow: 0 5px 18px color-mix(in oklab, var(--primary) 16%, transparent);
+  transform: translateY(-1px);
+}
+.rail-nav-item.new-task:not(:disabled):is(:hover, :focus-visible)::before {
+  opacity: 1;
+  transform: scaleX(1);
+}
+.rail-nav-item.new-task:not(:disabled):is(:hover, :focus-visible) > .rail-icon {
+  opacity: 0;
+  transform: translateX(72px) scale(.72);
+}
+.rail-nav-item.new-task:not(:disabled):is(:hover, :focus-visible) > .rail-label {
+  opacity: 0;
+  transform: translateX(28px);
+}
+.rail-nav-item.new-task:not(:disabled):is(:hover, :focus-visible) > .rail-shortcut {
+  opacity: 0;
+  transform: translateX(-18px) scale(.82);
+}
+.rail-nav-item.new-task:not(:disabled):is(:hover, :focus-visible) > .new-task-hover-plus {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1) rotate(0);
+}
+.rail-nav-item.new-task:not(:disabled):active { transform: translateY(0) scale(.985); }
+.pixice-app[data-reduce-motion="true"] .rail-nav-item.new-task,
+.pixice-app[data-reduce-motion="true"] .rail-nav-item.new-task::before,
+.pixice-app[data-reduce-motion="true"] .rail-nav-item.new-task > :is(.rail-icon, .rail-label, .rail-shortcut),
+.pixice-app[data-reduce-motion="true"] .new-task-hover-plus { transition-duration: 1ms; }
 .sidebar[data-expanded="true"] .rail-label,
 .sidebar[data-expanded="true"] .project-copy { opacity: 1; transform: translateX(0); transition-delay: 90ms; }
 .thread-indicator {

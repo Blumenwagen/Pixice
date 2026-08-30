@@ -208,6 +208,16 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
       destroy: vi.fn().mockResolvedValue({ destroyed: true })
     },
     preview: { setContext: vi.fn().mockResolvedValue({ open: false, tabCount: 0, active: null }) },
+    ios: {
+      environment: vi.fn().mockResolvedValue({ ready: true, simulators: [{ udid: "SIM-1", name: "iPhone 17 Pro" }], issues: [] }),
+      discover: vi.fn().mockResolvedValue([{ path: "/work/aurora/Aurora.xcodeproj", relativePath: "Aurora.xcodeproj", schemes: ["Aurora"] }]),
+      createStarter: vi.fn().mockResolvedValue({ created: true }),
+      start: vi.fn().mockResolvedValue({ id: "ios-session-1", status: "ready", scheme: "Aurora", deviceName: "iPhone 17 Pro", simulatorUdid: "SIM-1", previewUrl: "http://127.0.0.1:3200" }),
+      state: vi.fn().mockResolvedValue(null),
+      stop: vi.fn().mockResolvedValue({ status: "stopped" }),
+      action: vi.fn().mockResolvedValue({ ok: true }),
+      adopt: vi.fn().mockResolvedValue(null)
+    },
     files: {
       read: vi.fn(async ({ path }) => ({
         path: path.startsWith("/") ? path.replace(/:\d+$/, "") : `/work/aurora/${path.replace(/:\d+$/, "")}`,
@@ -1093,6 +1103,7 @@ describe("Pixice app shell", () => {
 
   it("loads the Review manifest before requesting only the selected file diff", async () => {
     const api = createApi();
+    let resolveFileDiff;
     api.review.read.mockResolvedValue({
       repository: { ...project.repository, dirtyPaths: ["src/auth.js", "src/session.js"] },
       files: [
@@ -1100,10 +1111,12 @@ describe("Pixice app shell", () => {
         { path: "src/session.js", plus: 2, minus: 0 }
       ]
     });
-    api.review.file.mockImplementation(async ({ path }) => ({
-      path,
-      baseCommit: "abc",
-      diff: `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old selected\n+new selected`
+    api.review.file.mockImplementation(({ path }) => new Promise((resolve) => {
+      resolveFileDiff = () => resolve({
+        path,
+        baseCommit: "abc",
+        diff: `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old selected\n+new selected`
+      });
     }));
     window.pixice = api;
     render(<App />);
@@ -1112,6 +1125,8 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
 
     await waitFor(() => expect(api.review.file).toHaveBeenCalledWith({ projectId: "project-1", path: "src/auth.js" }));
+    expect(screen.getByText("Reading file diff…")).toBeInTheDocument();
+    await act(async () => resolveFileDiff());
     expect(await screen.findByText("new selected")).toBeInTheDocument();
     expect(api.review.read).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /session\.js/ }));
@@ -3143,6 +3158,17 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("heading", { name: "What are we working on?" })).toBeInTheDocument();
   });
 
+  it("renders the accent-aware hover morph for the New task action", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    const newTask = screen.getByRole("button", { name: "New task" });
+    expect(newTask.querySelector(".new-task-hover-plus")).toHaveAttribute("aria-hidden", "true");
+    expect(appCss).toMatch(/--new-task-hover-fill:\s*color-mix\(in oklab, var\(--primary\)/);
+    expect(appCss).toMatch(/\.rail-nav-item\.new-task:not\(:disabled\):is\(:hover, :focus-visible\)[^{]*\{[^}]*transform:\s*translateY\(-1px\)/);
+    expect(appCss).toMatch(/\.pixice-app\[data-reduce-motion="true"\][^{]*\.new-task-hover-plus\s*\{\s*transition-duration:\s*1ms/);
+  });
+
   it("discovers and autocompletes Codex commands from the slash menu", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -3721,6 +3747,35 @@ describe("Pixice app shell", () => {
     expect(sidebar).toHaveAttribute("data-expanded", "true");
   });
 
+  it("opens, runs, and closes a thread-scoped iOS Simulator tab", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await screen.findByRole("region", { name: "Preview workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "New preview tab" }));
+    fireEvent.click(await screen.findByRole("button", { name: /iOS SimulatorBuild and run SwiftUI/ }));
+
+    expect(await screen.findByRole("region", { name: "iOS Simulator Preview" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Run" }));
+    await waitFor(() => expect(window.pixice.ios.start).toHaveBeenCalledWith({
+      workspaceId: "thread-1",
+      projectId: "project-1",
+      containerPath: "Aurora.xcodeproj",
+      scheme: "Aurora",
+      simulatorUdid: "SIM-1",
+      configuration: "Debug"
+    }));
+    await waitFor(() => expect(window.pixice.preview.setContext).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      context: expect.objectContaining({
+        active: expect.objectContaining({ kind: "simulator", sessionId: "ios-session-1", simulatorUdid: "SIM-1", status: "ready" })
+      })
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Close iPhone 17 Pro/ }));
+    expect(window.pixice.ios.stop).toHaveBeenCalledWith({ workspaceId: "thread-1" });
+  });
+
   it("keeps the native browser viewport hidden while a workflow tab is active", async () => {
     const api = window.pixice;
     render(<App />);
@@ -3754,6 +3809,55 @@ describe("Pixice app shell", () => {
 
   it("hides the native browser viewport while the Workflows workspace covers Preview", async () => {
     const api = window.pixice;
+    api.workflows = {
+      list: vi.fn().mockResolvedValue({ data: [] })
+    };
+    render(<WorkflowHost><App /></WorkflowHost>);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
+
+    await screen.findByRole("region", { name: "Preview workspace" });
+    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: "thread-1",
+      visible: true
+    })));
+
+    api.browser.setViewport.mockClear();
+    fireEvent.click(await screen.findByRole("button", { name: "Workflows" }));
+    await waitFor(() => expect(document.querySelector('[data-workflow-workspace="true"]')).toBeInTheDocument());
+    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({
+      workspaceId: "thread-1",
+      visible: false
+    }));
+    expect(api.browser.setViewport).not.toHaveBeenCalledWith(expect.objectContaining({ visible: true }));
+
+    api.browser.setViewport.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: "thread-1",
+      visible: true
+    })));
+  });
+
+  it("hides the native browser viewport behind a picture inspector and restores it on close", async () => {
+    const imageThread = {
+      ...thread,
+      turns: [{
+        ...thread.turns[0],
+        items: [
+          ...thread.turns[0].items,
+          {
+            id: "generated-picture",
+            type: "imageGeneration",
+            status: "completed",
+            result: "data:image/png;base64,AA==",
+            revisedPrompt: "Pixice workspace concept"
+          }
+        ]
+      }]
+    };
+    const api = createApi(imageThread);
+    window.pixice = api;
     render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
@@ -3764,9 +3868,9 @@ describe("Pixice app shell", () => {
       visible: true
     })));
 
-    const app = document.querySelector(".pixice-app");
     api.browser.setViewport.mockClear();
-    act(() => app.setAttribute("data-workflows-active", "true"));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect Pixice workspace concept" }));
+    expect(await screen.findByRole("dialog", { name: "Generated picture inspector" })).toBeInTheDocument();
     await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith({
       workspaceId: "thread-1",
       visible: false
@@ -3774,7 +3878,7 @@ describe("Pixice app shell", () => {
     expect(api.browser.setViewport).not.toHaveBeenCalledWith(expect.objectContaining({ visible: true }));
 
     api.browser.setViewport.mockClear();
-    act(() => app.removeAttribute("data-workflows-active"));
+    fireEvent.click(screen.getByRole("button", { name: "Close picture inspector" }));
     await waitFor(() => expect(api.browser.setViewport).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: "thread-1",
       visible: true

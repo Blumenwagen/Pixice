@@ -45,6 +45,7 @@ function selectedKindLabel(kind) {
   if (kind === "instrument") return "a Tool tab";
   if (kind === "task" || kind === "plan") return "a work item tab";
   if (kind === "workflow") return "a Workflow tab";
+  if (kind === "simulator") return "an iOS Simulator tab";
   if (kind === "new") return "the new-tab chooser";
   return "a tab";
 }
@@ -55,6 +56,7 @@ function inspectionToolFor(kind) {
   if (kind === "instrument") return "pixice_instruments.inspect_instrument";
   if (kind === "task" || kind === "plan") return "pixice_board.read_task";
   if (kind === "workflow") return "pixice_bridge.inspect_workflow";
+  if (kind === "simulator") return "pixice_ios.status";
   return null;
 }
 
