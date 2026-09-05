@@ -17,6 +17,10 @@ Pixice is a cross-platform Electron client for orchestrating coding agents throu
 - Tray lifecycle, native notifications, quit warning, external-open actions, packaged-build configuration, release matrix, and checksum enforcement.
 - Pixice's coral pixel-crystal application icon wired into the renderer and desktop packaging.
 
+## Remote access
+
+Open **Settings → Connections** to enable Pixice Connect, create an HTTPS tunnel or configure a permanent endpoint, and pair browsers or other Pixice desktops. Remote clients use Pixice’s existing project, task, approval, board, workflow, review, and file-editing interfaces. See [the remote access guide](docs/REMOTE.md) for setup and boundaries.
+
 ## Local development
 
 ```bash

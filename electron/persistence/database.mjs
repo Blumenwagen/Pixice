@@ -1496,8 +1496,23 @@ export class PixiceDatabase {
       })).sort((left, right) => right.costUsd - left.costUsd || right.totalTokens - left.totalTokens);
     };
 
+    const historyGroups = new Map();
+    for (const row of rows) {
+      if (new Date(row.recorded_at) < heatmapStart) continue;
+      const date = localDayKey(row.recorded_at);
+      const key = JSON.stringify([date, row.provider, row.model]);
+      const group = historyGroups.get(key) ?? { date, provider: row.provider, model: row.model, rows: [] };
+      group.rows.push(row);
+      historyGroups.set(key, group);
+    }
+
     return {
       rangeDays,
+      trackingDays: elapsedDays,
+      calendarDate: todayKey,
+      calendarTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      recordingStartDate: rows.length ? localDayKey(firstDate) : null,
+      historyDailyModels: [...historyGroups.values()].map(({ rows: historyRows, ...identity }) => ({ ...identity, ...usageTotals(historyRows) })),
       recordingStartedAt: rows[0]?.recorded_at ?? null,
       updatedAt: rows.at(-1)?.recorded_at ?? null,
       stats: {

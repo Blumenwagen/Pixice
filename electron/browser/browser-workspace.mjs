@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { RemoteBrowser } from "./remote-browser.mjs";
 
 const HOME_HTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><style>
 html,body{height:100%;margin:0}body{display:grid;place-items:center;color:#85858b;background:#171717;font:14px system-ui,sans-serif}.home{text-align:center}.mark{width:42px;height:42px;margin:0 auto 14px;display:grid;place-items:center;color:#c9c9ce;background:#252527;border:1px solid #343438;border-radius:13px;font-size:20px}strong{display:block;color:#e8e8eb;font-size:15px}p{margin:7px 0 0;font-size:12px}</style></head><body><div class="home"><div class="mark">◎</div><strong>Browse with Pixice</strong><p>Enter an address above or ask your agent to investigate a page.</p></div></body></html>`;
@@ -109,13 +110,30 @@ export class BrowserWorkspace {
   #visibleWorkspaceId = null;
   #attached = null;
   #visible = false;
+  #remote;
+  #BrowserWindow;
+  #remoteWindows = new Map();
   #bounds = { x: 0, y: 0, width: 0, height: 0 };
 
-  constructor({ window, WebContentsView, emit }) {
+  constructor({ window, WebContentsView, BrowserWindow, emit }) {
     this.#window = window;
     this.#WebContentsView = WebContentsView;
     this.#emit = emit;
+    this.#BrowserWindow = BrowserWindow;
+    this.#remote = new RemoteBrowser({ target: (workspaceId, tabId) => {
+      const tab = this.#tab(workspaceId, tabId);
+      const locallyVisible = () => this.#attached?.workspaceId === workspaceId && this.#attached?.tabId === tabId;
+      if (!locallyVisible() && this.#BrowserWindow && !this.#remoteWindows.has(tabId)) {
+        const background = new this.#BrowserWindow({ show: false, width: 1600, height: 1200, skipTaskbar: true, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+        background.contentView.addChildView(tab.view);
+        this.#remoteWindows.set(tabId, background);
+      }
+      return { tab, locallyVisible };
+    } });
   }
+
+  remoteFrame(payload) { return this.#remote.frame(payload); }
+  remoteInput(payload) { return this.#remote.input(payload); }
 
   snapshot(workspaceId) {
     const workspace = this.#workspaces.get(workspaceId);
@@ -205,6 +223,7 @@ export class BrowserWorkspace {
     const tab = workspace.tabs.get(id);
     if (!tab) return this.snapshot(workspaceId);
     if (this.#attached?.workspaceId === workspaceId && this.#attached?.tabId === id) this.#detachAttached();
+    this.#detachRemote(tab);
     workspace.tabs.delete(id);
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     if (workspace.activeTabId === id) workspace.activeTabId = [...workspace.tabs.keys()].at(-1) ?? null;
@@ -316,6 +335,7 @@ export class BrowserWorkspace {
     if (!workspace) return;
     if (this.#attached?.workspaceId === workspaceId) this.#detachAttached();
     for (const tab of workspace.tabs.values()) {
+      this.#detachRemote(tab);
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     }
     this.#workspaces.delete(workspaceId);
@@ -329,6 +349,7 @@ export class BrowserWorkspace {
     this.#detachAttached();
     for (const workspace of this.#workspaces.values()) {
       for (const tab of workspace.tabs.values()) {
+        this.#detachRemote(tab);
         if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
       }
     }
@@ -358,6 +379,16 @@ export class BrowserWorkspace {
     this.#emit("BrowserState", this.snapshot(workspaceId));
   }
 
+  #detachRemote(tab) {
+    const background = this.#remoteWindows.get(tab.id);
+    if (!background) return;
+    this.#remoteWindows.delete(tab.id);
+    if (!background.isDestroyed()) {
+      background.contentView.removeChildView(tab.view);
+      background.destroy();
+    }
+  }
+
   #detachAttached() {
     if (!this.#attached || this.#window.isDestroyed()) return;
     const workspace = this.#workspaces.get(this.#attached.workspaceId);
@@ -373,6 +404,7 @@ export class BrowserWorkspace {
     if (this.#attached?.workspaceId !== workspace.id || this.#attached?.tabId !== workspace.activeTabId) {
       this.#detachAttached();
       const tab = this.#tab(workspace.id);
+      this.#detachRemote(tab);
       this.#window.contentView.addChildView(tab.view);
       this.#attached = { workspaceId: workspace.id, tabId: tab.id };
     }

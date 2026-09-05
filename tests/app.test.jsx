@@ -1060,7 +1060,7 @@ describe("Pixice app shell", () => {
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).not.toBeInTheDocument();
     const settingsSidebar = screen.getByRole("complementary", { name: "Settings navigation" });
     expect(settingsSidebar).toBeInTheDocument();
-    expect(within(settingsSidebar).getByRole("navigation").querySelectorAll("button")).toHaveLength(7);
+    expect(within(settingsSidebar).getByRole("navigation").querySelectorAll("button")).toHaveLength(8);
     expect(within(settingsSidebar).queryByRole("button", { name: /^Runtime/ })).not.toBeInTheDocument();
     expect(within(settingsSidebar).queryByRole("button", { name: /^Notifications/ })).not.toBeInTheDocument();
     expect(within(settingsSidebar).getByRole("button", { name: /^About Pixice/ })).toBeInTheDocument();
@@ -3833,6 +3833,24 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Close preview workspace" })[0]);
     await waitFor(() => expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument());
     expect(sidebar).toHaveAttribute("data-expanded", "true");
+  });
+
+  it("keeps the native tab label and address synchronized with another browser client", async () => {
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await screen.findByRole("region", { name: "Preview workspace" });
+    const next = {
+      native: false, workspaceId: "thread-1", activeTabId: "browser-2",
+      tabs: [
+        { id: "browser-1", title: "Original", url: "https://one.example" },
+        { id: "browser-2", title: "From another client", url: "https://two.example" }
+      ]
+    };
+    window.pixice.browser.setViewport.mockResolvedValue(next);
+    act(() => window.pixice.emit({ type: "BrowserState", payload: next }));
+    expect(await screen.findByRole("tab", { name: "From another client" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("textbox", { name: "Browser address" })).toHaveValue("https://two.example");
   });
 
   it("opens, runs, and closes a thread-scoped iOS Simulator tab", async () => {

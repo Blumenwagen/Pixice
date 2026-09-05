@@ -1,6 +1,6 @@
 # Pixice privacy notice
 
-Effective August 22, 2026
+Effective September 5, 2026
 
 Pixice is a local desktop application. It does not include Pixice-owned analytics or advertising trackers in version 0.1.0-beta.2.
 
@@ -23,6 +23,14 @@ Pixice also makes network requests when it:
 - uses a capability, plugin, app, or MCP server configured by the user.
 
 Those destinations receive the normal request data, including an IP address and any headers or credentials the user configured.
+
+## Optional remote access
+
+Pixice Connect is off by default. When enabled, paired devices receive project and task data and can perform authorized agent, workflow, board, project-file, and native preview-browser actions. Paired devices can view signed-in pages in the host browser and interact with them. Page frames are transmitted on demand and are not saved in the connection audit; the audit records action names and results, never screenshot pixels or typed text. The host keeps device credential hashes and a bounded connection audit log; clients keep their device token, saved instance addresses, and separate workspace caches in browser/renderer local storage. Pairing links expire after five minutes, device access after 30 days, and the host can revoke either.
+
+Unified Usage saves per-instance token and cost summaries, daily model history, and last-reported provider limits in the receiving browser/renderer’s local storage. These snapshots remain available after a host disconnects or access is revoked. Forgetting the instance or clearing that browser storage removes its saved usage; no separate Pixice analytics service receives it.
+
+The optional temporary tunnel downloads a checksum-verified Cloudflare executable from GitHub and makes a Cloudflare-hosted HTTPS address available. Cloudflare terminates HTTPS and can process the transported application traffic and normal network metadata. Pixice does not claim end-to-end encryption through this service. A user-managed HTTPS endpoint is also supported. No Pixice-operated account or relay service is used.
 
 ## User control
 

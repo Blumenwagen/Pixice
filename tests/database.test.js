@@ -580,6 +580,11 @@ describe("thread runtime persistence", () => {
     expect(summary.models[0]).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", events: 1 });
     expect(summary.daily).toHaveLength(30);
     expect(summary.heatmapDaily).toHaveLength(365);
+    expect(summary.historyDailyModels).toHaveLength(1);
+    expect(summary.historyDailyModels[0]).toMatchObject({ date: summary.calendarDate, provider: "codex", model: "gpt-5.6-sol", totalTokens: 3_600, events: 1 });
+    expect(summary.recordingStartDate).toBe(summary.calendarDate);
+    expect(summary.trackingDays).toBe(1);
+    expect(summary.calendarTimeZone).toEqual(expect.any(String));
     expect(summary.heatmapDaily.at(-1)).toMatchObject({ costUsd: 0.023625, events: 1 });
     database.db.close();
 

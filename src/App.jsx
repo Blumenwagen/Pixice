@@ -1,3 +1,7 @@
+import { useUnifiedUsage } from "./connect/useUnifiedUsage.js";
+import { RemoteBrowserSurface } from "./connect/RemoteBrowserSurface.jsx";
+import { ConnectionsSettings } from "./connect/ConnectionsSettings.jsx";
+import { getPixiceApi } from "./connect/client.js";
 import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useContext } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import {
@@ -1294,6 +1298,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
 
   useEffect(() => setAddress(activeTab?.url ?? ""), [activeTab?.id, activeTab?.url]);
   useEffect(() => {
+    if (api?.remote) return undefined;
     if (!api?.browser || !activeTab || !viewportRef.current) {
       if (workspaceId) void api?.browser?.setViewport({ workspaceId, visible: false }).catch(() => {});
       return undefined;
@@ -1543,6 +1548,8 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
         />
       ) : activeFile ? (
         <FileSurface file={activeFile} onUpdate={onFileUpdate} onSave={saveFile} />
+      ) : activeTab && api.remote ? (
+        <RemoteBrowserSurface api={api} workspaceId={workspaceId} tabId={activeTab.id} key={`${workspaceId}:${activeTab.id}`} />
       ) : activeTab ? (
         <div className="browser-viewport" ref={viewportRef}>
           {!state.native && (
@@ -3907,7 +3914,7 @@ function ConversationWorkspace({
       <AnimatePresence initial={false} onExitComplete={() => setPreviewPresent(false)}>
         {previewOpen && (
           <BrowserPanel
-            api={window.pixice}
+            api={getPixiceApi()}
             workspaceId={previewWorkspaceId}
             state={browserState}
             onState={onBrowserState}
@@ -4350,11 +4357,12 @@ function AccentColorPicker({ value, onChange }) {
   );
 }
 
-function SettingsRow({ title, description, children }) {
+function SettingsRow({ title, description, children, hostOnly = false }) {
+  const disabled = hostOnly && Boolean(getPixiceApi()?.remote);
   return (
     <div className="preference-row">
-      <span><strong>{title}</strong><small>{description}</small></span>
-      <div className="preference-control">{children}</div>
+      <span><strong>{title}</strong><small>{description}{disabled ? " Change this on the host desktop." : ""}</small></span>
+      {disabled ? <fieldset className="preference-control connect-host-setting" disabled>{children}</fieldset> : <div className="preference-control">{children}</div>}
     </div>
   );
 }
@@ -4845,7 +4853,7 @@ function UsageLimitResetTime({ resetsAt }) {
   return <time dateTime={date.toISOString()} title={date.toLocaleString()}>Resets in {usageLimitCountdown(resetsAt, now)}</time>;
 }
 
-function ProviderUsageLimits({ data, loading, error, onRefresh }) {
+function ProviderUsageLimits({ data, loading, error, onRefresh, snapshotAt }) {
   const providers = data?.providers ?? [];
   const [selectedProvider, setSelectedProvider] = useState(providers[0]?.provider ?? "codex");
   useEffect(() => {
@@ -4866,7 +4874,7 @@ function ProviderUsageLimits({ data, loading, error, onRefresh }) {
   return (
     <section className="usage-limits-card" aria-label={`${providerLabel} usage limits`}>
       <header>
-        <span><h2>Usage limits</h2><p>Live allowance from signed-in provider accounts</p></span>
+        <span><h2>Usage limits</h2><p>{snapshotAt ? `Last reported allowance · ${new Date(snapshotAt).toLocaleString()}` : "Live allowance from signed-in provider accounts"}</p></span>
         <span className="usage-limits-actions">
           {providers.length > 1 && <SlidingSegmented value={active?.provider} options={providers.map((provider) => ({ value: provider.provider, label: provider.label }))} onChange={setSelectedProvider} label="Usage provider" className="usage-provider-switch" />}
           {active && <strong><i />{usagePlanLabel(active.planType, active.provider)}</strong>}
@@ -4914,10 +4922,49 @@ function chartDateLabel(value) {
   return new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsError, rangeDays, onRangeChange, onRefresh }) {
+export function UsagePage(props) {
+  const [scope, setScope] = useState(props.unifiedOnly ? "unified" : "instance");
+  const [limitsInstance, setLimitsInstance] = useState("");
+  const unified = useUnifiedUsage(scope === "unified", props.rangeDays);
+  const available = unified.entries.filter((entry) => entry.summary);
+  const limitHost = available.find((entry) => entry.id === limitsInstance) ?? available[0];
+  const pending = unified.entries.some((entry) => entry.status === "loading");
+  const cachedCount = available.filter((entry) => entry.cached).length;
+  return <>
+    <div className="usage-scope-bar">
+      {!props.unifiedOnly && <SlidingSegmented value={scope} options={[{ value: "instance", label: "This instance" }, { value: "unified", label: "Unified Usage" }]} onChange={setScope} label="Usage scope" />}
+      {scope === "unified" && <button className="settings-action" onClick={unified.refresh} disabled={unified.loading} aria-label="Refresh unified usage"><ArrowClockwise size={14} />{unified.loading ? "Refreshing…" : "Refresh"}</button>}
+    </div>
+    {scope === "instance" ? <UsageSettings {...props} /> : <>
+      <section className="usage-instances-card" aria-label="Unified usage instances">
+        <header><span><h2>Unified Usage</h2><p>Combined usage from instances paired on this device{window.pixice ? " and this desktop" : ""}.</p></span><strong role="status">{unified.loading ? "Updating · " : ""}{available.length} of {unified.entries.length} included</strong></header>
+        <div className="usage-instances-scroll"><table>
+          <thead><tr><th>Instance</th><th>Status</th><th>Month to date</th><th>Tokens · {props.rangeDays}d</th></tr></thead>
+          <tbody>{unified.entries.map((entry) => <tr key={entry.id}>
+            <th scope="row"><strong>{entry.name}</strong><small>{entry.local ? "This device" : entry.endpoint}</small></th>
+            <td><span className="usage-instance-status" data-state={entry.status}>{entry.status === "online" ? "Synced" : entry.status === "loading" ? "Syncing…" : entry.cached ? (entry.status === "unauthorized" ? "Saved · pair again" : "Saved · offline") : entry.status === "unauthorized" ? "Pair again" : "Unavailable"}</span><small>{entry.checkedAt ? `Last synced ${new Date(entry.checkedAt).toLocaleString()}` : "Not synced yet"}</small>{entry.error && <small>{entry.error}</small>}{entry.cacheError && <small>{entry.cacheError}</small>}</td>
+            <td>{entry.summary ? formatUsd(entry.summary.stats.currentMonthCostUsd) : "—"}</td>
+            <td>{entry.summary ? entry.summary.selected.totalTokens.toLocaleString() : "—"}</td>
+          </tr>)}</tbody>
+        </table></div>
+        <p className="settings-footnote">{available.length < unified.entries.length ? "Partial totals: instances without a saved snapshot are missing. " : ""}{cachedCount > 0 ? `${cachedCount} instance${cachedCount === 1 ? " uses its" : "s use their"} last saved usage; newer activity may be missing. ` : ""}Usage is saved on this device and syncs every 30 seconds while visible. Dates follow each host’s local calendar.</p>
+        {!unified.entries.length && !unified.loading && <p className="settings-footnote">Pair an instance in Connections to include its usage.</p>}
+        {unified.error && <p role="alert" className="connect-error">{unified.error}</p>}
+      </section>
+      <UsageSettings {...props} summary={unified.summary} loading={unified.loading || pending} error={!unified.summary && !unified.loading ? "No saved usage yet. Connect an instance and refresh to sync its history." : null} unified onRefresh={unified.refresh} limitsContent={limitHost ? <>
+        <div className="usage-limits-scope"><label>Provider limits for <select value={limitHost.id} onChange={(event) => setLimitsInstance(event.target.value)}>{available.map((entry) => <option value={entry.id} key={entry.id}>{entry.name}</option>)}</select></label><p>Account allowances stay separate. Instances using the same provider account share its limits.</p></div>
+        {limitHost.cached && <p className="settings-footnote">Saved allowance from {new Date(limitHost.checkedAt).toLocaleString()}; current limits may differ.</p>}
+        <ProviderUsageLimits data={limitHost.limits} snapshotAt={limitHost.cached ? limitHost.checkedAt : null} error={limitHost.limitsError} loading={unified.loading} onRefresh={unified.refresh} />
+      </> : null} />
+    </>}
+  </>;
+}
+
+function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsError, rangeDays, onRangeChange, onRefresh, unified = false, limitsContent }) {
   const [rateProvider, setRateProvider] = useState("codex");
-  if (loading && !summary) return <div className="usage-pane"><ProviderUsageLimits data={limits} loading={limitsLoading} error={limitsError} onRefresh={onRefresh} /><LoadingSkeleton label="Calculating usage" rows={5} /></div>;
-  if (error && !summary) return <div className="usage-pane"><ProviderUsageLimits data={limits} loading={limitsLoading} error={limitsError} onRefresh={onRefresh} /><div className="usage-error"><Warning size={18} /><span><strong>Usage history could not be loaded</strong><small>{error}</small></span><button className="settings-action" onClick={onRefresh}>Try again</button></div></div>;
+  const providerLimits = unified ? limitsContent : <ProviderUsageLimits data={limits} loading={limitsLoading} error={limitsError} onRefresh={onRefresh} />;
+  if (loading && !summary) return <div className="usage-pane">{providerLimits}<LoadingSkeleton label="Calculating usage" rows={5} /></div>;
+  if (error && !summary) return <div className="usage-pane">{providerLimits}<div className="usage-error"><Warning size={18} /><span><strong>Usage history could not be loaded</strong><small>{error}</small></span><button className="settings-action" onClick={onRefresh}>Try again</button></div></div>;
 
   const data = summary ?? {
     stats: {}, selected: {}, daily: [], heatmapDaily: [], models: [], pricing: [], pricingVerifiedAt: null, recordingStartedAt: null
@@ -4960,7 +5007,7 @@ function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsE
         </div>
         <div className="usage-hero-status"><i />Measured tokens · API-equivalent USD</div>
         <div className="usage-stat-grid">
-          <article><span>Today</span><strong><UsageCostTicker value={stats.todayCostUsd} /></strong><small>local calendar day</small></article>
+          <article><span>Today</span><strong><UsageCostTicker value={stats.todayCostUsd} /></strong><small>{unified ? "each host’s local day" : "local calendar day"}</small></article>
           <article><span>This week</span><strong><UsageCostTicker value={stats.currentWeekCostUsd} /></strong><small>since Monday</small></article>
           <article><span>Daily average</span><strong><UsageCostTicker value={stats.dailyAverageCostUsd} /></strong><small>since tracking began</small></article>
           <article><span>Weekly average</span><strong><UsageCostTicker value={stats.weeklyAverageCostUsd} /></strong><small>normalized from history</small></article>
@@ -4969,7 +5016,7 @@ function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsE
         </div>
       </section>
 
-      <ProviderUsageLimits data={limits} loading={limitsLoading} error={limitsError} onRefresh={onRefresh} />
+      {providerLimits}
 
       <section className="usage-heatmap-card">
         <header>
@@ -5001,7 +5048,7 @@ function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsE
 
       <div className="usage-chart-grid">
         <section className="usage-chart-card compact">
-          <header><span><h2>Cost by model</h2><p>Top models in this range</p></span></header>
+          <header><span><h2>Cost by model</h2><p>{data.modelHistoryUnavailable ? "Some saved hosts need an update to show model history in this range." : "Top models in this range"}</p></span></header>
           <DitherBarChart
             data={modelRows}
             series={[{ key: "cost", label: "Cost", color: "purple", variant: "hatched" }]}
@@ -5058,9 +5105,10 @@ const SETTINGS_PAGES = [
   { id: "conversation", label: "Conversation", description: "Writing, reading, and live output", icon: PencilSimple, keywords: "composer enter send shortcut drafts autofocus spellcheck slash commands timestamps work details expanded collapsed" },
   { id: "agents", label: "Agents", description: "Behavior and orchestration", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration tools instruments interactive progress task map approvals" },
   { id: "providers", label: "Providers", description: "Accounts, runtimes, and models", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions runtime health status connected update install locate repair" },
+  { id: "connections", label: "Connections", description: "Remote instances and paired devices", icon: Globe, keywords: "connect remote network tunnel web https pairing devices host instance tailscale" },
   { id: "capabilities", label: "Capabilities", description: "GitHub, skills, apps, and MCP", icon: PlugsConnected, keywords: "extensions plugins tools servers github gh cli login pull request issues push fetch workflow" },
   { id: "appearance", label: "Appearance", description: "Layout, text, color, and motion", icon: Eye, keywords: "compact comfortable conversation width focused balanced wide text size small large accent coral rose amber green teal blue violet graphite transparency projects sidebar recent third row nine legacy old nested shortcuts animation" },
-  { id: "usage", label: "Usage", description: "Tokens, trends, and API cost", icon: ChartLineUp, keywords: "cost spend pricing tokens input output cache daily weekly monthly charts" }
+  { id: "usage", label: "Usage", description: "Tokens, trends, and API cost", icon: ChartLineUp, keywords: "cost spend pricing tokens input output cache daily weekly monthly charts unified instances combined" }
 ];
 
 const SETTINGS_ABOUT_PAGE = { id: "about", label: "About Pixice", description: "Version and app updates", icon: Info, keywords: "about pixice version release download install github update" };
@@ -5203,7 +5251,7 @@ function SettingsWorkspace({
           <SettingsRow title="Fast mode" description="Start new tasks on the provider's faster service tier when the selected model supports it.">
             <SettingsToggle label="Use Fast mode for new tasks" checked={defaultFastMode} onChange={onDefaultFastModeChange} />
           </SettingsRow>
-          <SettingsRow title="Thread names" description="Generate concise names in a separate read-only turn. Automatic prefers Luna, then Haiku.">
+          <SettingsRow hostOnly title="Thread names" description="Generate concise names in a separate read-only turn. Automatic prefers Luna, then Haiku.">
             <select className="settings-select" aria-label="Thread name model" value={threadNamingModel} onChange={(event) => onThreadNamingModelChange(event.target.value)}>
               <option value={THREAD_NAMING_AUTO}>Automatic{automaticNamingModel ? ` (${automaticNamingModel.displayName})` : " (no model available)"}</option>
               {namingModels.map((model) => {
@@ -5216,7 +5264,7 @@ function SettingsWorkspace({
               <option value={THREAD_NAMING_OFF}>Off</option>
             </select>
           </SettingsRow>
-          <SettingsRow title="Workflow generation model" description="Used by the hidden read-only agent that builds a canvas from its description. Automatic prefers Terra and falls back to Claude.">
+          <SettingsRow hostOnly title="Workflow generation model" description="Used by the hidden read-only agent that builds a canvas from its description. Automatic prefers Terra and falls back to Claude.">
             <select className="settings-select" aria-label="Workflow generation model" value={workflowGenerationModel} onChange={(event) => onWorkflowGenerationModelChange(event.target.value)}>
               <option value={WORKFLOW_GENERATION_AUTO}>Automatic{automaticGenerationModel ? ` (${automaticGenerationModel.displayName})` : " (no model available)"}</option>
               {["codex", "claude"].map((provider) => {
@@ -5235,7 +5283,7 @@ function SettingsWorkspace({
           </SettingsRow>
         </SettingsGroup>
         <SettingsGroup title="Safety and continuity">
-          <SettingsRow title="Keep System awake" description="Prevent idle sleep while Pixice is running. The display may still turn off.">
+          <SettingsRow hostOnly title="Keep System awake" description="Prevent idle sleep while Pixice is running. The display may still turn off.">
             <SettingsToggle label="Keep System awake" checked={keepSystemAwake} onChange={onKeepSystemAwakeChange} />
           </SettingsRow>
           <SettingsRow title="Confirm before deleting tasks" description="Ask before removing a conversation from the task list.">
@@ -5271,13 +5319,13 @@ function SettingsWorkspace({
           </SettingsRow>
         </SettingsGroup>
         <SettingsGroup title="Notifications" description="Choose when the desktop app asks for attention or reports finished work.">
-          <SettingsRow title="Questions and approvals" description="Notify when an agent needs a decision before it can continue.">
+          <SettingsRow hostOnly title="Questions and approvals" description="Notify when an agent needs a decision before it can continue.">
             <SettingsToggle label="Notify for questions and approvals" checked={attentionNotifications} onChange={onAttentionNotificationsChange} />
           </SettingsRow>
-          <SettingsRow title="Task completion" description="Notify when a lead task finishes its active turn.">
+          <SettingsRow hostOnly title="Task completion" description="Notify when a lead task finishes its active turn.">
             <SettingsToggle label="Notify when tasks finish" checked={completionNotifications} onChange={onCompletionNotificationsChange} />
           </SettingsRow>
-          <SettingsRow title="Notification sound" description="Allow task notifications to play the operating system's alert sound.">
+          <SettingsRow hostOnly title="Notification sound" description="Allow task notifications to play the operating system's alert sound.">
             <SettingsToggle label="Play notification sounds" checked={notificationSound} onChange={onNotificationSoundChange} />
           </SettingsRow>
         </SettingsGroup>
@@ -5328,7 +5376,7 @@ function SettingsWorkspace({
     const coreBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category !== "pixice-native");
     const pixiceNativeBehaviors = agentBehaviorCatalog.filter((behavior) => behavior.category === "pixice-native");
     const renderBehavior = (behavior) => (
-      <SettingsRow key={behavior.id} title={behavior.label} description={behavior.description}>
+      <SettingsRow hostOnly key={behavior.id} title={behavior.label} description={behavior.description}>
         <SettingsToggle label={behavior.label} checked={agentBehaviors[behavior.id] ?? behavior.defaultEnabled} onChange={(value) => onAgentBehaviorChange(behavior.id, value)} />
       </SettingsRow>
     );
@@ -5437,8 +5485,10 @@ function SettingsWorkspace({
     );
   } else if (page === "providers") {
     pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} updateChecksEnabled={providerUpdateChecksEnabled} onUpdateChecksEnabledChange={onProviderUpdateChecksEnabledChange} />;
+  } else if (page === "connections") {
+    pageContent = <ConnectionsSettings />;
   } else if (page === "usage") {
-    pageContent = <UsageSettings summary={usageSummary} loading={usageLoading} error={usageError} limits={usageLimits} limitsLoading={usageLimitsLoading} limitsError={usageLimitsError} rangeDays={usageRangeDays} onRangeChange={onUsageRangeChange} onRefresh={onRefreshUsage} />;
+    pageContent = <UsagePage summary={usageSummary} loading={usageLoading} error={usageError} limits={usageLimits} limitsLoading={usageLimitsLoading} limitsError={usageLimitsError} rangeDays={usageRangeDays} onRangeChange={onUsageRangeChange} onRefresh={onRefreshUsage} />;
   } else if (page === "capabilities") {
     pageContent = (
       <>
@@ -5516,7 +5566,8 @@ function BoardWorkspace({ project, threads, tasks, phases, attention, loading, o
 
 export function App() {
   const systemReducedMotion = useReducedMotion();
-  const api = window.pixice;
+  const api = getPixiceApi();
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [projects, setProjects] = useState([]);
   const [projectActivity, setProjectActivity] = useState({});
   const [seenThreadCompletions, setSeenThreadCompletions] = useState(loadSeenThreadCompletions);
@@ -5777,7 +5828,7 @@ export function App() {
       return next;
     });
     removedIds.forEach((workspaceId) => {
-      void api?.browser?.destroy?.({ workspaceId }).catch(() => {});
+      if (!api?.remote) void api?.browser?.destroy?.({ workspaceId }).catch(() => {});
     });
   }, [api, previewWorkspaceId, previewWorkspaces, threads]);
 
@@ -6713,8 +6764,10 @@ export function App() {
             ...instrumentTabs.map((tab) => `instrument:${tab.id}`),
             ...customTabs.map((tab) => tab.id)
           ]);
-          const activeTabId = availableIds.has(workspace.activeTabId)
-            ? workspace.activeTabId
+          const wasBrowserActive = (workspace.browserState?.tabs ?? []).some((tab) => tab.id === workspace.activeTabId);
+          const activeTabId = wasBrowserActive && event.payload.activeTabId
+            ? event.payload.activeTabId
+            : availableIds.has(workspace.activeTabId) ? workspace.activeTabId
             : event.payload.activeTabId ?? customTabs.at(-1)?.id ?? fileTabs.at(-1)?.id ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null) ?? null;
           return {
             ...workspace,
@@ -8250,11 +8303,14 @@ export function App() {
     );
   }
 
+  useEffect(() => { setMobileNavigationOpen(false); }, [activeView, settingsPage, selectedProjectId, selectedThreadId]);
+
   return (
     <div className="pixice-stage">
       <div
         className={`pixice-app view-${activeView}`}
         data-sidebar-expanded={sidebarExpanded}
+        data-mobile-navigation={mobileNavigationOpen}
         data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread) && !previewOpen}
         data-density={preferences.density}
         data-conversation-width={preferences.conversationWidth}
@@ -8268,6 +8324,10 @@ export function App() {
         style={{ "--sidebar-width": `${sidebarWidth}px` }}
       >
         <div className="window-drag-region" aria-hidden="true" />
+        {api?.remote && <>
+          <button className="connect-mobile-menu" aria-label={mobileNavigationOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileNavigationOpen} onClick={() => { setMobileNavigationOpen((value) => !value); setSidebarExpanded(true); }}><Stack size={18} /></button>
+          {mobileNavigationOpen && <button className="connect-mobile-scrim" aria-label="Close navigation drawer" onClick={() => setMobileNavigationOpen(false)} />}
+        </>}
         {activeView === "settings" ? (
           <SettingsSidebar page={settingsPage} onPageChange={setSettingsPage} onBack={() => changeView("task")} />
         ) : activeView === "tools" ? (

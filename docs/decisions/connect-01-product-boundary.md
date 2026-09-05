@@ -1,6 +1,6 @@
 # Pixice Connect product boundary
 
-- Status: accepted
+- Status: superseded by [Connect 02](connect-02-remote-workspace.md)
 - Date: 2026-08-25
 - Decision: ship a private-network web companion before considering a managed public service
 - Scope: product and architecture decision only

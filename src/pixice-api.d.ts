@@ -257,9 +257,28 @@ type WorkflowTriggerStatus = {
   lastResult: string | null;
 };
 
+type ConnectStatus = {
+  hostId: string; name: string; enabled: boolean; running: boolean; port: number; host: string;
+  publicUrl: string; origins: string[]; error: string | null; protocol: number;
+  devices: Array<{ id: string; name: string; createdAt: number; lastSeen: number; expiresAt: number }>;
+  offers: Array<{ id: string; expiresAt: number }>;
+  audit: Array<{ at: string; action: string; deviceId?: string; result: string }>;
+  tunnel?: { state: string; url: string | null; error?: string };
+};
+
 declare global {
   interface Window {
+    pixiceRemote?: Window["pixice"];
     pixice?: {
+      remote?: { hostId: string; name: string; endpoint: string };
+      connect?: {
+        status(): Promise<ConnectStatus>;
+        configure(payload: { enabled: boolean; name?: string; port?: number; host?: "127.0.0.1" | "::1" | "0.0.0.0"; publicUrl?: string; origins?: string[] }): Promise<ConnectStatus>;
+        pair(): Promise<{ id: string; url: string; endpoint: string; expiresAt: number }>;
+        revoke(payload: { id?: string; all?: boolean }): Promise<ConnectStatus>;
+        startTunnel(): Promise<{ state: string; url: string | null; error?: string }>;
+        stopTunnel(): Promise<{ state: string; url: string | null; error?: string }>;
+      };
       app: {
         bootstrap(): Promise<{ projects: PixiceProject[]; models: any[]; runtime: any; settings?: Record<string, unknown>; agentBehaviors?: Array<{ id: string; label: string; description: string; category: "core" | "pixice-native"; defaultEnabled: boolean }> }>;
         saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; defaultFastMode?: boolean; threadNamingModel?: "auto" | "off" | `codex:${string}` | `claude:${string}`; workflowGenerationModel?: "auto" | `codex:${string}` | `claude:${string}`; attentionNotifications?: boolean; completionNotifications?: boolean; notificationSound?: boolean; keepSystemAwake?: boolean; checkProviderUpdates?: boolean; threadCompletionsSeen?: Record<string, string | number>; agentBehaviors?: Record<string, boolean> }): Promise<any>;
@@ -320,6 +339,8 @@ declare global {
         install(): Promise<{ ok: boolean }>;
       };
       browser: {
+        frame?(payload: { workspaceId: string; tabId: string; width: number; height: number }): Promise<{ frameId: string; width: number; height: number; image: string }>;
+        input?(payload: { workspaceId: string; tabId: string; frameId: string; input: Record<string, unknown> }): Promise<{ ok: boolean }>;
         state(payload: { workspaceId: string }): Promise<any>;
         create(payload: { workspaceId: string; url?: string }): Promise<any>;
         close(payload: { workspaceId: string; tabId: string }): Promise<any>;

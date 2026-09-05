@@ -1,0 +1,137 @@
+.connect-root, .connect-application { width: 100%; height: 100%; min-width: 0; }
+.connect-root { position: relative; }
+.connect-root.is-remote .connect-application { height: calc(100% - 28px); padding-top: 28px; box-sizing: content-box; }
+.connect-root.is-remote .pixice-app { padding-top: 0; }
+.connect-root.is-remote .window-drag-region { display: none; }
+.connect-instance-bar { position: absolute; inset: 0 0 auto; height: 28px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid var(--border); background: var(--surface); z-index: 0; -webkit-app-region: drag; }
+.connect-instance-bar button { display: flex; align-items: center; gap: 7px; max-width: 90%; color: var(--foreground); font-size: 10px; background: transparent; cursor: pointer; -webkit-app-region: no-drag; }
+.connect-instance-bar span { color: var(--quiet); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connect-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.connect-section-actions { margin-top: 12px; }
+.connect-input { width: 100%; min-width: 0; padding: 8px 10px; background: var(--surface-raised); color: var(--foreground); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; outline-offset: 2px; }
+.preference-control .connect-input { max-width: 260px; }
+.connect-port { max-width: 90px !important; }
+.connect-error { color: var(--primary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.connect-modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; padding: 20px; background: #0008; backdrop-filter: blur(7px); z-index: 2000; }
+.connect-modal { width: min(480px, 100%); max-height: calc(100dvh - 40px); padding: 22px; overflow-y: auto; background: var(--surface); box-shadow: 0 18px 70px #0005; }
+.connect-modal > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+.connect-modal h2 { margin: 0; font-size: 17px; letter-spacing: -.02em; }
+.connect-pair-form { display: grid; gap: 15px; }
+.connect-pair-form label { display: grid; gap: 7px; font-size: 12px; color: var(--muted); }
+.connect-pair-form .connect-actions { justify-content: flex-end; }
+.connect-pair-form .settings-footnote { margin: 0; line-height: 1.6; }
+.connect-welcome { height: 100%; padding: 32px 20px; display: grid; align-items: center; justify-items: center; overflow-y: auto; }
+.connect-welcome > section { width: min(520px, 100%); display: grid; gap: 18px; }
+.connect-welcome h1 { font-size: 26px; margin: 0; letter-spacing: -.04em; font-weight: 650; }
+.connect-welcome p { margin: 0; color: var(--muted); font-size: 13px; }
+.connect-welcome .settings-action { width: fit-content; }
+.connect-instance-list strong { display: flex; gap: 7px; align-items: center; }
+.connect-instance-list small { overflow-wrap: anywhere; }
+.connect-instance-list.compact { margin-bottom: 16px; }
+.connect-instance-list.compact .preference-row { padding-inline: 0; }
+.connect-pair-output { padding: 0 14px 14px; display: grid; gap: 10px; }
+.connect-pair-output small { color: var(--quiet); font-size: 10px; margin-right: auto; }
+.connect-audit { margin: 24px 2px; color: var(--quiet); font-size: 10px; }
+.connect-audit summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.connect-audit p { overflow-wrap: anywhere; }
+.connect-refresh { margin-top: 14px; }
+.connect-folder-list { max-height: 320px; min-height: 120px; overflow-y: auto; margin-block: 15px; }
+.connect-folder-list button { width: 100%; display: flex; gap: 9px; align-items: center; text-align: left; padding: 10px; background: transparent; color: var(--foreground); cursor: pointer; font-size: 12px; border-radius: 7px; }
+.connect-folder-list button:hover { background: var(--surface-raised); }
+@media (max-width: 640px) {
+  .connect-modal { padding: 18px; }
+  .connect-instance-list .preference-row { grid-template-columns: 1fr; gap: 10px; }
+  .connect-root.is-remote .settings-content { padding: 22px 16px; }
+  .connect-root.is-remote .settings-content .preference-row { grid-template-columns: 1fr; gap: 10px; }
+  .connect-root.is-remote .settings-content .preference-control { justify-content: flex-start; }
+  .connect-root.is-remote .settings-content .connect-input { max-width: 100%; }
+}
+.connect-mobile-menu, .connect-mobile-scrim { display: none; }
+@media (max-width: 720px) {
+  .connect-root.is-remote .connect-application { height: calc(100% - 44px); padding-top: 44px; }
+  .connect-root.is-remote .connect-instance-bar { height: 44px; padding-inline: 48px 12px; }
+  .connect-root.is-remote .connect-instance-bar button { font-size: 11px; }
+  .connect-root.is-remote .connect-instance-bar span { font-size: 10px; }
+  .connect-root.is-remote .pixice-app { grid-template-columns: minmax(0, 1fr); --rail-width: 0px; }
+  .connect-root.is-remote .connect-mobile-menu { display: grid; place-items: center; position: fixed; left: 4px; top: 0; width: 44px; height: 44px; color: var(--foreground); background: transparent; z-index: 50; cursor: pointer; }
+  .connect-root.is-remote .connect-mobile-scrim { display: block; position: fixed; inset: 44px 0 0; z-index: 29; background: #0008; }
+  .connect-root.is-remote .pixice-app > :is(.sidebar, .settings-sidebar) { position: absolute; inset: 0 auto 0 0; width: min(300px, calc(100vw - 48px)); z-index: 30; background: var(--stage); box-shadow: 16px 0 50px #0004; visibility: hidden; transform: translateX(-105%); transition: transform 180ms var(--ease), visibility 180ms; }
+  .connect-root.is-remote .pixice-app[data-mobile-navigation="true"] > :is(.sidebar, .settings-sidebar) { visibility: visible; transform: translateX(0); }
+  .connect-root.is-remote .sidebar-resizer { display: none; }
+  .connect-root.is-remote .main-canvas { margin: 0 4px 4px; }
+  .connect-root.is-remote .app-toolbar { padding-inline: 12px; }
+  .connect-root.is-remote .conversation-column,
+  .connect-root.is-remote .pixice-app[data-inspector-open="true"] .conversation-column { width: calc(100% - 28px); margin-inline: auto; padding-top: 22px; }
+  .connect-root.is-remote .composer,
+  .connect-root.is-remote .pixice-app[data-inspector-open="true"] .composer { left: 12px; right: 12px; width: auto; margin: 0; bottom: 12px; padding: 12px; }
+  .connect-root.is-remote .composer textarea { font-size: 16px; }
+  .connect-root.is-remote .composer-picker.permission .picker-trigger-label { display: none; }
+  .connect-root.is-remote .inspector { position: absolute; inset: 58px 0 0 auto; width: min(330px, calc(100% - 24px)); z-index: 15; background: var(--surface); }
+  .connect-root.is-remote .task-workspace.preview-mode,
+  .connect-root.is-remote .task-workspace.preview-mode[data-question-active="true"] { grid-template-columns: minmax(0, 1fr); }
+  .connect-root.is-remote .preview-mode > .main-canvas,
+  .connect-root.is-remote .preview-resizer { display: none; }
+  .connect-root.is-remote .attention-column { width: calc(100% - 24px); padding-top: 24px; }
+  .connect-root.is-remote .settings-content { width: calc(100% - 24px); padding: 24px 0; }
+  .connect-root.is-remote .settings-content .preference-row { grid-template-columns: 1fr; gap: 10px; }
+  .connect-root.is-remote .settings-content .preference-control { justify-content: flex-start; }
+}
+
+.connect-instance-bar:not([data-state="connected"]) span { color: var(--primary); }
+
+.connect-host-setting { border: 0; padding: 0; margin: 0; opacity: .55; }
+
+.connect-browser { display: flex; flex: 1; min-height: 0; flex-direction: column; background: var(--canvas); }
+.connect-browser-surface { position: relative; flex: 1; min-height: 0; overflow: hidden; outline-offset: -2px; touch-action: none; }
+.connect-browser-surface img { width: 100%; height: 100%; object-fit: contain; display: block; user-select: none; }
+.connect-browser-surface .browser-mock-page { height: 100%; }
+.connect-browser-controls { display: flex; align-items: center; gap: 12px; min-height: 32px; padding: 5px 12px; border-top: 1px solid var(--border); color: var(--quiet); font-size: 10px; }
+.connect-browser-controls span { margin-right: auto; }
+.connect-browser-controls button, .connect-browser-error button { padding: 4px 0; background: none; color: var(--muted); cursor: pointer; font-size: 11px; }
+.connect-browser-controls button:hover, .connect-browser-error button:hover { color: var(--foreground); }
+.connect-browser-controls button:disabled { opacity: .4; cursor: default; }
+.connect-browser-typing { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
+.connect-browser-typing textarea { flex: 1; min-width: 0; resize: vertical; padding: 8px; color: var(--foreground); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 13px; }
+.connect-browser-error { padding: 8px 12px; font-size: 11px; color: var(--primary); border-top: 1px solid var(--border); }
+.connect-browser-error button { margin-left: 12px; }
+@media (max-width: 720px) { .connect-browser-typing textarea { font-size: 16px; } }
+
+.usage-scope-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 20px; }
+.usage-instances-card { margin-bottom: 20px; padding: 20px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.usage-instances-card > header { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.usage-instances-card h2 { margin: 0; font-size: 13px; font-weight: 650; }
+.usage-instances-card header p, .usage-limits-scope p { margin: 5px 0 0; font-size: 10px; color: var(--quiet); line-height: 1.5; }
+.usage-instances-card header > strong { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.usage-instances-scroll { overflow-x: auto; margin-top: 16px; }
+.usage-instances-card table { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; }
+.usage-instances-card th, .usage-instances-card td { padding: 12px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.usage-instances-card th:first-child, .usage-instances-card td:first-child { padding-left: 0; }
+.usage-instances-card th:nth-child(n+3), .usage-instances-card td:nth-child(n+3) { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.usage-instances-card thead th { color: var(--quiet); font-size: 9px; font-weight: 500; white-space: nowrap; }
+.usage-instances-card tbody th { min-width: 130px; font-weight: 550; }
+.usage-instances-card tbody small { display: block; max-width: 240px; margin-top: 4px; color: var(--quiet); font-size: 9px; font-weight: 400; line-height: 1.45; overflow-wrap: anywhere; }
+.usage-instance-status { color: var(--muted); white-space: nowrap; }
+.usage-instance-status[data-state="online"] { color: var(--dither-green); }
+.usage-instance-status[data-state="unavailable"], .usage-instance-status[data-state="unauthorized"] { color: var(--dither-orange); }
+.usage-limits-scope { margin: 22px 0 12px; }
+.usage-limits-scope label { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); }
+.usage-limits-scope select { max-width: 100%; min-width: 150px; border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; color: var(--foreground); background: var(--surface); font: inherit; }
+@media (max-width: 720px) {
+  .usage-scope-bar { flex-wrap: wrap; }
+  .usage-instances-card { padding: 14px; }
+  .usage-instances-card > header { flex-direction: column; gap: 8px; }
+}
+.connect-saved-usage { height: 100dvh; overflow-y: auto; background: var(--canvas); color: var(--foreground); }
+.connect-saved-usage > .settings-content { margin: 24px auto; }
+.connect-saved-usage header h1 { margin: 20px 0; font-size: 24px; }
+@media (max-width: 720px) {
+  .usage-settings-content .usage-hero { padding: 16px; }
+  .usage-settings-content .usage-hero-totals { max-width: none; flex-direction: column; gap: 18px; }
+  .usage-settings-content .usage-hero-heading { min-width: 0; }
+  .usage-settings-content .usage-hero-lifetime { padding: 16px 0 0; border-left: 0; border-top: 1px solid var(--border); }
+  .usage-settings-content .usage-hero-status { position: relative; inset: auto; margin-top: 18px; flex-wrap: wrap; font-size: 9px; }
+  .usage-settings-content .usage-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-settings-content .usage-stat-grid article:nth-child(n) { padding: 12px 8px; border-left: 0; border-top: 1px solid var(--border); }
+  .usage-settings-content .usage-stat-grid article:nth-child(odd) { padding-left: 0; }
+  .usage-settings-content .usage-stat-grid article:nth-child(even) { border-left: 1px solid var(--border); }
+}

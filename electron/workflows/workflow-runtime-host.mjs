@@ -1,3 +1,4 @@
+import { applicationIpc, applicationEvents } from "../connect/application-transport.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { composeAgentInstructions } from "../runtime/agent-behavior.mjs";
@@ -43,7 +44,9 @@ function permissionSettings(mode, project) {
 function eventSender(BrowserWindow) {
   return (type, payload = {}) => {
     const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    window?.webContents.send("pixice:event", { type, payload, at: new Date().toISOString() });
+    const event = { type, payload, at: new Date().toISOString() };
+    window?.webContents.send("pixice:event", event);
+    applicationEvents.emit("event", event);
   };
 }
 
@@ -123,7 +126,7 @@ export async function installWorkflowRuntimeHost({
 
   const integration = installWorkflowIntegration({
     userDataPath: app.getPath("userData"),
-    ipcMain,
+    ipcMain: applicationIpc(ipcMain),
     runtime,
     database,
     dynamicTools,

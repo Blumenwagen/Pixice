@@ -14,7 +14,6 @@ export function TaskReceipt({ receipt, onCompare, onOpen, onLoadEvidence, render
   useEffect(() => { setExpanded(false); setError(null); }, [receipt?.threadId]);
   if (!receipt) return null;
   const running = receipt.status === "running";
-  if (running && !compact && !onOpen) return null;
   const checks = receipt.checks ?? [];
   const failed = checks.filter((check) => check.status === "failed").length;
   const passed = checks.filter((check) => check.status === "passed").length;
@@ -28,21 +27,21 @@ export function TaskReceipt({ receipt, onCompare, onOpen, onLoadEvidence, render
     }
   };
   return (
-    <section className={`task-receipt${leadingAction ? " answer-result" : ""}${compact ? " comparison-result" : ""}`} aria-label={`Task receipt: ${receipt.title}`}>
+    <section className={`task-receipt${running ? " is-running" : ""}${leadingAction ? " answer-result" : ""}${compact ? " comparison-result" : ""}`} aria-label={`Task receipt: ${receipt.title}`}>
       {compact && <header className="comparison-result-heading"><ModelBrandIcon model={receipt.model?.replace(/^(codex|claude):/, "")} size={16} /><strong>{receipt.modelLabel ?? receipt.model?.replace(/^(codex|claude):/, "") ?? "Model not recorded"}</strong><span>{receipt.sourceThreadId ? "Replay" : "Original"}</span></header>}
       <div className="receipt-bar">
         {leadingAction}
-        <button type="button" className="receipt-disclosure" aria-label={expanded ? "Hide evidence" : "View evidence"} aria-expanded={expanded} onClick={showEvidence}>
+        <button type="button" className="receipt-disclosure" aria-label={expanded ? (running ? "Hide working details" : "Hide evidence") : (running ? "Show working details" : "View evidence")} aria-expanded={expanded} onClick={showEvidence}>
           <Status size={14} /><span>{stateLabel(receipt)}</span><CaretDown size={12} className={expanded ? "expanded" : ""} />
         </button>
-        <span className="receipt-inline-meta"><span title="Agent time">{elapsed(receipt.durationMs ?? 0)}</span><span title="Estimated API cost">{receipt.usage?.events ? money(receipt.usage.costUsd) : "Cost unavailable"}{receipt.usage?.unpricedEvents > 0 && " + unpriced"}</span><span title="Total tokens used">{new Intl.NumberFormat("en-US").format(receipt.usage?.tokens ?? 0)} tokens</span></span>
+        {(!running || expanded) && <span className="receipt-inline-meta"><span title="Agent time">{elapsed(receipt.durationMs ?? 0)}</span><span title="Estimated API cost">{receipt.usage?.events ? money(receipt.usage.costUsd) : "Cost unavailable"}{receipt.usage?.unpricedEvents > 0 && " + unpriced"}</span><span title="Total tokens used">{new Intl.NumberFormat("en-US").format(receipt.usage?.tokens ?? 0)} tokens</span></span>}
         <div className="receipt-bar-actions">
           {!running && onCompare && <button type="button" className="receipt-action receipt-replay-link" title="Compare models" aria-label="Compare models" onClick={() => onCompare(receipt)}><ArrowClockwise size={14} /><span>Replay</span></button>}
           {onOpen && <button type="button" className="receipt-action" onClick={() => onOpen(receipt)}>{running ? "Open running task" : "Open task"}</button>}
         </div>
       </div>
-      {compact && <p className="receipt-summary">{running ? "Working on the original prompt…" : receipt.summary || "No final message was recorded."}</p>}
-      {running && receipt.remainingReplayTurns > 0 && <p className="receipt-note">{receipt.remainingReplayTurns} more original prompts queued.</p>}
+      {compact && (!running || expanded) && <p className="receipt-summary">{running ? "Working on the original prompt…" : receipt.summary || "No final message was recorded."}</p>}
+      {running && expanded && receipt.remainingReplayTurns > 0 && <p className="receipt-note">{receipt.remainingReplayTurns} more original prompts queued.</p>}
       {error && <p className="receipt-error" role="alert">{error}</p>}
       {expanded && <div className="receipt-evidence">
         <dl className="receipt-detail-facts">

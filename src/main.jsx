@@ -1,4 +1,5 @@
 import React from "react";
+import { ConnectRoot } from "./connect/ConnectRoot.jsx";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.jsx";
 import { WorkflowHost } from "./components/workflows/WorkflowHost.jsx";
@@ -28,11 +29,13 @@ if (import.meta.env.DEV && (previewParameters.has("task-progress-preview") || pr
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <RendererErrorBoundary>
+      <ConnectRoot>
       <WorkflowHost>
         <TaskPreviewHost>
           <App />
         </TaskPreviewHost>
       </WorkflowHost>
+      </ConnectRoot>
     </RendererErrorBoundary>
   </React.StrictMode>,
 );

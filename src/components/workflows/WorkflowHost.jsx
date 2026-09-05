@@ -1,3 +1,4 @@
+import { getPixiceApi } from "../../connect/client.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { TreeStructure } from "../icons/index.jsx";
@@ -5,7 +6,7 @@ import { WorkflowWorkspace } from "./WorkflowWorkspace.jsx";
 import styles from "./WorkflowWorkspace.module.css";
 
 export function WorkflowHost({ children }) {
-  const api = window.pixice;
+  const api = getPixiceApi();
   const [navTarget, setNavTarget] = useState(null);
   const [appTarget, setAppTarget] = useState(null);
   const [active, setActive] = useState(false);

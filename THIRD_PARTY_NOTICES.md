@@ -27,3 +27,10 @@ Pixice includes Electron and the production dependencies listed in `package.json
 - Dependency lockfile: https://github.com/Blumenwagen/Pixice/blob/main/pnpm-lock.yaml
 
 Before a public release, the release owner must review this notice against the final packaged dependency list and any updated provider terms.
+
+## Optional Cloudflare tunnel
+
+When explicitly started in Connections, Pixice downloads official cloudflared 2026.8.3, licensed under Apache-2.0. It is not included in the base application package. Release URLs and SHA-256 digests are pinned in `electron/connect/tunnel.mjs`.
+
+- Source and license: https://github.com/cloudflare/cloudflared
+- Release: https://github.com/cloudflare/cloudflared/releases/tag/2026.8.3

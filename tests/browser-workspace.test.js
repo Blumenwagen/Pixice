@@ -7,6 +7,8 @@ class FakeWebContents extends EventEmitter {
     super();
     this.url = "";
     this.closed = false;
+    this.backgroundThrottling = true;
+    this.debugger = { isAttached: () => true, attach: vi.fn(), detach: vi.fn(), sendCommand: vi.fn(async () => ({ data: Buffer.from('jpeg').toString('base64') })) };
     this.navigationHistory = {
       canGoBack: () => false,
       canGoForward: () => false,
@@ -39,9 +41,10 @@ class FakeWebContentsView {
   setBackgroundColor() {}
   setBorderRadius(radius) { this.borderRadius = radius; }
   setBounds(bounds) { this.bounds = bounds; }
+  getBounds() { return this.bounds ?? { x: 0, y: 0, width: 0, height: 0 }; }
 }
 
-function createHarness() {
+function createHarness(BrowserWindow) {
   FakeWebContentsView.instances = [];
   const attached = new Set();
   const window = {
@@ -52,7 +55,7 @@ function createHarness() {
     }
   };
   const emit = vi.fn();
-  return { workspace: new BrowserWorkspace({ window, WebContentsView: FakeWebContentsView, emit }), attached, emit };
+  return { workspace: new BrowserWorkspace({ window, WebContentsView: FakeWebContentsView, BrowserWindow, emit }), attached, emit };
 }
 
 describe("BrowserWorkspace", () => {
@@ -154,6 +157,28 @@ describe("BrowserWorkspace", () => {
     expect(adopted.tabs).toHaveLength(1);
     expect(workspace.snapshot("draft:project-1").tabs).toHaveLength(0);
     expect(workspace.snapshot("thread-new").tabs[0].url).toBe("https://example.com");
+  });
+
+  it("moves a remotely rendered tab back into the native preview without showing its background window", async () => {
+    const windows = [];
+    class BackgroundWindow {
+      constructor(options) { this.options = options; this.closed = false; this.children = new Set(); this.contentView = { addChildView: (view) => this.children.add(view), removeChildView: (view) => this.children.delete(view) }; windows.push(this); }
+      isDestroyed() { return this.closed; }
+      destroy() { this.closed = true; }
+    }
+    const { workspace, attached } = createHarness(BackgroundWindow);
+    const state = workspace.createTab('remote-task', 'https://example.com');
+    await workspace.remoteFrame({ workspaceId: 'remote-task', tabId: state.activeTabId, width: 640, height: 480 });
+    expect(windows).toHaveLength(1);
+    expect(windows[0].options.show).toBe(false);
+    expect(attached.size).toBe(0);
+    workspace.setViewport({ workspaceId: 'remote-task', visible: true, bounds: { x: 20, y: 30, width: 900, height: 600 } });
+    expect(windows[0].closed).toBe(true);
+    expect(windows[0].children.size).toBe(0);
+    expect(attached.has(FakeWebContentsView.instances[0])).toBe(true);
+    expect(await workspace.remoteFrame({ workspaceId: 'remote-task', tabId: state.activeTabId, width: 320, height: 400 })).toMatchObject({ width: 900, height: 600 });
+    expect(windows).toHaveLength(1);
+    workspace.destroy();
   });
 
   it("closes every renderer owned by a discarded preview workspace", async () => {

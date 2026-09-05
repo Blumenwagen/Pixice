@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, screen, shell, Tray, WebContentsView } from "electron";
+import { app, BrowserWindow, dialog, ipcMain as nativeIpcMain, Menu, nativeImage, Notification, powerSaveBlocker, screen, shell, Tray, WebContentsView } from "electron";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -74,6 +74,13 @@ import { resolveThreadProject } from "./runtime/thread-project-context.mjs";
 import { IosRuntimeService } from "./ios/ios-runtime-service.mjs";
 import { IosTools, PIXICE_IOS_NAMESPACE, iosDynamicTools, iosToolSchemas } from "./ios/ios-tools.mjs";
 
+import { ConnectServer } from "./connect/server.mjs";
+import { ConnectTunnel } from "./connect/tunnel.mjs";
+import { createRemoteInvoker } from "./connect/remote-operations.mjs";
+import { applicationIpc, applicationHandlers, applicationEvents } from "./connect/application-transport.mjs";
+const ipcMain = applicationIpc(nativeIpcMain);
+let connectServer;
+let connectTunnel;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
 const isDev = !app.isPackaged;
@@ -110,6 +117,7 @@ let taskResults;
 let quitting = false;
 let runtimeStatus = { state: "starting" };
 const activeTurns = new Map();
+const startingTurns = new Set();
 const turnUsageMetadata = new Map();
 const threadSessions = new ThreadSessionRegistry();
 const threadPlans = new Map();
@@ -264,7 +272,12 @@ const requirePromptInput = (value, context) => {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "A message or attachment is required" });
   }
 };
-const send = (type, payload = {}) => mainWindow?.webContents.send("pixice:event", { type, payload, at: new Date().toISOString() });
+const send = (type, payload = {}) => {
+  if (type === "AttentionRequired") payload = { ...payload, requestGeneration: runtimeGeneration };
+  const event = { type, payload, at: new Date().toISOString() };
+  mainWindow?.webContents.send("pixice:event", event);
+  applicationEvents.emit("event", event);
+};
 const RENDERER_STREAM_FRAME_MS = 16;
 const pendingRendererDeltas = new Map();
 let rendererDeltaTimer = null;
@@ -750,7 +763,9 @@ function createWindow() {
       const image = await mainWindow.webContents.capturePage();
       writeFileSync(process.env.PIXICE_CAPTURE_PATH, image.toPNG());
       quitting = true;
-      appUpdater?.stop();
+      await connectTunnel?.stop();
+  await connectServer?.stop();
+  appUpdater?.stop();
       browserWorkspace?.destroy();
       await runtime?.stop();
       app.quit();
@@ -987,28 +1002,33 @@ async function ensureThreadLoaded(project, threadId) {
 }
 
 async function startTrackedTurn({ project, threadId, input, text, model, effort, serviceTier, frozenAttachments, permissionMode = "workspace-write" }) {
-  if (activeTurns.has(threadId)) throw new Error("This task is already running.");
-  const cwd = await ensureThreadLoaded(project, threadId);
-  const permissions = permissionSettings(permissionMode, project);
-  await taskResults.begin({ project, threadId, input, prompt: text, model, effort, serviceTier, frozenAttachments,
-    attachmentRoot: attachmentProjectRoot(app.getPath("userData"), project.id) });
-  turnUsageMetadata.set(threadId, { turnId: null, model: model || null, serviceTier: serviceTier ?? null,
-    effort: effort || null, permissionMode, provider: runtime.providerForThread(threadId) });
+  if (activeTurns.has(threadId) || startingTurns.has(threadId)) throw new Error("This task is already running.");
+  startingTurns.add(threadId);
   try {
-    const response = await runtime.request("turn/start", {
-      threadId, input, cwd, runtimeWorkspaceRoots: runtimeRoots(project), model: model || null,
-      ...(serviceTier !== undefined ? { serviceTier } : {}), effort: effort || null, permissionMode,
-      approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer, sandboxPolicy: permissions.sandboxPolicy
-    });
-    taskResults.started(threadId, response.turn.id);
-    if (!response.turn.status || response.turn.status === "inProgress") activeTurns.set(threadId, response.turn.id);
-    const metadata = turnUsageMetadata.get(threadId);
-    if (metadata) metadata.turnId = response.turn.id;
-    updateTrayMenu();
-    return response;
-  } catch (error) {
-    taskResults.failed(threadId, error);
-    throw error;
+    const cwd = await ensureThreadLoaded(project, threadId);
+    const permissions = permissionSettings(permissionMode, project);
+    await taskResults.begin({ project, threadId, input, prompt: text, model, effort, serviceTier, frozenAttachments,
+      attachmentRoot: attachmentProjectRoot(app.getPath("userData"), project.id) });
+    turnUsageMetadata.set(threadId, { turnId: null, model: model || null, serviceTier: serviceTier ?? null,
+      effort: effort || null, permissionMode, provider: runtime.providerForThread(threadId) });
+    try {
+      const response = await runtime.request("turn/start", {
+        threadId, input, cwd, runtimeWorkspaceRoots: runtimeRoots(project), model: model || null,
+        ...(serviceTier !== undefined ? { serviceTier } : {}), effort: effort || null, permissionMode,
+        approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer, sandboxPolicy: permissions.sandboxPolicy
+      });
+      taskResults.started(threadId, response.turn.id);
+      if (!response.turn.status || response.turn.status === "inProgress") activeTurns.set(threadId, response.turn.id);
+      const metadata = turnUsageMetadata.get(threadId);
+      if (metadata) metadata.turnId = response.turn.id;
+      updateTrayMenu();
+      return response;
+    } catch (error) {
+      taskResults.failed(threadId, error);
+      throw error;
+    }
+  } finally {
+    startingTurns.delete(threadId);
   }
 }
 
@@ -1325,6 +1345,15 @@ async function steerBridgeParentTurn(parentThreadId, turnId, input) {
 }
 
 function registerIpc() {
+  ipcMain.handle("connect:status", () => ({ ...connectServer.status(), tunnel: connectTunnel.status() }));
+  ipcMain.handle("connect:configure", async (_event, payload) => {
+    await connectTunnel.stop();
+    return connectServer.configure(payload);
+  });
+  ipcMain.handle("connect:pair", () => connectServer.pairOffer());
+  ipcMain.handle("connect:revoke", (_event, payload) => connectServer.revoke(z.object({ id: z.string().optional(), all: z.boolean().optional() }).strict().parse(payload)));
+  ipcMain.handle("connect:tunnel:start", () => connectTunnel.start());
+  ipcMain.handle("connect:tunnel:stop", () => connectTunnel.stop());
   ipcMain.handle("tray:action", async (event, payload) => {
     if (!trayWindow || event.sender !== trayWindow.webContents) throw new Error("Tray action rejected");
     const value = z.object({
@@ -1426,7 +1455,7 @@ function registerIpc() {
     return taskResults.replay({ ...value, model: selected.id ?? selected.model });
   });
   ipcMain.handle("tasks:interventions", () => ({
-    requests: [...pendingRequests.values()].map(({ request, displayRequest }) => ({ ...(displayRequest ?? request), taskTitle: request.params?.threadId ? database.getThreadName(request.params.threadId) : null, projectId: threadProjects.get(request.params?.threadId) })),
+    requests: [...pendingRequests.values()].map(({ request, displayRequest, generation }) => ({ ...(displayRequest ?? request), requestGeneration: generation, taskTitle: request.params?.threadId ? database.getThreadName(request.params.threadId) : null, projectId: threadProjects.get(request.params?.threadId) })),
   }));
   ipcMain.handle("providers:login", (_event, payload) => {
     const { provider } = z.object({ provider: z.string().trim().min(1).max(64) }).parse(payload);
@@ -1467,6 +1496,17 @@ function registerIpc() {
   ipcMain.handle("updates:download", () => appUpdater.download());
   ipcMain.handle("updates:install", () => appUpdater.install());
   const browserScope = z.object({ workspaceId: z.string().trim().min(1) });
+  ipcMain.handle("browser:remote-frame", (_event, payload) => browserWorkspace.remoteFrame(payload));
+  ipcMain.handle("browser:remote-input", (_event, payload) => browserWorkspace.remoteInput(payload));
+  ipcMain.handle("browser:remote-adopt", (_event, payload) => {
+    const value = z.object({ fromWorkspaceId: z.string().trim().min(1).max(240), toWorkspaceId: z.string().trim().min(1).max(240) }).strict().parse(payload);
+    return browserWorkspace.adoptWorkspace(value.fromWorkspaceId, value.toWorkspaceId);
+  });
+  ipcMain.handle("browser:remote-destroy", (_event, payload) => {
+    const value = browserScope.strict().parse(payload);
+    browserWorkspace.destroyWorkspace(value.workspaceId);
+    return { destroyed: true, workspaceId: value.workspaceId };
+  });
   ipcMain.handle("browser:state", (_event, payload) => {
     const value = browserScope.parse(payload);
     return browserWorkspace.snapshot(value.workspaceId);
@@ -2723,7 +2763,7 @@ app.whenReady().then(async () => {
   runtime.on("provider-lifecycle", (state) => send("ProviderLifecycleState", state));
 
   createWindow();
-  browserWorkspace = new BrowserWorkspace({ window: mainWindow, WebContentsView, emit: send });
+  browserWorkspace = new BrowserWorkspace({ window: mainWindow, WebContentsView, BrowserWindow, emit: send });
   appUpdater = new PixiceAppUpdater({
     updater: autoUpdater,
     app,
@@ -2740,7 +2780,30 @@ app.whenReady().then(async () => {
       new Notification({ title: "Pixice update ready", body: "Restart Pixice when you are ready to install it." }).show();
     }
   });
+  connectServer = new ConnectServer({
+    directory: path.join(userDataPath, "connect"),
+    clientDirectory: path.join(__dirname, "../dist/client"),
+    version: app.getVersion(),
+    tlsFiles: process.env.PIXICE_CONNECT_TLS_CERT || process.env.PIXICE_CONNECT_TLS_KEY
+      ? { cert: process.env.PIXICE_CONNECT_TLS_CERT, key: process.env.PIXICE_CONNECT_TLS_KEY } : undefined,
+    attention: () => [...pendingRequests.values()].map((pending) => ({
+      ...pending.displayRequest, requestGeneration: pending.generation,
+      projectId: threadProjects.get(pending.request.params?.threadId)
+    })),
+    onChange: (status) => send("ConnectStatus", status),
+    invoke: createRemoteInvoker({
+      handlers: applicationHandlers,
+      pendingRequest: (id) => pendingRequests.get(requestKey(id)),
+      generation: () => runtimeGeneration,
+      activeTurnId: (id) => activeTurns.get(id),
+      fileOptions: previewFileOptions,
+      hostId: () => connectServer.state.hostId
+    })
+  });
+  connectTunnel = new ConnectTunnel({ directory: path.join(userDataPath, "connect"), server: connectServer, onChange: () => send("ConnectStatus", connectServer.status()) });
+  applicationEvents.on("event", (event) => connectServer.publish(event));
   registerIpc();
+  await connectServer.start().catch((error) => send("ConnectStatus", { ...connectServer.status(), error: error.message }));
   createTray();
   appUpdater.start();
   await runtime.start();
@@ -2752,6 +2815,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", async (event) => {
   if (quitting) return;
+  event.preventDefault();
   if (activeTurns.size) {
     event.preventDefault();
     const result = await dialog.showMessageBox(mainWindow, {
@@ -2768,6 +2832,8 @@ app.on("before-quit", async (event) => {
     ));
   }
   quitting = true;
+  await connectTunnel?.stop();
+  await connectServer?.stop();
   appUpdater?.stop();
   systemAwakeController?.stop();
   browserWorkspace?.destroy();

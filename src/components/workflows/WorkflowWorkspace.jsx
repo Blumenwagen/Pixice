@@ -1,3 +1,4 @@
+import { getPixiceApi } from "../../connect/client.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise,
@@ -349,7 +350,7 @@ function WorkflowEditor({ api, projectId, workflowId, workflows = EMPTY_WORKFLOW
   );
 }
 
-export function WorkflowWorkspace({ api = window.pixice, projectId, projectName, models = EMPTY_WORKFLOW_LIST, requestedWorkflowId = null, onWorkflowSelected, onBack }) {
+export function WorkflowWorkspace({ api = getPixiceApi(), projectId, projectName, models = EMPTY_WORKFLOW_LIST, requestedWorkflowId = null, onWorkflowSelected, onBack }) {
   const [workflows, setWorkflows] = useState([]);
   const [selectedId, setSelectedId] = useState(requestedWorkflowId);
   const selectedIdRef = useRef(requestedWorkflowId);
@@ -541,7 +542,7 @@ export function WorkflowWorkspace({ api = window.pixice, projectId, projectName,
   );
 }
 
-export function WorkflowPreview({ api = window.pixice, projectId, workflowId, workflowName = "Workflow", models = EMPTY_WORKFLOW_LIST, reason = "open", onOpenWorkspace, onClose, onTitleChange, tabbed = false }) {
+export function WorkflowPreview({ api = getPixiceApi(), projectId, workflowId, workflowName = "Workflow", models = EMPTY_WORKFLOW_LIST, reason = "open", onOpenWorkspace, onClose, onTitleChange, tabbed = false }) {
   const [title, setTitle] = useState(workflowName || "Workflow");
   const handleSaved = useCallback((saved) => setTitle(saved.name), []);
 

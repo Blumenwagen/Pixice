@@ -28,6 +28,22 @@ describe("task result controls", () => {
     expect(open).toHaveBeenCalled();
   });
 
+  it("keeps a running receipt collapsed until its details are requested", () => {
+    render(<TaskReceipt compact receipt={{ ...receipt, status: "running", remainingReplayTurns: 2 }} />);
+
+    expect(screen.getByRole("button", { name: "Show working details" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("10,000 tokens")).not.toBeInTheDocument();
+    expect(screen.queryByText("Working on the original prompt…")).not.toBeInTheDocument();
+    expect(screen.queryByText("2 more original prompts queued.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show working details" }));
+
+    expect(screen.getByRole("button", { name: "Hide working details" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("10,000 tokens")).toBeInTheDocument();
+    expect(screen.getByText("Working on the original prompt…")).toBeInTheDocument();
+    expect(screen.getByText("2 more original prompts queued.")).toBeInTheDocument();
+  });
+
   it("sends model-specific effort and speed, and resets fast mode when switching providers", async () => {
     const onReplay = vi.fn().mockResolvedValue({});
     const models = [{ id: "codex:gpt-6-astra", model: "gpt-6-astra", displayName: "Astra", defaultReasoningEffort: "high",

@@ -96,7 +96,7 @@ describe("WorkflowWorkspace", () => {
     expect(api.workflows.read).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Workflow settings" }));
-    fireEvent.change(screen.getByDisplayValue("Release workflow"), { target: { value: "Release workflow 2" } });
+    fireEvent.change(await screen.findByDisplayValue("Release workflow"), { target: { value: "Release workflow 2" } });
 
     await waitFor(() => expect(api.workflows.save).toHaveBeenCalledTimes(1), { timeout: 1500 });
     expect(api.workflows.list).toHaveBeenCalledTimes(1);
@@ -110,7 +110,7 @@ describe("WorkflowWorkspace", () => {
     render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Pixice" />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Workflow settings" }));
-    fireEvent.click(screen.getByRole("button", { name: "Generate workflow from description" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate workflow from description" }));
 
     expect(await screen.findByText("Agent is building this workflow")).toBeInTheDocument();
     await waitFor(() => expect(api.workflows.generate).toHaveBeenCalledWith({ projectId: "project-1", workflowId: "workflow-1" }));
@@ -126,7 +126,7 @@ describe("WorkflowWorkspace", () => {
     render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Pixice" />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Workflow settings" }));
-    fireEvent.click(screen.getByRole("button", { name: "Generate workflow from description" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate workflow from description" }));
 
     expect((await screen.findAllByText("The workflow agent is unavailable")).length).toBeGreaterThan(0);
     expect(screen.getByRole("group", { name: "Output: Result" })).toBeInTheDocument();
