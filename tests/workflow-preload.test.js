@@ -116,6 +116,20 @@ describe("workflow preload bridge", () => {
     expect(invoke).toHaveBeenCalledWith("preview:context", payload);
   });
 
+  it("exposes answer-scoped chat forking", async () => {
+    const { api, invoke } = loadPreload();
+    const payload = {
+      projectId: "project-1",
+      threadId: "thread-1",
+      lastTurnId: "turn-2",
+      lastItemId: "answer-2"
+    };
+
+    await api.threads.fork(payload);
+
+    expect(invoke).toHaveBeenCalledWith("threads:fork", payload);
+  });
+
   it("exposes independent provider lifecycle actions", async () => {
     const { api, invoke } = loadPreload();
     const codex = { provider: "codex" };

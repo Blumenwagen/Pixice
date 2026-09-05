@@ -119,6 +119,7 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     read: invoke("threads:read"),
     children: invoke("threads:children"),
     create: invoke("threads:create"),
+    fork: invoke("threads:fork"),
     archive: invoke("threads:archive")
   }),
   turns: Object.freeze({ start: invoke("turns:start"), steer: invoke("turns:steer"), interrupt: invoke("turns:interrupt") }),

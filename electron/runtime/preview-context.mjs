@@ -39,13 +39,44 @@ function textResult(value, success = true) {
   };
 }
 
+const PREVIEW_ACTIVE_METADATA_FIELDS = [
+  "kind",
+  "id",
+  "title",
+  "url",
+  "path",
+  "projectId",
+  "taskId",
+  "proposalId",
+  "workflowId",
+  "instrumentId",
+  "documentVersion",
+  "editable",
+  "dirty",
+  "simulatorUdid",
+  "sessionId",
+  "status",
+  "threadId",
+  "forkedFromId",
+  "hostThreadId"
+];
+
+function activeTabMetadata(active) {
+  if (!active || typeof active !== "object") return null;
+  return Object.fromEntries(PREVIEW_ACTIVE_METADATA_FIELDS
+    .filter((field) => active[field] !== undefined)
+    .map((field) => [field, active[field]]));
+}
+
 function selectedKindLabel(kind) {
   if (kind === "browser") return "a browser tab";
   if (kind === "file") return "a file tab";
   if (kind === "instrument") return "a Tool tab";
   if (kind === "task" || kind === "plan") return "a work item tab";
+  if (kind === "task-map") return "a Task Map tab";
   if (kind === "workflow") return "a Workflow tab";
   if (kind === "simulator") return "an iOS Simulator tab";
+  if (kind === "thread") return "a Side Thread chat tab";
   if (kind === "new") return "the new-tab chooser";
   return "a tab";
 }
@@ -87,7 +118,7 @@ export class PreviewContextRegistry {
   set(threadId, context) {
     if (!threadId) throw new Error("A thread-scoped Preview workspace is required");
     const normalized = context?.open
-      ? { open: true, tabCount: context.tabCount ?? 0, active: context.active ?? null }
+      ? { open: true, tabCount: context.tabCount ?? 0, active: activeTabMetadata(context.active) }
       : { open: false, tabCount: 0, active: null };
     this.#contexts.set(threadId, normalized);
     return normalized;

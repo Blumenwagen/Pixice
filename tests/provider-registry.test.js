@@ -42,7 +42,11 @@ class FakeProvider extends EventEmitter {
     this.calls.push({ method, params });
     if (method === "model/list") return { data: this.models.map((model) => ({ model, displayName: model })) };
     if (method === "thread/list") return { data: this.threads ?? [] };
+    if (method === "thread/read") {
+      return { thread: this.threadReads?.[params.threadId] ?? this.threads?.find((thread) => thread.id === params.threadId) };
+    }
     if (method === "thread/start") return { thread: { id: `${this.id}-thread`, cwd: params.cwd, ephemeral: params.ephemeral === true, turns: [] } };
+    if (method === "thread/fork") return { thread: { id: `${this.id}-fork`, cwd: "/workspace", parentThreadId: null, turns: [] } };
     if (method === "turn/start") return { turn: { id: `${this.id}-turn` } };
     return {};
   }
@@ -104,6 +108,63 @@ describe("ProviderRegistry", () => {
     claude.emit("server-request", { id: "claude-request:1", method: "item/tool/requestApproval", params: {} });
     registry.respond("claude-request:1", { decision: "accept" });
     expect(claude.response).toEqual({ id: "claude-request:1", result: { decision: "accept" } });
+  });
+
+  it("routes a fork to the source provider and persists fork ancestry separately", async () => {
+    const database = new MemoryDatabase();
+    database.saveThreadProviderBinding({ threadId: "source-thread", provider: "claude", providerThreadId: "session-1", cwd: "/workspace" });
+    const registry = new ProviderRegistry({ database });
+    const codex = registry.register(new FakeProvider("codex", []));
+    const claude = registry.register(new FakeProvider("claude", []));
+
+    const response = await registry.request("thread/fork", {
+      threadId: "source-thread",
+      lastTurnId: "turn-1",
+      lastItemId: "answer-1"
+    });
+
+    expect(response.thread).toMatchObject({ id: "claude-fork", provider: "claude", parentThreadId: null, forkedFromId: "source-thread" });
+    expect(claude.calls.at(-1)).toMatchObject({ method: "thread/fork", params: { threadId: "source-thread", lastTurnId: "turn-1", lastItemId: "answer-1" } });
+    expect(codex.calls).toEqual([]);
+    expect(database.getThreadProviderBinding("claude-fork")).toMatchObject({ provider: "claude", forkedFromId: "source-thread" });
+  });
+
+  it("projects durable Codex fork ancestry onto live list and read responses after restart", async () => {
+    const database = new MemoryDatabase();
+    database.saveThreadProviderBinding({ threadId: "source-thread", provider: "codex", providerThreadId: "native-source", cwd: "/workspace" });
+    const initialRegistry = new ProviderRegistry({ database });
+    initialRegistry.register(new FakeProvider("codex", []));
+
+    const forked = await initialRegistry.request("thread/fork", {
+      threadId: "source-thread",
+      lastTurnId: "turn-1",
+      lastItemId: "answer-1"
+    });
+    expect(forked.thread).toMatchObject({ id: "codex-fork", forkedFromId: "source-thread" });
+
+    const restartedRegistry = new ProviderRegistry({ database });
+    const restartedCodex = restartedRegistry.register(new FakeProvider("codex", []));
+    const liveFork = {
+      id: "codex-fork",
+      providerThreadId: "native-fork",
+      cwd: "/workspace",
+      name: "Source task (fork)",
+      status: { type: "idle" }
+    };
+    restartedCodex.threads = [liveFork];
+    restartedCodex.threadReads = { "codex-fork": liveFork };
+
+    await expect(restartedRegistry.request("thread/list", { cwd: "/workspace" })).resolves.toMatchObject({
+      data: [expect.objectContaining({ id: "codex-fork", forkedFromId: "source-thread", provider: "codex" })]
+    });
+    await expect(restartedRegistry.request("thread/read", { threadId: "codex-fork" })).resolves.toMatchObject({
+      thread: expect.objectContaining({ id: "codex-fork", forkedFromId: "source-thread", provider: "codex" })
+    });
+
+    restartedCodex.connected = false;
+    await expect(restartedRegistry.request("thread/list", { cwd: "/workspace" })).resolves.toMatchObject({
+      data: [expect.objectContaining({ id: "codex-fork", forkedFromId: "source-thread", persisted: true })]
+    });
   });
 
   it("does not persist ephemeral helper threads", async () => {

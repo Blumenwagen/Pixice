@@ -16,7 +16,13 @@ import {
   previewContextToolShapes,
   stripPreviewContextHint
 } from "../runtime/preview-context.mjs";
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createSdkMcpServer,
+  deleteSession as deleteClaudeSession,
+  forkSession as forkClaudeSession,
+  getSessionMessages as getClaudeSessionMessages,
+  tool
+} from "@anthropic-ai/claude-agent-sdk";
 import { normalizePixiceQuestions, pixiceQuestionToolShape } from "../runtime/question-tool.mjs";
 import { PIXICE_BRIDGE_MCP_TOOLS, pixiceBridgeDynamicTools, pixiceBridgeToolShapes } from "../runtime/pixice-bridge.mjs";
 import { PIXICE_BOARD_MCP_TOOLS, pixiceBoardToolShapes, pixiceBoardTools } from "../runtime/pixice-board.mjs";
@@ -363,6 +369,68 @@ function normalizeStoredClaudeThread(thread) {
   return { thread: changed ? { ...thread, turns } : thread, changed };
 }
 
+function claudeForkPoint(thread, lastTurnId, lastItemId) {
+  const turnIndex = (thread.turns ?? []).findIndex((turn) => turn.id === lastTurnId);
+  if (turnIndex === -1) throw new Error("Claude fork turn was not found");
+  const turn = thread.turns[turnIndex];
+  if (turn.status !== "completed") throw new Error("Claude can only fork from a completed answer");
+  const agentItems = (turn.items ?? []).filter((item) => item.type === "agentMessage" && String(item.text ?? "").trim());
+  const finalItem = [...agentItems].reverse().find((item) => item.phase === "final_answer") ?? agentItems.at(-1);
+  if (!finalItem) throw new Error("Claude fork turn has no assistant answer");
+  if (lastItemId && finalItem.id !== lastItemId) throw new Error("Claude can only fork from the final answer in a turn");
+  if (!finalItem.sourceUuid) throw new Error("This Claude answer predates native fork metadata and cannot be forked safely");
+  return { turnIndex, finalItem };
+}
+
+function sessionMessageSignature(message) {
+  return JSON.stringify([message?.type, message?.parent_tool_use_id ?? null, message?.message ?? null]);
+}
+
+function claudeForkUuidMap(sourceMessages, forkedMessages, cutoffUuid) {
+  const cutoffIndex = sourceMessages.findIndex((message) => message.uuid === cutoffUuid);
+  if (cutoffIndex === -1) {
+    if (forkedMessages.length > sourceMessages.length) {
+      throw new Error("Claude returned a fork whose transcript does not match the selected history");
+    }
+    const sourcePrefix = sourceMessages.slice(0, forkedMessages.length);
+    const mapping = new Map();
+    for (let index = 0; index < forkedMessages.length; index += 1) {
+      if (sessionMessageSignature(sourcePrefix[index]) !== sessionMessageSignature(forkedMessages[index])) {
+        throw new Error("Claude returned a fork whose transcript does not match the selected history");
+      }
+      mapping.set(sourcePrefix[index].uuid, forkedMessages[index].uuid);
+    }
+    return mapping;
+  }
+  const sourcePrefix = sourceMessages.slice(0, cutoffIndex + 1);
+  const mapping = new Map();
+  let forkedIndex = 0;
+  for (const sourceMessage of sourcePrefix) {
+    const signature = sessionMessageSignature(sourceMessage);
+    while (forkedIndex < forkedMessages.length && sessionMessageSignature(forkedMessages[forkedIndex]) !== signature) {
+      forkedIndex += 1;
+    }
+    const forkedMessage = forkedMessages[forkedIndex];
+    if (!forkedMessage) throw new Error("Claude returned a fork whose transcript does not match the selected history");
+    mapping.set(sourceMessage.uuid, forkedMessage.uuid);
+    forkedIndex += 1;
+  }
+  return mapping;
+}
+
+function cloneClaudeForkTurns(turns, uuidMap) {
+  const copied = structuredClone(turns);
+  for (const turn of copied) {
+    for (const item of turn.items ?? []) {
+      if (!item.sourceUuid) continue;
+      const remapped = uuidMap.get(item.sourceUuid);
+      if (remapped) item.sourceUuid = remapped;
+      else delete item.sourceUuid;
+    }
+  }
+  return copied;
+}
+
 export class ClaudeProvider extends EventEmitter {
   constructor({
     database,
@@ -370,6 +438,9 @@ export class ClaudeProvider extends EventEmitter {
     developerInstructionsPath,
     developerInstructions = null,
     queryFactory = null,
+    sessionFork = forkClaudeSession,
+    sessionMessages = getClaudeSessionMessages,
+    sessionDelete = deleteClaudeSession,
     pixiceBridge = null,
     pixiceBoard = null,
     pixiceInstruments = null,
@@ -389,6 +460,9 @@ export class ClaudeProvider extends EventEmitter {
     this.developerInstructionsPath = developerInstructionsPath;
     this.developerInstructions = developerInstructions;
     this.queryFactory = queryFactory;
+    this.sessionFork = sessionFork;
+    this.sessionMessages = sessionMessages;
+    this.sessionDelete = sessionDelete;
     this.pixiceBridge = pixiceBridge;
     this.pixiceBoard = pixiceBoard;
     this.pixiceInstruments = pixiceInstruments;
@@ -618,6 +692,7 @@ export class ClaudeProvider extends EventEmitter {
     if (method === "model/list") return this.#listModels(params);
     if (method === "thread/list") return this.#listThreads(params);
     if (method === "thread/start") return this.#startThread(params);
+    if (method === "thread/fork") return this.#forkThread(params);
     if (method === "thread/read" || method === "thread/resume") return { thread: this.#context(params.threadId).thread };
     if (method === "thread/archive") return this.#archiveThread(params.threadId);
     if (method === "thread/name/set") return this.#nameThread(params.threadId, params.name);
@@ -780,6 +855,96 @@ export class ClaudeProvider extends EventEmitter {
       terminalError: null
     };
     this.sessions.set(threadId, context);
+    this.#persist(context);
+    this.#emitEvent("TaskUpdated", { method: "thread/started", thread });
+    return { thread };
+  }
+
+  async #forkThread(params) {
+    const source = this.#context(params.threadId);
+    if (source.currentTurn || source.thread.status?.type === "active") {
+      throw new Error("Claude cannot fork a thread while it is running");
+    }
+    const { turnIndex, finalItem } = claudeForkPoint(source.thread, params.lastTurnId, params.lastItemId);
+    const sourceMessages = await this.sessionMessages(source.providerThreadId, {
+      dir: source.thread.cwd,
+      includeSystemMessages: true
+    });
+    const sourceName = String(source.thread.name ?? "").trim();
+    const forkResult = await this.sessionFork(source.providerThreadId, {
+      dir: source.thread.cwd,
+      upToMessageId: finalItem.sourceUuid,
+      ...(sourceName ? { title: `${sourceName} (fork)` } : {})
+    });
+    if (!forkResult?.sessionId) throw new Error("Claude did not return a session for the fork");
+
+    let turns;
+    try {
+      const forkedMessages = await this.sessionMessages(forkResult.sessionId, {
+        dir: source.thread.cwd,
+        includeSystemMessages: true
+      });
+      const uuidMap = claudeForkUuidMap(sourceMessages, forkedMessages, finalItem.sourceUuid);
+      turns = cloneClaudeForkTurns(source.thread.turns.slice(0, turnIndex + 1), uuidMap);
+    } catch (error) {
+      try {
+        await this.sessionDelete(forkResult.sessionId, { dir: source.thread.cwd });
+      } catch (cleanupError) {
+        this.emit("diagnostic", `Claude could not remove an incomplete fork: ${cleanupError.message}`);
+      }
+      throw error;
+    }
+
+    const createdAt = now();
+    const {
+      bridge: _bridge,
+      bridgeModel: _bridgeModel,
+      bridgeThread: _bridgeThread,
+      agentNickname: _agentNickname,
+      agentRole: _agentRole,
+      agentStatusMessage: _agentStatusMessage,
+      parentThreadId: _parentThreadId,
+      ...independentSourceThread
+    } = structuredClone(source.thread);
+    const thread = {
+      ...independentSourceThread,
+      id: randomUUID(),
+      providerThreadId: forkResult.sessionId,
+      ephemeral: false,
+      name: sourceName ? `${sourceName} (fork)` : null,
+      createdAt,
+      updatedAt: createdAt,
+      parentThreadId: null,
+      forkedFromId: source.thread.id,
+      status: threadStatus("idle"),
+      turns
+    };
+    const context = {
+      thread,
+      providerThreadId: forkResult.sessionId,
+      resumeCursor: forkResult.sessionId,
+      model: source.model,
+      effort: source.effort,
+      permissionMode: source.permissionMode,
+      internalNoTools: source.internalNoTools,
+      runtimeWorkspaceRoots: [...source.runtimeWorkspaceRoots],
+      developerInstructions: source.developerInstructions,
+      usesGlobalDeveloperInstructions: source.usesGlobalDeveloperInstructions,
+      refreshInstructionsAfterTurn: false,
+      query: null,
+      queue: null,
+      runner: null,
+      abortController: null,
+      currentTurn: null,
+      compactionItem: null,
+      toolItems: new Map(),
+      taskItems: new Map(),
+      streamResponses: new Map(),
+      activeResponseByLane: new Map(),
+      usageBaseline: new Map(),
+      terminalError: null
+    };
+    this.sessions.set(thread.id, context);
     this.#persist(context);
     this.#emitEvent("TaskUpdated", { method: "thread/started", thread });
     return { thread };
@@ -1335,7 +1500,14 @@ export class ClaudeProvider extends EventEmitter {
       finalItem.phase = "final_answer";
       this.#emitEvent("TaskUpdated", { method: "item/completed", threadId: context.thread.id, turnId: turn.id, item: finalItem });
     } else if (resultText || error) {
-      const item = { id: `claude-result:${message.uuid}`, type: "agentMessage", text: resultText || error, phase: "final_answer", ...(message.is_error ? { error: true } : {}) };
+      const item = {
+        id: `claude-result:${message.uuid}`,
+        type: "agentMessage",
+        text: resultText || error,
+        phase: "final_answer",
+        sourceUuid: message.uuid,
+        ...(message.is_error ? { error: true } : {})
+      };
       appendItem(turn, item);
       this.#emitEvent("TaskUpdated", { method: "item/completed", threadId: context.thread.id, turnId: turn.id, item });
     }
@@ -1617,19 +1789,20 @@ export class ClaudeProvider extends EventEmitter {
     let context = this.sessions.get(threadId);
     if (context) return context;
     const binding = this.database.getThreadProviderBinding(threadId);
-    const thread = this.database.getProviderThreadSnapshot(threadId);
-    if (!binding || binding.provider !== this.id || !thread) throw new Error("Claude thread was not found");
+    const storedThread = this.database.getProviderThreadSnapshot(threadId);
+    if (!binding || binding.provider !== this.id || !storedThread) throw new Error("Claude thread was not found");
+    const { providerContext = {}, ...thread } = storedThread;
     context = {
       thread,
       providerThreadId: binding.providerThreadId || randomUUID(),
       resumeCursor: binding.resumeCursor || binding.providerThreadId,
-      model: null,
-      effort: null,
-      permissionMode: "workspace-write",
-      internalNoTools: false,
-      runtimeWorkspaceRoots: [thread.cwd],
-      developerInstructions: null,
-      usesGlobalDeveloperInstructions: true,
+      model: providerContext.model ?? null,
+      effort: providerContext.effort ?? null,
+      permissionMode: providerContext.permissionMode ?? "workspace-write",
+      internalNoTools: providerContext.internalNoTools === true,
+      runtimeWorkspaceRoots: Array.isArray(providerContext.runtimeWorkspaceRoots) ? providerContext.runtimeWorkspaceRoots : [thread.cwd],
+      developerInstructions: providerContext.developerInstructions ?? null,
+      usesGlobalDeveloperInstructions: providerContext.usesGlobalDeveloperInstructions !== false,
       refreshInstructionsAfterTurn: false,
       query: null,
       queue: null,
@@ -1678,15 +1851,27 @@ export class ClaudeProvider extends EventEmitter {
       provider: this.id,
       providerThreadId: context.providerThreadId,
       resumeCursor: context.resumeCursor,
-      cwd: context.thread.cwd
+      cwd: context.thread.cwd,
+      forkedFromId: context.thread.forkedFromId ?? null
     };
-    const bindingKey = JSON.stringify([binding.providerThreadId, binding.resumeCursor, binding.cwd]);
+    const bindingKey = JSON.stringify([binding.providerThreadId, binding.resumeCursor, binding.cwd, binding.forkedFromId]);
     if (this.persistedBindingKeys.get(context.thread.id) !== bindingKey) {
       this.database.saveThreadProviderBinding(binding);
       this.persistedBindingKeys.set(context.thread.id, bindingKey);
       this.emit("binding", binding);
     }
-    this.database.saveProviderThreadSnapshot(context.thread.id, context.thread);
+    this.database.saveProviderThreadSnapshot(context.thread.id, {
+      ...context.thread,
+      providerContext: {
+        model: context.model,
+        effort: context.effort,
+        permissionMode: context.permissionMode,
+        internalNoTools: context.internalNoTools,
+        runtimeWorkspaceRoots: context.runtimeWorkspaceRoots,
+        developerInstructions: context.developerInstructions,
+        usesGlobalDeveloperInstructions: context.usesGlobalDeveloperInstructions
+      }
+    });
   }
 
   #writeStreamCheckpoint(context) {

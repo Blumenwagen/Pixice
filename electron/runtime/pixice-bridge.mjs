@@ -22,7 +22,7 @@ const spawnThreadShape = {
   prompt: z.string().trim().min(1).max(100_000),
   model: z.string().trim().min(1).max(160),
   effort: z.string().trim().regex(/^[a-z][a-z0-9_-]*$/i).max(32).optional(),
-  permissionMode: z.enum(["read-only", "workspace-write", "auto-approve", "full-access"]).default("workspace-write")
+  permissionMode: z.enum(["read-only", "workspace-write", "auto-approve", "full-access"]).optional()
 };
 
 const sendUpdateShape = {
@@ -53,7 +53,7 @@ const spawnThreadInputSchema = {
     permissionMode: {
       type: "string",
       enum: ["read-only", "workspace-write", "auto-approve", "full-access"],
-      description: "Permission scope for the new thread. Defaults to workspace-write."
+      description: "Permission scope for the new thread. Defaults to the parent thread's permission mode."
     }
   },
   required: ["prompt", "model"],
@@ -213,14 +213,15 @@ export class PixiceBridge {
     if (input.effort && effortValues.length && !effortValues.includes(input.effort)) {
       throw new Error(`${input.effort} is not supported by ${selected.displayName}`);
     }
-    const permissions = context.permissionSettings(input.permissionMode);
+    const permissionMode = input.permissionMode ?? context.permissionMode ?? "workspace-write";
+    const permissions = context.permissionSettings(permissionMode);
     const runtimeWorkspaceRoots = context.runtimeWorkspaceRoots?.length ? context.runtimeWorkspaceRoots : [context.cwd];
     const started = await this.runtime.request("thread/start", {
       cwd: context.cwd,
       runtimeWorkspaceRoots,
       parentThreadId: params.threadId,
       model: selected.id,
-      permissionMode: input.permissionMode,
+      permissionMode,
       approvalPolicy: permissions.approvalPolicy,
       approvalsReviewer: permissions.approvalsReviewer,
       sandbox: permissions.sandbox,
@@ -235,7 +236,7 @@ export class PixiceBridge {
       model: selected.id,
       effort: input.effort ?? null
     });
-    this.onThreadCreated?.({ context, thread: child, prompt: input.prompt, model: selected });
+    this.onThreadCreated?.({ context, thread: child, prompt: input.prompt, model: selected, permissionMode });
     this.#publishAgentState({
       parentThreadId: params.threadId,
       childThreadId: child.id,
@@ -262,7 +263,7 @@ export class PixiceBridge {
         runtimeWorkspaceRoots,
         model: selected.id,
         effort: input.effort || null,
-        permissionMode: input.permissionMode,
+        permissionMode,
         approvalPolicy: permissions.approvalPolicy,
         approvalsReviewer: permissions.approvalsReviewer,
         sandboxPolicy: permissions.sandboxPolicy

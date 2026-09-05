@@ -32,7 +32,7 @@ class FakeRuntime extends EventEmitter {
   }
 }
 
-function createBridge(models) {
+function createBridge(models, contextOverrides = {}) {
   const runtime = new FakeRuntime(models);
   const database = new MemoryDatabase();
   const activities = [];
@@ -47,12 +47,13 @@ function createBridge(models) {
       cwd: "/workspace",
       runtimeWorkspaceRoots: ["/workspace", "/shared"],
       developerInstructions: "Pixice base guidance\n\n# Verification before handoff",
-      permissionSettings: () => ({
+      permissionSettings: (mode) => ({
         approvalPolicy: "on-request",
-        approvalsReviewer: "user",
+        approvalsReviewer: mode === "auto-approve" ? "auto_review" : "user",
         sandbox: "workspace-write",
         sandboxPolicy: { type: "workspaceWrite" }
-      })
+      }),
+      ...contextOverrides
     }),
     onThreadCreated,
     onCompletion,
@@ -98,7 +99,7 @@ describe("Pixice bridge", () => {
   });
 
   it("spawns a cross-provider thread and relays its final answer", async () => {
-    const { bridge, runtime, database, activities, onThreadCreated, onCompletion } = createBridge();
+    const { bridge, runtime, database, activities, onThreadCreated, onCompletion } = createBridge(undefined, { permissionMode: "auto-approve" });
     const resultPromise = bridge.handleToolCall({
       threadId: "parent-1",
       turnId: "parent-turn",
@@ -119,7 +120,9 @@ describe("Pixice bridge", () => {
           model: "claude:claude-sonnet-4-6",
           parentThreadId: "parent-1",
           runtimeWorkspaceRoots: ["/workspace", "/shared"],
-          developerInstructions: "Pixice base guidance\n\n# Verification before handoff"
+          developerInstructions: "Pixice base guidance\n\n# Verification before handoff",
+          permissionMode: "workspace-write",
+          approvalsReviewer: "user"
         })
       }),
       expect.objectContaining({
@@ -128,7 +131,9 @@ describe("Pixice bridge", () => {
           threadId: "child-1",
           model: "claude:claude-sonnet-4-6",
           effort: "high",
-          runtimeWorkspaceRoots: ["/workspace", "/shared"]
+          runtimeWorkspaceRoots: ["/workspace", "/shared"],
+          permissionMode: "workspace-write",
+          approvalsReviewer: "user"
         })
       })
     ]));
@@ -167,6 +172,69 @@ describe("Pixice bridge", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(onCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  it("inherits the parent permission mode when the child does not specify one", async () => {
+    const { bridge, runtime, onThreadCreated } = createBridge(undefined, { permissionMode: "auto-approve" });
+    const resultPromise = bridge.handleToolCall({
+      threadId: "parent-1",
+      tool: "spawn_thread",
+      arguments: {
+        prompt: "Review the interface",
+        model: "codex:gpt-5.6-luna"
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(runtime.calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: "thread/start",
+        params: expect.objectContaining({ permissionMode: "auto-approve", approvalsReviewer: "auto_review" })
+      }),
+      expect.objectContaining({
+        method: "turn/start",
+        params: expect.objectContaining({ permissionMode: "auto-approve", approvalsReviewer: "auto_review" })
+      })
+    ]));
+    expect(onThreadCreated).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "auto-approve" }));
+
+    runtime.emit("event", {
+      payload: {
+        method: "turn/completed",
+        threadId: "child-1",
+        turn: { id: "turn-1", status: "completed", items: [{ type: "agentMessage", text: "Done." }] }
+      }
+    });
+    await resultPromise;
+  });
+
+  it("falls back to workspace access when no permission mode is available", async () => {
+    const { bridge, runtime } = createBridge();
+    const resultPromise = bridge.handleToolCall({
+      threadId: "parent-1",
+      tool: "spawn_thread",
+      arguments: {
+        prompt: "Review the interface",
+        model: "codex:gpt-5.6-luna"
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(runtime.calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: "turn/start",
+        params: expect.objectContaining({ permissionMode: "workspace-write", approvalsReviewer: "user" })
+      })
+    ]));
+
+    runtime.emit("event", {
+      payload: {
+        method: "turn/completed",
+        threadId: "child-1",
+        turn: { id: "turn-1", status: "completed", items: [{ type: "agentMessage", text: "Done." }] }
+      }
+    });
+    await resultPromise;
   });
 
   it("delivers child progress updates to the parent activity stream", async () => {

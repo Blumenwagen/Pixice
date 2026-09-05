@@ -1,0 +1,153 @@
+{
+  "capturedAt": "2026-08-31T07:22:36.209Z",
+  "targetUrl": "http://127.0.0.1:5173/?task-progress-preview",
+  "sourceVisualTruth": "User-provided Codex answer-action screenshot in the lead Pixice thread",
+  "interaction": "Clicked the compact answer fork button and waited for the fork to become the active main thread",
+  "sourceState": {
+    "activeThreadId": "preview-task",
+    "viewport": {
+      "width": 1480,
+      "height": 950,
+      "devicePixelRatio": 2
+    },
+    "previewWorkspaceCount": 0,
+    "previewForkTabCount": 0,
+    "activeRowThreadId": "preview-task",
+    "activeRowText": "Refine chat forking",
+    "activeRowForkIcons": 0,
+    "totalForkRows": 0,
+    "forkButton": {
+      "label": "Fork from this answer",
+      "title": "Fork from this answer",
+      "width": 26,
+      "height": 26,
+      "disabled": false
+    },
+    "answerOutputOrder": {
+      "finalAnswerIndex": 2,
+      "imageIndexes": [
+        3
+      ],
+      "actionIndex": 4,
+      "imageCount": 1,
+      "actionsDetached": true,
+      "answerBeforeImages": true,
+      "actionsBelowImages": true,
+      "forkBeforeTimestamp": true,
+      "actionGapAfterImage": 13
+    },
+    "sidebarExpanded": "true",
+    "sourceAnswerVisible": true,
+    "forkPayload": null
+  },
+  "forkState": {
+    "activeThreadId": "preview-task-fork",
+    "viewport": {
+      "width": 1480,
+      "height": 950,
+      "devicePixelRatio": 2
+    },
+    "previewWorkspaceCount": 0,
+    "previewForkTabCount": 0,
+    "activeRowThreadId": "preview-task-fork",
+    "activeRowText": "Refine chat forking (fork)",
+    "activeRowForkIcons": 1,
+    "totalForkRows": 1,
+    "forkButton": {
+      "label": "Fork from this answer",
+      "title": "Fork from this answer",
+      "width": 26,
+      "height": 26,
+      "disabled": false
+    },
+    "answerOutputOrder": {
+      "finalAnswerIndex": 2,
+      "imageIndexes": [
+        3
+      ],
+      "actionIndex": 4,
+      "imageCount": 1,
+      "actionsDetached": true,
+      "answerBeforeImages": true,
+      "actionsBelowImages": true,
+      "forkBeforeTimestamp": true,
+      "actionGapAfterImage": 13
+    },
+    "sidebarExpanded": "true",
+    "sourceAnswerVisible": true,
+    "forkPayload": {
+      "projectId": "preview-project",
+      "threadId": "preview-task",
+      "lastTurnId": "fork-source-turn",
+      "lastItemId": "fork-source-answer"
+    }
+  },
+  "neutralState": {
+    "activeThreadId": "preview-task",
+    "forkRowActive": false,
+    "forkRowHovered": false,
+    "forkIconColor": "rgb(133, 133, 133)",
+    "quietColor": "rgb(133, 133, 133)",
+    "usesQuietColor": true,
+    "forkRowTitle": "Refine chat forking (fork) · Forked conversation",
+    "forkRowDescription": "Forked conversation"
+  },
+  "consoleErrors": [],
+  "captures": {
+    "sourceFull": {
+      "path": "/Users/tschlueter/Desktop/Pixice/work/design-qa/chat-fork/01-source-answer-full.png",
+      "pixels": {
+        "width": 2960,
+        "height": 1900
+      },
+      "rectangle": null
+    },
+    "sourceDetail": {
+      "path": "/Users/tschlueter/Desktop/Pixice/work/design-qa/chat-fork/02-source-answer-detail.png",
+      "pixels": {
+        "width": 1600,
+        "height": 1574
+      },
+      "rectangle": {
+        "x": 468,
+        "y": 74,
+        "width": 800,
+        "height": 787
+      }
+    },
+    "forkFull": {
+      "path": "/Users/tschlueter/Desktop/Pixice/work/design-qa/chat-fork/03-fork-selected-main-full.png",
+      "pixels": {
+        "width": 2960,
+        "height": 1900
+      },
+      "rectangle": null
+    },
+    "forkSidebar": {
+      "path": "/Users/tschlueter/Desktop/Pixice/work/design-qa/chat-fork/04-fork-sidebar-detail.png",
+      "pixels": {
+        "width": 528,
+        "height": 1844
+      },
+      "rectangle": {
+        "x": 0,
+        "y": 28,
+        "width": 264,
+        "height": 922
+      }
+    },
+    "forkAnswer": {
+      "path": "/Users/tschlueter/Desktop/Pixice/work/design-qa/chat-fork/05-fork-answer-detail.png",
+      "pixels": {
+        "width": 1600,
+        "height": 1574
+      },
+      "rectangle": {
+        "x": 468,
+        "y": 65,
+        "width": 800,
+        "height": 787
+      }
+    }
+  }
+}

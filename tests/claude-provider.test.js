@@ -645,6 +645,192 @@ describe("Claude provider", () => {
     database.db.close();
   });
 
+  it("forks through the selected native assistant message and remaps copied transcript UUIDs", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-fork-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const outputs = [];
+    const queryOptions = [];
+    const sourceAssistant = {
+      type: "assistant",
+      session_id: "source-session",
+      uuid: "assistant-source",
+      parent_tool_use_id: null,
+      message: { id: "response-1", content: [{ type: "text", text: "The ordinary final answer" }] }
+    };
+    const forkedAssistant = { ...structuredClone(sourceAssistant), session_id: "forked-session", uuid: "assistant-forked" };
+    const sessionFork = vi.fn().mockResolvedValue({ sessionId: "forked-session" });
+    const sessionMessages = vi.fn(async (sessionId) => sessionId === "forked-session" ? [forkedAssistant] : [sourceAssistant]);
+    const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    const provider = new ClaudeProvider({
+      database,
+      clientVersion: "test",
+      sessionFork,
+      sessionMessages,
+      sessionDelete,
+      queryFactory: ({ options }) => {
+        const output = new AsyncPromptQueue();
+        outputs.push(output);
+        queryOptions.push(options);
+        return { [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](), close: vi.fn() };
+      }
+    });
+    const events = [];
+    provider.on("event", (event) => events.push(event));
+    await provider.start();
+
+    const { thread } = await provider.request("thread/start", {
+      cwd: directory,
+      runtimeWorkspaceRoots: [directory, path.join(directory, "shared")],
+      model: "sonnet",
+      permissionMode: "read-only",
+      developerInstructions: "Keep the fork instructions. ",
+      parentThreadId: "bridge-parent"
+    });
+    thread.bridge = { kind: "pixiceBridge", parentThreadId: "bridge-parent" };
+    thread.bridgeModel = "claude:sonnet";
+    thread.agentNickname = "Backend helper";
+    thread.agentRole = "Backend work";
+    thread.agentStatusMessage = "Done";
+    await provider.request("thread/name/set", { threadId: thread.id, name: "Source task" });
+    const { turn } = await provider.request("turn/start", {
+      threadId: thread.id,
+      input: [{ type: "text", text: "Give me the answer" }],
+      effort: "high"
+    });
+    outputs[0].push(sourceAssistant);
+    outputs[0].push({
+      type: "result",
+      subtype: "success",
+      session_id: thread.providerThreadId,
+      uuid: "result-source",
+      is_error: false,
+      result: "The ordinary final answer",
+      modelUsage: {}
+    });
+    await tick();
+    const source = (await provider.request("thread/read", { threadId: thread.id })).thread;
+    const finalItem = source.turns[0].items.find((item) => item.type === "agentMessage" && item.phase === "final_answer");
+    await provider.stop();
+    await provider.start();
+    events.length = 0;
+
+    const result = await provider.request("thread/fork", {
+      threadId: thread.id,
+      lastTurnId: turn.id,
+      lastItemId: finalItem.id
+    });
+
+    expect(sessionFork).toHaveBeenCalledWith(thread.providerThreadId, {
+      dir: directory,
+      upToMessageId: "assistant-source",
+      title: "Source task (fork)"
+    });
+    expect(sessionMessages).toHaveBeenCalledWith(thread.providerThreadId, { dir: directory, includeSystemMessages: true });
+    expect(sessionMessages).toHaveBeenCalledWith("forked-session", { dir: directory, includeSystemMessages: true });
+    expect(sessionDelete).not.toHaveBeenCalled();
+    expect(result.thread).toMatchObject({
+      providerThreadId: "forked-session",
+      name: "Source task (fork)",
+      parentThreadId: null,
+      forkedFromId: thread.id,
+      status: { type: "idle" }
+    });
+    expect(result.thread).not.toHaveProperty("bridge");
+    expect(result.thread).not.toHaveProperty("bridgeModel");
+    expect(result.thread).not.toHaveProperty("agentNickname");
+    expect(result.thread).not.toHaveProperty("agentRole");
+    expect(result.thread).not.toHaveProperty("agentStatusMessage");
+    expect(result.thread.turns[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: finalItem.id, phase: "final_answer", sourceUuid: "assistant-forked" })
+    ]));
+    expect(database.getThreadProviderBinding(result.thread.id)).toMatchObject({
+      provider: "claude",
+      providerThreadId: "forked-session",
+      resumeCursor: "forked-session",
+      forkedFromId: thread.id
+    });
+    expect(events).toEqual([
+      expect.objectContaining({ type: "TaskUpdated", payload: expect.objectContaining({ method: "thread/started", thread: expect.objectContaining({ id: result.thread.id }) }) })
+    ]);
+
+    await provider.request("turn/start", {
+      threadId: result.thread.id,
+      input: [{ type: "text", text: "Continue separately" }]
+    });
+    expect(queryOptions[1]).toMatchObject({
+      model: "sonnet",
+      effort: "high",
+      permissionMode: "default",
+      resume: "forked-session",
+      systemPrompt: { append: "Keep the fork instructions. " }
+    });
+    expect(queryOptions[1].additionalDirectories).toEqual([directory, path.join(directory, "shared")]);
+
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("forks a synthetic result answer through its native transcript cutoff", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-result-fork-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    const sourceAssistant = {
+      type: "assistant",
+      session_id: "source-session",
+      uuid: "assistant-source",
+      parent_tool_use_id: null,
+      message: { id: "response-1", content: [{ type: "text", text: "Synthetic final answer" }] }
+    };
+    const forkedAssistant = { ...structuredClone(sourceAssistant), session_id: "forked-session", uuid: "assistant-forked" };
+    const sessionFork = vi.fn().mockResolvedValue({ sessionId: "forked-session" });
+    const sessionMessages = vi.fn(async (sessionId) => sessionId === "forked-session" ? [forkedAssistant] : [sourceAssistant]);
+    const provider = new ClaudeProvider({
+      database,
+      sessionFork,
+      sessionMessages,
+      sessionDelete: vi.fn(),
+      queryFactory: () => ({ [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](), close: vi.fn() })
+    });
+    await provider.start();
+    const { thread } = await provider.request("thread/start", { cwd: directory, model: "sonnet" });
+    const { turn } = await provider.request("turn/start", {
+      threadId: thread.id,
+      input: [{ type: "text", text: "Answer without an assistant event" }]
+    });
+    output.push({
+      type: "result",
+      subtype: "success",
+      session_id: thread.providerThreadId,
+      uuid: "result-source",
+      is_error: false,
+      result: "Synthetic final answer",
+      modelUsage: {}
+    });
+    await tick();
+
+    const source = (await provider.request("thread/read", { threadId: thread.id })).thread;
+    const finalItem = source.turns[0].items.find((item) => item.type === "agentMessage" && item.phase === "final_answer");
+    expect(finalItem).toMatchObject({ sourceUuid: "result-source" });
+
+    const result = await provider.request("thread/fork", {
+      threadId: thread.id,
+      lastTurnId: turn.id,
+      lastItemId: finalItem.id
+    });
+
+    expect(sessionFork).toHaveBeenCalledWith(thread.providerThreadId, {
+      dir: directory,
+      upToMessageId: "result-source"
+    });
+    expect(result.thread).toMatchObject({ forkedFromId: thread.id, status: { type: "idle" } });
+    expect(result.thread.turns[0].items.find((item) => item.id === finalItem.id)).not.toHaveProperty("sourceUuid");
+
+    await provider.stop();
+    database.db.close();
+  });
+
   it("uses structured tool results and denial events as the authority for tool status", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-tool-results-"));
     temporaryDirectories.push(directory);

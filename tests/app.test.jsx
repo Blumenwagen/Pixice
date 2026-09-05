@@ -315,7 +315,25 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
       list: vi.fn().mockResolvedValue({ data: threadValues, nextCursor: null }),
       read: vi.fn(async ({ threadId }) => ({ thread: threadValues.find((candidate) => candidate.id === threadId) ?? threadValues[0] })),
       children: vi.fn().mockResolvedValue({ data: [], nextCursor: null }),
-      create: vi.fn().mockResolvedValue({ thread: { ...thread, id: "thread-new", name: null, preview: "", turns: [] } }),
+      create: vi.fn(async () => {
+        const created = { ...thread, id: "thread-new", name: null, preview: "", parentThreadId: null, turns: [] };
+        if (!threadValues.some((candidate) => candidate.id === created.id)) threadValues.push(created);
+        return { thread: created };
+      }),
+      fork: vi.fn(async ({ threadId }) => {
+        const source = threadValues.find((candidate) => candidate.id === threadId) ?? threadValues[0];
+        const forked = {
+          ...source,
+          id: "thread-fork",
+          name: "Fork of authentication",
+          preview: "Fork of authentication",
+          parentThreadId: null,
+          forkedFromId: threadId,
+          status: { type: "idle" }
+        };
+        if (!threadValues.some((candidate) => candidate.id === forked.id)) threadValues.push(forked);
+        return { thread: forked };
+      }),
       archive: vi.fn().mockResolvedValue({})
     },
     turns: {
@@ -4254,5 +4272,576 @@ describe("Pixice app shell", () => {
     await user.click(screen.getByRole("radio", { name: /Every model/ }));
     await waitFor(() => expect(workspace).toHaveAttribute("data-question-active", "false"));
     expect(screen.getByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+  });
+
+  it("opens an existing Side Thread without replacing the main task and routes live events exactly", async () => {
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Investigate retries",
+      preview: "Investigate retries",
+      turns: [{
+        id: "turn-2",
+        status: "completed",
+        items: [
+          { id: "user-2", type: "userMessage", content: [{ type: "text", text: "How do retries work?" }] },
+          { id: "agent-2", type: "agentMessage", text: "Retries use bounded backoff.", phase: "final_answer" }
+        ]
+      }]
+    };
+    window.pixice = createApi([thread, secondThread]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await screen.findByRole("region", { name: "Preview workspace" });
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Side threadChat beside this task/ }));
+    await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "Investigate retries" }));
+
+    const sideThread = await screen.findByRole("region", { name: "Side thread: Investigate retries" });
+    expect(screen.getByText("I traced the current flow.")).toBeInTheDocument();
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toBeInTheDocument();
+
+    act(() => window.pixice.emit({
+      type: "AttentionRequired",
+      payload: {
+        id: "side-question",
+        method: "pixice/requestUserInput",
+        projectId: "project-1",
+        params: {
+          threadId: "thread-2",
+          questions: [{
+            id: "scope",
+            header: "Retry scope",
+            question: "Which retry path should the side thread inspect?",
+            options: [{ label: "Network retries", description: "Inspect request retries.", recommended: true }]
+          }]
+        }
+      }
+    }));
+    expect(await within(sideThread).findByText("Which retry path should the side thread inspect?")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toBeInTheDocument();
+    await user.click(within(sideThread).getByRole("button", { name: "Skip questions" }));
+    await waitFor(() => expect(window.pixice.questions.respond).toHaveBeenCalledWith({ requestId: "side-question", action: "cancel", answers: {} }));
+
+    await user.type(await within(sideThread).findByRole("textbox", { name: "Side thread prompt" }), "Check the retry cap");
+    await user.click(within(sideThread).getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      threadId: "thread-2",
+      text: "Check the retry cap"
+    })));
+    expect(window.pixice.turns.start.mock.calls.at(-1)[0]).not.toHaveProperty("previewContext");
+
+    act(() => window.pixice.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "item/agentMessage/delta",
+        projectId: "project-1",
+        threadId: "thread-2",
+        turnId: "turn-new",
+        itemId: "side-live-answer",
+        delta: "Side-only live answer"
+      }
+    }));
+
+    expect(await within(sideThread).findByText("Side-only live answer")).toBeInTheDocument();
+    expect(within(document.querySelector(".main-canvas")).queryByText("Side-only live answer")).not.toBeInTheDocument();
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
+
+    await user.click(within(sideThread).getByRole("button", { name: "Open as main task" }));
+    await waitFor(() => expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-2"));
+  });
+
+  it("marks a completed Side Thread as read without promoting it", async () => {
+    localStorage.setItem("pixice.threadCompletionsSeen", JSON.stringify({ __baselineAt: 0 }));
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Finished side review",
+      preview: "Finished side review",
+      updatedAt: Math.floor(Date.now() / 1000) + 1,
+      turns: [{ id: "turn-2", status: "completed", items: [{ id: "agent-2", type: "agentMessage", text: "The review is complete.", phase: "final_answer" }] }]
+    };
+    window.pixice = createApi([thread, secondThread]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    expect(screen.getByRole("button", { name: "Finished side review" }).closest(".task-row")).toHaveClass("finished");
+
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Side threadChat beside this task/ }));
+    await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "Finished side review" }));
+
+    await screen.findByRole("region", { name: "Side thread: Finished side review" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Finished side review" }).closest(".task-row")).not.toHaveClass("finished"));
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
+    expect(JSON.parse(localStorage.getItem("pixice.threadCompletionsSeen"))).toMatchObject({ "thread-2": "turn:turn-2" });
+  });
+
+  it("forks a Side Thread answer into the main task list instead of nesting another Preview chat", async () => {
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Investigate retries",
+      preview: "Investigate retries",
+      turns: [{
+        id: "turn-2",
+        status: "completed",
+        items: [
+          { id: "user-2", type: "userMessage", content: [{ type: "text", text: "How do retries work?" }] },
+          { id: "agent-2", type: "agentMessage", text: "Retries use bounded backoff.", phase: "final_answer" }
+        ]
+      }]
+    };
+    window.pixice = createApi([thread, secondThread]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Side threadChat beside this task/ }));
+    await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "Investigate retries" }));
+    const sideThread = await screen.findByRole("region", { name: "Side thread: Investigate retries" });
+
+    await user.click(within(sideThread).getByRole("button", { name: "Fork from this answer" }));
+
+    await waitFor(() => expect(window.pixice.threads.fork).toHaveBeenCalledWith({
+      projectId: "project-1",
+      threadId: "thread-2",
+      lastTurnId: "turn-2",
+      lastItemId: "agent-2"
+    }));
+    await waitFor(() => expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-fork"));
+    expect(screen.getByRole("button", { name: "Fork of authentication" })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelector('[data-thread-id="thread-fork"] .task-fork-icon')).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Fork of authentication" })).not.toBeInTheDocument();
+  });
+
+  it("keeps Side Thread scrolling and file drops isolated from the main task", async () => {
+    const secondThread = {
+      ...thread,
+      id: "thread-2",
+      name: "Streaming side review",
+      preview: "Streaming side review",
+      status: { type: "active", activeFlags: [] },
+      turns: [{ id: "turn-2", status: "inProgress", items: [{ id: "agent-2", type: "agentMessage", text: "Reading the trace." }] }]
+    };
+    window.pixice = createApi([thread, secondThread]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Side threadChat beside this task/ }));
+    await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "Streaming side review" }));
+    const sideThread = await screen.findByRole("region", { name: "Side thread: Streaming side review" });
+    const scroller = sideThread.querySelector(".side-thread-scroll");
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, value: 1200 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, value: 180, writable: true }
+    });
+    fireEvent.scroll(scroller);
+
+    act(() => window.pixice.emit({
+      type: "RuntimeEvent",
+      payload: {
+        method: "item/agentMessage/delta",
+        projectId: "project-1",
+        threadId: "thread-2",
+        turnId: "turn-2",
+        itemId: "agent-2",
+        delta: " More output."
+      }
+    }));
+    await within(sideThread).findByText(/More output/);
+    expect(scroller.scrollTop).toBe(180);
+
+    const image = new File([new Uint8Array([137, 80, 78, 71])], "wrong-thread.png", { type: "image/png" });
+    const transfer = { files: [image], items: [{ kind: "file", type: image.type }] };
+    fireEvent.dragEnter(scroller, { dataTransfer: transfer });
+    fireEvent.drop(scroller, { dataTransfer: transfer });
+    expect(screen.queryByRole("img", { name: "wrong-thread.png" })).not.toBeInTheDocument();
+    const mainComposer = screen.getByRole("textbox", { name: "Task prompt" }).closest(".composer");
+    expect(within(mainComposer).getByRole("button", { name: "Send message" })).toBeDisabled();
+  });
+
+  it("creates a draft Side Thread on first send and keeps its composer independent", async () => {
+    const api = createApi();
+    const startedTurn = { id: "side-turn-live", status: "inProgress", items: [] };
+    api.turns.start = vi.fn(async ({ threadId }) => {
+      api.emit({ type: "RuntimeEvent", payload: { method: "turn/started", projectId: "project-1", threadId, turn: startedTurn } });
+      api.emit({
+        type: "RuntimeEvent",
+        payload: {
+          method: "item/agentMessage/delta",
+          projectId: "project-1",
+          threadId,
+          turnId: startedTurn.id,
+          itemId: "side-created-live",
+          delta: "Live from the new side thread"
+        }
+      });
+      return { turn: startedTurn };
+    });
+    window.pixice = api;
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await screen.findByRole("region", { name: "Preview workspace" });
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Side threadChat beside this task/ }));
+    await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "New side thread" }));
+
+    const sideThread = await screen.findByRole("region", { name: "Side thread: New side thread" });
+    const sidePrompt = within(sideThread).getByRole("textbox", { name: "Side thread prompt" });
+    fireEvent.change(sidePrompt, { target: { value: "Compare two implementation options" } });
+    await user.click(within(sideThread).getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(window.pixice.threads.create).toHaveBeenCalledWith({
+      projectId: "project-1",
+      model: "gpt-5.6",
+      permissionMode: "workspace-write"
+    }));
+    expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      threadId: "thread-new",
+      text: "Compare two implementation options"
+    }));
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("");
+    expect(await screen.findByRole("button", { name: "Open as main task" })).toBeEnabled();
+    expect(await screen.findByText("Live from the new side thread")).toBeInTheDocument();
+  });
+
+  it("closes a Side Thread tab without interrupting or archiving its thread", async () => {
+    const secondThread = { ...thread, id: "thread-2", name: "Side review", preview: "Side review" };
+    window.pixice = createApi([thread, secondThread]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Side threadChat beside this task/ }));
+    await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "Side review" }));
+    await screen.findByRole("region", { name: "Side thread: Side review" });
+
+    await user.click(screen.getByRole("button", { name: "Close Side review" }));
+
+    expect(window.pixice.turns.interrupt).not.toHaveBeenCalled();
+    expect(window.pixice.threads.archive).not.toHaveBeenCalled();
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
+  });
+
+  it("warns before closing a new Side Thread with an unsent draft", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Side threadChat beside this task/ }));
+    await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "New side thread" }));
+    const sideThread = await screen.findByRole("region", { name: "Side thread: New side thread" });
+    await user.type(within(sideThread).getByRole("textbox", { name: "Side thread prompt" }), "Keep this thought");
+
+    await user.click(screen.getByRole("button", { name: "Close New side thread" }));
+
+    expect(confirm).toHaveBeenCalledWith("Close \"New side thread\"?\n\nThe unsent message will be discarded.");
+    expect(screen.getByRole("region", { name: "Side thread: New side thread" })).toBeInTheDocument();
+  });
+
+  it("removes an archived thread from Side Thread tabs in other workspaces", async () => {
+    const secondThread = { ...thread, id: "thread-2", name: "Side review", preview: "Side review" };
+    window.pixice = createApi([thread, secondThread]);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Side threadChat beside this task/ }));
+    await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "Side review" }));
+    await screen.findByRole("region", { name: "Side thread: Side review" });
+
+    await user.click(screen.getByRole("button", { name: "Delete Side review" }));
+
+    await waitFor(() => expect(window.pixice.threads.archive).toHaveBeenCalledWith({
+      projectId: "project-1",
+      threadId: "thread-2"
+    }));
+    expect(screen.queryByRole("region", { name: "Side thread: Side review" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Side review" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+  });
+
+  it("warns about dirty Preview files and tears down an archived chat workspace", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await user.click(screen.getByRole("button", { name: "Open src/runtime.js" }));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Edit runtime.js" }), { target: { value: "export const ready = false;\n" } });
+
+    await user.click(screen.getByRole("button", { name: "Delete Refactor authentication" }));
+
+    expect(confirm.mock.calls.at(-1)[0]).toContain("One file has unsaved edits.");
+    expect(window.pixice.threads.archive).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    await user.click(screen.getByRole("button", { name: "Delete Refactor authentication" }));
+    await waitFor(() => expect(window.pixice.threads.archive).toHaveBeenCalledWith({ projectId: "project-1", threadId: "thread-1" }));
+    expect(window.pixice.browser.destroy).toHaveBeenCalledWith({ workspaceId: "thread-1" });
+  });
+
+  it("forks a completed answer into the selected main task without opening Preview", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await screen.findByRole("region", { name: "Preview workspace" });
+    const readsBeforeFork = window.pixice.threads.read.mock.calls.length;
+    window.pixice.threads.read.mockImplementation(async ({ threadId }) => {
+      if (threadId === "thread-fork") return new Promise(() => {});
+      return { thread };
+    });
+
+    const forkButton = screen.getByRole("button", { name: "Fork from this answer" });
+    expect(forkButton).toHaveTextContent("");
+    expect(forkButton).toHaveAttribute("aria-busy", "false");
+    expect(appCss).toMatch(/\.fork-response-button\s*\{[^}]*width:\s*26px;[^}]*height:\s*26px;/s);
+    await user.click(forkButton);
+
+    await waitFor(() => expect(window.pixice.threads.fork).toHaveBeenCalledWith({
+      projectId: "project-1",
+      threadId: "thread-1",
+      lastTurnId: "turn-1",
+      lastItemId: "agent-1"
+    }));
+    await waitFor(() => expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-fork"));
+    const forkedThreadButton = screen.getByRole("button", { name: "Fork of authentication" });
+    expect(forkedThreadButton).toHaveAttribute("aria-current", "page");
+    expect(forkedThreadButton).toHaveAttribute("aria-description", "Forked conversation");
+    expect(forkedThreadButton).toHaveAttribute("title", expect.stringContaining("Forked conversation"));
+    expect(document.querySelector('[data-thread-id="thread-fork"] .task-fork-icon')).toBeInTheDocument();
+    expect(screen.queryByText("Loading conversation…")).not.toBeInTheDocument();
+    expect(window.pixice.threads.read.mock.calls.slice(readsBeforeFork).some(([payload]) => payload.threadId === "thread-fork")).toBe(false);
+    expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Fork of authentication" })).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("pixice.threadConfiguration.thread-fork"))).toMatchObject({
+      model: "gpt-5.6",
+      effort: "high",
+      fastMode: false,
+      permissionMode: "workspace-write"
+    });
+    await expect(window.pixice.threads.fork.mock.results[0].value).resolves.toMatchObject({
+      thread: { parentThreadId: null, forkedFromId: "thread-1" }
+    });
+  });
+
+  it.each([
+    ["first", 0, "turn-first", "agent-first"],
+    ["second", 1, "turn-second", "agent-second"]
+  ])("forks from the exact %s completed answer", async (_label, answerIndex, turnId, itemId) => {
+    const multiTurnThread = {
+      ...thread,
+      turns: [
+        {
+          id: "turn-first",
+          status: "completed",
+          items: [
+            { id: "user-first", type: "userMessage", content: [{ type: "text", text: "First prompt" }] },
+            { id: "agent-first", type: "agentMessage", text: "First answer", phase: "final_answer" }
+          ]
+        },
+        {
+          id: "turn-second",
+          status: "completed",
+          items: [
+            { id: "user-second", type: "userMessage", content: [{ type: "text", text: "Second prompt" }] },
+            { id: "agent-second", type: "agentMessage", text: "Second answer", phase: "final_answer" }
+          ]
+        }
+      ]
+    };
+    const api = createApi(multiTurnThread);
+    window.pixice = api;
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("Second answer");
+
+    await user.click(screen.getAllByRole("button", { name: "Fork from this answer" })[answerIndex]);
+
+    await waitFor(() => expect(api.threads.fork).toHaveBeenCalledWith({
+      projectId: "project-1",
+      threadId: "thread-1",
+      lastTurnId: turnId,
+      lastItemId: itemId
+    }));
+  });
+
+  it("keeps the fork action below generated answer images and before the timestamp", async () => {
+    const imageAnswerThread = {
+      ...thread,
+      turns: [{
+        id: "turn-image-answer",
+        status: "completed",
+        completedAt: "2026-08-31T08:56:00.000Z",
+        items: [
+          { id: "user-image-answer", type: "userMessage", content: [{ type: "text", text: "Show the generated concepts" }] },
+          { id: "agent-image-answer", type: "agentMessage", text: "Here are the concepts.", phase: "final_answer" },
+          { id: "generated-answer-image", type: "imageGeneration", status: "completed", result: "data:image/png;base64,AA==", revisedPrompt: "Generated fork preview" }
+        ]
+      }]
+    };
+    window.pixice = createApi(imageAnswerThread);
+    render(<App />);
+
+    const image = await screen.findByRole("img", { name: "Generated fork preview" });
+    const forkButton = screen.getByRole("button", { name: "Fork from this answer" });
+    const actionRow = forkButton.closest(".assistant-answer-actions");
+    const turn = forkButton.closest(".conversation-turn");
+    const turnChildren = [...turn.children];
+    const imageBlock = turnChildren.find((candidate) => candidate.contains(image));
+
+    expect(actionRow).toHaveClass("detached");
+    expect(turnChildren.indexOf(actionRow)).toBeGreaterThan(turnChildren.indexOf(imageBlock));
+    expect(actionRow.firstElementChild).toBe(forkButton);
+    expect(actionRow.querySelector("time")).toBeInTheDocument();
+  });
+
+  it("clears source suggestions and loads fork-scoped suggestions without flashing a conversation loader", async () => {
+    const sourceSuggestion = {
+      id: "source-suggestion",
+      projectId: project.id,
+      threadId: thread.id,
+      type: "workflow-pattern",
+      status: "open",
+      title: "Source-only suggestion",
+      message: "This belongs to the source thread.",
+      payload: { count: 2, suggestedName: "Source workflow", steps: [] }
+    };
+    const api = createApi(thread, [sourceSuggestion]);
+    window.pixice = api;
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("region", { name: "Source-only suggestion" });
+
+    await user.click(screen.getByRole("button", { name: "Fork from this answer" }));
+
+    await waitFor(() => expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-fork"));
+    await waitFor(() => expect(api.proactivity.list).toHaveBeenCalledWith({ projectId: "project-1", threadId: "thread-fork" }));
+    expect(screen.queryByRole("region", { name: "Source-only suggestion" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading conversation…")).not.toBeInTheDocument();
+  });
+
+  it("keeps a pending fork with its source project when the user switches projects", async () => {
+    const secondProject = {
+      id: "project-2",
+      displayName: "Beacon",
+      canonicalPath: "/work/beacon",
+      icon: "terminal",
+      color: "green",
+      folders: ["/work/beacon"]
+    };
+    const secondThread = { ...thread, id: "thread-2", name: "Ship Beacon", preview: "Ship Beacon", cwd: "/work/beacon" };
+    const forkedThread = { ...thread, id: "thread-fork", name: "Fork of authentication", preview: "Fork of authentication", forkedFromId: "thread-1", parentThreadId: null };
+    const api = createApi([thread]);
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project, secondProject],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    let forkPersisted = false;
+    api.threads.list.mockImplementation(async ({ projectId }) => ({ data: projectId === "project-2" ? [secondThread] : forkPersisted ? [thread, forkedThread] : [thread], nextCursor: null }));
+    api.threads.read.mockImplementation(async ({ threadId }) => ({ thread: threadId === forkedThread.id ? forkedThread : threadId === secondThread.id ? secondThread : thread }));
+    let resolveFork;
+    api.threads.fork.mockImplementation(() => new Promise((resolve) => { resolveFork = resolve; }));
+    window.pixice = api;
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Fork from this answer" }));
+    await waitFor(() => expect(api.threads.fork).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Forking this answer" })).toHaveAttribute("aria-busy", "true");
+    await user.click(screen.getByRole("button", { name: "Beacon" }));
+    await screen.findByRole("button", { name: "Ship Beacon" });
+    forkPersisted = true;
+    await act(async () => { resolveFork({ thread: forkedThread }); });
+
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-2");
+    expect(screen.queryByRole("button", { name: "Fork of authentication" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Aurora" }));
+    expect(await screen.findByRole("button", { name: "Fork of authentication" })).toBeInTheDocument();
+    expect(document.querySelector('[data-thread-id="thread-fork"] .task-fork-icon')).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument();
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
+  });
+
+  it("adds a completed fork without stealing focus after the user selects another task", async () => {
+    const secondThread = { ...thread, id: "thread-2", name: "Review sessions", preview: "Review sessions" };
+    const forkedThread = { ...thread, id: "thread-fork", name: "Fork of authentication", preview: "Fork of authentication", forkedFromId: "thread-1", parentThreadId: null };
+    const api = createApi([thread, secondThread]);
+    let resolveFork;
+    api.threads.fork.mockImplementation(() => new Promise((resolve) => { resolveFork = resolve; }));
+    window.pixice = api;
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Fork from this answer" }));
+    await waitFor(() => expect(api.threads.fork).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Review sessions" }));
+    await waitFor(() => expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-2"));
+    await act(async () => { resolveFork({ thread: forkedThread }); });
+
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-2");
+    expect(screen.getByRole("button", { name: "Fork of authentication" })).toBeInTheDocument();
+    expect(document.querySelector('[data-thread-id="thread-fork"] .task-fork-icon')).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Preview workspace" })).not.toBeInTheDocument();
+  });
+
+  it("hides fork actions while any turn in the source thread is active", async () => {
+    window.pixice = createApi({
+      ...thread,
+      status: { type: "active", activeFlags: [] },
+      turns: [
+        ...thread.turns,
+        { id: "turn-active", status: "inProgress", items: [{ id: "live-reasoning", type: "reasoning", summary: ["Still working"] }] }
+      ]
+    });
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    expect(screen.queryByRole("button", { name: "Fork from this answer" })).not.toBeInTheDocument();
+  });
+
+  it("opens the current task map as a Preview tab", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await screen.findByRole("region", { name: "Preview workspace" });
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Task mapWatch plans and agents/ }));
+
+    expect(await screen.findByRole("region", { name: "Task map preview" })).toBeInTheDocument();
+    expect(screen.getByText("Lead")).toBeInTheDocument();
+    expect(screen.getByText("I traced the current flow.")).toBeInTheDocument();
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
   });
 });

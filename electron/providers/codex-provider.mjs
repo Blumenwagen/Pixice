@@ -42,7 +42,9 @@ export class CodexProvider extends EventEmitter {
   }
 
   request(method, params) {
-    return this.runtime.request(method, params);
+    if (method !== "thread/fork") return this.runtime.request(method, params);
+    const { lastItemId: _lastItemId, ...codexParams } = params ?? {};
+    return this.runtime.request(method, codexParams);
   }
 
   respond(id, result) {

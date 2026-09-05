@@ -119,6 +119,84 @@ function newPreviewChooserTab() {
   return { id: `new:${Date.now()}:${previewTabSequence}`, kind: "new", title: "New tab", payload: {} };
 }
 
+function newSideThreadTab(projectId, hostThreadId) {
+  previewTabSequence += 1;
+  const draftId = `${Date.now()}:${previewTabSequence}`;
+  return {
+    id: `thread:draft:${draftId}`,
+    kind: "thread",
+    title: "New side thread",
+    payload: { projectId, threadId: null, hostThreadId, draftId, status: "idle" }
+  };
+}
+
+function threadPreviewTab(projectId, candidate, hostThreadId) {
+  return {
+    id: `thread:${candidate.id}`,
+    kind: "thread",
+    title: threadTitle(candidate),
+    payload: { projectId, threadId: candidate.id, hostThreadId, forkedFromId: candidate.forkedFromId ?? null, status: threadStatus(candidate) }
+  };
+}
+
+function updateThreadPreviewTabs(workspaces, threadId, patch) {
+  let changed = false;
+  const next = Object.fromEntries(Object.entries(workspaces).map(([workspaceId, workspace]) => {
+    let workspaceChanged = false;
+    const customTabs = (workspace.customTabs ?? []).map((tab) => {
+      if (tab.kind !== "thread" || tab.payload?.threadId !== threadId) return tab;
+      changed = true;
+      workspaceChanged = true;
+      return {
+        ...tab,
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        payload: { ...tab.payload, ...(patch.payload ?? {}) }
+      };
+    });
+    return [workspaceId, workspaceChanged ? { ...workspace, customTabs } : workspace];
+  }));
+  return changed ? next : workspaces;
+}
+
+function removeThreadPreviewTabs(workspaces, threadId) {
+  let changed = false;
+  const next = {};
+  for (const [workspaceId, workspace] of Object.entries(workspaces)) {
+    if (workspaceId === threadId) {
+      changed = true;
+      continue;
+    }
+    const removedIds = new Set((workspace.customTabs ?? [])
+      .filter((tab) => tab.kind === "thread" && tab.payload?.threadId === threadId)
+      .map((tab) => tab.id));
+    if (!removedIds.size) {
+      next[workspaceId] = workspace;
+      continue;
+    }
+    changed = true;
+    let customTabs = (workspace.customTabs ?? []).filter((tab) => !removedIds.has(tab.id));
+    const browserTabs = workspace.browserState?.tabs ?? [];
+    const fileTabs = workspace.fileTabs ?? [];
+    const instrumentTabs = workspace.instrumentTabs ?? [];
+    let activeTabId = workspace.activeTabId;
+    if (removedIds.has(activeTabId)) {
+      activeTabId = customTabs.at(-1)?.id
+        ?? fileTabs.at(-1)?.id
+        ?? (instrumentTabs[0] ? `instrument:${instrumentTabs[0].id}` : null)
+        ?? workspace.browserState?.activeTabId
+        ?? browserTabs[0]?.id
+        ?? null;
+    }
+    if (!customTabs.length && !browserTabs.length && !fileTabs.length && !instrumentTabs.length) {
+      const chooser = newPreviewChooserTab();
+      customTabs = [chooser];
+      activeTabId = chooser.id;
+    }
+    next[workspaceId] = { ...workspace, customTabs, activeTabId };
+  }
+  return changed ? next : workspaces;
+}
+
 export function previewContextForWorkspace(workspace) {
   const browserTabs = workspace?.browserState?.tabs ?? [];
   const fileTabs = workspace?.fileTabs ?? [];
@@ -145,9 +223,12 @@ export function previewContextForWorkspace(workspace) {
       taskId: custom.payload?.taskId,
       proposalId: custom.payload?.proposalId,
       workflowId: custom.payload?.workflowId,
+      threadId: custom.payload?.threadId ?? undefined,
+      hostThreadId: custom.payload?.hostThreadId ?? undefined,
+      forkedFromId: custom.payload?.forkedFromId ?? undefined,
       simulatorUdid: custom.payload?.session?.simulatorUdid,
       sessionId: custom.payload?.session?.id,
-      status: custom.payload?.session?.status
+      status: custom.kind === "thread" ? custom.payload?.status : custom.payload?.session?.status
     }
   };
   return { open: true, tabCount, active: null };
@@ -589,6 +670,9 @@ function SidebarNavItem({ icon: Icon, label, active, badge, badgeVisible = true,
 
 const SidebarThreadRow = memo(function SidebarThreadRow({ task, active, finished, animateLayout, onSelectThread, onDeleteThread }) {
   const title = threadTitle(task);
+  const titleParts = [title];
+  if (task.forkedFromId) titleParts.push("Forked conversation");
+  if (finished) titleParts.push("Finished");
   const running = threadIsRunning(task);
   const savedPlanProgress = normalizePlanProgress(task.planProgress);
   const finishedPlanComplete = Boolean(savedPlanProgress)
@@ -599,11 +683,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow({ task, active, finished
   return (
     <motion.div
       className={`task-row ${active ? "active" : ""} ${running ? "running" : ""} ${finished ? "finished" : ""}`}
+      data-thread-id={task.id}
       layout={animateLayout ? "position" : false}
       transition={animateLayout ? { layout: { duration: 0.22, ease: [0.22, 1, 0.36, 1] } } : undefined}
       data-layout-animation={animateLayout ? "true" : "false"}
     >
-      <button className="task-select" onClick={() => onSelectThread(task.id)} title={finished ? `${title} · Finished` : title} aria-current={active ? "page" : undefined}>
+      <button
+        className="task-select"
+        onClick={() => onSelectThread(task.id)}
+        title={titleParts.join(" · ")}
+        aria-current={active ? "page" : undefined}
+        aria-description={task.forkedFromId ? "Forked conversation" : undefined}
+      >
+        {task.forkedFromId && <span className="task-fork-icon" aria-hidden="true"><GitBranch size={11} /></span>}
         <span className="task-title">{title}</span>
         {running && (
           <ReasoningOrb
@@ -1090,12 +1182,14 @@ function PreviewCustomTabIcon({ kind }) {
   if (kind === "workflow") return <TreeStructure size={12} />;
   if (kind === "task") return <Circle size={12} />;
   if (kind === "plan") return <Gauge size={12} />;
+  if (kind === "thread") return <GitBranch size={12} />;
+  if (kind === "task-map") return <TaskMapIcon size={12} />;
   if (kind === "new") return <Plus size={12} />;
   if (kind === "simulator") return <Desktop size={12} />;
   return <File size={12} />;
 }
 
-function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChooseCustom, onChooseSimulator }) {
+function PreviewNewTab({ api, projectId, hostThreadId, threads, onChooseBrowser, onChooseFile, onChooseCustom, onChooseSimulator }) {
   const [mode, setMode] = useState(null);
   const [path, setPath] = useState("");
   const [items, setItems] = useState([]);
@@ -1107,17 +1201,21 @@ function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChoose
     setLoading(true);
     setError("");
     try {
-      const response = nextMode === "task"
-        ? await api?.board?.list?.({ projectId })
-        : await api?.workflows?.list?.({ projectId });
-      setItems(response?.data ?? []);
+      if (nextMode === "thread") {
+        setItems((threads ?? []).filter((candidate) => candidate.id !== hostThreadId && isSidebarThread(candidate)));
+      } else {
+        const response = nextMode === "task"
+          ? await api?.board?.list?.({ projectId })
+          : await api?.workflows?.list?.({ projectId });
+        setItems(response?.data ?? []);
+      }
     } catch (cause) {
       setItems([]);
       setError(cause.message);
     } finally {
       setLoading(false);
     }
-  }, [api, projectId]);
+  }, [api, hostThreadId, projectId, threads]);
 
   const openFile = async (event) => {
     event.preventDefault();
@@ -1138,8 +1236,10 @@ function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChoose
         <div className="preview-new-tab-grid" aria-label="New preview tab options">
           <button type="button" onClick={() => void onChooseBrowser()}><Globe size={16} /><span><strong>Browser</strong><small>Open a web page</small></span></button>
           <button type="button" onClick={() => { setMode("file"); setItems([]); setError(""); }}><Files size={16} /><span><strong>File</strong><small>Open a local file</small></span></button>
+          <button type="button" onClick={() => void loadItems("thread")}><GitBranch size={16} /><span><strong>Side thread</strong><small>Chat beside this task</small></span></button>
           <button type="button" onClick={() => void loadItems("task")}><Circle size={16} /><span><strong>Work item</strong><small>Open a Board item</small></span></button>
           <button type="button" onClick={() => void loadItems("workflow")}><TreeStructure size={16} /><span><strong>Workflow</strong><small>Open a workflow canvas</small></span></button>
+          {hostThreadId && <button type="button" onClick={() => onChooseCustom({ id: `task-map:${hostThreadId}`, kind: "task-map", title: "Task map", payload: { projectId, threadId: hostThreadId, hostThreadId } })}><TaskMapIcon size={16} /><span><strong>Task map</strong><small>Watch plans and agents</small></span></button>}
           <button type="button" onClick={onChooseSimulator}><Desktop size={16} /><span><strong>iOS Simulator</strong><small>Build and run SwiftUI</small></span></button>
         </div>
         {mode === "file" && (
@@ -1149,22 +1249,30 @@ function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChoose
             <button type="submit" disabled={!path.trim() || loading}>{loading ? <SpinnerGap className="spin-icon" size={13} /> : "Open"}</button>
           </form>
         )}
-        {(mode === "task" || mode === "workflow") && (
-          <div className="preview-new-tab-list" aria-label={mode === "task" ? "Work items" : "Workflows"}>
+        {(mode === "task" || mode === "workflow" || mode === "thread") && (
+          <div className="preview-new-tab-list" aria-label={mode === "task" ? "Work items" : mode === "thread" ? "Side threads" : "Workflows"}>
+            {mode === "thread" && !loading && (
+              <button type="button" className="preview-new-side-thread" onClick={() => onChooseCustom(newSideThreadTab(projectId, hostThreadId))}>
+                <Plus size={13} />
+                <span>New side thread</span>
+              </button>
+            )}
             {loading ? <span><SpinnerGap className="spin-icon" size={14} />Loading</span> : items.map((item) => (
-              <button type="button" key={item.id} onClick={() => onChooseCustom({
-                id: `${mode}:${item.id}`,
-                kind: mode,
-                title: item.title ?? item.name ?? (mode === "task" ? "Work item" : "Workflow"),
-                payload: mode === "task"
-                  ? { projectId, taskId: item.id, reason: "edit", actorKind: "user" }
-                  : { projectId, workflowId: item.id, workflowName: item.name, reason: "open" }
-              })}>
-                {mode === "task" ? <Circle size={13} /> : <TreeStructure size={13} />}
-                <span>{item.title ?? item.name}</span>
+              <button type="button" key={item.id} onClick={() => onChooseCustom(mode === "thread"
+                ? threadPreviewTab(projectId, item, hostThreadId)
+                : {
+                  id: `${mode}:${item.id}`,
+                  kind: mode,
+                  title: item.title ?? item.name ?? (mode === "task" ? "Work item" : "Workflow"),
+                  payload: mode === "task"
+                    ? { projectId, taskId: item.id, reason: "edit", actorKind: "user" }
+                    : { projectId, workflowId: item.id, workflowName: item.name, reason: "open" }
+                })}>
+                {mode === "task" ? <Circle size={13} /> : mode === "thread" ? <GitBranch size={13} /> : <TreeStructure size={13} />}
+                <span>{mode === "thread" ? threadTitle(item) : item.title ?? item.name}</span>
               </button>
             ))}
-            {!loading && !items.length && !error && <span>No {mode === "task" ? "work items" : "workflows"} yet.</span>}
+            {!loading && !items.length && !error && mode !== "thread" && <span>No {mode === "task" ? "work items" : "workflows"} yet.</span>}
           </div>
         )}
         {error && <p className="preview-new-tab-error"><Warning size={13} />{error}</p>}
@@ -1173,7 +1281,7 @@ function PreviewNewTab({ api, projectId, onChooseBrowser, onChooseFile, onChoose
   );
 }
 
-function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onClose, onBrowserClose, projectId, fileTabs, instrumentTabs, customTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onCustomTabOpen, onCustomTabUpdate, onCustomTabClose, onNewTab, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource }) {
+function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onClose, onBrowserClose, projectId, hostThreadId, fileTabs, instrumentTabs, customTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onCustomTabOpen, onCustomTabUpdate, onCustomTabClose, onNewTab, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource, sideThreadProps, taskMapProps }) {
   const viewportRef = useRef(null);
   const systemReducedMotion = useReducedMotion();
   const isPresent = useIsPresent();
@@ -1356,6 +1464,8 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
         <PreviewNewTab
           api={api}
           projectId={projectId}
+          hostThreadId={hostThreadId}
+          threads={sideThreadProps?.threads}
           onChooseBrowser={async () => {
             const next = await api.browser.create({ workspaceId });
             onBrowserCreated(activeCustomTab.id, next);
@@ -1378,6 +1488,16 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
             });
           }}
         />
+      ) : activeCustomTab?.kind === "thread" ? (
+        <SideThreadSurface
+          {...sideThreadProps}
+          api={api}
+          tab={activeCustomTab}
+          onTabUpdate={(patch) => onCustomTabUpdate(activeCustomTab.id, patch)}
+          key={activeCustomTab.id}
+        />
+      ) : activeCustomTab?.kind === "task-map" ? (
+        <TaskMapPreview {...taskMapProps} />
       ) : activeCustomTab?.kind === "simulator" ? (
         <IosSimulatorPreview
           api={api}
@@ -1432,7 +1552,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
             </div>
           )}
         </div>
-      ) : <div className="file-empty"><PreviewIcon size={28} /><strong>Open something</strong><small>Use + to open a browser, file, work item, or Workflow.</small></div>}
+      ) : <div className="file-empty"><PreviewIcon size={28} /><strong>Open something</strong><small>Use + to open a browser, file, side thread, work item, or Workflow.</small></div>}
     </motion.section>
   );
 }
@@ -1829,6 +1949,7 @@ function sameThreadSummary(left, right) {
     && left.name === right.name
     && left.preview === right.preview
     && left.parentThreadId === right.parentThreadId
+    && left.forkedFromId === right.forkedFromId
     && left.agentStatusMessage === right.agentStatusMessage
     && left.liveProjection === right.liveProjection
     && threadStatus(left) === threadStatus(right)
@@ -1838,7 +1959,37 @@ function sameThreadSummary(left, right) {
     && left.bridge?.effort === right.bridge?.effort;
 }
 
-function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false, timestamp = null, showTimestamp = true }) {
+function AssistantAnswerActions({ timestamp = null, showTimestamp = true, onFork = null }) {
+  const [forking, setForking] = useState(false);
+  if (!onFork && !showTimestamp) return null;
+  return (
+    <div className="assistant-answer-actions detached">
+      {onFork && (
+        <button
+          type="button"
+          className="fork-response-button"
+          aria-label={forking ? "Forking this answer" : "Fork from this answer"}
+          aria-busy={forking}
+          title={forking ? "Forking this answer" : "Fork from this answer"}
+          disabled={forking}
+          onClick={async () => {
+            setForking(true);
+            try {
+              await onFork();
+            } finally {
+              setForking(false);
+            }
+          }}
+        >
+          {forking ? <SpinnerGap className="spin-icon" size={12} /> : <GitBranch size={13} />}
+        </button>
+      )}
+      {showTimestamp && <MessageTimestamp value={timestamp} />}
+    </div>
+  );
+}
+
+function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false }) {
   const [animate] = useState(() => !seenResponseIds.has(responseKey));
   const systemReducedMotion = useReducedMotion();
   useEffect(() => {
@@ -1859,7 +2010,6 @@ function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sen
         ) : <MarkdownMessage text={item.text} />}
         {sentToMain && <div className="bridge-answer-status"><CheckCircle size={11} weight="fill" />Sent answer to main agent</div>}
       </article>
-      {forceFinal && showTimestamp && <MessageTimestamp value={timestamp} />}
     </div>
   );
 }
@@ -1900,7 +2050,7 @@ function ConversationItem({ item, forceFinal = false, responseKey, seenResponseI
   }
   if (item.type === "agentMessage") {
     if (!item.text) return null;
-    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} sentToMain={sentToMain} timestamp={timestamp} showTimestamp={showTimestamp} />;
+    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} sentToMain={sentToMain} />;
   }
   if (item.type === "imageGeneration") {
     return (
@@ -2399,7 +2549,7 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
   );
 }
 
-const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds, showTimestamps = true, completedWorkDetails = "auto", onImageRevision = null, imageRevisionDisabled = false }) {
+const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds, showTimestamps = true, completedWorkDetails = "auto", onImageRevision = null, imageRevisionDisabled = false, onFork = null }) {
   const items = turn.items ?? [];
   const threadId = thread.id;
   const running = turnIsRunning(turn.status);
@@ -2410,6 +2560,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     ? items.findLastIndex((item) => item.type === "agentMessage" && item.text)
     : -1;
   const finalIndex = explicitFinalIndex === -1 ? fallbackFinalIndex : explicitFinalIndex;
+  const finalItem = finalIndex === -1 ? null : items[finalIndex];
   const settled = !running && finalIndex !== -1;
   const startedAt = turn.startedAt ?? turn.createdAt;
   const completedAt = turn.completedAt;
@@ -2461,6 +2612,17 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     );
   });
   flushTrace();
+  if (turn.status === "completed" && finalItem) {
+    const timestamp = finalItem.createdAt ?? finalItem.completedAt ?? completedAt;
+    rendered.push(
+      <AssistantAnswerActions
+        timestamp={timestamp}
+        showTimestamp={showTimestamps}
+        onFork={finalItem.id && onFork ? () => onFork({ threadId, turnId: turn.id, itemId: finalItem.id }) : null}
+        key={`answer-actions-${finalItem.renderId ?? finalItem.id ?? turn.id}`}
+      />
+    );
+  }
   if (running && workingTraceIndexes.length) {
     const activeTraceIndex = workingTraceIndexes.at(-1);
     rendered[activeTraceIndex] = cloneElement(rendered[activeTraceIndex], { running: true });
@@ -2479,6 +2641,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
   && previous.completedWorkDetails === next.completedWorkDetails
   && previous.onImageRevision === next.onImageRevision
   && previous.imageRevisionDisabled === next.imageRevisionDisabled
+  && previous.onFork === next.onFork
   && previous.seenResponseIds === next.seenResponseIds);
 
 function isQuestionRequest(request) {
@@ -2607,7 +2770,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt }) {
+function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -2616,6 +2779,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
   const [commandsDismissed, setCommandsDismissed] = useState(false);
   const storageKey = `pixice.draft.${draftKey}`;
   const commandListId = useId();
+  const composerRef = useRef(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const selected = models.find((model) => model.model === selectedModel);
@@ -2645,6 +2809,10 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
   }, [text]);
 
   useEffect(() => {
+    onDraftStateChange?.({ hasText: Boolean(text), attachmentCount: attachments.length });
+  }, [attachments.length, onDraftStateChange, text]);
+
+  useEffect(() => {
     if (!autoFocusComposer || disabled || questionRequest) return undefined;
     const frame = window.requestAnimationFrame(() => textareaRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
@@ -2672,37 +2840,40 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
   }, [attachments.length, disabled]);
 
   useEffect(() => {
+    const target = globalFileDrop ? window : composerRef.current;
+    if (!target) return undefined;
+    const belongsToScopedComposer = (event) => globalFileDrop && event.target?.closest?.('[data-composer-drop-scope="local"]');
     const onDragEnter = (event) => {
-      if (disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
+      if (belongsToScopedComposer(event) || disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
       setDraggingFiles(true);
     };
     const onDragOver = (event) => {
-      if (disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
+      if (belongsToScopedComposer(event) || disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
       setDraggingFiles(true);
     };
     const onDragLeave = (event) => {
-      if (!event.relatedTarget) setDraggingFiles(false);
+      if (globalFileDrop ? !event.relatedTarget : !composerRef.current?.contains(event.relatedTarget)) setDraggingFiles(false);
     };
     const onDrop = (event) => {
-      if (disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
+      if (belongsToScopedComposer(event) || disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
       setDraggingFiles(false);
       addAttachmentFiles(attachmentFilesFromTransfer(event.dataTransfer));
     };
-    window.addEventListener("dragenter", onDragEnter);
-    window.addEventListener("dragover", onDragOver);
-    window.addEventListener("dragleave", onDragLeave);
-    window.addEventListener("drop", onDrop);
+    target.addEventListener("dragenter", onDragEnter);
+    target.addEventListener("dragover", onDragOver);
+    target.addEventListener("dragleave", onDragLeave);
+    target.addEventListener("drop", onDrop);
     return () => {
-      window.removeEventListener("dragenter", onDragEnter);
-      window.removeEventListener("dragover", onDragOver);
-      window.removeEventListener("dragleave", onDragLeave);
-      window.removeEventListener("drop", onDrop);
+      target.removeEventListener("dragenter", onDragEnter);
+      target.removeEventListener("dragover", onDragOver);
+      target.removeEventListener("dragleave", onDragLeave);
+      target.removeEventListener("drop", onDrop);
     };
-  }, [addAttachmentFiles, disabled, questionRequest]);
+  }, [addAttachmentFiles, disabled, globalFileDrop, questionRequest]);
   const slashMatch = showSlashCommands ? text.match(/^\/([^\s]*)$/) : null;
   const slashQuery = slashMatch?.[1].toLowerCase() ?? null;
   const matchingCommands = slashQuery === null ? [] : SLASH_COMMANDS.filter((command) => {
@@ -2745,13 +2916,13 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
   };
   if (questionRequest) {
     return (
-      <div className="composer" data-question-active="true">
+      <div className="composer" data-question-active="true" data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
         <ComposerQuestion request={questionRequest} onResolve={onQuestionResolve} />
       </div>
     );
   }
   return (
-    <div className="composer" data-dragging-files={draggingFiles}>
+    <div className="composer" data-dragging-files={draggingFiles} data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
       {draggingFiles && (
         <div className="composer-drop-target" role="status">
           <Files size={22} />
@@ -2810,12 +2981,12 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
       )}
       <textarea
         ref={textareaRef}
-        aria-label="Task prompt"
+        aria-label={ariaLabel}
         aria-autocomplete="list"
         aria-expanded={commandMenuOpen}
         aria-controls={commandMenuOpen ? commandListId : undefined}
         aria-activedescendant={commandMenuOpen && activeCommand ? `${commandListId}-${activeCommand.name}` : undefined}
-        placeholder={disabled ? "Connect a provider and select a project to begin" : running ? "Steer the active task" : "Describe the task you want to work on"}
+        placeholder={disabled ? "Connect a provider and select a project to begin" : running ? runningPlaceholder : placeholder}
         spellCheck={spellCheckComposer}
         value={text}
         disabled={disabled}
@@ -2931,6 +3102,444 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
   );
 }
 
+function applySideThreadRuntimePayload(current, payload) {
+  if (payload.method === "thread/name/updated") {
+    return current?.id === payload.threadId ? { ...current, name: payload.name } : current;
+  }
+  return applyRuntimePayload(current ?? payload.thread ?? null, payload);
+}
+
+function SideThreadSurface({
+  api,
+  tab,
+  runtime,
+  models,
+  defaultModel,
+  defaultEffort,
+  defaultFastMode,
+  defaultPermissionMode,
+  providers,
+  threads,
+  attention,
+  preferences,
+  seenResponseIds,
+  onQuestionResolve,
+  onProviderLogin,
+  onProvidersRefresh,
+  onThreadCreated,
+  onThreadActivity,
+  onThreadViewed,
+  onOpenMain,
+  onForkResponse,
+  onTabUpdate,
+  onError
+}) {
+  const projectId = tab.payload?.projectId;
+  const threadId = tab.payload?.threadId ?? null;
+  const threadIdRef = useRef(threadId);
+  const initialThread = threads?.find((candidate) => candidate.id === threadId) ?? null;
+  const [snapshot, setSnapshot] = useState(initialThread);
+  const [loading, setLoading] = useState(Boolean(threadId));
+  const [busy, setBusy] = useState(false);
+  const [surfaceError, setSurfaceError] = useState("");
+  const [selectedModel, setSelectedModel] = useState(defaultModel || models?.[0]?.model || "");
+  const [effort, setEffort] = useState(defaultEffort || "high");
+  const [fastMode, setFastMode] = useState(Boolean(defaultFastMode));
+  const [permissionMode, setPermissionMode] = useState(defaultPermissionMode || "workspace-write");
+  const scrollRef = useRef(null);
+  const followLatestRef = useRef(true);
+  const followedThreadRef = useRef(threadId);
+  const pendingDeltasRef = useRef([]);
+  const deltaFrameRef = useRef(null);
+  threadIdRef.current = threadId;
+
+  useEffect(() => {
+    if (!models?.length) return;
+    const saved = loadThreadConfiguration(threadId);
+    const model = models.find((candidate) => candidate.model === saved?.model)
+      ?? models.find((candidate) => candidate.model === defaultModel)
+      ?? models[0];
+    setSelectedModel(model.model);
+    setEffort(resolveReasoningEffort(saved?.effort, model, defaultEffort));
+    setFastMode(Boolean(saved?.fastMode ?? defaultFastMode) && Boolean(fastServiceTier(model)));
+    setPermissionMode(PERMISSION_OPTIONS.some((option) => option.value === saved?.permissionMode)
+      ? saved.permissionMode
+      : defaultPermissionMode);
+  }, [defaultEffort, defaultFastMode, defaultModel, defaultPermissionMode, models, threadId]);
+
+  const refresh = useCallback(async (targetThreadId = threadIdRef.current) => {
+    if (!api?.threads?.read || !projectId || !targetThreadId) return;
+    try {
+      const response = await api.threads.read({ projectId, threadId: targetThreadId });
+      if (threadIdRef.current !== targetThreadId) return;
+      markResponsesSeen(response.thread, seenResponseIds);
+      onThreadViewed(response.thread);
+      setSnapshot((current) => mergeThreadSnapshot(current, response.thread));
+      setSurfaceError("");
+    } catch (cause) {
+      if (threadIdRef.current !== targetThreadId) return;
+      setSurfaceError(cause.message);
+    } finally {
+      if (threadIdRef.current === targetThreadId) setLoading(false);
+    }
+  }, [api, onThreadViewed, projectId, seenResponseIds]);
+
+  useEffect(() => {
+    if (!threadId) {
+      setLoading(false);
+      setSnapshot(null);
+      return undefined;
+    }
+    setLoading(true);
+    void refresh(threadId);
+    return undefined;
+  }, [refresh, threadId]);
+
+  const flushDeltas = useCallback(() => {
+    deltaFrameRef.current = null;
+    const pending = coalesceRuntimeDeltas(pendingDeltasRef.current.splice(0));
+    if (!pending.length) return;
+    setSnapshot((current) => pending.reduce(applySideThreadRuntimePayload, current));
+  }, []);
+
+  const commitPayload = useCallback((payload) => {
+    if (payload.method === "item/agentMessage/delta") {
+      pendingDeltasRef.current.push(payload);
+      if (deltaFrameRef.current !== null) return;
+      deltaFrameRef.current = typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame(flushDeltas)
+        : window.setTimeout(flushDeltas, 16);
+      return;
+    }
+    const pending = coalesceRuntimeDeltas(pendingDeltasRef.current.splice(0));
+    if (deltaFrameRef.current !== null) {
+      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(deltaFrameRef.current);
+      else window.clearTimeout(deltaFrameRef.current);
+      deltaFrameRef.current = null;
+    }
+    setSnapshot((current) => applySideThreadRuntimePayload(pending.reduce(applySideThreadRuntimePayload, current), payload));
+  }, [flushDeltas]);
+
+  useEffect(() => {
+    if (!api?.events?.subscribe) return undefined;
+    return api.events.subscribe((event) => {
+      const payload = event.payload ?? {};
+      const targetThreadId = threadIdRef.current;
+      if (!targetThreadId || (payload.threadId ?? payload.thread?.id) !== targetThreadId) return;
+      commitPayload(payload);
+      if (payload.method === "turn/completed") {
+        window.setTimeout(() => void refresh(targetThreadId), 120);
+      }
+    });
+  }, [api, commitPayload, refresh]);
+
+  useEffect(() => () => {
+    pendingDeltasRef.current = [];
+    if (deltaFrameRef.current !== null) {
+      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(deltaFrameRef.current);
+      else window.clearTimeout(deltaFrameRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const title = threadTitle(snapshot);
+    const status = threadStatus(snapshot);
+    if (tab.title === title && tab.payload?.status === status) return;
+    onTabUpdate({
+      title,
+      payload: { ...tab.payload, status }
+    });
+  }, [onTabUpdate, snapshot, tab.payload, tab.title]);
+
+  useLayoutEffect(() => {
+    if (followedThreadRef.current !== threadId) {
+      followedThreadRef.current = threadId;
+      followLatestRef.current = true;
+    }
+    const node = scrollRef.current;
+    if (node && followLatestRef.current) node.scrollTop = node.scrollHeight;
+  }, [snapshot?.turns, threadId]);
+
+  const persistConfiguration = (patch) => {
+    const next = { selectedModel, effort, fastMode, permissionMode, ...patch };
+    if (patch.selectedModel !== undefined) setSelectedModel(patch.selectedModel);
+    if (patch.effort !== undefined) setEffort(patch.effort);
+    if (patch.fastMode !== undefined) setFastMode(patch.fastMode);
+    if (patch.permissionMode !== undefined) setPermissionMode(patch.permissionMode);
+    if (threadId) saveThreadConfiguration(threadId, {
+      model: next.selectedModel,
+      effort: next.effort,
+      fastMode: next.fastMode,
+      permissionMode: next.permissionMode
+    });
+  };
+
+  const changeModel = (modelName) => {
+    const model = models.find((candidate) => candidate.model === modelName);
+    const nextEffort = resolveReasoningEffort(effort, model, defaultEffort);
+    persistConfiguration({ selectedModel: modelName, effort: nextEffort, fastMode: Boolean(fastMode && fastServiceTier(model)) });
+  };
+
+  const submit = async (text, attachments = []) => {
+    if (!api || !projectId || !runtime?.connected || busy || !selectedModel) return false;
+    followLatestRef.current = true;
+    setBusy(true);
+    setSurfaceError("");
+    let targetThreadId = threadIdRef.current;
+    let optimisticTurnId = null;
+    let optimisticMessageId = null;
+    let removeEmptyTurn = false;
+    const model = models.find((candidate) => candidate.model === selectedModel);
+    const availableFastTier = fastServiceTier(model);
+    const serviceTier = availableFastTier ? (fastMode ? availableFastTier : null) : undefined;
+    try {
+      if (!targetThreadId) {
+        const created = await api.threads.create({
+          projectId,
+          model: selectedModel || undefined,
+          ...(serviceTier !== undefined ? { serviceTier } : {}),
+          permissionMode
+        });
+        targetThreadId = created.thread.id;
+        threadIdRef.current = targetThreadId;
+        setSnapshot(created.thread);
+        saveThreadConfiguration(targetThreadId, { model: selectedModel, effort, fastMode, permissionMode });
+        onThreadCreated(tab.id, created.thread, {
+          ...tab.payload,
+          projectId,
+          threadId: targetThreadId
+        });
+      }
+
+      const currentSnapshot = snapshot?.id === targetThreadId ? snapshot : null;
+      const activeTurn = [...(currentSnapshot?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
+      if (activeTurn) {
+        optimisticTurnId = activeTurn.id;
+        optimisticMessageId = `local-user:${activeTurn.id}:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+        setSnapshot((current) => appendLocalUserMessage(current, {
+          turnId: activeTurn.id,
+          text,
+          attachments,
+          messageId: optimisticMessageId
+        }));
+        await api.turns.steer({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, attachments });
+        window.setTimeout(() => void refresh(targetThreadId), 250);
+      } else {
+        optimisticTurnId = `local-turn:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+        optimisticMessageId = `local-user:${optimisticTurnId}`;
+        removeEmptyTurn = true;
+        setSnapshot((current) => appendLocalUserMessage(current, {
+          turnId: optimisticTurnId,
+          text,
+          attachments,
+          messageId: optimisticMessageId
+        }));
+        const response = await api.turns.start({
+          projectId,
+          threadId: targetThreadId,
+          text,
+          attachments,
+          model: selectedModel || undefined,
+          ...(serviceTier !== undefined ? { serviceTier } : {}),
+          effort,
+          permissionMode
+        });
+        const temporaryTurnId = optimisticTurnId;
+        const localMessageId = optimisticMessageId;
+        setSnapshot((current) => {
+          if (!current) return current;
+          const createdAt = response.turn.startedAt ?? response.turn.createdAt;
+          const responseAlreadyArrived = (current.turns ?? []).some((turn) => turn.id === response.turn.id);
+          const withoutTemporaryTurn = removeLocalUserMessage(current, {
+            turnId: temporaryTurnId,
+            messageId: localMessageId,
+            removeEmptyTurn: true
+          });
+          if (!responseAlreadyArrived) {
+            const incoming = appendLocalUserMessage({
+              id: current.id,
+              turns: [{ ...response.turn, renderId: temporaryTurnId }]
+            }, {
+              turnId: response.turn.id,
+              text,
+              attachments,
+              createdAt,
+              messageId: localMessageId,
+              skipIfMatching: true
+            });
+            return mergeThreadSnapshot(withoutTemporaryTurn, incoming);
+          }
+          const keyedThread = {
+            ...withoutTemporaryTurn,
+            turns: (withoutTemporaryTurn.turns ?? []).map((turn) => turn.id === response.turn.id
+              ? { ...turn, renderId: turn.renderId ?? temporaryTurnId }
+              : turn)
+          };
+          const started = applyRuntimePayload(keyedThread, { method: "turn/started", threadId: targetThreadId, turn: response.turn });
+          return appendLocalUserMessage(started, {
+            turnId: response.turn.id,
+            text,
+            attachments,
+            createdAt,
+            messageId: localMessageId,
+            skipIfMatching: true
+          });
+        });
+        window.setTimeout(() => void refresh(targetThreadId), 250);
+        window.setTimeout(() => void refresh(targetThreadId), 900);
+      }
+      onThreadActivity(targetThreadId);
+      return true;
+    } catch (cause) {
+      if (optimisticTurnId && optimisticMessageId) {
+        setSnapshot((current) => removeLocalUserMessage(current, {
+          turnId: optimisticTurnId,
+          messageId: optimisticMessageId,
+          removeEmptyTurn
+        }));
+      }
+      setSurfaceError(cause.message);
+      onError(cause.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const activeTurn = [...(snapshot?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
+  const questionRequest = attention.find((request) => isQuestionRequest(request) && request.params?.threadId === threadId) ?? null;
+  const title = snapshot ? threadTitle(snapshot) : tab.title || "New side thread";
+  const forkFromSideThread = useCallback((details) => onForkResponse({
+    ...details,
+    configuration: { model: selectedModel, effort, fastMode, permissionMode }
+  }), [effort, fastMode, onForkResponse, permissionMode, selectedModel]);
+  const updateDraftState = useCallback(({ hasText, attachmentCount }) => {
+    if (tab.payload?.draftHasText === hasText && tab.payload?.draftAttachmentCount === attachmentCount) return;
+    onTabUpdate({
+      payload: {
+        ...tab.payload,
+        draftHasText: hasText,
+        draftAttachmentCount: attachmentCount
+      }
+    });
+  }, [onTabUpdate, tab.payload]);
+
+  return (
+    <section className="side-thread-surface" aria-label={`Side thread: ${title}`} data-composer-drop-scope="local">
+      <header className="side-thread-header">
+        <div>
+          {snapshot ? <StatusDot status={threadStatus(snapshot)} /> : <GitBranch size={14} />}
+          <span><strong>{title}</strong><small>{activeTurn ? "Working" : tab.payload?.forkedFromId ? "Forked side thread" : threadId ? "Side thread" : "Starts when you send"}</small></span>
+        </div>
+        <button type="button" disabled={!threadId} onClick={() => onOpenMain(threadId)}><Eye size={13} />Open as main task</button>
+      </header>
+      <div
+        className="side-thread-scroll"
+        ref={scrollRef}
+        onScroll={() => {
+          const node = scrollRef.current;
+          if (node) followLatestRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+        }}
+      >
+        {loading ? (
+          <div className="loading-state"><SpinnerGap className="spin-icon" size={18} />Loading side thread…</div>
+        ) : !snapshot ? (
+          <div className="side-thread-empty"><GitBranch size={22} /><strong>Start a side thread</strong><p>Ask a related question without leaving the main task.</p></div>
+        ) : (
+          <div className="side-thread-messages">
+            {(snapshot.turns ?? []).length === 0 && <p className="quiet-empty">This side thread has no messages yet.</p>}
+            {(snapshot.turns ?? []).map((turn, turnIndex) => (
+              <TurnConversation
+                thread={snapshot}
+                turn={turn}
+                turnIndex={turnIndex}
+                seenResponseIds={seenResponseIds}
+                showTimestamps={preferences.showMessageTimestamps}
+                completedWorkDetails={preferences.completedWorkDetails}
+                onFork={activeTurn ? null : forkFromSideThread}
+                key={turn.renderId ?? turn.id}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+      {surfaceError && <div className="side-thread-error" role="alert"><Warning size={13} />{surfaceError}</div>}
+      <Composer
+        disabled={!runtime?.connected || !models.length}
+        busy={busy}
+        draftKey={`${projectId}:side:${threadId ?? tab.payload?.draftId ?? tab.id}`}
+        preserveDrafts={preferences.preserveDrafts}
+        sendShortcut={preferences.sendShortcut}
+        spellCheckComposer={preferences.spellCheckComposer}
+        autoFocusComposer={false}
+        showSlashCommands={preferences.showSlashCommands}
+        running={Boolean(activeTurn)}
+        questionRequest={questionRequest}
+        onQuestionResolve={onQuestionResolve}
+        models={models}
+        selectedModel={selectedModel}
+        onModelChange={changeModel}
+        effort={effort}
+        onEffortChange={(nextEffort) => persistConfiguration({ effort: nextEffort })}
+        fastMode={fastMode}
+        onFastModeChange={(enabled) => persistConfiguration({ fastMode: enabled })}
+        permissionMode={permissionMode}
+        onPermissionModeChange={(mode) => persistConfiguration({ permissionMode: mode })}
+        providers={providers}
+        onProviderLogin={onProviderLogin}
+        onProvidersRefresh={onProvidersRefresh}
+        onSubmit={submit}
+        onDraftStateChange={updateDraftState}
+        onInterrupt={async () => {
+          if (!threadId || !activeTurn) return;
+          try {
+            await api.turns.interrupt({ projectId, threadId, turnId: activeTurn.id });
+          } catch (cause) {
+            setSurfaceError(cause.message);
+            onError(cause.message);
+          }
+        }}
+        ariaLabel="Side thread prompt"
+        placeholder="Ask a related question"
+        runningPlaceholder="Steer the side thread"
+        globalFileDrop={false}
+      />
+    </section>
+  );
+}
+
+function TaskMapPreview({ thread, threads, plan, attention, onResolve }) {
+  if (!thread) {
+    return <div className="file-empty"><TaskMapIcon size={28} /><strong>No active task</strong><small>Open a task before using its Task map.</small></div>;
+  }
+  const agents = descendantsOf(threads, thread.id);
+  return (
+    <section className="task-map-preview" aria-label="Task map preview">
+      <header><span><TaskMapIcon size={15} />Task map</span><StatusDot status={threadStatus(thread)} /></header>
+      <div className="task-map-preview-scroll">
+        <section className="inspector-section">
+          <span className="section-label">Plan</span>
+          {plan?.length ? (
+            <div className="inspector-plan">
+              {plan.map((step) => <div key={step.step} className={step.status}>{step.status === "completed" ? <CheckCircle size={14} weight="fill" /> : step.status === "inProgress" ? <SpinnerGap className="spin-icon" size={14} /> : <Circle size={14} />}<span>{step.step}</span></div>)}
+            </div>
+          ) : <p className="inspector-empty">No structured plan reported yet.</p>}
+        </section>
+        <section className="inspector-section">
+          <div className="section-heading"><span className="section-label">Agents</span><small>{agents.length + 1}</small></div>
+          <div className="agent-list">
+            <InspectorAgentRow agent={thread} lead />
+            {agents.map((agent) => <InspectorAgentRow agent={agent} parentTitle={threadTitle(thread)} key={agent.id} />)}
+            {agents.length === 0 && <p className="inspector-empty">No delegated agents yet.</p>}
+          </div>
+        </section>
+        {attention.filter((request) => request.params?.threadId === thread.id && !isQuestionRequest(request)).map((request) => <ApprovalCard request={request} onResolve={onResolve} key={request.id} />)}
+      </div>
+    </section>
+  );
+}
+
 function EmptyConversation({ project, runtime, onOpenProject }) {
   if (!project) {
     return (
@@ -3031,6 +3640,8 @@ function ConversationWorkspace({
   onOpenWorkspaceReference,
   proactiveSuggestions,
   onProactiveSuggestionResolve,
+  sideThreadProps,
+  taskMapProps,
   composerProps
 }) {
   const [previewPresent, setPreviewPresent] = useState(previewOpen);
@@ -3208,6 +3819,7 @@ function ConversationWorkspace({
                     completedWorkDetails={completedWorkDetails}
                     onImageRevision={composerProps.onImageRevision}
                     imageRevisionDisabled={composerProps.busy}
+                    onFork={composerProps.running ? null : composerProps.onForkResponse}
                     key={turn.renderId ?? turn.id}
                   />
                 ))}
@@ -3261,6 +3873,7 @@ function ConversationWorkspace({
             onBrowserCreated={onPreviewBrowserCreated}
             onClose={onPreviewToggle}
             projectId={project?.id}
+            hostThreadId={thread?.id ?? null}
             fileTabs={previewFileTabs}
             instrumentTabs={previewInstrumentTabs}
             customTabs={previewCustomTabs}
@@ -3279,6 +3892,8 @@ function ConversationWorkspace({
             onInstrumentInvoke={onPreviewInstrumentInvoke}
             onInstrumentPin={onPreviewInstrumentPin}
             onOpenResource={onOpenWorkspaceReference}
+            sideThreadProps={sideThreadProps}
+            taskMapProps={taskMapProps}
           />
         )}
       </AnimatePresence>
@@ -5134,13 +5749,20 @@ export function App() {
   const selectedThreadCompletionRevision = threadCompletionRevision(sidebarThreads.find((candidate) => candidate.id === selectedThreadId));
   const changedCount = review.projectId === selectedProjectId ? review.repository?.dirtyPaths?.length ?? 0 : 0;
 
+  const markThreadCompletionSeen = useCallback((candidate) => {
+    const threadId = candidate?.id;
+    const completionRevision = threadCompletionRevision(candidate);
+    if (!threadId || !completionRevision) return;
+    setSeenThreadCompletions((current) => {
+      if (current[threadId] === completionRevision) return current;
+      return { ...current, [threadId]: completionRevision };
+    });
+  }, []);
+
   useEffect(() => {
     if (!selectedThreadId || !selectedThreadCompletionRevision) return;
-    setSeenThreadCompletions((current) => {
-      if (current[selectedThreadId] === selectedThreadCompletionRevision) return current;
-      return { ...current, [selectedThreadId]: selectedThreadCompletionRevision };
-    });
-  }, [selectedThreadCompletionRevision, selectedThreadId]);
+    markThreadCompletionSeen(sidebarThreads.find((candidate) => candidate.id === selectedThreadId));
+  }, [markThreadCompletionSeen, selectedThreadCompletionRevision, selectedThreadId, sidebarThreads]);
 
   useEffect(() => {
     if (!seenThreadCompletionsHydrated) return;
@@ -5844,6 +6466,8 @@ export function App() {
       optimisticThreadsRef.current.delete(selectedThreadId);
       threadLoadRequestRef.current += 1;
       setLoading((state) => ({ ...state, thread: false }));
+      setProactiveSuggestions([]);
+      void loadProactivity(selectedProjectId, selectedThreadId);
       return;
     }
     loadThread(selectedProjectId, selectedThreadId);
@@ -6214,6 +6838,7 @@ export function App() {
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId
           ? { ...candidate, status: { type: "active", activeFlags: [] }, planProgress: null }
           : candidate));
+        setPreviewWorkspaces((current) => updateThreadPreviewTabs(current, payload.threadId, { payload: { status: "running" } }));
       }
       if (payload.method === "turn/completed" && payload.threadId) {
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId
@@ -6226,12 +6851,15 @@ export function App() {
               updatedAt: Date.now()
             }
           : candidate));
+        setPreviewWorkspaces((current) => updateThreadPreviewTabs(current, payload.threadId, { payload: { status: "completed" } }));
       }
       if (payload.method === "thread/status/changed") {
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId ? { ...candidate, status: payload.status } : candidate));
+        setPreviewWorkspaces((current) => updateThreadPreviewTabs(current, payload.threadId, { payload: { status: threadStatus({ status: payload.status }) } }));
       }
       if (payload.method === "thread/name/updated") {
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId ? { ...candidate, name: payload.name } : candidate));
+        setPreviewWorkspaces((current) => updateThreadPreviewTabs(current, payload.threadId, { title: payload.name }));
         if (payload.threadId === selectedThreadIdRef.current) {
           setThread((current) => current?.id === payload.threadId ? { ...current, name: payload.name } : current);
         }
@@ -6373,9 +7001,32 @@ export function App() {
     const projectId = selectedProjectId;
     const target = threads.find((candidate) => candidate.id === threadId);
     const title = threadTitle(target);
-    if (!skipConfirm && preferences.confirmBeforeDelete && !window.confirm(`Delete “${title}”?\n\nThis removes the conversation from Pixice’s task list.`)) return false;
+    const owningPreview = previewWorkspaces[threadId];
+    const dirtyFileCount = (owningPreview?.fileTabs ?? []).filter((file) => file.dirty).length;
+    if (skipConfirm && dirtyFileCount) return false;
+    const previewHasContent = Boolean(
+      owningPreview
+      && ((owningPreview.browserState?.tabs ?? []).length
+        || (owningPreview.fileTabs ?? []).length
+        || (owningPreview.instrumentTabs ?? []).length
+        || (owningPreview.customTabs ?? []).length)
+    );
+    if (!skipConfirm && (preferences.confirmBeforeDelete || dirtyFileCount)) {
+      const previewWarning = previewHasContent ? " It also closes this chat's Preview workspace." : "";
+      const dirtyWarning = dirtyFileCount
+        ? `\n\n${dirtyFileCount === 1 ? "One file has" : `${dirtyFileCount} files have`} unsaved edits.`
+        : "";
+      if (!window.confirm(`Delete "${title}"?\n\nThis removes the conversation from Pixice's task list.${previewWarning}${dirtyWarning}`)) return false;
+    }
     try {
       await api.threads.archive({ projectId, threadId });
+      if (owningPreview) {
+        try {
+          await api.browser?.destroy?.({ workspaceId: threadId });
+        } catch {
+          // The conversation is already archived, so Preview teardown remains best effort.
+        }
+      }
       localStorage.removeItem(threadConfigurationKey(threadId));
       setSeenThreadCompletions((current) => {
         if (!(threadId in current)) return current;
@@ -6383,12 +7034,7 @@ export function App() {
         delete next[threadId];
         return next;
       });
-      setPreviewWorkspaces((current) => {
-        if (!current[threadId]) return current;
-        const next = { ...current };
-        delete next[threadId];
-        return next;
-      });
+      setPreviewWorkspaces((current) => removeThreadPreviewTabs(current, threadId));
       if (selectedProjectIdRef.current !== projectId) return;
       const remaining = threads.filter((candidate) => candidate.id !== threadId);
       setThreads((current) => current.filter((candidate) => candidate.id !== threadId));
@@ -6404,13 +7050,16 @@ export function App() {
       setError(null);
       return true;
     } catch (cause) {
-      setError(cause.message);
+      if (selectedProjectIdRef.current === projectId) setError(cause.message);
       return false;
     }
   };
 
   const cleanupThreads = async (threadIds) => {
-    const removable = [...new Set(threadIds)].filter((threadId) => threads.some((candidate) => candidate.id === threadId));
+    const removable = [...new Set(threadIds)].filter((threadId) => (
+      threads.some((candidate) => candidate.id === threadId)
+      && !(previewWorkspaces[threadId]?.fileTabs ?? []).some((file) => file.dirty)
+    ));
     if (!removable.length) return 0;
     const label = removable.length === 1 ? "this old chat" : `these ${removable.length} old chats`;
     if (!window.confirm(`Clean up ${label}?\n\nThis removes the conversations from Pixice’s task list.`)) return 0;
@@ -6668,9 +7317,9 @@ export function App() {
     setPreviewActiveTabId(chooser.id);
   }, [browserState, previewActiveTabId, previewCustomTabs, previewInstrumentTabs, previewOpen, previewWorkspaceId, setPreviewActiveTabId, setPreviewCustomTabs, setPreviewOpen]);
 
-  const openPreviewCustomTab = useCallback((tab) => {
-    if (!tab?.id) return;
-    updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
+  const openPreviewCustomTabInWorkspace = useCallback((workspaceId, tab) => {
+    if (!workspaceId || !tab?.id) return;
+    updatePreviewWorkspace(workspaceId, (workspace) => {
       const customTabs = workspace.customTabs ?? [];
       return {
         ...workspace,
@@ -6681,11 +7330,75 @@ export function App() {
           : [...customTabs, tab]
       };
     });
-  }, [previewWorkspaceId, updatePreviewWorkspace]);
+  }, [updatePreviewWorkspace]);
+
+  const openPreviewCustomTab = useCallback((tab) => {
+    openPreviewCustomTabInWorkspace(previewWorkspaceId, tab);
+  }, [openPreviewCustomTabInWorkspace, previewWorkspaceId]);
 
   const updatePreviewCustomTab = useCallback((tabId, patch) => {
     setPreviewCustomTabs((current) => current.map((tab) => tab.id === tabId ? { ...tab, ...patch } : tab));
   }, [setPreviewCustomTabs]);
+
+  const registerSideThread = useCallback((tabId, createdThread, payload) => {
+    const workspaceId = payload?.hostThreadId ?? (payload?.projectId ? `draft:${payload.projectId}` : null);
+    openPreviewCustomTabInWorkspace(workspaceId, {
+      id: tabId,
+      kind: "thread",
+      title: threadTitle(createdThread),
+      payload: {
+        ...payload,
+        threadId: createdThread.id,
+        forkedFromId: createdThread.forkedFromId ?? payload?.forkedFromId ?? null,
+        status: threadStatus(createdThread)
+      }
+    });
+    if (selectedProjectIdRef.current !== payload?.projectId) return;
+    setThreads((current) => current.some((candidate) => candidate.id === createdThread.id)
+      ? current.map((candidate) => candidate.id === createdThread.id ? { ...candidate, ...createdThread } : candidate)
+      : [createdThread, ...current]);
+  }, [openPreviewCustomTabInWorkspace]);
+
+  const forkConversation = useCallback(async ({ threadId, turnId, itemId, configuration }) => {
+    const projectId = selectedProjectIdRef.current;
+    if (!api?.threads?.fork || !projectId || !threadId || !turnId || !itemId) return false;
+    const selectedThreadAtStart = selectedThreadIdRef.current;
+    const sourceConfiguration = loadThreadConfiguration(threadId)
+      ?? configuration
+      ?? (threadId === selectedThreadAtStart
+        ? { model: selectedModel, effort, fastMode, permissionMode }
+        : null);
+    try {
+      const response = await api.threads.fork({
+        projectId,
+        threadId,
+        lastTurnId: turnId,
+        lastItemId: itemId
+      });
+      const forkedThread = response.thread;
+      if (sourceConfiguration) saveThreadConfiguration(forkedThread.id, sourceConfiguration);
+      if (selectedProjectIdRef.current !== projectId) return true;
+      setThreads((current) => current.some((candidate) => candidate.id === forkedThread.id)
+        ? current.map((candidate) => candidate.id === forkedThread.id ? { ...candidate, ...forkedThread } : candidate)
+        : [forkedThread, ...current]);
+      if (selectedThreadIdRef.current === selectedThreadAtStart) {
+        markResponsesSeen(forkedThread, seenResponseIdsRef.current);
+        optimisticThreadsRef.current.set(forkedThread.id, forkedThread);
+        selectedThreadIdRef.current = forkedThread.id;
+        setSelectedThreadId(forkedThread.id);
+        setThread(forkedThread);
+        setPlan([]);
+        setProactiveSuggestions([]);
+        setDraftMode(false);
+        setActiveView("task");
+      }
+      setError(null);
+      return true;
+    } catch (cause) {
+      if (selectedProjectIdRef.current === projectId) setError(cause.message);
+      return false;
+    }
+  }, [api, effort, fastMode, permissionMode, selectedModel]);
 
   const openNewPreviewTab = useCallback(() => {
     openPreviewCustomTab(newPreviewChooserTab());
@@ -6797,6 +7510,21 @@ export function App() {
 
   const closePreviewCustomTab = useCallback((tabId, { ensureTab = true } = {}) => {
     const target = previewCustomTabs.find((tab) => tab.id === tabId);
+    const draftAttachmentCount = Number(target?.payload?.draftAttachmentCount ?? 0);
+    const unrecoverableText = Boolean(target?.payload?.draftHasText)
+      && (!preferences.preserveDrafts || !target?.payload?.threadId);
+    if (target?.kind === "thread" && (draftAttachmentCount > 0 || unrecoverableText)) {
+      const description = draftAttachmentCount > 0 && unrecoverableText
+        ? "The unsent message and attachments will be discarded."
+        : draftAttachmentCount > 0
+          ? "Unsent attachments will be discarded."
+          : "The unsent message will be discarded.";
+      if (!window.confirm(`Close "${target.title || "side thread"}"?\n\n${description}`)) return;
+    }
+    if (target?.kind === "thread" && !target.payload?.threadId) {
+      const draftKey = `${target.payload?.projectId}:side:${target.payload?.draftId ?? target.id}`;
+      localStorage.removeItem(`pixice.draft.${draftKey}`);
+    }
     if (target?.kind === "simulator") {
       void api?.ios?.stop?.({ workspaceId: previewWorkspaceId }).catch(() => {});
     }
@@ -6823,7 +7551,7 @@ export function App() {
         open: workspace.open
       };
     });
-  }, [api, previewCustomTabs, previewWorkspaceId, updatePreviewWorkspace]);
+  }, [api, preferences.preserveDrafts, previewCustomTabs, previewWorkspaceId, updatePreviewWorkspace]);
 
   const refreshPreviewInstrument = useCallback(async (instrumentId, source) => {
     if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Instrument data refresh is unavailable");
@@ -7208,6 +7936,7 @@ export function App() {
       const attachments = generatedImageAttachment(source);
       return submit(generatedImageRevisionPrompt(comment, prompt, attachments.length > 0), attachments);
     },
+    onForkResponse: forkConversation,
     onInterrupt: interrupt
   };
   const activeProjectToolId = projectTools.some((tool) => tool.id === selectedProjectToolId)
@@ -7365,6 +8094,29 @@ export function App() {
         onOpenWorkspaceReference={openWorkspaceReference}
         proactiveSuggestions={proactiveSuggestions}
         onProactiveSuggestionResolve={resolveProactiveSuggestion}
+        sideThreadProps={{
+          runtime,
+          models,
+          defaultModel,
+          defaultEffort,
+          defaultFastMode,
+          defaultPermissionMode,
+          providers,
+          threads,
+          attention,
+          preferences,
+          seenResponseIds: seenResponseIdsRef.current,
+          onQuestionResolve: resolveQuestion,
+          onProviderLogin: loginProvider,
+          onProvidersRefresh: refreshProviders,
+          onThreadCreated: registerSideThread,
+          onThreadActivity: markThreadMessaged,
+          onThreadViewed: markThreadCompletionSeen,
+          onOpenMain: selectThread,
+          onForkResponse: forkConversation,
+          onError: setError
+        }}
+        taskMapProps={{ thread, threads, plan, attention, onResolve: resolveAttention }}
         composerProps={composerProps}
       />
     );

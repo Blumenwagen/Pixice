@@ -305,12 +305,15 @@ declare global {
             open: boolean;
             tabCount: number;
             active: null | {
-              kind: "browser" | "file" | "instrument" | "task" | "plan" | "workflow" | "simulator" | "new";
+              kind: "browser" | "file" | "instrument" | "task" | "plan" | "workflow" | "simulator" | "thread" | "task-map" | "new";
               id?: string;
               title?: string;
               url?: string;
               path?: string;
               projectId?: string;
+              threadId?: string;
+              hostThreadId?: string;
+              forkedFromId?: string;
               taskId?: string;
               proposalId?: string;
               workflowId?: string;
@@ -423,6 +426,7 @@ declare global {
         read(payload: ThreadScope): Promise<{ thread: any; plan?: any[] | null }>;
         children(payload: ThreadScope): Promise<{ data: any[]; nextCursor: string | null }>;
         create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ thread: any }>;
+        fork(payload: ThreadScope & ({ lastTurnId: string } | { turnId: string }) & ({ lastItemId: string } | { itemId: string })): Promise<{ thread: any }>;
         archive(payload: ThreadScope): Promise<unknown>;
       };
       turns: {

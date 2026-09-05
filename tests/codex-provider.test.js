@@ -94,4 +94,25 @@ describe("Codex provider lifecycle", () => {
     expect(runtime.request).toHaveBeenNthCalledWith(2, "account/logout", {});
     expect(lifecycle.logoutCommand).toHaveBeenCalledOnce();
   });
+
+  it("forwards native forks through the selected turn and strips only the answer item", async () => {
+    const runtime = new FakeRuntime();
+    runtime.request.mockResolvedValue({ thread: { id: "forked-thread" } });
+    const provider = new CodexProvider(runtime);
+
+    await provider.request("thread/fork", {
+      threadId: "source-thread",
+      lastTurnId: "turn-2",
+      lastItemId: "answer-2",
+      deferGoalContinuation: true,
+      threadSource: "pixice"
+    });
+
+    expect(runtime.request).toHaveBeenCalledWith("thread/fork", {
+      threadId: "source-thread",
+      lastTurnId: "turn-2",
+      deferGoalContinuation: true,
+      threadSource: "pixice"
+    });
+  });
 });

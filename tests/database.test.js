@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PixiceDatabase } from "../electron/persistence/database.mjs";
 
 const temporaryDirectories = [];
@@ -299,12 +299,15 @@ describe("thread runtime persistence", () => {
       provider: "claude",
       providerThreadId: "session-1",
       resumeCursor: "session-1",
-      cwd: "/workspace"
+      cwd: "/workspace",
+      forkedFromId: "thread-parent"
     });
     database.saveProviderThreadSnapshot("thread-claude", {
       id: "thread-claude",
       cwd: "/workspace",
       name: "Claude task",
+      parentThreadId: null,
+      forkedFromId: "thread-parent",
       status: { type: "active", activeFlags: [] },
       turns: [{ id: "turn-1", status: "inProgress", items: [{ id: "user", type: "userMessage" }] }]
     });
@@ -313,11 +316,12 @@ describe("thread runtime persistence", () => {
       provider: "claude",
       providerThreadId: "session-1",
       resumeCursor: "session-1",
-      cwd: "/workspace"
+      cwd: "/workspace",
+      forkedFromId: "thread-parent"
     });
     expect(database.listThreadProviderBindings({ provider: "claude" })).toHaveLength(1);
     expect(database.listProviderThreadSummaries({ provider: "claude", cwd: "/workspace" })).toEqual([
-      expect.objectContaining({ id: "thread-claude", name: "Claude task", status: { type: "active", activeFlags: [] } })
+      expect.objectContaining({ id: "thread-claude", name: "Claude task", parentThreadId: null, forkedFromId: "thread-parent", status: { type: "active", activeFlags: [] } })
     ]);
     expect(database.listProviderThreadSummaries({ provider: "claude" })[0]).not.toHaveProperty("turns");
 
@@ -326,6 +330,7 @@ describe("thread runtime persistence", () => {
       status: "inProgress",
       items: [{ id: "user", type: "userMessage" }, { id: "answer", type: "agentMessage", text: "Recovered output" }]
     });
+    expect(database.getProviderThreadSnapshot("thread-claude")).toMatchObject({ parentThreadId: null, forkedFromId: "thread-parent" });
     expect(database.getProviderThreadSnapshot("thread-claude").turns[0].items).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "answer", text: "Recovered output" })
     ]));
@@ -343,6 +348,121 @@ describe("thread runtime persistence", () => {
     database.deleteThreadProviderBinding("thread-claude");
     expect(database.getThreadProviderBinding("thread-claude")).toBeNull();
     expect(database.getProviderThreadSnapshot("thread-claude")).toBeNull();
+    database.db.close();
+  });
+
+  it("orders active snapshots and checkpoints even when the system clock does not advance", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-active-checkpoint-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-31T12:00:00.000Z"));
+    try {
+      database.saveThreadProviderBinding({
+        threadId: "thread-active",
+        provider: "claude",
+        providerThreadId: "session-active",
+        cwd: "/workspace"
+      });
+      const activeSnapshot = {
+        id: "thread-active",
+        cwd: "/workspace",
+        status: { type: "active", activeFlags: [] },
+        turns: [{ id: "turn-active", status: "inProgress", items: [{ id: "user", type: "userMessage" }] }]
+      };
+      database.saveProviderThreadSnapshot("thread-active", activeSnapshot);
+      database.saveProviderActiveTurn("thread-active", {
+        id: "turn-active",
+        status: "inProgress",
+        items: [{ id: "user", type: "userMessage" }, { id: "answer", type: "agentMessage", text: "Checkpoint output" }]
+      });
+      expect(database.getProviderThreadSnapshot("thread-active")).toMatchObject({
+        status: { type: "active" },
+        turns: [{ id: "turn-active", items: expect.arrayContaining([expect.objectContaining({ id: "answer", text: "Checkpoint output" })]) }]
+      });
+
+      database.saveProviderThreadSnapshot("thread-active", {
+        ...activeSnapshot,
+        turns: [{
+          id: "turn-active",
+          status: "inProgress",
+          items: [{ id: "user", type: "userMessage" }, { id: "answer", type: "agentMessage", text: "Newer snapshot output" }]
+        }]
+      });
+      expect(database.getProviderThreadSnapshot("thread-active").turns[0].items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "answer", text: "Newer snapshot output" })
+      ]));
+      expect(database.getProviderThreadSnapshot("thread-active").turns[0].items).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "answer", text: "Checkpoint output" })
+      ]));
+
+      database.saveProviderActiveTurn("thread-active", {
+        id: "turn-active",
+        status: "inProgress",
+        items: [{ id: "user", type: "userMessage" }, { id: "answer", type: "agentMessage", text: "Newest checkpoint output" }]
+      });
+      expect(database.getProviderThreadSnapshot("thread-active").turns[0].items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "answer", text: "Newest checkpoint output" })
+      ]));
+
+      database.saveProviderThreadSnapshot("thread-active", {
+        ...activeSnapshot,
+        status: { type: "idle" },
+        turns: [{ id: "turn-active", status: "completed", items: [{ id: "answer", type: "agentMessage", text: "Final output" }] }]
+      });
+      expect(database.getProviderThreadSnapshot("thread-active").turns[0]).toMatchObject({ status: "completed" });
+    } finally {
+      vi.useRealTimers();
+      database.db.close();
+    }
+  });
+
+  it("adds durable fork ancestry to provider bindings created by older builds", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-fork-migration-"));
+    temporaryDirectories.push(directory);
+    const legacy = new DatabaseSync(path.join(directory, "pixice.sqlite"));
+    legacy.exec(`
+      CREATE TABLE thread_provider_bindings (
+        thread_id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_thread_id TEXT,
+        resume_cursor TEXT, cwd TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE provider_thread_snapshots (
+        thread_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL
+      );
+    `);
+    const legacyAt = "2026-08-01T12:00:00.000Z";
+    legacy.prepare(`
+      INSERT INTO thread_provider_bindings
+        (thread_id, provider, provider_thread_id, resume_cursor, cwd, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run("legacy-fork", "claude", "legacy-session", "legacy-session", "/workspace", legacyAt, legacyAt);
+    legacy.prepare(`
+      INSERT INTO provider_thread_snapshots (thread_id, snapshot, summary, updated_at)
+      VALUES (?, ?, ?, ?)
+    `).run(
+      "legacy-fork",
+      JSON.stringify({ id: "legacy-fork", cwd: "/workspace", forkedFromId: "legacy-source", status: { type: "idle" }, turns: [] }),
+      JSON.stringify({ id: "legacy-fork", name: "Legacy fork", status: { type: "idle" } }),
+      legacyAt
+    );
+    legacy.close();
+
+    const database = new PixiceDatabase(directory);
+    expect(database.db.prepare("PRAGMA table_info(thread_provider_bindings)").all().map((column) => column.name))
+      .toContain("forked_from_id");
+    expect(database.getThreadProviderBinding("legacy-fork")).toMatchObject({ forkedFromId: "legacy-source" });
+    expect(database.getProviderThreadSummary("legacy-fork")).toMatchObject({ forkedFromId: "legacy-source" });
+    database.saveThreadProviderBinding({
+      threadId: "forked-thread",
+      provider: "codex",
+      providerThreadId: "native-fork",
+      cwd: "/workspace",
+      forkedFromId: "source-thread"
+    });
+    expect(database.getThreadProviderBinding("forked-thread")).toMatchObject({
+      forkedFromId: "source-thread"
+    });
     database.db.close();
   });
 

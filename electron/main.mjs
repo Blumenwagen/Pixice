@@ -27,7 +27,8 @@ import {
   appendPreviewContextHint,
   PIXICE_PREVIEW_NAMESPACE,
   PreviewContextRegistry,
-  previewContextDynamicTools
+  previewContextDynamicTools,
+  stripPreviewContextHint
 } from "./runtime/preview-context.mjs";
 import {
   isPixiceQuestionToolCall,
@@ -131,6 +132,26 @@ let agentBehaviorsDirectory;
 
 const idPayload = z.object({ projectId: z.string().min(1) });
 const threadPayload = idPayload.extend({ threadId: z.string().min(1) });
+const forkPointIdSchema = z.string().trim().min(1).max(500);
+const threadForkPayload = threadPayload.extend({
+  turnId: forkPointIdSchema.optional(),
+  itemId: forkPointIdSchema.optional(),
+  lastTurnId: forkPointIdSchema.optional(),
+  lastItemId: forkPointIdSchema.optional()
+}).strict().superRefine((value, context) => {
+  if (!value.turnId && !value.lastTurnId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "A fork turn is required", path: ["lastTurnId"] });
+  }
+  if (!value.itemId && !value.lastItemId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "A fork answer is required", path: ["lastItemId"] });
+  }
+  if (value.turnId && value.lastTurnId && value.turnId !== value.lastTurnId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Fork turn identifiers must match", path: ["lastTurnId"] });
+  }
+  if (value.itemId && value.lastItemId && value.itemId !== value.lastItemId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Fork answer identifiers must match", path: ["lastItemId"] });
+  }
+});
 const projectIconSchema = z.enum([
   "folder", "code", "terminal", "globe", "sparkles", "stack", "brain", "chart", "desktop",
   "file", "files", "git-branch", "image", "lock", "shield", "workflow", "gauge", "connect"
@@ -209,12 +230,15 @@ const previewContextSchema = z.object({
   open: z.boolean(),
   tabCount: z.number().int().nonnegative().max(100).default(0),
   active: z.object({
-    kind: z.enum(["browser", "file", "instrument", "task", "plan", "workflow", "simulator", "new"]),
+    kind: z.enum(["browser", "file", "instrument", "task", "plan", "workflow", "simulator", "thread", "task-map", "new"]),
     id: z.string().max(500).optional(),
     title: z.string().max(500).optional(),
     url: z.string().max(10_000).optional(),
     path: z.string().max(10_000).optional(),
     projectId: z.string().max(500).optional(),
+    threadId: z.string().max(500).optional(),
+    hostThreadId: z.string().max(500).optional(),
+    forkedFromId: z.string().max(500).optional(),
     taskId: z.string().max(500).optional(),
     proposalId: z.string().max(500).optional(),
     workflowId: z.string().max(500).optional(),
@@ -445,6 +469,34 @@ function withPersistedThreadName(thread) {
       };
     })
   };
+}
+
+function validatedForkAnswer(thread, turnId, itemId) {
+  if (!thread?.id) throw new Error("The source thread could not be read");
+  if (activeTurns.has(thread.id) || thread.status?.type === "active" || (thread.turns ?? []).some((turn) => turn.status === "inProgress")) {
+    throw new Error("A running thread cannot be forked");
+  }
+  const turn = (thread.turns ?? []).find((candidate) => candidate.id === turnId);
+  if (!turn) throw new Error("The selected fork turn was not found");
+  if (turn.status !== "completed") throw new Error("Only a completed answer can be forked");
+  const answers = (turn.items ?? []).filter((item) => item.type === "agentMessage" && String(item.text ?? "").trim());
+  const finalAnswer = [...answers].reverse().find((item) => item.phase === "final_answer") ?? answers.at(-1);
+  if (!finalAnswer) throw new Error("The selected turn has no assistant answer");
+  if (finalAnswer.id !== itemId) throw new Error("Only the final assistant answer in a turn can be forked");
+  return finalAnswer;
+}
+
+function independentForkThread(thread, forkedFromId) {
+  const {
+    bridge: _bridge,
+    bridgeModel: _bridgeModel,
+    bridgeThread: _bridgeThread,
+    agentNickname: _agentNickname,
+    agentRole: _agentRole,
+    agentStatusMessage: _agentStatusMessage,
+    ...independentThread
+  } = thread;
+  return { ...independentThread, parentThreadId: null, forkedFromId };
 }
 
 function scheduleThreadName({ project, threadId, source, kind }) {
@@ -1882,6 +1934,48 @@ function registerIpc() {
     pendingTaskNames.add(response.thread.id);
     return response;
   });
+  ipcMain.handle("threads:fork", async (_event, payload) => {
+    const value = threadForkPayload.parse(payload);
+    const lastTurnId = value.lastTurnId ?? value.turnId;
+    const lastItemId = value.lastItemId ?? value.itemId;
+    const project = getProject(value.projectId);
+    await ensureThreadLoaded(project, value.threadId);
+    const sourceResponse = await runtime.request("thread/read", { threadId: value.threadId, includeTurns: true });
+    if (!isWithinProject(project, sourceResponse.thread?.cwd)) throw new Error("Thread is outside the selected project");
+    const sourceThread = withPersistedThreadName(sourceResponse.thread);
+    validatedForkAnswer(sourceThread, lastTurnId, lastItemId);
+
+    const response = await runtime.request("thread/fork", {
+      threadId: value.threadId,
+      lastTurnId,
+      lastItemId,
+      deferGoalContinuation: true
+    });
+    if (!response.thread?.id || !response.thread.cwd) throw new Error("Runtime returned an invalid forked thread");
+    if (!isWithinProject(project, response.thread.cwd)) throw new Error("Forked thread is outside the selected project");
+
+    let thread = independentForkThread(response.thread, sourceThread.id);
+    rememberThread(project, thread, { loaded: true });
+    const binding = database.getThreadProviderBinding(thread.id);
+    if (binding) database.saveThreadProviderBinding({ ...binding, forkedFromId: sourceThread.id });
+
+    const sourceName = stripPreviewContextHint(sourceThread.name ?? sourceThread.preview ?? "Untitled task").trim() || "Untitled task";
+    const providerName = String(thread.name ?? "").trim();
+    const providerPreservedForkName = providerName && providerName !== sourceName;
+    const name = providerPreservedForkName ? providerName : `${sourceName} (fork)`;
+    database.saveThreadName(thread.id, name);
+    thread = { ...thread, name };
+    const providerSnapshot = database.getProviderThreadSnapshot?.(thread.id);
+    database.saveProviderThreadSnapshot?.(thread.id, { ...(providerSnapshot ?? {}), ...thread });
+    if (!providerPreservedForkName) {
+      try {
+        await runtime.request("thread/name/set", { threadId: thread.id, name });
+      } catch (error) {
+        codexRuntime.emit("diagnostic", `Fork name could not be saved to the provider: ${error.message}`);
+      }
+    }
+    return { ...response, thread: projectRendererThread(withPersistedThreadName(thread)) };
+  });
   ipcMain.handle("threads:archive", async (_event, payload) => {
     const { projectId, threadId } = threadPayload.parse(payload);
     const project = getProject(projectId);
@@ -2248,14 +2342,17 @@ app.whenReady().then(async () => {
         cwd: binding?.cwd || projectPrimaryRoot(project),
         runtimeWorkspaceRoots: projectRoots(project),
         developerInstructions: currentAgentInstructions(),
+        permissionMode: turnUsageMetadata.get(threadId)?.permissionMode
+          ?? database.getAppSettings().defaultPermissionMode
+          ?? "workspace-write",
         permissionSettings: (mode) => permissionSettings(mode, project)
       };
     },
-    onThreadCreated: ({ context, thread, prompt, model }) => {
+    onThreadCreated: ({ context, thread, prompt, model, permissionMode }) => {
       const project = database.getProject(context.projectId);
       if (!project) return;
       rememberThread(project, thread, { loaded: true });
-      turnUsageMetadata.set(thread.id, { turnId: null, model: model.id, serviceTier: null, provider: model.provider });
+      turnUsageMetadata.set(thread.id, { turnId: null, model: model.id, serviceTier: null, permissionMode, provider: model.provider });
       scheduleThreadName({ project, threadId: thread.id, source: prompt, kind: "thread" });
     },
     onCompletion: (completion) => bridgeParentContinuation.notify(completion),

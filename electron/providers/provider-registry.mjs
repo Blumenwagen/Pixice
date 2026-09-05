@@ -17,6 +17,12 @@ function tagProvider(value, provider) {
   return value && typeof value === "object" ? { ...value, provider } : value;
 }
 
+function projectPersistedForkLineage(database, thread) {
+  if (!thread?.id) return thread;
+  const forkedFromId = database.getThreadProviderBinding?.(thread.id)?.forkedFromId;
+  return forkedFromId && forkedFromId !== thread.forkedFromId ? { ...thread, forkedFromId } : thread;
+}
+
 function authenticationState(result) {
   const requiresAuth = result?.requiresAuth ?? result?.requiresOpenaiAuth ?? true;
   const authenticated = result?.authenticated ?? (Boolean(result?.account) || !requiresAuth);
@@ -39,6 +45,7 @@ function persistedThread(database, binding) {
     createdAt: snapshot.createdAt ?? binding.createdAt,
     updatedAt: snapshot.updatedAt ?? binding.updatedAt,
     parentThreadId: link?.parentThreadId ?? snapshot.parentThreadId ?? null,
+    forkedFromId: snapshot.forkedFromId ?? binding.forkedFromId ?? null,
     status: snapshot.status ?? { type: "notLoaded" },
     ...(link ? { bridge: link } : {}),
     persisted: true
@@ -309,7 +316,8 @@ export class ProviderRegistry extends EventEmitter {
       const data = (response?.data ?? []).map((thread) => {
         this.#saveBinding(provider.id, { threadId: thread.id, providerThreadId: thread.providerThreadId, cwd: thread.cwd });
         const link = this.database.getThreadLink?.(thread.id);
-        const tagged = tagProvider(link ? { ...thread, parentThreadId: link.parentThreadId, bridge: link } : thread, provider.id);
+        const linked = link ? { ...thread, parentThreadId: link.parentThreadId, bridge: link } : thread;
+        const tagged = tagProvider(projectPersistedForkLineage(this.database, linked), provider.id);
         this.#saveThreadSummary(provider.id, tagged);
         return tagged;
       });
@@ -348,9 +356,10 @@ export class ProviderRegistry extends EventEmitter {
       this.#saveBinding(providerId, {
         threadId: response.thread.id,
         providerThreadId: response.thread.providerThreadId,
-        cwd: response.thread.cwd ?? params.cwd
+        cwd: response.thread.cwd ?? params.cwd,
+        forkedFromId: response.thread.forkedFromId ?? (method === "thread/fork" ? params.threadId : null)
       });
-      const thread = tagProvider(response.thread, providerId);
+      const thread = tagProvider(projectPersistedForkLineage(this.database, response.thread), providerId);
       this.#saveThreadSummary(providerId, thread);
       return { ...response, thread };
     }
@@ -365,13 +374,15 @@ export class ProviderRegistry extends EventEmitter {
       provider,
       providerThreadId: binding.providerThreadId ?? null,
       resumeCursor: binding.resumeCursor ?? null,
-      cwd: binding.cwd ?? existing?.cwd ?? ""
+      cwd: binding.cwd ?? existing?.cwd ?? "",
+      forkedFromId: binding.forkedFromId ?? existing?.forkedFromId ?? null
     };
     if (
       existing?.provider === next.provider
       && (existing.providerThreadId ?? null) === next.providerThreadId
       && (existing.resumeCursor ?? null) === next.resumeCursor
       && (existing.cwd ?? "") === next.cwd
+      && (existing.forkedFromId ?? null) === next.forkedFromId
     ) return;
     this.database.saveThreadProviderBinding(next);
   }
@@ -388,6 +399,7 @@ export class ProviderRegistry extends EventEmitter {
       createdAt: thread.createdAt ?? null,
       updatedAt: thread.updatedAt ?? null,
       parentThreadId: thread.parentThreadId ?? null,
+      forkedFromId: thread.forkedFromId ?? null,
       status: thread.status ?? { type: "notLoaded" }
     });
   }

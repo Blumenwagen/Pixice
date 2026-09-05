@@ -44,6 +44,74 @@ describe("Preview context", () => {
     expect(registry.current("thread-2")).toEqual({ open: false, tabCount: 0, active: null });
   });
 
+  it("describes a Side Thread without exposing its conversation", async () => {
+    const registry = new PreviewContextRegistry();
+    registry.set("host-thread", {
+      open: true,
+      tabCount: 3,
+      active: {
+        kind: "thread",
+        id: "thread:side-thread",
+        title: "Investigate Preview state",
+        threadId: "side-thread",
+        forkedFromId: "source-thread",
+        hostThreadId: "host-thread",
+        status: "active",
+        turns: [{ id: "private-turn", items: [{ type: "agentMessage", text: "Private answer" }] }]
+      }
+    });
+
+    const response = await registry.handleToolCall({ threadId: "host-thread", tool: "current", arguments: {} });
+    const result = JSON.parse(response.contentItems[0].text);
+
+    expect(result).toEqual({
+      open: true,
+      tabCount: 3,
+      active: {
+        kind: "thread",
+        id: "thread:side-thread",
+        title: "Investigate Preview state",
+        threadId: "side-thread",
+        forkedFromId: "source-thread",
+        hostThreadId: "host-thread",
+        status: "active"
+      },
+      inspectWith: null
+    });
+    expect(response.contentItems[0].text).not.toContain("Private answer");
+  });
+
+  it("adds a compact Side Thread hint without naming either conversation", () => {
+    const text = appendPreviewContextHint("compare these approaches", {
+      open: true,
+      tabCount: 1,
+      active: {
+        kind: "thread",
+        title: "Private side investigation",
+        threadId: "side-thread",
+        hostThreadId: "host-thread"
+      }
+    });
+
+    expect(text).toContain("Pixice Preview is open in this thread with a Side Thread chat tab selected");
+    expect(text).toContain("pixice_preview.current");
+    expect(text).not.toContain("Private side investigation");
+    expect(text).not.toContain("side-thread");
+    expect(text).not.toContain("host-thread");
+  });
+
+  it("describes a Task Map tab without adding task details to the hint", () => {
+    const text = appendPreviewContextHint("check the split", {
+      open: true,
+      tabCount: 2,
+      active: { kind: "task-map", title: "Private task title", projectId: "project-1" }
+    });
+
+    expect(text).toContain("Pixice Preview is open in this thread with a Task Map tab selected");
+    expect(text).not.toContain("Private task title");
+    expect(text).not.toContain("project-1");
+  });
+
   it("opens a requested local file in the controlling thread", async () => {
     const openFile = async (request) => ({ opened: true, path: request.path, editable: true });
     const registry = new PreviewContextRegistry({ openFile });

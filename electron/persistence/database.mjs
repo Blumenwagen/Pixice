@@ -121,9 +121,14 @@ function providerThreadSummary(snapshot) {
     createdAt: snapshot.createdAt ?? null,
     updatedAt: snapshot.updatedAt ?? null,
     parentThreadId: snapshot.parentThreadId ?? null,
+    forkedFromId: snapshot.forkedFromId ?? null,
     status: snapshot.status ?? { type: "notLoaded" },
     ...(completionRevision ? { completionRevision } : {})
   };
+}
+
+function providerThreadIsActive(snapshot) {
+  return snapshot?.status === "active" || snapshot?.status?.type === "active";
 }
 
 function mapProactiveSuggestion(row) {
@@ -288,7 +293,7 @@ export class PixiceDatabase {
         ON proactive_suggestions(project_id, status, updated_at);
       CREATE TABLE IF NOT EXISTS thread_provider_bindings (
         thread_id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_thread_id TEXT,
-        resume_cursor TEXT, cwd TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+        resume_cursor TEXT, cwd TEXT NOT NULL DEFAULT '', forked_from_id TEXT, created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS provider_thread_snapshots (
@@ -335,11 +340,28 @@ export class PixiceDatabase {
       const activityColumns = new Set(this.db.prepare("PRAGMA table_info(board_task_activity)").all().map((column) => column.name));
       if (!activityColumns.has("actor_kind")) this.db.exec("ALTER TABLE board_task_activity ADD COLUMN actor_kind TEXT");
       if (!activityColumns.has("actor_id")) this.db.exec("ALTER TABLE board_task_activity ADD COLUMN actor_id TEXT");
+      const providerBindingColumns = new Set(this.db.prepare("PRAGMA table_info(thread_provider_bindings)").all().map((column) => column.name));
+      if (!providerBindingColumns.has("forked_from_id")) this.db.exec("ALTER TABLE thread_provider_bindings ADD COLUMN forked_from_id TEXT");
       const snapshotColumns = new Set(this.db.prepare("PRAGMA table_info(provider_thread_snapshots)").all().map((column) => column.name));
       if (!snapshotColumns.has("summary")) this.db.exec("ALTER TABLE provider_thread_snapshots ADD COLUMN summary TEXT NOT NULL DEFAULT '{}'");
       const updateSnapshotSummary = this.db.prepare("UPDATE provider_thread_snapshots SET summary = ? WHERE thread_id = ?");
       for (const row of this.db.prepare("SELECT thread_id, snapshot FROM provider_thread_snapshots WHERE summary = '{}'").all()) {
         updateSnapshotSummary.run(JSON.stringify(providerThreadSummary(parsedJson(row.snapshot, {}))), row.thread_id);
+      }
+      const backfillForkAncestry = this.db.prepare("UPDATE thread_provider_bindings SET forked_from_id = ? WHERE thread_id = ? AND forked_from_id IS NULL");
+      for (const row of this.db.prepare(`
+        SELECT bindings.thread_id, snapshots.snapshot, snapshots.summary
+        FROM thread_provider_bindings AS bindings
+        JOIN provider_thread_snapshots AS snapshots ON snapshots.thread_id = bindings.thread_id
+        WHERE bindings.forked_from_id IS NULL
+          AND (snapshots.snapshot LIKE '%"forkedFromId"%' OR snapshots.summary LIKE '%"forkedFromId"%')
+      `).all()) {
+        const snapshot = parsedJson(row.snapshot, {});
+        const summary = parsedJson(row.summary, {});
+        const forkedFromId = snapshot.forkedFromId ?? summary.forkedFromId;
+        if (typeof forkedFromId === "string" && forkedFromId.trim()) {
+          backfillForkAncestry.run(forkedFromId, row.thread_id);
+        }
       }
       this.db.exec(`
         INSERT OR IGNORE INTO project_folders (project_id, canonical_path, position, created_at)
@@ -1169,13 +1191,14 @@ export class PixiceDatabase {
     const existing = this.getThreadProviderBinding(binding.threadId);
     this.db.prepare(`
       INSERT INTO thread_provider_bindings (
-        thread_id, provider, provider_thread_id, resume_cursor, cwd, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        thread_id, provider, provider_thread_id, resume_cursor, cwd, forked_from_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(thread_id) DO UPDATE SET
         provider=excluded.provider,
         provider_thread_id=COALESCE(excluded.provider_thread_id, thread_provider_bindings.provider_thread_id),
         resume_cursor=COALESCE(excluded.resume_cursor, thread_provider_bindings.resume_cursor),
         cwd=CASE WHEN excluded.cwd = '' THEN thread_provider_bindings.cwd ELSE excluded.cwd END,
+        forked_from_id=COALESCE(excluded.forked_from_id, thread_provider_bindings.forked_from_id),
         updated_at=excluded.updated_at
     `).run(
       binding.threadId,
@@ -1183,6 +1206,7 @@ export class PixiceDatabase {
       binding.providerThreadId ?? null,
       binding.resumeCursor ?? null,
       binding.cwd ?? "",
+      binding.forkedFromId ?? null,
       existing?.createdAt ?? now,
       now
     );
@@ -1198,6 +1222,7 @@ export class PixiceDatabase {
       providerThreadId: row.provider_thread_id,
       resumeCursor: row.resume_cursor,
       cwd: row.cwd,
+      forkedFromId: row.forked_from_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -1263,8 +1288,21 @@ export class PixiceDatabase {
     this.db.prepare("DELETE FROM thread_links WHERE child_thread_id = ? OR parent_thread_id = ?").run(threadId, threadId);
   }
 
+  #nextProviderWriteTimestamp(threadId) {
+    const row = this.db.prepare(`
+      SELECT MAX(updated_at) AS updated_at FROM (
+        SELECT updated_at FROM provider_thread_snapshots WHERE thread_id = ?
+        UNION ALL
+        SELECT updated_at FROM provider_thread_active_turns WHERE thread_id = ?
+      )
+    `).get(threadId, threadId);
+    const previous = Date.parse(row?.updated_at ?? "");
+    const timestamp = Math.max(Date.now(), Number.isFinite(previous) ? previous + 1 : 0);
+    return new Date(timestamp).toISOString();
+  }
+
   saveProviderThreadSnapshot(threadId, snapshot) {
-    const updatedAt = new Date().toISOString();
+    const updatedAt = this.#nextProviderWriteTimestamp(threadId);
     this.db.prepare(`
       INSERT INTO provider_thread_snapshots (thread_id, snapshot, summary, updated_at)
       VALUES (?, ?, ?, ?)
@@ -1281,7 +1319,7 @@ export class PixiceDatabase {
       VALUES (?, ?, ?, ?)
       ON CONFLICT(thread_id) DO UPDATE SET
         turn_id=excluded.turn_id, turn=excluded.turn, updated_at=excluded.updated_at
-    `).run(threadId, turn.id, JSON.stringify(turn), new Date().toISOString());
+    `).run(threadId, turn.id, JSON.stringify(turn), this.#nextProviderWriteTimestamp(threadId));
   }
 
   deleteProviderActiveTurn(threadId) {
@@ -1314,6 +1352,7 @@ export class PixiceDatabase {
         providerThreadId: row.provider_thread_id,
         cwd: row.cwd,
         provider: row.provider,
+        forkedFromId: summary.forkedFromId ?? row.forked_from_id ?? null,
         createdAt: summary.createdAt ?? row.created_at,
         updatedAt: summary.updatedAt ?? row.updated_at
       };
@@ -1321,28 +1360,43 @@ export class PixiceDatabase {
   }
 
   getProviderThreadSummary(threadId) {
-    const row = this.db.prepare("SELECT summary FROM provider_thread_snapshots WHERE thread_id = ?").get(threadId);
-    return row ? { ...providerThreadSummary(parsedJson(row.summary, {})), id: threadId } : null;
+    const row = this.db.prepare(`
+      SELECT snapshots.summary, bindings.forked_from_id
+      FROM provider_thread_snapshots AS snapshots
+      JOIN thread_provider_bindings AS bindings ON bindings.thread_id = snapshots.thread_id
+      WHERE snapshots.thread_id = ?
+    `).get(threadId);
+    if (!row) return null;
+    const summary = providerThreadSummary(parsedJson(row.summary, {}));
+    return { ...summary, id: threadId, forkedFromId: summary.forkedFromId ?? row.forked_from_id ?? null };
   }
 
   getProviderThreadSnapshot(threadId) {
     const row = this.db.prepare(`
-      SELECT snapshots.snapshot, snapshots.updated_at AS snapshot_updated_at,
+      SELECT snapshots.snapshot, snapshots.updated_at AS snapshot_updated_at, bindings.forked_from_id,
         active.turn, active.updated_at AS active_updated_at
       FROM provider_thread_snapshots AS snapshots
+      JOIN thread_provider_bindings AS bindings ON bindings.thread_id = snapshots.thread_id
       LEFT JOIN provider_thread_active_turns AS active ON active.thread_id = snapshots.thread_id
       WHERE snapshots.thread_id = ?
     `).get(threadId);
     if (!row) return null;
     try {
       const snapshot = JSON.parse(row.snapshot);
-      if (!row.turn || row.active_updated_at <= row.snapshot_updated_at) return snapshot;
+      const persistedSnapshot = {
+        ...snapshot,
+        forkedFromId: snapshot.forkedFromId ?? row.forked_from_id ?? null
+      };
+      if (!row.turn) return persistedSnapshot;
       const activeTurn = JSON.parse(row.turn);
-      const turns = [...(snapshot.turns ?? [])];
+      const activeIsOlder = row.active_updated_at < row.snapshot_updated_at;
+      const activeTiesSettledSnapshot = row.active_updated_at === row.snapshot_updated_at && !providerThreadIsActive(persistedSnapshot);
+      if (activeIsOlder || activeTiesSettledSnapshot) return persistedSnapshot;
+      const turns = [...(persistedSnapshot.turns ?? [])];
       const index = turns.findIndex((turn) => turn.id === activeTurn.id);
       if (index === -1) turns.push(activeTurn);
       else turns[index] = activeTurn;
-      return { ...snapshot, status: { type: "active", activeFlags: [] }, updatedAt: row.active_updated_at, turns };
+      return { ...persistedSnapshot, status: { type: "active", activeFlags: [] }, updatedAt: row.active_updated_at, turns };
     } catch {
       return null;
     }
