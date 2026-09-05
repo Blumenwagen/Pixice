@@ -100,6 +100,20 @@ describe("ProviderRegistry", () => {
     expect(codex.calls.some((call) => call.method === "turn/start")).toBe(false);
   });
 
+  it("discovers Astra and routes qualified model IDs and reasoning effort to Codex", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", ["gpt-6-astra"]));
+    const models = await registry.request("model/list");
+    expect(models.data[0]).toMatchObject({
+      id: "codex:gpt-6-astra", model: "gpt-6-astra", bridge: { eligible: true }
+    });
+    const started = await registry.request("thread/start", { cwd: "/workspace", model: "codex:gpt-6-astra" });
+    await registry.request("turn/start", { threadId: started.thread.id, model: "codex:gpt-6-astra", effort: "ultra", serviceTier: "priority" });
+    expect(codex.calls.at(-1)).toMatchObject({
+      method: "turn/start", params: { model: "gpt-6-astra", effort: "ultra", serviceTier: "priority" }
+    });
+  });
+
   it("routes provider server-request responses back to their owner", () => {
     const registry = new ProviderRegistry({ database: new MemoryDatabase() });
     const codex = registry.register(new FakeProvider("codex", []));

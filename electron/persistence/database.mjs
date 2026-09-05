@@ -325,6 +325,11 @@ export class PixiceDatabase {
       );
       CREATE INDEX IF NOT EXISTS usage_events_recorded_at ON usage_events(recorded_at);
       CREATE INDEX IF NOT EXISTS usage_events_model ON usage_events(provider, model);
+      CREATE TABLE IF NOT EXISTS task_results (
+        thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, group_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL, data TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS task_results_project ON task_results(project_id);
     `);
 
       const projectColumns = new Set(this.db.prepare("PRAGMA table_info(projects)").all().map((column) => column.name));
@@ -489,6 +494,7 @@ export class PixiceDatabase {
       this.db.prepare("DELETE FROM task_view_state WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").run(projectId);
       this.db.prepare("DELETE FROM tasks WHERE project_id = ?").run(projectId);
       this.db.prepare("DELETE FROM project_folders WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM task_results WHERE project_id = ?").run(projectId);
       this.db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
       this.db.exec("COMMIT");
       return project;

@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
   }),
   github: Object.freeze({ status: invoke("github:status"), login: invoke("github:login"), logout: invoke("github:logout") }),
   usage: Object.freeze({ summary: invoke("usage:summary"), limits: invoke("usage:limits") }),
+  tasks: Object.freeze({
+    receipts: invoke("tasks:receipts"), receipt: invoke("tasks:receipt"),
+    replay: invoke("tasks:replay"), interventions: invoke("tasks:interventions")
+  }),
   updates: Object.freeze({ status: invoke("updates:status"), check: invoke("updates:check"), download: invoke("updates:download"), install: invoke("updates:install") }),
   browser: Object.freeze({
     state: invoke("browser:state"),

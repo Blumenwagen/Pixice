@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift } from "../src/App.jsx";
+import { listPricingCatalog } from "../electron/usage/pricing.mjs";
 import { WorkflowHost } from "../src/components/workflows/WorkflowHost.jsx";
 
 const appCss = readFileSync("src/styles.css", "utf8");
@@ -2303,7 +2304,44 @@ describe("Pixice app shell", () => {
     expect(api.app.saveSettings).toHaveBeenCalledWith({ checkProviderUpdates: false });
   });
 
+  it("keeps results and questions in the task and shows only approvals in Attention", async () => {
+    const api = createApi();
+    let result = {
+      threadId: "thread-1", projectId: project.id, groupId: "thread-1", revision: "receipt-1",
+      title: "Refactor authentication", projectName: project.displayName, model: "gpt-6-astra",
+      status: "completed", outcome: "pending", summary: "Cookies now expire correctly.",
+      promptCount: 1, startedAt: new Date().toISOString(), durationMs: 1_000,
+      usage: { costUsd: 0.2, tokens: 1_000, events: 1, unpricedEvents: 0 }, checks: []
+    };
+    api.tasks = {
+      receipts: vi.fn(async () => [result]),
+      receipt: vi.fn(async () => result),
+      interventions: vi.fn(async () => ({ requests: [{
+        id: "other-question", projectId: project.id, taskTitle: "Choose session storage", method: "pixice/requestUserInput",
+        params: { threadId: "thread-1", questions: [{ id: "storage", header: "Storage", question: "Which storage should I use?",
+          options: [{ label: "Use cookies", description: "Use secure cookies." }, { label: "Keep local storage", description: "Keep the existing behavior." }] }] }
+      }], receipts: [result] }))
+    };
+    window.pixice = api;
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Task receipt: Refactor authentication" });
+    expect(within(card).getByRole("button", { name: "Fork from this answer" }).closest(".receipt-bar")).toBe(within(card).getByText("1,000 tokens").closest(".receipt-bar"));
+    fireEvent.click(screen.getByRole("button", { name: "Attention" }));
+    expect(screen.getByRole("heading", { name: "No approvals waiting" })).toBeInTheDocument();
+    expect(screen.queryByText("Which storage should I use?")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Task receipt: Refactor authentication" })).not.toBeInTheDocument();
+    act(() => api.emit({ type: "AttentionRequired", payload: { id: 91, method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", command: "pnpm test" } } }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve", exact: true }));
+    await waitFor(() => expect(api.approvals.resolve).toHaveBeenCalledWith({ requestId: 91, decision: "accept" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refactor authentication", exact: true }));
+    fireEvent.click(await screen.findByRole("radio", { name: /Use cookies/ }));
+    await waitFor(() => expect(api.questions.respond).toHaveBeenCalledWith({ requestId: "other-question", action: "answer", answers: { storage: "Use cookies" } }));
+  });
+
   it("shows measured token usage, cost averages, charts, and the current rate card", async () => {
+    const api = window.pixice;
+    const summary = await api.usage.summary();
+    api.usage.summary.mockResolvedValue({ ...summary, pricing: listPricingCatalog() });
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -2332,6 +2370,11 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("img", { name: "Daily API-equivalent spend over 30 days" })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "API-equivalent cost by model" })).toBeInTheDocument();
     expect(screen.getByText("GPT-5.6 Sol", { selector: ".usage-rate-row strong" })).toBeInTheDocument();
+    const astraRate = screen.getByText("GPT-6 Astra", { selector: ".usage-rate-row strong" }).closest(".usage-rate-row");
+    expect(astraRate).toHaveTextContent("verified 2026-09-05");
+    expect(astraRate).toHaveTextContent("fast supported");
+    expect(within(astraRate).getByText("$10.00")).toBeInTheDocument();
+    expect(within(astraRate).getByText("$50.00")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Anthropic" }));
     expect(screen.getByText("Claude Sonnet 5", { selector: ".usage-rate-row strong" })).toBeInTheDocument();
@@ -3403,15 +3446,15 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("listbox", { name: "Reasoning" })).toBeInTheDocument();
   });
 
-  it("enables fast mode for supported Codex models and sends the priority service tier", async () => {
+  it.each(["gpt-5.6", "gpt-6-astra"])("enables fast mode for %s and sends the priority service tier", async (model) => {
     const user = userEvent.setup();
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({
       projects: [project],
       models: [{
-        id: "codex:gpt-5.6",
-        model: "gpt-5.6",
-        displayName: "GPT-5.6",
+        id: `codex:${model}`,
+        model,
+        displayName: model,
         provider: "codex",
         isDefault: true,
         defaultReasoningEffort: "high",
@@ -3435,8 +3478,8 @@ describe("Pixice app shell", () => {
     await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Ship this quickly");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() => expect(api.threads.create).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: "priority" })));
-    expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: "priority" }));
+    await waitFor(() => expect(api.threads.create).toHaveBeenCalledWith(expect.objectContaining({ model, serviceTier: "priority" })));
+    expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ model, serviceTier: "priority" }));
 
     await waitFor(() => expect(fastToggle).toBeEnabled());
     await user.click(fastToggle);

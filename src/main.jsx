@@ -16,6 +16,10 @@ for (let index = 0; index < localStorage.length; index += 1) {
 }
 
 const previewParameters = new URLSearchParams(window.location.search);
+if (import.meta.env.DEV && previewParameters.has("task-results-preview")) {
+  const { createTaskResultsPreviewApi } = await import("./task-results-preview.js");
+  window.pixice = await createTaskResultsPreviewApi();
+}
 if (import.meta.env.DEV && (previewParameters.has("task-progress-preview") || previewParameters.has("git-setup-preview"))) {
   const { createTaskProgressPreviewApi } = await import("./task-progress-preview.js");
   window.pixice = createTaskProgressPreviewApi({ gitUnavailable: previewParameters.has("git-setup-preview") });

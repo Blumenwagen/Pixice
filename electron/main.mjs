@@ -9,6 +9,7 @@ import electronUpdater from "electron-updater";
 import { CodexRuntime } from "./runtime/codex-runtime.mjs";
 import { ThreadSessionRegistry } from "./runtime/thread-session-registry.mjs";
 import { ThreadNamer } from "./runtime/thread-namer.mjs";
+import { TaskResults } from "./runtime/task-results.mjs";
 import { buildCodexUserInput } from "./runtime/user-input.mjs";
 import {
   MAX_PROMPT_ATTACHMENTS,
@@ -105,6 +106,7 @@ let iosTools;
 let proactiveStewardship;
 let systemAwakeController;
 let database;
+let taskResults;
 let quitting = false;
 let runtimeStatus = { state: "starting" };
 const activeTurns = new Map();
@@ -984,6 +986,32 @@ async function ensureThreadLoaded(project, threadId) {
   return cwd;
 }
 
+async function startTrackedTurn({ project, threadId, input, text, model, effort, serviceTier, frozenAttachments, permissionMode = "workspace-write" }) {
+  if (activeTurns.has(threadId)) throw new Error("This task is already running.");
+  const cwd = await ensureThreadLoaded(project, threadId);
+  const permissions = permissionSettings(permissionMode, project);
+  await taskResults.begin({ project, threadId, input, prompt: text, model, effort, serviceTier, frozenAttachments,
+    attachmentRoot: attachmentProjectRoot(app.getPath("userData"), project.id) });
+  turnUsageMetadata.set(threadId, { turnId: null, model: model || null, serviceTier: serviceTier ?? null,
+    effort: effort || null, permissionMode, provider: runtime.providerForThread(threadId) });
+  try {
+    const response = await runtime.request("turn/start", {
+      threadId, input, cwd, runtimeWorkspaceRoots: runtimeRoots(project), model: model || null,
+      ...(serviceTier !== undefined ? { serviceTier } : {}), effort: effort || null, permissionMode,
+      approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer, sandboxPolicy: permissions.sandboxPolicy
+    });
+    taskResults.started(threadId, response.turn.id);
+    if (!response.turn.status || response.turn.status === "inProgress") activeTurns.set(threadId, response.turn.id);
+    const metadata = turnUsageMetadata.get(threadId);
+    if (metadata) metadata.turnId = response.turn.id;
+    updateTrayMenu();
+    return response;
+  } catch (error) {
+    taskResults.failed(threadId, error);
+    throw error;
+  }
+}
+
 function boundedTextResult(value, maximumBytes) {
   const buffer = Buffer.from(String(value ?? ""), "utf8");
   if (buffer.byteLength <= maximumBytes) return { content: buffer.toString("utf8"), truncated: false };
@@ -1322,6 +1350,7 @@ function registerIpc() {
       const project = trayProjectForThread(followUp.threadId);
       if (!project) throw new Error("This thread is not linked to a Pixice project");
       await ensureThreadLoaded(project, followUp.threadId);
+      taskResults.stopReplay(followUp.threadId, true);
       await runtime.request("turn/steer", {
         threadId: followUp.threadId,
         expectedTurnId: turnId,
@@ -1374,6 +1403,31 @@ function registerIpc() {
     };
   });
   ipcMain.handle("usage:limits", () => readProviderRateLimits({ codexProvider, claudeProvider }));
+  ipcMain.handle("tasks:receipts", (_event, payload) => {
+    const value = z.object({ projectId: z.string().optional(), groupId: z.string().optional() }).strict().parse(payload ?? {});
+    return taskResults.list(value);
+  });
+  ipcMain.handle("tasks:receipt", (_event, payload) => {
+    const { projectId, threadId } = threadPayload.strict().parse(payload);
+    const receipt = taskResults.receipt(threadId);
+    if (receipt && receipt.projectId !== projectId) throw new Error("This result belongs to another project.");
+    return receipt;
+  });
+  ipcMain.handle("tasks:replay", async (_event, payload) => {
+    const value = threadPayload.extend({ revision: z.string(), model: z.string().min(1), effort: z.string().optional(), serviceTier: z.string().nullable().optional() }).strict().parse(payload);
+    if (taskResults.get(value.threadId)?.projectId !== value.projectId) throw new Error("Task result not found.");
+    const models = await listModels();
+    const selected = models.find((model) => model.id === value.model || model.model === value.model);
+    if (!selected) throw new Error("This model is no longer connected. Refresh the model list and try again.");
+    const efforts = (selected.supportedReasoningEfforts ?? []).map((option) => option.reasoningEffort ?? option.effort ?? option);
+    if (value.effort && efforts.length && !efforts.includes(value.effort)) throw new Error("This model does not support the selected reasoning effort.");
+    const tiers = selected.serviceTiers?.length ? selected.serviceTiers : selected.additionalSpeedTiers ?? [];
+    if (value.serviceTier && !tiers.some((tier) => (tier.id ?? tier) === value.serviceTier)) throw new Error("This model does not support the selected speed tier.");
+    return taskResults.replay({ ...value, model: selected.id ?? selected.model });
+  });
+  ipcMain.handle("tasks:interventions", () => ({
+    requests: [...pendingRequests.values()].map(({ request, displayRequest }) => ({ ...(displayRequest ?? request), taskTitle: request.params?.threadId ? database.getThreadName(request.params.threadId) : null, projectId: threadProjects.get(request.params?.threadId) })),
+  }));
   ipcMain.handle("providers:login", (_event, payload) => {
     const { provider } = z.object({ provider: z.string().trim().min(1).max(64) }).parse(payload);
     return startProviderLogin(provider);
@@ -1879,6 +1933,7 @@ function registerIpc() {
     const project = getProject(projectId);
     const response = await runtime.request("thread/read", { threadId, includeTurns: true });
     if (!isWithinProject(project, response.thread.cwd)) throw new Error("Thread is outside the selected project");
+    await taskResults.observeThread(project, response.thread);
     rememberThread(project, response.thread);
     const thread = projectRendererThread(withPersistedThreadName(response.thread));
     return { ...response, thread, plan: threadPlans.get(threadId) ?? database.getThreadPlan(threadId) };
@@ -2002,32 +2057,11 @@ function registerIpc() {
       permissionMode: permissionModeSchema.default("workspace-write")
     }).superRefine(requirePromptInput).parse(payload);
     const project = getProject(value.projectId);
-    const permissions = permissionSettings(value.permissionMode, project);
-    const cwd = await ensureThreadLoaded(project, value.threadId);
     const prompt = preparePromptInput(value, project, value.threadId);
-    const response = await runtime.request("turn/start", {
-      threadId: value.threadId,
-      input: buildCodexUserInput(prompt.text, prompt.images),
-      cwd,
-      runtimeWorkspaceRoots: runtimeRoots(project),
-      model: value.model || null,
-      ...(value.serviceTier !== undefined ? { serviceTier: value.serviceTier } : {}),
-      effort: value.effort || null,
-      permissionMode: value.permissionMode,
-      approvalPolicy: permissions.approvalPolicy,
-      approvalsReviewer: permissions.approvalsReviewer,
-      sandboxPolicy: permissions.sandboxPolicy
+    const response = await startTrackedTurn({
+      project, threadId: value.threadId, input: buildCodexUserInput(prompt.text, prompt.images),
+      text: value.text, model: value.model, effort: value.effort, serviceTier: value.serviceTier, permissionMode: value.permissionMode
     });
-    activeTurns.set(value.threadId, response.turn.id);
-    turnUsageMetadata.set(value.threadId, {
-      turnId: response.turn.id,
-      model: value.model || null,
-      serviceTier: value.serviceTier ?? null,
-      effort: value.effort || null,
-      permissionMode: value.permissionMode,
-      provider: runtime.providerForThread(value.threadId)
-    });
-    updateTrayMenu();
     if (pendingTaskNames.delete(value.threadId)) {
       const attachmentCount = value.images.length + value.attachments.length;
       scheduleThreadName({ project, threadId: value.threadId, source: value.text || `${attachmentCount} attached file${attachmentCount === 1 ? "" : "s"}`, kind: "task" });
@@ -2053,6 +2087,7 @@ function registerIpc() {
     const project = getProject(value.projectId);
     await ensureThreadLoaded(project, value.threadId);
     const prompt = preparePromptInput(value, project, value.threadId);
+    taskResults.stopReplay(value.threadId, true);
     return runtime.request("turn/steer", {
       threadId: value.threadId,
       expectedTurnId: value.turnId,
@@ -2063,6 +2098,7 @@ function registerIpc() {
     const value = threadPayload.extend({ turnId: z.string().min(1) }).parse(payload);
     const project = getProject(value.projectId);
     await ensureThreadLoaded(project, value.threadId);
+    taskResults.stopReplay(value.threadId);
     const response = await runtime.request("turn/interrupt", { threadId: value.threadId, turnId: value.turnId });
     activeTurns.delete(value.threadId);
     updateTrayMenu();
@@ -2228,6 +2264,23 @@ app.whenReady().then(async () => {
   if (recordedDataVersion && recordedDataVersion !== app.getVersion()) recoverUpdateDataFromBackup({ userDataPath });
   await ensureVersionUpdateDataBackup({ userDataPath, currentVersion: app.getVersion() });
   database = new PixiceDatabase(userDataPath);
+  taskResults = new TaskResults({
+    database, directory: path.join(userDataPath, "task-results"),
+    onChange: (payload) => { send("TaskReceiptUpdated", payload); send("UsageUpdated", payload); },
+    readThread: (threadId) => runtime.request("thread/read", { threadId, includeTurns: true }),
+    startTurn: startTrackedTurn,
+    startThread: async ({ project, model, serviceTier }) => {
+      const permissions = permissionSettings("workspace-write", project);
+      const response = await runtime.request("thread/start", {
+        cwd: projectPrimaryRoot(project), runtimeWorkspaceRoots: runtimeRoots(project), model, serviceTier,
+        permissionMode: "workspace-write", approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer,
+        sandbox: permissions.sandbox, developerInstructions: currentAgentInstructions(), dynamicTools: pixiceDynamicTools, threadSource: "pixice"
+      });
+      rememberThread(project, response.thread, { loaded: true });
+      database.saveThreadName(response.thread.id, `${project.displayName} · ${model}`);
+      return response;
+    }
+  });
   const previewThreadContext = (threadId) => {
     const binding = database.getThreadProviderBinding(threadId);
     const project = resolveThreadProject({
@@ -2461,6 +2514,10 @@ app.whenReady().then(async () => {
     const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
     event.payload = { ...event.payload, receivedAt };
     const { method, threadId, turn } = event.payload ?? {};
+    if (method === "serverRequest/resolved") {
+      pendingRequests.delete(requestKey(event.payload.requestId));
+      send("AttentionResolved", { requestId: event.payload.requestId, threadId });
+    }
     if (method === "account/rateLimits/updated") {
       trayLimits = null;
       send("CodexLimitsUpdated", { receivedAt });
@@ -2494,6 +2551,7 @@ app.whenReady().then(async () => {
       database.saveThreadName(threadId, event.payload.name);
     }
     if (method === "turn/started" && threadId) {
+      taskResults.observeStart(threadId, turn?.id);
       threadPlans.set(threadId, []);
       database.saveThreadPlan(threadId, []);
     }
@@ -2515,6 +2573,20 @@ app.whenReady().then(async () => {
           codexRuntime.emit("diagnostic", `Task stewardship failed: ${error.message}`);
         }
       }
+    }
+    if (method === "turn/completed" && threadId && event.payload.turn) {
+      const completed = taskResults.get(threadId)
+        ? taskResults.complete(threadId, event.payload.turn, threadPlans.get(threadId) ?? [])
+        : Promise.resolve().then(async () => {
+          if (database.getThreadLink(threadId)) return;
+          const projectId = threadProjects.get(threadId) ?? boardThreadContext(threadId)?.projectId;
+          const project = projectId && database.getProject(projectId);
+          if (!project) return;
+          const response = await runtime.request("thread/read", { threadId, includeTurns: true });
+          taskResults.importThread(project, response.thread);
+        });
+      void completed
+        .catch((error) => { taskResults.failed(threadId, error); codexRuntime.emit("diagnostic", `Task receipt failed: ${error.message}`); });
     }
     if (method === "turn/completed" && threadId && event.payload.turn && !database.getThreadLink(threadId)) {
       const projectId = threadProjects.get(threadId) ?? boardThreadContext(threadId)?.projectId;
@@ -2636,12 +2708,12 @@ app.whenReady().then(async () => {
         return;
       }
     } else if (request.method === PIXICE_QUESTION_METHOD) kind = "pixice-question";
-    pendingRequests.set(requestKey(request.id), { request, kind, generation: runtimeGeneration });
-    send("AttentionRequired", { ...displayRequest, projectId: threadProjects.get(request.params?.threadId) });
+    pendingRequests.set(requestKey(request.id), { request, displayRequest, kind, generation: runtimeGeneration });
+    send("AttentionRequired", { ...displayRequest, taskTitle: request.params?.threadId ? database.getThreadName(request.params.threadId) : null, projectId: threadProjects.get(request.params?.threadId) });
     const settings = database.getAppSettings();
     if (settings.attentionNotifications !== false && Notification.isSupported()) {
       new Notification({
-        title: kind.startsWith("pixice-question") ? "A task has a question" : "Pixice needs your attention",
+        title: displayRequest.method?.includes("requestUserInput") ? "A task has a question" : "Pixice needs your attention",
         body: displayRequest.method,
         silent: settings.notificationSound === false
       }).show();

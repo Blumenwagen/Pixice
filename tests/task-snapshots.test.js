@@ -1,0 +1,45 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import { captureTaskSnapshot, createReplayWorkspace, taskWorkspaceChanges } from "../electron/git/task-snapshots.mjs";
+const run = promisify(execFile);
+const directories = [];
+afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
+
+describe("task starting snapshots", () => {
+  it("replays staged, unstaged, deleted and untracked files without touching the user's index or branch", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "pixice-replay-")); directories.push(directory);
+    const root = path.join(directory, "source"); await mkdir(root);
+    const git = async (...args) => (await run("git", args, { cwd: root })).stdout;
+    await git("init"); await git("config", "user.name", "Test"); await git("config", "user.email", "test@example.test");
+    await writeFile(path.join(root, "file.txt"), "original\n");
+    await writeFile(path.join(root, "deleted.txt"), "delete me\n");
+    await writeFile(path.join(root, ".gitignore"), "ignored.txt\n");
+    await git("add", "."); await git("commit", "-m", "initial");
+    await writeFile(path.join(root, "file.txt"), "staged\n"); await git("add", "file.txt");
+    await writeFile(path.join(root, "file.txt"), "starting state\n");
+    await writeFile(path.join(root, "new.txt"), "untracked start\n");
+    await writeFile(path.join(root, "ignored.txt"), "private\n");
+    await rm(path.join(root, "deleted.txt"));
+    const beforeIndex = await readFile(path.join(root, ".git", "index"));
+    const beforeHead = await git("rev-parse", "HEAD");
+    const snapshot = await captureTaskSnapshot([root]);
+    expect(await readFile(path.join(root, ".git", "index"))).toEqual(beforeIndex);
+    expect(await git("rev-parse", "HEAD")).toBe(beforeHead);
+    await writeFile(path.join(root, "file.txt"), "agent result\n");
+    await writeFile(path.join(root, "new.txt"), "agent changed untracked\n");
+    const changes = await taskWorkspaceChanges(snapshot);
+    expect(changes.files.map((file) => file.path).sort()).toEqual(["file.txt", "new.txt"]);
+    expect(changes.patch).toContain("-starting state");
+    const replay = await createReplayWorkspace(snapshot, path.join(directory, "replay"));
+    expect(await readFile(path.join(replay.folders[0], "file.txt"), "utf8")).toBe("starting state\n");
+    expect(await readFile(path.join(replay.folders[0], "new.txt"), "utf8")).toBe("untracked start\n");
+    await expect(readFile(path.join(replay.folders[0], "deleted.txt"))).rejects.toThrow();
+    await expect(readFile(path.join(replay.folders[0], "ignored.txt"))).rejects.toThrow();
+    expect(await readFile(path.join(root, ".git", "index"))).toEqual(beforeIndex);
+    expect(await git("rev-parse", "HEAD")).toBe(beforeHead);
+  });
+});

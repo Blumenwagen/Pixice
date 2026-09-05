@@ -78,6 +78,28 @@ describe("Pixice bridge", () => {
     expect(payload.recommendation.provider).toBe("codex");
   });
 
+  it("lists and spawns connected Astra with its advertised reasoning efforts", async () => {
+    const { bridge, runtime } = createBridge([{
+      id: "codex:gpt-6-astra", model: "gpt-6-astra", provider: "codex",
+      supportedReasoningEfforts: [{ reasoningEffort: "ultra" }]
+    }]);
+    const catalog = await bridge.handleToolCall({ threadId: "parent-1", tool: "list_models", arguments: {} });
+    expect(JSON.parse(catalog.contentItems[0].text).models[0]).toMatchObject({
+      id: "codex:gpt-6-astra", supportedReasoningEfforts: [{ reasoningEffort: "ultra" }]
+    });
+    const pending = bridge.handleToolCall({
+      threadId: "parent-1", tool: "spawn_thread",
+      arguments: { prompt: "Review the architecture", model: "codex:gpt-6-astra", effort: "ultra" }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runtime.calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: "thread/start", params: expect.objectContaining({ model: "codex:gpt-6-astra" }) }),
+      expect.objectContaining({ method: "turn/start", params: expect.objectContaining({ model: "codex:gpt-6-astra", effort: "ultra" }) })
+    ]));
+    runtime.emit("event", { payload: { method: "turn/completed", threadId: "child-1", turn: { id: "turn-1", status: "completed", items: [] } } });
+    expect(JSON.parse((await pending).contentItems[0].text)).toMatchObject({ threadId: "child-1", status: "completed" });
+  });
+
   it("recommends whichever eligible family is actually connected", async () => {
     const claudeOnly = createBridge([
       { id: "claude:claude-sonnet-4-6", model: "claude-sonnet-4-6", provider: "claude" }

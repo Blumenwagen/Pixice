@@ -73,7 +73,7 @@ const bridgeTools = [
   {
     type: "function",
     name: "list_models",
-    description: "List only currently connected models available to the Pixice bridge, Pixice's internal 1-5 capability ratings, and a policy-based recommendation for the supplied task. GPT is intentionally limited to 5.6 Luna, Terra, and Sol; every connected Claude model reported by Claude Code is eligible.",
+    description: "List only currently connected models available to the Pixice bridge, Pixice's internal 1-5 capability ratings, and a policy-based recommendation for the supplied task. GPT supports 6 Astra and 5.6 Luna, Terra, and Sol; every connected Claude model reported by Claude Code is eligible.",
     inputSchema: listModelsInputSchema
   },
   {
@@ -192,7 +192,7 @@ export class PixiceBridge {
         ],
         routineAndHighVolume: "Prefer GPT 5.6 Luna.",
         balancedImplementation: "Prefer GPT 5.6 Terra.",
-        deepTechnicalWork: "Prefer GPT 5.6 Sol.",
+        deepTechnicalWork: "Prefer GPT 6 Astra when connected, otherwise GPT 5.6 Sol.",
         uiAndProductTaste: "Prefer Claude Sonnet or Opus when one is connected; GPT remains capable if Claude is unavailable.",
         crossFamilyDirection: "A Claude bridge thread may direct or review a GPT bridge thread, and vice versa.",
         note: "Only models from connected providers are returned. Ratings are Pixice routing heuristics on a 1-5 scale, not vendor benchmarks."

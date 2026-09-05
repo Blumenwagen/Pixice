@@ -16,6 +16,7 @@ import { InlineVisualization, parseVisualizationSpec } from "./components/Inline
 import { InstrumentHost } from "./components/instruments/InstrumentHost.jsx";
 import { IosSimulatorPreview } from "./components/ios/IosSimulatorPreview.jsx";
 import { ProjectToolsSidebar, ProjectToolsWorkspace } from "./components/instruments/ProjectToolsWorkspace.jsx";
+import { TaskReceipt, ModelReplay } from "./components/TaskResults.jsx";
 import { TaskPreviewContent } from "./components/TaskPreviewHost.jsx";
 import { WorkflowPreview } from "./components/workflows/WorkflowWorkspace.jsx";
 import { DitherAreaChart, DitherBarChart } from "./components/dither-kit/DitherChart.jsx";
@@ -2208,7 +2209,7 @@ function PickerGlyph({ option, kind }) {
   return <span className={`picker-glyph${option.danger ? " danger" : ""}`}><Glyph size={15} weight="regular" /></span>;
 }
 
-function ComposerPicker({ label, hint, value, options, onChange, kind, align = "right", disabled = false, providers = [], onProviderLogin, onProvidersRefresh }) {
+export function ComposerPicker({ label, hint, value, options, onChange, kind, align = "right", disabled = false, providers = [], onProviderLogin, onProvidersRefresh }) {
   const [open, setOpen] = useState(false);
   const systemReducedMotion = useReducedMotion();
   const [activeProvider, setActiveProvider] = useState("codex");
@@ -2549,7 +2550,7 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
   );
 }
 
-const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds, showTimestamps = true, completedWorkDetails = "auto", onImageRevision = null, imageRevisionDisabled = false, onFork = null }) {
+const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds, showTimestamps = true, completedWorkDetails = "auto", onImageRevision = null, imageRevisionDisabled = false, onFork = null, receipt = null, onReceiptCompare = null }) {
   const items = turn.items ?? [];
   const threadId = thread.id;
   const running = turnIsRunning(turn.status);
@@ -2614,14 +2615,18 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
   flushTrace();
   if (turn.status === "completed" && finalItem) {
     const timestamp = finalItem.createdAt ?? finalItem.completedAt ?? completedAt;
-    rendered.push(
-      <AssistantAnswerActions
-        timestamp={timestamp}
-        showTimestamp={showTimestamps}
-        onFork={finalItem.id && onFork ? () => onFork({ threadId, turnId: turn.id, itemId: finalItem.id }) : null}
-        key={`answer-actions-${finalItem.renderId ?? finalItem.id ?? turn.id}`}
-      />
-    );
+    const answerActions = <AssistantAnswerActions
+      timestamp={timestamp}
+      showTimestamp={showTimestamps}
+      onFork={finalItem.id && onFork ? () => onFork({ threadId, turnId: turn.id, itemId: finalItem.id }) : null}
+    />;
+    rendered.push(receipt ? <TaskReceipt
+      receipt={receipt} onCompare={onReceiptCompare}
+      renderDiff={renderCapturedChanges} leadingAction={answerActions}
+      key={`answer-actions-${finalItem.renderId ?? finalItem.id ?? turn.id}`}
+    /> : cloneElement(answerActions, { key: `answer-actions-${finalItem.renderId ?? finalItem.id ?? turn.id}` }));
+  } else if (receipt) {
+    rendered.push(<TaskReceipt receipt={receipt} onCompare={onReceiptCompare} renderDiff={renderCapturedChanges} key="task-result" />);
   }
   if (running && workingTraceIndexes.length) {
     const activeTraceIndex = workingTraceIndexes.at(-1);
@@ -2642,7 +2647,13 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
   && previous.onImageRevision === next.onImageRevision
   && previous.imageRevisionDisabled === next.imageRevisionDisabled
   && previous.onFork === next.onFork
+  && previous.receipt === next.receipt
+  && previous.onReceiptCompare === next.onReceiptCompare
   && previous.seenResponseIds === next.seenResponseIds);
+
+function isApprovalRequest(request) {
+  return request?.method?.includes("requestApproval") || ["applyPatchApproval", "execCommandApproval"].includes(request?.method);
+}
 
 function isQuestionRequest(request) {
   return request?.method?.includes("requestUserInput") && Array.isArray(request.params?.questions) && request.params.questions.length > 0;
@@ -2658,6 +2669,7 @@ function optionDisplayLabel(option) {
 
 function ComposerQuestion({ request, onResolve }) {
   const questions = request.params.questions;
+  const asynchronous = request.params.isBlocking === false;
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState({});
   const [phase, setPhase] = useState("idle");
@@ -2667,6 +2679,15 @@ function ComposerQuestion({ request, onResolve }) {
   const customInputRef = useRef(null);
   const question = questions[Math.min(step, questions.length - 1)];
   const questionId = question.id ?? `question-${step + 1}`;
+  const showCustomInput = customOpen || !question.options?.length;
+  const moveToQuestion = (index) => {
+    const nextQuestion = questions[index];
+    const saved = answers[nextQuestion.id ?? `question-${index + 1}`] ?? "";
+    const custom = Boolean(saved && !nextQuestion.options?.some((option) => option.label === saved));
+    setStep(index);
+    setCustomOpen(custom);
+    setCustomAnswer(custom ? saved : "");
+  };
 
   useEffect(() => {
     setStep(0);
@@ -2699,6 +2720,7 @@ function ComposerQuestion({ request, onResolve }) {
     if (phase === "leaving" || !String(answer).trim()) return;
     const nextAnswers = { ...answers, [questionId]: String(answer).trim() };
     setAnswers(nextAnswers);
+    if (asynchronous) return;
     setPhase("leaving");
     after(() => {
       if (step === questions.length - 1) {
@@ -2716,7 +2738,8 @@ function ComposerQuestion({ request, onResolve }) {
   };
 
   return (
-    <section className="composer-question" aria-live="polite">
+    <section className="composer-question" data-asynchronous={asynchronous} aria-live="polite">
+      {asynchronous && <div className="question-async-status">Answer when ready · work continues</div>}
       <div className="question-step" data-phase={phase} key={questionId}>
         <header className="question-header">
           <div>
@@ -2735,8 +2758,8 @@ function ComposerQuestion({ request, onResolve }) {
                 className="question-option"
                 data-recommended={recommended}
                 role="radio"
-                aria-checked="false"
-                onClick={() => choose(option.label)}
+                aria-checked={answers[questionId] === option.label}
+                onClick={() => { setCustomOpen(false); choose(option.label); }}
                 key={`${option.label}-${index}`}
               >
                 <span className="question-option-number">{index + 1}</span>
@@ -2751,18 +2774,25 @@ function ComposerQuestion({ request, onResolve }) {
         </div>
 
         <div className="question-footer">
-          {customOpen ? (
+          {showCustomInput ? (
             <form className="question-custom-form" onSubmit={(event) => { event.preventDefault(); choose(customAnswer); }}>
               <PencilSimple size={16} />
-              <input ref={customInputRef} aria-label="Custom answer" value={customAnswer} onChange={(event) => setCustomAnswer(event.target.value)} placeholder="Type a different answer" />
+              <input ref={customInputRef} type={question.isSecret ? "password" : "text"} aria-label="Custom answer" value={customAnswer} onChange={(event) => { setCustomAnswer(event.target.value); if (asynchronous) setAnswers((current) => ({ ...current, [questionId]: event.target.value })); }} placeholder="Type a different answer" />
               <button type="submit" disabled={!customAnswer.trim()} aria-label="Use custom answer"><CaretRight size={18} /></button>
             </form>
           ) : (
-            <button type="button" className="question-custom" onClick={() => setCustomOpen(true)}><PencilSimple size={17} /><span>Type a different answer</span></button>
+            <button type="button" className="question-custom" onClick={() => { setCustomOpen(true); if (asynchronous) setAnswers((current) => ({ ...current, [questionId]: customAnswer })); }}><PencilSimple size={17} /><span>Type a different answer</span></button>
           )}
           <div className="question-progress" aria-label={`Question ${step + 1} of ${questions.length}`}>
             {questions.map((candidate, index) => <i className={index === step ? "active" : index < step ? "complete" : ""} key={candidate.id ?? index} />)}
           </div>
+          {asynchronous && <>
+            {step > 0 && <button type="button" className="question-skip" onClick={() => moveToQuestion(step - 1)}>Back</button>}
+            <button type="button" className="question-submit" disabled={phase === "leaving" || !answers[questionId]?.trim()} onClick={() => {
+              if (step === questions.length - 1) complete("answer", answers);
+              else moveToQuestion(step + 1);
+            }}>{step === questions.length - 1 ? "Submit answer" : "Next"}</button>
+          </>}
           <button type="button" className="question-skip" onClick={() => complete("cancel")}>Skip</button>
         </div>
       </div>
@@ -2771,6 +2801,7 @@ function ComposerQuestion({ request, onResolve }) {
 }
 
 function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true }) {
+  const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -2813,7 +2844,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
   }, [attachments.length, onDraftStateChange, text]);
 
   useEffect(() => {
-    if (!autoFocusComposer || disabled || questionRequest) return undefined;
+    if (!autoFocusComposer || disabled || blockingQuestion) return undefined;
     const frame = window.requestAnimationFrame(() => textareaRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
   }, [autoFocusComposer, disabled, draftKey, questionRequest]);
@@ -2844,12 +2875,12 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
     if (!target) return undefined;
     const belongsToScopedComposer = (event) => globalFileDrop && event.target?.closest?.('[data-composer-drop-scope="local"]');
     const onDragEnter = (event) => {
-      if (belongsToScopedComposer(event) || disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
+      if (belongsToScopedComposer(event) || disabled || blockingQuestion || !transferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
       setDraggingFiles(true);
     };
     const onDragOver = (event) => {
-      if (belongsToScopedComposer(event) || disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
+      if (belongsToScopedComposer(event) || disabled || blockingQuestion || !transferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
       setDraggingFiles(true);
@@ -2858,7 +2889,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
       if (globalFileDrop ? !event.relatedTarget : !composerRef.current?.contains(event.relatedTarget)) setDraggingFiles(false);
     };
     const onDrop = (event) => {
-      if (belongsToScopedComposer(event) || disabled || questionRequest || !transferHasFiles(event.dataTransfer)) return;
+      if (belongsToScopedComposer(event) || disabled || blockingQuestion || !transferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
       setDraggingFiles(false);
       addAttachmentFiles(attachmentFilesFromTransfer(event.dataTransfer));
@@ -2914,15 +2945,16 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
       if (preserveDrafts) localStorage.setItem(storageKey, value);
     }
   };
-  if (questionRequest) {
+  if (blockingQuestion) {
     return (
-      <div className="composer" data-question-active="true" data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
-        <ComposerQuestion request={questionRequest} onResolve={onQuestionResolve} />
+      <div className="composer" data-question-active="true" data-question-present="true" data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
+        <ComposerQuestion key={questionRequest.id} request={questionRequest} onResolve={onQuestionResolve} />
       </div>
     );
   }
   return (
-    <div className="composer" data-dragging-files={draggingFiles} data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
+    <div className="composer" data-question-present={Boolean(questionRequest)} data-dragging-files={draggingFiles} data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
+      {questionRequest && <ComposerQuestion key={questionRequest.id} request={questionRequest} onResolve={onQuestionResolve} />}
       {draggingFiles && (
         <div className="composer-drop-target" role="status">
           <Files size={22} />
@@ -3642,6 +3674,8 @@ function ConversationWorkspace({
   onProactiveSuggestionResolve,
   sideThreadProps,
   taskMapProps,
+  receipt,
+  onReceiptCompare,
   composerProps
 }) {
   const [previewPresent, setPreviewPresent] = useState(previewOpen);
@@ -3693,6 +3727,11 @@ function ConversationWorkspace({
     const frame = window.requestAnimationFrame(updateActivePrompt);
     return () => window.cancelAnimationFrame(frame);
   }, [thread?.id, thread?.turns, promptItems, updateActivePrompt]);
+
+  useLayoutEffect(() => {
+    const node = scrollRef.current;
+    if (node && followLatestRef.current) node.scrollTop = node.scrollHeight;
+  }, [composerProps.questionRequest?.id]);
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
@@ -3778,7 +3817,7 @@ function ConversationWorkspace({
     <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
     <div
       className={`task-workspace${previewLayoutOpen ? " preview-mode" : ""}`}
-      data-question-active={Boolean(composerProps.questionRequest)}
+      data-question-active={Boolean(composerProps.questionRequest && composerProps.questionRequest.params?.isBlocking !== false)}
       ref={workspaceRef}
       style={previewChatWidth === null ? undefined : { "--preview-chat-width": `${previewChatWidth}px` }}
     >
@@ -3820,13 +3859,15 @@ function ConversationWorkspace({
                     onImageRevision={composerProps.onImageRevision}
                     imageRevisionDisabled={composerProps.busy}
                     onFork={composerProps.running ? null : composerProps.onForkResponse}
+                    receipt={turnIndex === thread.turns.length - 1 ? receipt : null}
+                    onReceiptCompare={onReceiptCompare}
                     key={turn.renderId ?? turn.id}
                   />
                 ))}
               </div>
-              {proactiveSuggestions.length > 0 && (
+              {proactiveSuggestions.some((suggestion) => !receipt || suggestion.type !== "task-status") && (
                 <div className="proactive-suggestions" aria-label="Pixice suggestions">
-                  {proactiveSuggestions.map((suggestion) => <ProactiveSuggestionCard suggestion={suggestion} onResolve={onProactiveSuggestionResolve} key={suggestion.id} />)}
+                  {proactiveSuggestions.filter((suggestion) => !receipt || suggestion.type !== "task-status").map((suggestion) => <ProactiveSuggestionCard suggestion={suggestion} onResolve={onProactiveSuggestionResolve} key={suggestion.id} />)}
                 </div>
               )}
               {showTaskProgress && (
@@ -4158,6 +4199,26 @@ function FileDiff({ file }) {
       </div>
     </div>
   );
+}
+
+export function renderCapturedChanges(changes) {
+  const roots = [...new Set(changes.files.map((file) => file.root))];
+  const parsedByRoot = new Map(roots.map((root) => [root, reviewFiles(changes.repositoryPatches?.find((entry) => entry.root === root)?.patch ?? (roots.length === 1 ? changes.patch ?? "" : ""), [])]));
+  return changes.files.map((file, index) => {
+    const diff = parsedByRoot.get(file.root)?.find((candidate) => candidate.path === file.path);
+    return <details className="receipt-captured-file" key={`${file.root}:${file.path}:${index}`}>
+      <summary><File size={13} /><span>{file.path}{roots.length > 1 && <small> · {file.root}</small>}</span><span className="file-diff-stat"><span className="add">+{file.plus}</span><span className="del">−{file.minus}</span></span></summary>
+      {diff?.rows?.length ? <FileDiff file={{ ...file, ...diff }} /> : <p className="receipt-note">{file.binary ? "Binary file changed." : "No captured text diff is available for this file."}</p>}
+    </details>;
+  });
+}
+
+export function preserveReceiptEvidence(incoming, previous) {
+  return incoming.map((receipt) => {
+    const cached = previous.find((candidate) => candidate.threadId === receipt.threadId);
+    if (receipt.changes?.patch !== undefined || !cached?.changes || cached.revision !== receipt.revision || cached.status !== receipt.status || cached.completedAt !== receipt.completedAt) return receipt;
+    return { ...receipt, changes: { ...receipt.changes, patch: cached.changes.patch, repositoryPatches: cached.changes.repositoryPatches } };
+  });
 }
 
 function ReviewWorkspace({ project, review, loading, fileLoadingPath, gitStatus, gitBusy, onLoadFile, onRefresh, onInstallGit, onExternal }) {
@@ -4621,7 +4682,7 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onA
               </article>
             ))}
           </div>
-          <p className="bridge-model-note">Connected models only. Pixice normally prefers cost-effective GPT 5.6 Luna, Terra, or Sol; Claude is preferred when requested, when it is the only family available, or for UI and taste work.</p>
+          <p className="bridge-model-note">Connected models only. Pixice normally prefers cost-effective GPT 5.6 Luna, Terra, or Sol, and GPT 6 Astra for demanding technical work; Claude is preferred when requested, when it is the only family available, or for UI and taste work.</p>
         </section>
       )}
     </div>
@@ -4962,9 +5023,10 @@ function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsE
         </section>
       </div>
 
+
       <section className="settings-group usage-rates">
         <header className="usage-rates-header">
-          <span><h2>Current API rate card</h2><p>USD per 1M text tokens · verified {data.pricingVerifiedAt ?? "with provider docs"}</p></span>
+          <span><h2>Current API rate card</h2><p>USD per 1M text tokens</p></span>
           <SlidingSegmented value={rateProvider} options={[{ value: "codex", label: "OpenAI" }, { value: "claude", label: "Anthropic" }]} onChange={setRateProvider} label="Rate provider" />
         </header>
         <div className="settings-card usage-rate-card">
@@ -4972,7 +5034,7 @@ function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsE
           <div className="usage-rate-scroll">
             {rateRows.map((entry) => (
               <div className="usage-rate-row" key={`${entry.provider}:${entry.model}`}>
-                <span><strong>{entry.label}</strong><small>{entry.model}{entry.fastRates ? " · fast supported" : ""}</small></span>
+                <span><strong>{entry.label}</strong><small>{entry.model}{entry.fastRates ? " · fast supported" : ""} · verified {entry.verifiedAt ?? data.pricingVerifiedAt ?? "with provider docs"}</small></span>
                 <span>{formatApiRate(entry.rates.input)}</span>
                 <span>{formatApiRate(entry.rates.cachedInput)}</span>
                 <span>{formatApiRate(entry.rates.cacheWriteInput)}</span>
@@ -5414,16 +5476,17 @@ function SettingsWorkspace({
   );
 }
 
-function AttentionWorkspace({ attention, onResolve }) {
-  return (
-    <main className="main-canvas workspace">
-      <AppToolbar title="Attention" subtitle={`${attention.length} pending`} />
-      <div className="attention-column">
-        <div className="settings-title"><span>Attention</span><h1>Decisions waiting on you</h1><p>Approval requests from every active Pixice task appear here.</p></div>
-        {attention.length === 0 ? <div className="empty-state compact"><CheckCircle size={28} weight="fill" /><h2>Nothing needs attention</h2><p>Active tasks can continue without input.</p></div> : attention.map((request) => <ApprovalCard request={request} onResolve={onResolve} key={request.id} />)}
-      </div>
-    </main>
-  );
+function AttentionWorkspace({ attention, projects, onResolve }) {
+  const approvals = attention.filter(isApprovalRequest);
+  return <main className="main-canvas workspace">
+    <AppToolbar icon={ShieldCheck} title="Attention" subtitle={`${approvals.length} approval${approvals.length === 1 ? "" : "s"}`} />
+    <div className="attention-column">
+      {approvals.length ? approvals.map((request) => <div key={request.id}>
+        <p className="approval-task-context">{projects.find((project) => project.id === request.projectId)?.displayName ?? "Pixice"} · {request.taskTitle || request.params?.threadId || "Task"}</p>
+        <ApprovalCard request={request} onResolve={onResolve} />
+      </div>) : <div className="empty-state compact"><ShieldCheck size={28} /><h2>No approvals waiting</h2><p>Requests for permission appear here.</p></div>}
+    </div>
+  </main>;
 }
 
 function BoardWorkspace({ project, threads, tasks, phases, attention, loading, onCreate, onCreatePhase, onUpdate, onMove, onDelete, onOpenThread, onOpenTask, onScheduleMove, onStartTask }) {
@@ -5487,6 +5550,9 @@ export function App() {
   const [thread, setThread] = useState(null);
   const [plan, setPlan] = useState([]);
   const [attention, setAttention] = useState([]);
+  const [taskReceipts, setTaskReceipts] = useState([]);
+  const [receiptRefreshKey, setReceiptRefreshKey] = useState(0);
+  const [comparisonThreadId, setComparisonThreadId] = useState(null);
   const [review, setReview] = useState({ projectId: null, repository: null, files: [], fileDiffs: {} });
   const [boardTasks, setBoardTasks] = useState([]);
   const [boardPhases, setBoardPhases] = useState([]);
@@ -6181,6 +6247,31 @@ export function App() {
     loadProviders();
   }, [loadProviders]);
 
+  useEffect(() => {
+    if (!api?.tasks?.receipts) return undefined;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const results = await api.tasks.receipts({});
+        const detail = selectedProjectId && selectedThreadId
+          ? await api.tasks.receipt({ projectId: selectedProjectId, threadId: selectedThreadId }) : null;
+        if (!cancelled) {
+          setTaskReceipts((previous) => preserveReceiptEvidence(results.map((receipt) => receipt.threadId === detail?.threadId ? detail : receipt), previous));
+        }
+      } catch (cause) { if (!cancelled) setError(`Could not refresh task requests or results: ${cause.message}`); }
+    }, 100);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [api, selectedProjectId, selectedThreadId, receiptRefreshKey]);
+
+  useEffect(() => {
+    if (!api?.tasks?.interventions) return undefined;
+    let cancelled = false;
+    api.tasks.interventions().then((result) => {
+      if (!cancelled) setAttention((current) => [...current, ...result.requests.filter((request) => !current.some((candidate) => candidate.id === request.id))]);
+    }).catch((cause) => { if (!cancelled) setError(`Could not refresh task requests or results: ${cause.message}`); });
+    return () => { cancelled = true; };
+  }, [api]);
+
   const loadUsage = useCallback(async (days = usageRangeDays) => {
     if (!api?.usage) return;
     const requestId = ++usageLoadRequestRef.current;
@@ -6598,7 +6689,11 @@ export function App() {
         const questionForCurrentThread = isQuestionRequest(event.payload) && event.payload.params?.threadId === selectedThreadIdRef.current;
         const attentionForCurrentThread = event.payload.params?.threadId === selectedThreadIdRef.current;
         if (attentionForCurrentThread && !questionForCurrentThread) setInspectorOpen(true);
-        if (preferencesRef.current.bringApprovalsForward && !questionForCurrentThread) setActiveView("attention");
+        if (preferencesRef.current.bringApprovalsForward && isApprovalRequest(event.payload) && !questionForCurrentThread) setActiveView("attention");
+        return;
+      }
+      if (event.type === "AttentionResolved") {
+        setAttention((current) => current.filter((request) => request.id !== event.payload.requestId));
         return;
       }
       if (event.type === "AttentionReset") {
@@ -6783,6 +6878,10 @@ export function App() {
       }
       if (event.type === "TraySettingsUpdated") {
         if (typeof event.payload?.keepSystemAwake === "boolean") setKeepSystemAwake(event.payload.keepSystemAwake);
+        return;
+      }
+      if (event.type === "TaskReceiptUpdated") {
+        setReceiptRefreshKey((value) => value + 1);
         return;
       }
       if (event.type === "UsageUpdated") {
@@ -7906,6 +8005,31 @@ export function App() {
     }
   };
 
+  const loadReceiptEvidence = async (receipt) => {
+    const updated = await api.tasks.receipt({ projectId: receipt.projectId, threadId: receipt.threadId });
+    if (updated) setTaskReceipts((current) => current.map((candidate) => candidate.threadId === updated.threadId ? updated : candidate));
+  };
+  const compareReceipt = (receipt) => {
+    setComparisonThreadId(receipt.threadId);
+    changeView("compare");
+  };
+  const openReceiptTask = (receipt) => {
+    setDraftMode(false);
+    selectedProjectIdRef.current = receipt.projectId;
+    selectedThreadIdRef.current = receipt.threadId;
+    setSelectedProjectId(receipt.projectId);
+    setSelectedThreadId(receipt.threadId);
+    setActiveView("task");
+  };
+  const replayReceipt = async (receipt, options) => {
+    const result = await api.tasks.replay({ projectId: receipt.projectId, threadId: receipt.threadId, revision: receipt.revision, ...options });
+    setProjects((current) => current.some((project) => project.id === result.project.id) ? current : [...current, result.project]);
+    setReceiptRefreshKey((value) => value + 1);
+  };
+  const comparisonSource = taskReceipts.find((receipt) => receipt.threadId === comparisonThreadId);
+  const comparisonReceipts = comparisonSource ? taskReceipts.filter((receipt) => receipt.groupId === comparisonSource.groupId).sort((left, right) => left.startedAt.localeCompare(right.startedAt)) : [];
+  const interventionCount = attention.filter(isApprovalRequest).length;
+
   const questionRequest = attention.find((request) => isQuestionRequest(request) && request.params?.threadId === selectedThreadId) ?? null;
   const composerProps = {
     disabled: !runtime.connected || !selectedProject,
@@ -8049,7 +8173,9 @@ export function App() {
       />
     );
   } else if (activeView === "attention") {
-    content = <AttentionWorkspace attention={attention} onResolve={resolveAttention} />;
+    content = <AttentionWorkspace attention={attention} projects={projects} onResolve={resolveAttention} />;
+  } else if (activeView === "compare") {
+    content = <main className="main-canvas workspace"><AppToolbar icon={GitBranch} title="Compare models" subtitle={comparisonSource?.projectName} />{comparisonSource ? <ModelReplay key={comparisonSource.threadId} source={comparisonSource} comparisons={comparisonReceipts} models={models} onReplay={replayReceipt} onClose={() => openReceiptTask(comparisonSource)} Picker={ComposerPicker} renderDiff={renderCapturedChanges} onOpen={openReceiptTask} onLoadEvidence={loadReceiptEvidence} /> : <div className="empty-state compact"><h2>No task selected</h2><p>Open a completed task receipt to compare models.</p></div>}</main>;
   } else {
     content = (
       <ConversationWorkspace
@@ -8117,6 +8243,8 @@ export function App() {
           onError: setError
         }}
         taskMapProps={{ thread, threads, plan, attention, onResolve: resolveAttention }}
+        receipt={taskReceipts.find((receipt) => receipt.threadId === selectedThreadId)}
+        onReceiptCompare={compareReceipt}
         composerProps={composerProps}
       />
     );
@@ -8169,7 +8297,7 @@ export function App() {
             onOpenProject={openProject}
             activeView={activeView}
             onView={changeView}
-            attentionCount={attention.length}
+            attentionCount={interventionCount}
             changedCount={changedCount}
             toolCount={projectTools.length}
             runtime={runtime}

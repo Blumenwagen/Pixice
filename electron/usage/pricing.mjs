@@ -13,6 +13,16 @@ const rate = (input, cachedInput, output, cacheWriteInput = input) => ({
 const PRICE_CATALOG = [
   {
     provider: "codex",
+    id: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    // https://developers.openai.com/api/docs/models/gpt-6-astra
+    verifiedAt: "2026-09-05",
+    rates: rate(10, 1, 50, 12.5),
+    fastRates: rate(20, 2, 100, 25),
+    longContext: { threshold: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 }
+  },
+  {
+    provider: "codex",
     id: "gpt-5.6-sol",
     label: "GPT-5.6 Sol",
     aliases: ["gpt-5.6"],
@@ -182,6 +192,7 @@ export function listPricingCatalog(recordedAt = new Date().toISOString()) {
     provider: entry.provider,
     model: entry.id,
     label: entry.label,
+    verifiedAt: entry.verifiedAt ?? PRICING_VERIFIED_AT,
     rates: ratesAt(entry, recordedAt),
     fastRates: entry.fastRates ?? null
   }));

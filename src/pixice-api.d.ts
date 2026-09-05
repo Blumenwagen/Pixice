@@ -7,6 +7,7 @@ type PixiceEvent = {
     | "ActivityReceived"
     | "AttentionRequired"
     | "AttentionReset"
+    | "AttentionResolved"
     | "RuntimeError"
     | "RuntimeStatus"
     | "ProviderLifecycleState"
@@ -28,6 +29,7 @@ type PixiceEvent = {
     | "TrayNavigate"
     | "TraySettingsUpdated"
     | "UsageUpdated"
+    | "TaskReceiptUpdated"
     | "CodexLimitsUpdated"
     | "ProjectDeleted";
   payload: any;
@@ -36,6 +38,30 @@ type PixiceEvent = {
 
 type ProjectScope = { projectId: string };
 type ThreadScope = ProjectScope & { threadId: string };
+type PixiceTaskReceipt = ThreadScope & {
+  groupId: string;
+  sourceThreadId?: string;
+  revision: string;
+  title: string;
+  projectName: string;
+  prompt: string;
+  promptCount: number;
+  model?: string;
+  status: "running" | "completed" | "failed" | "interrupted";
+  summary?: string;
+  startedAt: string;
+  completedAt?: string | null;
+  durationMs: number;
+  usage: { tokens: number; costUsd: number; events: number; unpricedEvents: number };
+  checks?: Array<{ id: string; command: string; status: "passed" | "failed" | "unknown"; exitCode: number | null; output: string }>;
+  turns?: Array<{ id: string; status: string; summary?: string; checks: NonNullable<PixiceTaskReceipt["checks"]> }>;
+  unresolved?: string[];
+  changes?: { files: Array<{ path: string; root: string; plus: number; minus: number; binary: boolean }>; fileCount: number; patch?: string; repositoryPatches?: Array<{ root: string; patch: string }>; truncated?: boolean } | null;
+  changesError?: string | null;
+  replayAvailable: boolean;
+  replayUnavailableReason?: string | null;
+  remainingReplayTurns: number;
+};
 type PixiceProvider = {
   id: "codex" | "claude" | string;
   connected?: boolean;
@@ -253,6 +279,12 @@ declare global {
         status(): Promise<{ available: boolean; authenticated: boolean; source: "bundled" | "system" | null; version: string | null; account: { login: string; name?: string | null; avatarUrl?: string | null } | null; message: string }>;
         login(): Promise<any>;
         logout(): Promise<any>;
+      };
+      tasks: {
+        receipts(payload?: { projectId?: string; groupId?: string }): Promise<PixiceTaskReceipt[]>;
+        receipt(payload: ThreadScope): Promise<PixiceTaskReceipt | null>;
+        replay(payload: ThreadScope & { revision: string; model: string; effort?: string; serviceTier?: string | null }): Promise<{ project: PixiceProject; thread: any; receipt: PixiceTaskReceipt }>;
+        interventions(): Promise<{ requests: any[] }>;
       };
       usage: {
         summary(payload: { days: number }): Promise<any>;

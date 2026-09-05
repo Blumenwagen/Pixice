@@ -1,6 +1,6 @@
 ---
 name: proof-before-done
-description: Configure or repair repository guidance for coding agents, including AGENTS.md, Claude companion instructions, permission boundaries, task briefs, and change-specific verification. Use when a user asks to set up agent rules, reduce agent drift, define safe autonomy, or require evidence before completion. Do not use for ordinary feature implementation or generic code review.
+description: Configure repository agent guidance, scoped autonomy, and change-specific completion checks.
 ---
 
 # Proof Before Done
@@ -26,14 +26,14 @@ Do not replace an existing `AGENTS.md` or `CLAUDE.md` wholesale. Reconcile dupli
 
 For Codex, account for instruction precedence from root to the current directory. An `AGENTS.override.md` replaces the regular file at the same level. Do not create an override unless the user asks for a temporary or directory-specific replacement.
 
-## Produce four controls
+## Choose the needed guidance
 
-Create or update the smallest useful set:
+Create or update only the files the repository needs. A concise AGENTS.md may be sufficient:
 
 1. `AGENTS.md` with repository facts, normal working rules, and verified commands.
 2. `CLAUDE.md` only when the user uses Claude Code or requests a companion file.
-3. `docs/agent/permissions.md` with actions grouped as allowed, ask first, and never without new authority.
-4. `docs/agent/done-checklist.md` with change-type checks and required handoff evidence.
+3. A separate `docs/agent/permissions.md` only when the boundaries are too substantial for concise inline guidance.
+4. A separate `docs/agent/done-checklist.md` only when multiple workflows need reusable change-type checks.
 
 Use the files in `assets/templates/` as starting points. Remove unused sections and all bracketed placeholders from files you deliver.
 
@@ -70,7 +70,6 @@ Before finishing:
 - remove vague advice that could fit any repository;
 - remove duplicated rules already enforced by tooling;
 - confirm every command exists in package scripts, task files, CI, or project documentation;
-- confirm the permission file does not silently widen access;
-- confirm the done checklist covers the repository's highest-risk change types;
+- confirm permission guidance does not silently widen access;
+- confirm completion guidance covers the repository's highest-risk change types;
 - inspect the final diff for accidental changes.
-

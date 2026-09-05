@@ -21,10 +21,17 @@ const GPT_56_PROFILES = {
   },
   sol: {
     label: "Deep technical specialist",
-    summary: "Highest-depth GPT option for architecture, difficult debugging, and consequential code changes.",
+    summary: "Deep technical GPT option for architecture, difficult debugging, and consequential code changes.",
     strengths: ["architecture", "hard debugging", "security analysis", "complex refactors"],
     ratings: rating(5, 5, 4, 4, 3, 2)
   }
+};
+
+const GPT_ASTRA_PROFILE = {
+  label: "Advanced reasoning specialist",
+  summary: "GPT-6 Astra for complex, demanding coding and reasoning tasks.",
+  strengths: ["architecture", "hard debugging", "complex reasoning", "complex refactors"],
+  ratings: rating(5, 5, 4, 4, 2, 1)
 };
 
 const CLAUDE_PROFILES = {
@@ -55,6 +62,7 @@ const CLAUDE_PROFILES = {
 };
 
 function gptProfile(id) {
+  if (/^(?:codex:)?gpt-6-astra(?:-20\d{2}-\d{2}-\d{2})?$/.test(id)) return GPT_ASTRA_PROFILE;
   if (!id.includes("5.6")) return null;
   return Object.entries(GPT_56_PROFILES).find(([family]) => id.includes(family))?.[1] ?? null;
 }
@@ -127,16 +135,18 @@ export function recommendBridgeModel(models = [], task = "") {
   if (gptModels.length) {
     const deepTask = includesAny(taskText, ["architecture", "security", "hard debugging", "deep reasoning", "complex refactor"]);
     const routineTask = includesAny(taskText, ["routine", "mechanical", "search", "run tests", "small edit", "quick check", "high volume"]);
-    const families = deepTask ? ["sol", "terra", "luna"] : routineTask ? ["luna", "terra", "sol"] : ["terra", "luna", "sol"];
+    const families = deepTask ? ["astra", "sol", "terra", "luna"] : routineTask ? ["luna", "terra", "sol", "astra"] : ["terra", "luna", "sol", "astra"];
     const model = preferredModel(eligible, "codex", families);
     return {
       modelId: model.id,
       provider: "codex",
-      reason: deepTask
-        ? "GPT is preferred for cost efficiency; Sol best fits this unusually deep technical task."
-        : routineTask
-          ? "GPT is preferred for cost efficiency; Luna best fits routine or high-volume work."
-          : "GPT is the normal default for cost-effective delegation; Terra provides the best general balance."
+      reason: normalizedModelId(model).includes("gpt-6-astra")
+        ? "GPT-6 Astra is the connected GPT choice for complex, demanding work."
+        : deepTask
+          ? "GPT is preferred for cost efficiency; Sol best fits this unusually deep technical task."
+          : routineTask
+            ? "GPT is preferred for cost efficiency; Luna best fits routine or high-volume work."
+            : "GPT is the normal default for cost-effective delegation; Terra provides the best general balance."
     };
   }
 

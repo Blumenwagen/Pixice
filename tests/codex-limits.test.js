@@ -54,6 +54,16 @@ describe("Codex rate limits", () => {
     });
   });
 
+  it("preserves an Astra quota bucket reported by Codex", () => {
+    const result = normalizeCodexRateLimits({ rateLimitsByLimitId: {
+      astra: { limitName: "GPT-6 Astra", primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1_788_000_000 } }
+    } });
+    expect(result.limits).toEqual([expect.objectContaining({
+      id: "astra", name: "GPT-6 Astra",
+      windows: [expect.objectContaining({ remainingPercent: 75, windowDurationMins: 300 })]
+    })]);
+  });
+
   it("reads the canonical app-server method and degrades when Codex is offline", async () => {
     const runtime = { connected: true, request: vi.fn().mockResolvedValue(response) };
     await expect(readCodexRateLimits(runtime)).resolves.toMatchObject({ status: "available", planType: "prolite" });

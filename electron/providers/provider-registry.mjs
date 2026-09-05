@@ -80,10 +80,16 @@ export class ProviderRegistry extends EventEmitter {
     if (this.providers.has(provider.id)) throw new Error(`Provider ${provider.id} is already registered`);
     this.providers.set(provider.id, provider);
     provider.on("status", (status) => this.#handleStatus(provider, status));
-    provider.on("event", (event) => this.emit("event", {
-      ...event,
-      payload: { ...(event?.payload ?? {}), provider: provider.id }
-    }));
+    provider.on("event", (event) => {
+      if (event?.payload?.method === "serverRequest/resolved") {
+        const key = this.#requestKey(event.payload.requestId);
+        if (this.requestOwners.get(key) === provider.id) this.requestOwners.delete(key);
+      }
+      this.emit("event", {
+        ...event,
+        payload: { ...(event?.payload ?? {}), provider: provider.id }
+      });
+    });
     provider.on("server-request", (request) => {
       this.requestOwners.set(this.#requestKey(request.id), provider.id);
       this.emit("server-request", { ...request, provider: provider.id });

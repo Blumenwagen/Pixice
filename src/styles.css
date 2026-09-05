@@ -3318,3 +3318,31 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   .animated-icon { pointer-events: none; }
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.composer-question[data-asynchronous="true"] { border-bottom: 1px solid var(--border); }
+.question-async-status { padding: 12px 20px 0; font-size: 11px; color: var(--muted); }
+.question-option[aria-checked="true"] { background: var(--surface-raised); border-color: var(--foreground); }
+.question-submit { border: 0; border-radius: 7px; padding: 7px 11px; background: var(--foreground); color: var(--canvas); font: inherit; font-size: 12px; cursor: pointer; }
+.question-submit:disabled { opacity: .4; cursor: default; }
+
+.composer-question[data-asynchronous="true"] .question-footer { flex-wrap: wrap; }
+
+/* Questions occupy layout space so their controls never cover the last reply. */
+.main-canvas:has(> .composer[data-question-present="true"]) > .composer {
+  position: relative;
+  inset: auto;
+  flex: none;
+  margin: 0 auto 16px;
+}
+.main-canvas:has(> .composer[data-question-present="true"]) .conversation-column {
+  padding-bottom: 24px;
+}
+.composer[data-question-present="true"] .composer-question {
+  max-height: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.composer[data-question-present="true"] .composer-question[data-asynchronous="true"] {
+  max-height: 28vh;
+}

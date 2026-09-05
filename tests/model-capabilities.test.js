@@ -16,6 +16,20 @@ describe("Pixice bridge model capabilities", () => {
     expect(models[2].bridge.ratings.reasoning).toBe(5);
   });
 
+  it("supports Astra and prefers it for demanding work with a Sol fallback", () => {
+    const astra = { id: "codex:gpt-6-astra", model: "gpt-6-astra", provider: "codex" };
+    const sol = { id: "codex:gpt-5.6-sol", model: "gpt-5.6-sol", provider: "codex" };
+    const terra = { id: "codex:gpt-5.6-terra", model: "gpt-5.6-terra", provider: "codex" };
+    expect(bridgeModelProfile(astra)).toMatchObject({ eligible: true, ratings: { reasoning: 5 } });
+    expect(bridgeModelProfile("codex:gpt-6-astra").eligible).toBe(true);
+    expect(bridgeModelProfile("gpt-6-astra-2026-09-01").eligible).toBe(true);
+    expect(bridgeModelProfile("gpt-6-astra-unknown").eligible).toBe(false);
+    expect(recommendBridgeModel([terra, sol, astra], "Review the architecture").modelId).toBe(astra.id);
+    expect(recommendBridgeModel([terra, sol], "Review the architecture").modelId).toBe(sol.id);
+    expect(recommendBridgeModel([terra, astra], "Implement an endpoint").modelId).toBe(terra.id);
+    expect(recommendBridgeModel([astra], "Implement an endpoint")).toMatchObject({ modelId: astra.id, reason: expect.stringContaining("Astra") });
+  });
+
   it("keeps every Claude model and makes taste and UI strengths explicit", () => {
     expect(bridgeModelProfile({ model: "claude-opus-4-1", provider: "claude" })).toMatchObject({
       eligible: true,

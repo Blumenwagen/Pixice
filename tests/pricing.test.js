@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { calculateUsageCost, resolveModelPricing } from "../electron/usage/pricing.mjs";
+import { calculateUsageCost, resolveModelPricing, listPricingCatalog } from "../electron/usage/pricing.mjs";
 
 describe("API-equivalent pricing", () => {
+  it("prices Astra standard, fast, cached, and long-context usage", () => {
+    const usage = { provider: "codex", model: "codex:gpt-6-astra", inputTokens: 10_000, cachedInputTokens: 4_000, cacheWriteInputTokens: 1_000, outputTokens: 2_000 };
+    expect(calculateUsageCost(usage).costUsd).toBeCloseTo(0.1665);
+    expect(calculateUsageCost({ ...usage, serviceTier: "priority" }).costUsd).toBeCloseTo(0.333);
+    expect(calculateUsageCost({ ...usage, inputTokens: 272_000 }).longContext).toBe(false);
+    const long = calculateUsageCost({ ...usage, inputTokens: 300_000 });
+    expect(long.longContext).toBe(true);
+    expect(long.costUsd).toBeCloseTo(6.083);
+    expect(calculateUsageCost({ ...usage, inputTokens: 300_000, serviceTier: "priority" }).costUsd).toBeCloseTo(12.166);
+    expect(resolveModelPricing("gpt-6-astra-2026-09-05", "codex").id).toBe("gpt-6-astra");
+    expect(listPricingCatalog()).toContainEqual(expect.objectContaining({
+      model: "gpt-6-astra", verifiedAt: "2026-09-05",
+      rates: { input: 10, cachedInput: 1, cacheWriteInput: 12.5, output: 50 },
+      fastRates: { input: 20, cachedInput: 2, cacheWriteInput: 25, output: 100 }
+    }));
+  });
+
   it("separates uncached, cached, cache-write, and output tokens", () => {
     const priced = calculateUsageCost({
       provider: "codex",
