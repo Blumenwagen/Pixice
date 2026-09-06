@@ -3,7 +3,8 @@
 .connect-root.is-remote .connect-application { height: calc(100% - 28px); padding-top: 28px; box-sizing: content-box; }
 .connect-root.is-remote .pixice-app { padding-top: 0; }
 .connect-root.is-remote .window-drag-region { display: none; }
-.connect-instance-bar { position: absolute; inset: 0 0 auto; height: 28px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid var(--border); background: var(--surface); z-index: 0; -webkit-app-region: drag; }
+.connect-instance-bar { position: absolute; inset: 0 0 auto; height: 28px; display: flex; align-items: center; justify-content: center; background: var(--chrome-glass); z-index: 0; -webkit-app-region: drag; }
+.connect-root:has(.pixice-app[data-reduce-transparency="true"]) .connect-instance-bar { background: #242424; }
 .connect-instance-bar button { display: flex; align-items: center; gap: 7px; max-width: 90%; color: var(--foreground); font-size: 10px; background: transparent; cursor: pointer; -webkit-app-region: no-drag; }
 .connect-instance-bar span { color: var(--quiet); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .connect-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
