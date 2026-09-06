@@ -6,7 +6,18 @@ import { previewFileTarget } from '../runtime/preview-files.mjs';
 import { OPERATIONS, PROTOCOL_VERSION } from './protocol.mjs';
 const RESPONSES = new Set(['approvals.resolve', 'requests.respond', 'questions.respond', 'elicitations.respond']);
 
-export function createRemoteInvoker({ handlers, pendingRequest, generation, activeTurnId, fileOptions, hostId }) {
+export function createRemoteThreadValidator({ getProject, request, contains }) {
+  return async (payload) => {
+    const { projectId, threadId } = z.object({ projectId: z.string().min(1), threadId: z.string().min(1) }).parse(payload);
+    const project = getProject(projectId);
+    // Authorization needs the workspace, not turn history. Reading turns can fail
+    // for newly created Codex threads and also triggers receipt hydration in IPC.
+    const { thread } = await request('thread/read', { threadId, includeTurns: false });
+    if (thread?.id !== threadId || !thread.cwd || !contains(project, thread.cwd)) throw new Error('Thread is outside the selected project');
+  };
+}
+
+export function createRemoteInvoker({ handlers, pendingRequest, generation, activeTurnId, fileOptions, hostId, validateThread }) {
   return async (operation, payload) => {
     if (operation === 'projects.directories') {
       const value = z.object({ path: z.string().max(4096).optional() }).strict().parse(payload ?? {});
@@ -27,8 +38,7 @@ export function createRemoteInvoker({ handlers, pendingRequest, generation, acti
       if (operation === 'files.write' && !Number.isFinite(payload.expectedMtimeMs)) throw new Error('Read the current file before saving it.');
     }
     if (payload?.threadId && payload?.projectId && !['threads.read', 'threads.children', 'threads.create'].includes(operation)) {
-      // Validate ownership using the same host service as the desktop thread reader.
-      await handlers.get('threads:read')(null, { projectId: payload.projectId, threadId: payload.threadId });
+      await validateThread({ projectId: payload.projectId, threadId: payload.threadId });
     }
     if (['turns.steer', 'turns.interrupt'].includes(operation) && activeTurnId(payload.threadId) !== payload.turnId) throw new Error('That turn is no longer active. Refresh the task.');
     const result = await handler(null, payload);

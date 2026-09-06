@@ -76,7 +76,7 @@ import { IosTools, PIXICE_IOS_NAMESPACE, iosDynamicTools, iosToolSchemas } from 
 
 import { ConnectServer } from "./connect/server.mjs";
 import { ConnectTunnel } from "./connect/tunnel.mjs";
-import { createRemoteInvoker } from "./connect/remote-operations.mjs";
+import { createRemoteInvoker, createRemoteThreadValidator } from "./connect/remote-operations.mjs";
 import { applicationIpc, applicationHandlers, applicationEvents } from "./connect/application-transport.mjs";
 const ipcMain = applicationIpc(nativeIpcMain);
 let connectServer;
@@ -2793,6 +2793,10 @@ app.whenReady().then(async () => {
     onChange: (status) => send("ConnectStatus", status),
     invoke: createRemoteInvoker({
       handlers: applicationHandlers,
+      validateThread: createRemoteThreadValidator({
+        getProject, contains: isWithinProject,
+        request: (method, payload) => runtime.request(method, payload)
+      }),
       pendingRequest: (id) => pendingRequests.get(requestKey(id)),
       generation: () => runtimeGeneration,
       activeTurnId: (id) => activeTurns.get(id),
