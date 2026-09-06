@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   PIXICE_BROWSER_MCP_TOOLS,
@@ -481,6 +483,10 @@ export class ClaudeProvider extends EventEmitter {
     this.models = null;
     this.started = false;
     this.authSession = null;
+    this.discoveryCache = new Map();
+    this.discoveryTail = Promise.resolve();
+    this.discoveryGeneration = 0;
+    this.discoveryAbortController = null;
     this.runtimeLifecycle?.on("state", (state) => this.emit("lifecycle", state));
   }
 
@@ -511,6 +517,9 @@ export class ClaudeProvider extends EventEmitter {
   }
 
   async stop() {
+    this.started = false;
+    this.#invalidateDiscovery();
+    await this.discoveryTail;
     this.#closeAuthSession();
     for (const context of this.sessions.values()) {
       this.#flushPersist(context);
@@ -541,17 +550,8 @@ export class ClaudeProvider extends EventEmitter {
 
   async account() {
     if (!this.started) throw new Error("Claude provider is not available");
-    let query;
-    const queue = new AsyncPromptQueue();
-    try {
-      query = this.queryFactory({
-        prompt: queue,
-        options: this.#probeOptions()
-      });
-      const account = await Promise.race([
-        query.accountInfo(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Claude account discovery timed out")), 8_000))
-      ]);
+    return this.#discover("account", async (query) => {
+      const account = await query.accountInfo();
       const authenticated = claudeAccountIsAuthenticated(account);
       return {
         account: authenticated ? { type: "claude", ...account } : null,
@@ -559,53 +559,40 @@ export class ClaudeProvider extends EventEmitter {
         requiresAuth: true,
         externallyManagedAuth: claudeExternallyManagedAuth(account, this.environment)
       };
-    } finally {
-      queue.close();
-      query?.close?.();
-    }
+    });
   }
 
   async usageLimits() {
     if (!this.started) throw new Error("Claude provider is not available");
-    let query;
-    const queue = new AsyncPromptQueue();
-    try {
-      query = this.queryFactory({
-        prompt: queue,
-        options: this.#probeOptions()
-      });
-      const account = await Promise.race([
-        query.accountInfo(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Claude account discovery timed out")), 8_000))
-      ]);
+    return this.#discover("limits", async (query) => {
+      const account = await query.accountInfo();
       const authenticated = claudeAccountIsAuthenticated(account);
       if (!authenticated) return { account: null, authenticated: false, usage: null };
       const usageMethod = query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
       if (typeof usageMethod !== "function") throw new Error("This Claude runtime does not expose live plan limits yet.");
-      const usage = await Promise.race([
-        usageMethod.call(query),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Claude limits discovery timed out")), 8_000))
-      ]);
+      const usage = await usageMethod.call(query);
       return { account: { type: "claude", ...account }, authenticated: true, usage };
-    } finally {
-      queue.close();
-      query?.close?.();
-    }
+    }, { timeoutMs: 16_000 });
   }
 
   async login() {
     if (!this.started) throw new Error("Claude provider is not available");
     this.#closeAuthSession();
     const queue = new AsyncPromptQueue();
-    const query = this.queryFactory({ prompt: queue, options: this.#probeOptions() });
-    this.authSession = { queue, query };
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-auth-"));
+    const abortController = new AbortController();
+    this.authSession = { queue, directory, abortController };
+    let query;
     try {
+      query = this.queryFactory({ prompt: queue, options: this.#probeOptions(directory, abortController) });
+      this.authSession.query = query;
       const response = await query.claudeAuthenticate(true);
       const authUrl = response?.authUrl ?? response?.url;
       if (!authUrl) throw new Error("Claude did not return a sign-in URL");
       void query.claudeOAuthWaitForCompletion()
         .then(() => {
-          this.models = null;
+          if (!this.started || this.authSession?.query !== query) return;
+          this.#invalidateDiscovery();
           this.emit("status", { state: "ready", message: "Claude account connected" });
         })
         .catch((error) => this.emit("diagnostic", `Claude sign in did not complete: ${error.message}`))
@@ -630,7 +617,7 @@ export class ClaudeProvider extends EventEmitter {
     if (!this.runtimeLifecycle) throw new Error("Claude logout requires an external Claude Code executable");
     this.#closeAuthSession();
     await this.runtimeLifecycle.logoutCommand();
-    this.models = null;
+    this.#invalidateDiscovery();
     this.emit("status", { state: "ready", message: "Claude account disconnected" });
     return { loggedOut: true, externallyManagedAuth: false };
   }
@@ -728,54 +715,119 @@ export class ClaudeProvider extends EventEmitter {
     }
   }
 
-  async #listModels(params) {
-    if (this.models) return { data: serializeClaudeModels(this.models) };
-    let models;
-    let probe;
-    const queue = new AsyncPromptQueue();
+  async #listModels() {
     try {
-      const cwd = params.cwd || process.cwd();
-      probe = this.queryFactory({
-        prompt: queue,
-        options: claudeQueryOptions({
-          cwd,
-          permissionMode: "read-only",
-          sessionId: randomUUID(),
-          developerInstructions: this.#developerInstructions(),
-          clientVersion: this.clientVersion,
-          canUseTool: async () => ({ behavior: "deny", message: "Model discovery cannot run tools" }),
-          pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable,
-          environment: this.environment
-        })
-      });
-      const discovered = await Promise.race([
-        probe.supportedModels(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Claude model discovery timed out")), 8_000))
-      ]);
-      models = normalizeClaudeModels(discovered);
-      if (!models.length) throw new Error("Claude returned no supported models");
-      this.models = models;
+      return await this.#discover("models", async (query) => {
+        const models = normalizeClaudeModels(await query.supportedModels());
+        if (!models.length) throw new Error("Claude returned no supported models");
+        return { data: serializeClaudeModels(models) };
+      }, { ttlMs: 300_000 });
     } catch (error) {
-      models = FALLBACK_MODELS;
-      this.emit("diagnostic", `Claude model discovery fell back to aliases: ${error.message}`);
-    } finally {
-      queue.close();
-      probe?.close?.();
+      return { data: serializeClaudeModels(FALLBACK_MODELS) };
     }
-    return { data: serializeClaudeModels(models) };
   }
 
-  #probeOptions() {
-    return claudeQueryOptions({
-      cwd: process.cwd(),
-      permissionMode: "read-only",
-      sessionId: randomUUID(),
-      developerInstructions: this.#developerInstructions(),
+  #invalidateDiscovery() {
+    this.discoveryGeneration += 1;
+    this.discoveryCache.clear();
+    this.models = null;
+    this.discoveryAbortController?.abort(new Error("Claude discovery cancelled"));
+  }
+
+  #discover(key, operation, { ttlMs = 30_000, timeoutMs = 8_000 } = {}) {
+    const cached = this.discoveryCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.promise;
+    const generation = this.discoveryGeneration;
+    const entry = { expiresAt: Infinity, promise: null };
+    // Share identical reads and serialize different reads: status refreshes must
+    // never create an unbounded number of full Claude Code subprocesses.
+    const pending = this.discoveryTail.then(async () => {
+      if (!this.started || generation !== this.discoveryGeneration) throw new Error("Claude discovery cancelled");
+      const abortController = new AbortController();
+      this.discoveryAbortController = abortController;
+      const queue = new AsyncPromptQueue();
+      let query;
+      let directory;
+      let timer;
+      let onAbort;
+      let child;
+      let childExited;
+      try {
+        directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-discovery-"));
+        const cancelled = new Promise((_, reject) => {
+          onAbort = () => reject(abortController.signal.reason);
+          abortController.signal.addEventListener("abort", onAbort, { once: true });
+        });
+        timer = setTimeout(() => abortController.abort(new Error(`Claude ${key} discovery timed out`)), timeoutMs);
+        const options = this.#probeOptions(directory, abortController);
+        options.spawnClaudeCodeProcess = ({ command, args, ...spawnOptions }) => {
+          abortController.signal.throwIfAborted();
+          child = spawn(command, args, { ...spawnOptions, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+          child.stderr.resume();
+          childExited = new Promise((resolve) => {
+            child.once("close", resolve);
+            child.once("error", resolve);
+          });
+          return child;
+        };
+        query = this.queryFactory({ prompt: queue, options });
+        return await Promise.race([Promise.resolve().then(() => operation(query)), cancelled]);
+      } finally {
+        clearTimeout(timer);
+        abortController.signal.removeEventListener("abort", onAbort);
+        queue.close();
+        try { query?.close?.(); } finally {
+          abortController.abort();
+          // SDK close() returns before process exit. Wait for our metadata
+          // child so the next queued read cannot overlap its shutdown grace.
+          if (childExited) {
+            const killTimer = setTimeout(() => {
+              if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+            }, 2_500);
+            try { await childExited; } finally { clearTimeout(killTimer); }
+          }
+          if (this.discoveryAbortController === abortController) this.discoveryAbortController = null;
+          if (directory) rmSync(directory, { recursive: true, force: true });
+        }
+      }
+    });
+    entry.promise = pending.then((value) => {
+      entry.expiresAt = Date.now() + ttlMs;
+      return value;
+    }, (error) => {
+      // Back off after failures too, including model fallback and signed-out
+      // accounts. A new login/runtime invalidates this cooldown immediately.
+      entry.expiresAt = Date.now() + 30_000;
+      if (generation === this.discoveryGeneration) this.emit("diagnostic", `Claude ${key} discovery failed: ${error.message}`);
+      throw error;
+    });
+    this.discoveryTail = entry.promise.catch(() => {});
+    this.discoveryCache.set(key, entry);
+    return entry.promise;
+  }
+
+  #probeOptions(cwd, abortController) {
+    const { env, pathToClaudeCodeExecutable } = claudeQueryOptions({
+      cwd,
       clientVersion: this.clientVersion,
-      canUseTool: async () => ({ behavior: "deny", message: "Account discovery cannot run tools" }),
       pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable,
       environment: this.environment
     });
+    return {
+      cwd,
+      env,
+      pathToClaudeCodeExecutable,
+      abortController,
+      tools: [],
+      settingSources: [],
+      plugins: [],
+      skills: [],
+      mcpServers: {},
+      strictMcpConfig: true,
+      persistSession: false,
+      systemPrompt: "Read account and runtime metadata only.",
+      canUseTool: async () => ({ behavior: "deny", message: "Discovery cannot run tools" })
+    };
   }
 
   #repairStoredThreads() {
@@ -795,7 +847,9 @@ export class ClaudeProvider extends EventEmitter {
   #closeAuthSession(expectedQuery) {
     if (!this.authSession || (expectedQuery && this.authSession.query !== expectedQuery)) return;
     this.authSession.queue.close();
-    this.authSession.query.close?.();
+    this.authSession.query?.close?.();
+    this.authSession.abortController?.abort();
+    if (this.authSession.directory) rmSync(this.authSession.directory, { recursive: true, force: true });
     this.authSession = null;
   }
 

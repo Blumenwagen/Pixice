@@ -64,7 +64,8 @@ describe("Claude provider", () => {
     database.db.close();
   });
 
-  it("does not cache the minimal fallback when model discovery fails", async () => {
+  it("retries the minimal model fallback after a cooldown", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-model-retry-"));
     temporaryDirectories.push(directory);
     const database = new PixiceDatabase(directory);
@@ -78,7 +79,11 @@ describe("Claude provider", () => {
     await provider.start();
 
     expect((await provider.request("model/list")).data.map((model) => model.model)).toEqual(["default"]);
+    expect((await provider.request("model/list")).data.map((model) => model.model)).toEqual(["default"]);
+    expect(supportedModels).toHaveBeenCalledTimes(1);
+    clock.mockReturnValue(31_001);
     expect((await provider.request("model/list")).data.map((model) => model.model)).toEqual(["claude-sonnet-4-6"]);
+    clock.mockRestore();
     expect(supportedModels).toHaveBeenCalledTimes(2);
     await provider.stop();
     database.db.close();
