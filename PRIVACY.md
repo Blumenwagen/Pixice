@@ -1,12 +1,14 @@
 # Pixice privacy notice
 
-Effective September 5, 2026
+Effective September 6, 2026
 
 Pixice is a local desktop application. It does not include Pixice-owned analytics or advertising trackers in version 0.1.0-beta.2.
 
 ## Data stored on the device
 
-Pixice stores project paths, board tasks, thread metadata and snapshots, usage estimates, workflow definitions, browser workspace state, settings, and prompt attachments in the operating system's application-data directory. Workflow credentials are encrypted with Electron's operating-system-backed secure storage and saved in a user-only file. Provider command-line tools may keep their own credentials and history in their own storage locations.
+Pixice stores project paths, board tasks, thread metadata and snapshots, usage estimates, workflow definitions, browser workspace state, settings, and prompt attachments in the operating system's application-data directory. Workflow credentials use AES-256-GCM encryption with an envelope key wrapped by the operating system's secure storage, or an explicitly configured environment key on standalone hosts. Legacy OS-encrypted records remain readable. Key records and encrypted credentials are stored in user-only files. Browser navigation metadata and cookie partitions remain on the host; page frames and typed input are not saved in the connection audit. Provider command-line tools may keep their own credentials and history in their own storage locations.
+
+The background backend continues tasks, workflows, and enabled remote access when the desktop interface is closed or quit. Stop it explicitly in Connections or with the service CLI.
 
 Removing Pixice does not necessarily remove its application-data directory or data kept by Codex, Claude, Git, browsers, or operating-system credential stores.
 

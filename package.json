@@ -9,11 +9,12 @@
   "private": true,
   "packageManager": "pnpm@10.15.1",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.20.0"
   },
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "service": "node electron/backend/cli.mjs",
     "dev:electron": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build --mode sites && node scripts/prepare-sites-build.mjs",
     "build:desktop": "node scripts/verify-github-cli.mjs --current && vite build --mode desktop && pnpm verify:desktop-renderer && electron-builder --config electron-builder.config.cjs",

@@ -7,6 +7,7 @@ function Row({ title, description, children }) { return <div className="preferen
 export function ConnectionsSettings() {
   const connect = useConnect();
   const api = window.pixice?.connect;
+  const [service, setService] = useState(null);
   const [host, setHost] = useState(null);
   const [url, setUrl] = useState('');
   const [port, setPort] = useState('43187');
@@ -19,6 +20,7 @@ export function ConnectionsSettings() {
   const [busy, setBusy] = useState(false);
   async function refresh() {
     if (!api) return;
+    if (window.pixice?.service) setService(await window.pixice.service.status());
     const status = await api.status(); setHost(status); setUrl(status.publicUrl); setPort(String(status.port)); setName(status.name); setBind(status.host); setOrigin(status.origins.join('\n'));
   }
   useEffect(() => {
@@ -36,6 +38,11 @@ export function ConnectionsSettings() {
   }
   return <>
     <section className="settings-group"><header><h2>Your instances</h2><p>Open another Pixice host with the same projects, tasks, and live agent activity.</p></header><InstanceList /><div className="connect-actions connect-section-actions"><button className="settings-action" onClick={() => connect?.add()}><Plus size={14} /> Add instance</button></div></section>
+    {window.pixice?.service && <Group title="Background backend" description="Tasks, workflows, and remote access continue when you close or quit the interface. Stopping requires all active work to finish first.">
+      <Row title="Service" description={service ? `${service.phase === 'ready' ? 'Running' : service.phase} · Process ${service.pid}` : 'Checking backend…'}><div className="connect-actions"><button className="settings-action" disabled={busy} onClick={() => perform(() => window.pixice.service.restart())}>Restart backend</button><button className="settings-action" disabled={busy} onClick={() => perform(() => window.pixice.service.stop())}>Stop backend</button></div></Row>
+      {service?.loginSupported && <Row title="Start at login" description="Starts the backend and native browser helper in the background."><button className="settings-action" disabled={busy || !service} onClick={() => perform(() => window.pixice.service.setOpenAtLogin({ enabled: !service.openAtLogin }))}>{service?.openAtLogin ? 'Turn off' : 'Enable'}</button></Row>}
+      {service?.native?.error && <p className="settings-footnote">{service.native.error}</p>}
+    </Group>}
     {api && <>
       <Group title="This device" description="Paired devices can work with every project and run agent actions on this host. Provider accounts and connection administration stay here.">
         <Row title="Remote access" description={host?.running ? `Listening on ${host.host}:${host.port}` : host?.error || 'Off until you enable it.'}><button className={`settings-action${host?.running ? '' : ' primary'}`} disabled={busy || !host} onClick={() => perform(() => configure(!host.running))}>{host?.running ? 'Turn off' : 'Enable remote access'}</button></Row>

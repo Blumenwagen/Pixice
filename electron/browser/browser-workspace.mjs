@@ -145,9 +145,19 @@ export class BrowserWorkspace {
     };
   }
 
-  createTab(workspaceId, url = HOME_URL) {
+  sessionPartition(workspaceId) { return this.#workspaces.get(workspaceId)?.partition; }
+
+  restoreSession({ workspaceId, partition, tabs, activeTabId }) {
     const workspace = this.#workspace(workspaceId);
-    const id = randomUUID();
+    if (workspace.tabs.size) return;
+    if (/^persist:pixice-browser-[a-f0-9]{24}$/.test(partition)) workspace.partition = partition;
+    for (const tab of tabs) this.createTab(workspaceId, tab.url || undefined, tab.id);
+    if (workspace.tabs.has(activeTabId)) this.activateTab(workspaceId, activeTabId);
+  }
+
+  createTab(workspaceId, url = HOME_URL, restoredId = null) {
+    const workspace = this.#workspace(workspaceId);
+    const id = restoredId || randomUUID();
     const view = new this.#WebContentsView({
       webPreferences: {
         contextIsolation: true,
@@ -258,6 +268,8 @@ export class BrowserWorkspace {
     if (action === "stop") contents.stop();
     return this.snapshot(workspaceId);
   }
+
+  hideViewport() { this.#visible = false; this.#detachAttached(); this.#visibleWorkspaceId = null; }
 
   setViewport({ workspaceId, visible, bounds }) {
     if (visible) {

@@ -92,6 +92,7 @@ export function ConnectRoot({ children }) {
   const [ready, setReady] = useState(false);
   const [state, setState] = useState({ state: 'connecting' });
   const [revision, setRevision] = useState(0);
+  const [localState, setLocalState] = useState({ state: window.pixice?.service ? 'connecting' : 'connected' });
   const [retry, setRetry] = useState(0);
   const [pairing, setPairing] = useState(Boolean(initialPair.current));
   const [switcher, setSwitcher] = useState(false);
@@ -122,6 +123,21 @@ export function ConnectRoot({ children }) {
     return () => { disposed = true; client.close(); if (window.pixiceRemote === client.api) delete window.pixiceRemote; };
   }, [active, instance?.endpoint, instance?.token, retry, local]);
 
+  useEffect(() => {
+    if (!window.pixice?.service) return;
+    let disposed = false;
+    window.pixice.service.connection().then((value) => { if (!disposed) setLocalState(value); }).catch((error) => { if (!disposed) setLocalState({ state: 'error', error: error.message }); });
+    const unsubscribe = window.pixice.events.subscribe((event) => {
+      if (event.type === 'ServiceConnectionState') setLocalState(event.payload);
+      if (event.type === 'ServiceReset') setRevision((value) => value + 1);
+    });
+    return () => { disposed = true; unsubscribe(); };
+  }, []);
+  async function startLocalService() {
+    setLocalState({ state: 'connecting' });
+    try { await window.pixice.service.start(); setRevision((value) => value + 1); }
+    catch (error) { setLocalState({ state: 'error', error: error.message }); }
+  }
   function select(id) {
     if (active === id) { setSwitcher(false); return; }
     // Unmount first; defer changing storage until effect cleanups have saved drafts.
@@ -144,6 +160,7 @@ export function ConnectRoot({ children }) {
   return <ConnectContext.Provider value={context}>
     <div className={`connect-root${active ? ' is-remote' : ''}`}>
       {ready && <div key={`${active || 'local'}:${revision}`} className="connect-application">{children}</div>}
+      {local && !active && localState.state !== 'connected' && <div className="connect-service-overlay"><section className="settings-card" role="status"><h2>{localState.state === 'connecting' ? 'Connecting to Pixice…' : 'Backend unavailable'}</h2><p>{localState.error || 'Your projects and saved usage remain on this device.'}</p><div className="connect-actions"><button className="settings-action primary" onClick={startLocalService}>Start backend</button><button className="settings-action" onClick={() => setSwitcher(true)}>Choose another instance</button><button className="settings-action" onClick={() => setShowUsage(true)}>View Unified Usage</button></div></section></div>}
       {!ready && <main className="connect-welcome"><section>
         <img src={pixiceIcon} alt="" width="48" height="48" /><h1>Pixice Connect</h1>
         <p>{instance ? `Opening ${instance.name}…` : 'Your projects, wherever you are.'}</p>

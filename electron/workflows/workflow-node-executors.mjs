@@ -137,7 +137,7 @@ async function responseBytes(response, maxBytes) {
   return bytes;
 }
 
-async function executeHttpRequest({ config, context, projectId, credentialResolver, fetchImpl = globalThis.fetch }) {
+async function executeHttpRequest({ config, context, projectId, credentialResolver, fetchImpl = globalThis.fetch, signal }) {
   if (typeof fetchImpl !== "function") throw new Error("HTTP requests are unavailable in this runtime");
   const url = assertHttpUrl(renderString(config.url, context));
   const query = objectValue(workflowParseJsonTemplate(config.query, context, "HTTP query"), "HTTP query");
@@ -167,15 +167,16 @@ async function executeHttpRequest({ config, context, projectId, credentialResolv
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error(`HTTP request timed out after ${config.timeoutMs}ms`)), config.timeoutMs);
-  let response;
+  let response, bytes;
   try {
     response = await fetchImpl(url, {
       method: config.method,
       headers,
       body,
       redirect: "follow",
-      signal: controller.signal
+      signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
     });
+    bytes = await responseBytes(response, config.maxBytes);
   } catch (error) {
     if (controller.signal.aborted) throw new Error(`HTTP request timed out after ${config.timeoutMs}ms`);
     throw new Error(`HTTP request failed: ${error.message}`);
@@ -183,7 +184,6 @@ async function executeHttpRequest({ config, context, projectId, credentialResolv
     clearTimeout(timeout);
   }
 
-  const bytes = await responseBytes(response, config.maxBytes);
   const text = new TextDecoder().decode(bytes);
   const contentType = response.headers.get("content-type") ?? "";
   let responseBody = text;
@@ -756,6 +756,7 @@ export async function executeBuiltInWorkflowNode({
   assertActive,
   fetchImpl,
   credentialResolver,
+  signal,
   notify,
   executeWorkflow,
   variables = {}
@@ -770,6 +771,7 @@ export async function executeBuiltInWorkflowNode({
       context,
       projectId: workflow.projectId,
       credentialResolver,
+      signal,
       fetchImpl
     }));
   }

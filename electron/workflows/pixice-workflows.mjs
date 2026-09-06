@@ -294,6 +294,7 @@ export class PixiceWorkflows {
     this.notify = notify;
     this.pendingAgents = new Map();
     this.activeRuns = new Map();
+    this.acceptingRuns = true;
     this.runPromises = new Map();
     this.runtime.on("event", (event) => this.#onRuntimeEvent(event));
   }
@@ -362,6 +363,7 @@ export class PixiceWorkflows {
     parentNodeId = null,
     callStack = []
   }) {
+    if (!this.acceptingRuns) throw new Error("The Pixice service is stopping; workflow runs are paused.");
     const workflow = this.#workflow(projectId, workflowId);
     if (callStack.includes(workflow.id)) throw new Error(`Subworkflow cycle detected at “${workflow.name}”`);
     if (callStack.length >= 8) throw new Error("Subworkflow nesting is limited to eight workflows");
@@ -392,6 +394,7 @@ export class PixiceWorkflows {
       runId: run.id,
       workflowId: workflow.id,
       cancelled: false,
+      controller: new AbortController(),
       threads: new Set(),
       childRuns: new Set(),
       activeTriggerIds: new Set(selectedTriggers),
@@ -424,6 +427,7 @@ export class PixiceWorkflows {
     const state = this.activeRuns.get(runId);
     if (!state) return run;
     state.cancelled = true;
+    state.controller.abort(new Error("Workflow run was cancelled"));
     const cancelling = this.store.updateRun(runId, { status: "cancelling" });
     this.#publishRun(cancelling);
     await Promise.allSettled([
@@ -436,6 +440,16 @@ export class PixiceWorkflows {
       ...[...state.childRuns].map((childRunId) => this.cancelRun(projectId, childRunId))
     ]);
     return this.store.getRun(runId);
+  }
+
+  async close() {
+    this.acceptingRuns = false;
+    await Promise.allSettled([...this.activeRuns].map(([runId]) => {
+      const run = this.store.getRun(runId); return this.cancelRun(run.projectId, runId);
+    }));
+    for (const [threadId, pending] of this.pendingAgents) pending.resolve({ threadId, status: "cancelled", answer: "" });
+    this.pendingAgents.clear();
+    await Promise.allSettled([...this.runPromises.values()]);
   }
 
   async handleToolCall(params) {
@@ -664,6 +678,7 @@ export class PixiceWorkflows {
       database: this.database,
       assertActive: () => this.#assertActive(state),
       fetchImpl: this.fetchImpl,
+      signal: state.controller.signal,
       credentialResolver: this.credentialResolver,
       notify: this.notify,
       executeWorkflow: (request) => this.#executeNestedWorkflow({

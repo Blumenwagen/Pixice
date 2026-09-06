@@ -15,8 +15,9 @@ const SESSION_AGE = 30 * 24 * 60 * 60 * 1000;
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
 
 export class ConnectServer {
-  constructor({ directory, clientDirectory, invoke, attention = () => [], version = 'development', tls, tlsFiles, onChange = () => {} }) {
+  constructor({ directory, clientDirectory, invoke, attention = () => [], version = 'development', tls, tlsFiles, onChange = () => {}, initialState, persist = true, operations = OPERATIONS, readOperations = READ_OPERATIONS, eventFilter = (event) => REMOTE_EVENTS.has(event.type) && !(event.type === 'FilePreviewOpenRequested' && event.payload?.file?.external) }) {
     this.directory = directory;
+    this.persist = persist; this.allowedOperations = operations; this.readOperations = readOperations; this.eventFilter = eventFilter;
     this.clientDirectory = clientDirectory;
     this.invoke = invoke;
     this.attention = attention;
@@ -45,7 +46,7 @@ export class ConnectServer {
     this.state = { hostId: randomUUID(), name: hostname(), enabled: false, port: 43187, host: '127.0.0.1', publicUrl: '', origins: [], devices: [], offers: [], audit: [] };
     const file = path.join(directory, 'connect.json');
     // Corrupt credentials must never silently reset or enable the listener.
-    if (existsSync(file)) {
+    if (persist && existsSync(file)) {
       try {
         const saved = JSON.parse(readFileSync(file, 'utf8'));
         if (!saved || typeof saved.enabled !== 'boolean' || typeof saved.hostId !== 'string' || !Array.isArray(saved.devices) || !Array.isArray(saved.offers) || !Array.isArray(saved.audit)) throw new Error('Invalid connection settings');
@@ -54,8 +55,11 @@ export class ConnectServer {
         this.error = 'Connect settings could not be read. Save connection settings to reset remote access.';
       }
     }
+      if (initialState) Object.assign(this.state, initialState);
   }
+
   save() {
+    if (!this.persist) return;
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     const file = path.join(this.directory, 'connect.json');
     writeFileSync(`${file}.tmp`, JSON.stringify(this.state), { mode: 0o600 });
@@ -148,8 +152,7 @@ export class ConnectServer {
     return this.status();
   }
   publish(event) {
-    if (!REMOTE_EVENTS.has(event.type)) return;
-    if (event.type === 'FilePreviewOpenRequested' && event.payload?.file?.external) return;
+    if (!this.eventFilter(event)) return;
     const envelope = { ...event, instanceId: this.instanceId, sequence: ++this.sequence, protocol: PROTOCOL_VERSION };
     const encoded = JSON.stringify(envelope);
     // Large outputs are recovered from the authoritative snapshot instead of filling stream buffers.
@@ -262,10 +265,10 @@ export class ConnectServer {
       if (url.pathname === '/api/connect/call' && req.method === 'POST') {
         const body = await this.body(req);
         this.authenticate(req); // A device may have been revoked while uploading the body.
-        if (!body || typeof body.operation !== 'string' || (!OPERATIONS.has(body.operation) && body.operation !== 'projects.directories')) throw fail(404, 'This action is available only on the host');
+        if (!body || typeof body.operation !== 'string' || (!this.allowedOperations.has(body.operation) && body.operation !== 'projects.directories')) throw fail(404, 'This action is available only on the host');
         if (body.instanceId !== this.instanceId) throw fail(409, 'The host restarted. Reconnect before sending this action.');
         if (typeof body.id !== 'string' || !/^[a-f0-9-]{36}$/.test(body.id) || !Number.isFinite(body.issuedAt) || Math.abs(Date.now() - body.issuedAt) > 10 * 60_000) throw fail(400, 'This request is invalid or expired. Check the device clock.');
-        if (READ_OPERATIONS.has(body.operation)) {
+        if (this.readOperations.has(body.operation)) {
           const auditKey = `${device.id}:${body.operation}`;
           if (Date.now() - (this.readAudit.get(auditKey) ?? 0) > 60_000) { this.audit(body.operation, device.id); this.readAudit.set(auditKey, Date.now()); }
           try {

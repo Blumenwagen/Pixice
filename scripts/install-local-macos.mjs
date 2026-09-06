@@ -7,6 +7,10 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { discoverService, serviceCall, stopService } from '../electron/backend/manager.mjs';
+import { createUpdateDataBackup } from '../electron/persistence/update-data-backup.mjs';
+import { acquireServiceOwnership } from '../electron/backend/ownership.mjs';
+import { defaultDataDirectory } from '../electron/backend/paths.mjs';
 import { verifyMacAppSignature } from "./macos-signing.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -115,10 +119,25 @@ async function quitRunningApp(processIds) {
 async function finishInstall(planPath) {
   const plan = JSON.parse(await readFile(planPath, "utf8"));
   await new Promise((resolve) => setTimeout(resolve, relaunchDelayMs));
+  // A live backend owns the databases even when the desktop has been closed.
+  let backend;
+  try { backend = await discoverService(defaultDataDirectory()); } catch (error) {
+    if (error.code !== 'ENOENT' && existsSync(path.join(defaultDataDirectory(), 'service/instance.json'))) {
+      // A stale descriptor is safe only when the OS confirms no backend owner.
+      const probe = await acquireServiceOwnership(defaultDataDirectory()); await probe.release();
+    }
+  }
+  if (backend) {
+    if (backend.status.activeTurns || backend.status.startingTurns || backend.status.activeWorkflows) throw new Error('Active Pixice work is still running. Finish it before installing this update.');
+    await serviceCall(backend.descriptor, 'service.backup', { currentVersion: backend.status.version, targetVersion: 'local-update' });
+    await stopService(defaultDataDirectory(), { update: true });
+  }
   await quitRunningApp(plan.runningPids);
 
+  const installOwnership = await acquireServiceOwnership(defaultDataDirectory());
   let movedCurrentApp = false;
   try {
+    if (!backend) await createUpdateDataBackup({ userDataPath: defaultDataDirectory(), currentVersion: "local-installed", targetVersion: "local-update", reason: "local-app-update" });
     if (existsSync(plan.target)) {
       await rename(plan.target, plan.backup);
       movedCurrentApp = true;
@@ -129,6 +148,8 @@ async function finishInstall(planPath) {
       await rename(plan.backup, plan.target);
     }
     throw error;
+  } finally {
+    await installOwnership.release();
   }
 
   await assertAppBundle(plan.target);

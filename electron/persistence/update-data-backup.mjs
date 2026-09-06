@@ -17,7 +17,8 @@ export const UPDATE_DATA_BACKUP_DIRECTORY = "update-data-backups";
 export const UPDATE_DATA_VERSION_FILE = "update-data-version.json";
 
 const SQLITE_FILES = ["pixice.sqlite", "pixice-workflows.sqlite", "pixice-instruments.sqlite"];
-const FILES = [...SQLITE_FILES, "pixice-workflow-credentials.json"];
+const KEY_FILE = "service/credential-key.json";
+const FILES = [...SQLITE_FILES, "pixice-workflow-credentials.json", KEY_FILE];
 
 function safeVersion(value) {
   return String(value || "unknown").replace(/[^0-9A-Za-z._-]/g, "_");
@@ -52,7 +53,8 @@ async function snapshotDatabase(sourcePath, destinationPath) {
   }
 }
 
-function validateCredentialStore(filePath) {
+function validateCredentialStore(filePath, fileName) {
+  if (fileName === KEY_FILE) { const key = JSON.parse(readFileSync(filePath, "utf8")); if (!["environment", "native"].includes(key.kind) || typeof key.verification !== "string" || (key.kind === "native" && typeof key.wrapped !== "string")) throw new Error("Workflow encryption key record is invalid"); return; }
   const value = JSON.parse(readFileSync(filePath, "utf8"));
   if (!value || typeof value !== "object" || !Array.isArray(value.credentials)) {
     throw new Error("Workflow credential data has an invalid format");
@@ -62,7 +64,7 @@ function validateCredentialStore(filePath) {
 function durableFileIsHealthy(filePath, fileName) {
   try {
     if (!SQLITE_FILES.includes(fileName)) {
-      validateCredentialStore(filePath);
+      validateCredentialStore(filePath, fileName);
       return true;
     }
     const database = new DatabaseSync(filePath, { open: true, readOnly: true });
@@ -143,6 +145,7 @@ export function recoverUpdateDataFromBackup({ userDataPath }) {
     if (!candidate) continue;
 
     const sourcePath = path.join(candidate.directory, fileName);
+    mkdirSync(path.dirname(currentPath), { recursive: true, mode: 0o700 });
     const temporaryPath = `${currentPath}.${randomUUID()}.restore`;
     copyFileSync(sourcePath, temporaryPath);
     if (!durableFileIsHealthy(temporaryPath, fileName)) {
@@ -194,9 +197,10 @@ export async function createUpdateDataBackup({
       const sourcePath = path.join(userDataPath, fileName);
       if (!existsSync(sourcePath)) continue;
       const destinationPath = path.join(temporaryPath, fileName);
+      mkdirSync(path.dirname(destinationPath), { recursive: true, mode: 0o700 });
       if (SQLITE_FILES.includes(fileName)) await snapshotDatabase(sourcePath, destinationPath);
       else {
-        validateCredentialStore(sourcePath);
+        validateCredentialStore(sourcePath, fileName);
         copyFileSync(sourcePath, destinationPath);
       }
       files.push({

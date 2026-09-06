@@ -1,10 +1,7 @@
-import { applicationIpc, applicationEvents } from "../connect/application-transport.mjs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { composeAgentInstructions } from "../runtime/agent-behavior.mjs";
 import { installWorkflowIntegration } from "./workflow-integration.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function projectRoots(project) {
   return [...new Set(project?.folders?.length ? project.folders : [project?.canonicalPath])].filter(Boolean);
@@ -41,15 +38,6 @@ function permissionSettings(mode, project) {
   };
 }
 
-function eventSender(BrowserWindow) {
-  return (type, payload = {}) => {
-    const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    const event = { type, payload, at: new Date().toISOString() };
-    window?.webContents.send("pixice:event", event);
-    applicationEvents.emit("event", event);
-  };
-}
-
 export function controllingWorkflowWorkspace(database, threadId) {
   let current = threadId;
   const visited = new Set();
@@ -79,25 +67,15 @@ export async function installWorkflowRuntimeHost({
   threadContext,
   dynamicTools,
   onThreadCreated,
-  onAgentActivity
+  onAgentActivity,
+  userDataPath, resourcesPath, handlers, send, credentialCrypto, notify
 }) {
-  if (!process.versions.electron) return null;
-  const { app, BrowserWindow, ipcMain, Notification, safeStorage } = await import("electron");
-  const send = eventSender(BrowserWindow);
   const settings = () => database.getAppSettings?.() ?? {};
-  const developerInstructions = () => {
-    const baseInstructionsPath = app.isPackaged
-      ? path.join(process.resourcesPath, "runtime/pixice-developer-instructions.md")
-      : path.join(__dirname, "../../resources/runtime/pixice-developer-instructions.md");
-    const behaviorsDirectory = app.isPackaged
-      ? path.join(process.resourcesPath, "runtime/agent-behaviors")
-      : path.join(__dirname, "../../resources/runtime/agent-behaviors");
-    return composeAgentInstructions({
-      baseInstructionsPath,
-      behaviorsDirectory,
-      settings: settings().agentBehaviors
-    });
-  };
+  const developerInstructions = () => composeAgentInstructions({
+    baseInstructionsPath: path.join(resourcesPath, "runtime/pixice-developer-instructions.md"),
+    behaviorsDirectory: path.join(resourcesPath, "runtime/agent-behaviors"),
+    settings: settings().agentBehaviors
+  });
 
   const projectContext = (projectId, sourceThreadId) => {
     const source = sourceThreadId ? threadContext(sourceThreadId) : null;
@@ -125,8 +103,8 @@ export async function installWorkflowRuntimeHost({
   };
 
   const integration = installWorkflowIntegration({
-    userDataPath: app.getPath("userData"),
-    ipcMain: applicationIpc(ipcMain),
+    userDataPath,
+    ipcMain: handlers,
     runtime,
     database,
     dynamicTools,
@@ -137,12 +115,8 @@ export async function installWorkflowRuntimeHost({
       if (!project) throw new Error("Project not found");
       return project;
     },
-    credentialCrypto: safeStorage,
-    notify: async ({ title, body, urgency, silent }) => {
-      if (!Notification.isSupported()) return false;
-      new Notification({ title, body, urgency, silent }).show();
-      return true;
-    },
+    credentialCrypto,
+    notify,
     onChange: (payload) => send("WorkflowUpdated", payload),
     onTriggersChange: (payload) => send("WorkflowTriggersUpdated", payload),
     onAttention: (payload) => send("AttentionRequired", payload),
@@ -168,8 +142,5 @@ export async function installWorkflowRuntimeHost({
   });
   await integration.ready;
 
-  app.once("before-quit", () => {
-    void integration.close().catch(() => null);
-  });
   return integration;
 }

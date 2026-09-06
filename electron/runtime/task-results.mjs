@@ -88,7 +88,7 @@ export class TaskResults {
     ); CREATE INDEX IF NOT EXISTS task_results_project ON task_results(project_id);`);
     // A replay never resumes spending on its own after the application exits.
     for (const record of this.records()) {
-      if (record.status === "running") this.save({ ...record, status: "interrupted", replayQueue: [], error: "Pixice closed before this task finished. Open the task to continue." });
+      if (record.status === "running") this.save({ ...record, status: "interrupted", replayQueue: [], error: "The Pixice backend stopped before this task finished. Open the task to continue." });
     }
   }
 

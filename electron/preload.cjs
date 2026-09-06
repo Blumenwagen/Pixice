@@ -136,5 +136,6 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
   models: Object.freeze({ list: invoke("models:list") }),
   extensions: Object.freeze({ list: invoke("extensions:list") }),
   external: Object.freeze({ openEditor: invoke("external:editor"), openTerminal: invoke("external:terminal"), reveal: invoke("external:reveal") }),
+  service: Object.freeze({ connection: invoke('service:connection'), status: invoke('service:status'), start: invoke('service:start'), stop: invoke('service:stop'), restart: invoke('service:restart'), setOpenAtLogin: invoke('service:login') }),
   events: Object.freeze({ subscribe: onEvent })
 }));

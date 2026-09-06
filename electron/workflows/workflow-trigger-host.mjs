@@ -71,6 +71,7 @@ export class WorkflowTriggerHost {
     workflows,
     database,
     credentialStore,
+    prepareCredentials = async () => {},
     onChange,
     notify,
     createServer = http.createServer,
@@ -83,6 +84,7 @@ export class WorkflowTriggerHost {
     this.workflows = workflows;
     this.database = database;
     this.credentialStore = credentialStore;
+    this.prepareCredentials = prepareCredentials;
     this.onChange = onChange;
     this.notify = notify;
     this.onAttention = onAttention;
@@ -520,6 +522,7 @@ export class WorkflowTriggerHost {
     if (route.config.authCredentialId) {
       let credential;
       try {
+        await this.prepareCredentials();
         credential = this.credentialStore.resolve(route.workflow.projectId, route.config.authCredentialId);
       } catch (error) {
         Object.assign(status, { status: "error", error: error.message });

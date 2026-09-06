@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { buildCodexUserInput } from "./user-input.mjs";
 import { bridgeEligibleModels, recommendBridgeModel } from "./model-capabilities.mjs";
-import { installWorkflowRuntimeHost } from "../workflows/workflow-runtime-host.mjs";
 import { pixiceWorkflowTools } from "../workflows/pixice-workflows.mjs";
 import { pixiceWorkflowToolShapes } from "../workflows/workflow-tool-shapes.mjs";
 
@@ -118,7 +117,7 @@ function completionStatus(status) {
 }
 
 export class PixiceBridge {
-  constructor({ runtime, database, threadContext, dynamicTools, onThreadCreated, onActivity, onCompletion }) {
+  constructor({ runtime, database, threadContext, dynamicTools, onThreadCreated, onActivity, onCompletion, installWorkflows = async () => null }) {
     this.runtime = runtime;
     this.database = database;
     this.threadContext = threadContext;
@@ -129,7 +128,7 @@ export class PixiceBridge {
     this.pending = new Map();
     this.workflowIntegration = null;
     this.workflowError = null;
-    this.workflowReady = installWorkflowRuntimeHost({
+    this.workflowReady = installWorkflows({
       runtime,
       database,
       threadContext,

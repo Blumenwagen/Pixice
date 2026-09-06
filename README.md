@@ -38,7 +38,7 @@ After `pnpm build:desktop`, install and relaunch the arm64 app with:
 pnpm install:local:macos
 ```
 
-The installer stages the new bundle, waits for the current Pixice process to quit, preserves the installed app as a timestamped backup, swaps the bundle atomically, and relaunches Pixice once. It uses a detached one-shot worker; do not replace it with `launchctl submit`, because macOS can infer `KeepAlive` for submitted script jobs and create a permanent relaunch loop.
+The installer stages the new bundle, refuses to interrupt active backend work, backs up durable data, stops the backend and native helper, waits for the current Pixice process to quit, preserves the installed app as a timestamped backup, swaps the bundle atomically, and relaunches Pixice once. It uses a detached one-shot worker; do not replace it with `launchctl submit`, because macOS can infer `KeepAlive` for submitted script jobs and create a permanent relaunch loop.
 
 ## Provider runtime release gate
 
@@ -61,3 +61,5 @@ Packaged Pixice builds check the `Blumenwagen/Pixice` GitHub Releases feed in th
 In development, Pixice automatically uses a `codex` executable found on `PATH`; `PIXICE_CODEX_PATH` can still select an explicit binary. See [`RELEASE.md`](RELEASE.md) for the release runbook and [`PLAN.md`](PLAN.md) for the implementation roadmap.
 
 Pixice has no product license in this beta. Bundled dependencies retain their own terms, recorded in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+Pixice runs its application core in an independent Node backend. Closing or quitting the interface leaves tasks and remote access running. Use **Settings → Connections → Background backend** for explicit stop, restart, and login controls, or see [standalone service commands](docs/REMOTE.md#standalone-node-commands).

@@ -332,6 +332,14 @@ declare global {
           }>;
         }>;
       };
+      service?: {
+        connection(): Promise<{ state: string; error?: string }>;
+        status(): Promise<{ phase: string; pid: number; version: string; buildId: string; activeTurns: number; startingTurns: number; activeWorkflows: number; loginSupported: boolean; openAtLogin: boolean; native: { connected: boolean; error?: string | null } }>;
+        start(): Promise<{ connected: boolean }>;
+        stop(): Promise<{ stopped: boolean }>;
+        restart(): Promise<{ connected: boolean }>;
+        setOpenAtLogin(value: { enabled: boolean }): Promise<{ enabled: boolean }>;
+      };
       updates: {
         status(): Promise<any>;
         check(): Promise<any>;

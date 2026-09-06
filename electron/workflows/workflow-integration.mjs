@@ -69,7 +69,7 @@ export function installWorkflowIntegration({
     onForeground,
     onThreadCreated,
     onAgentActivity,
-    credentialResolver: (projectId, id) => credentialStore.resolve(projectId, id),
+    credentialResolver: async (projectId, id) => { await credentialCrypto?.ready?.(); return credentialStore.resolve(projectId, id); },
     notify
   });
   triggerHost = new WorkflowTriggerHost({
@@ -77,6 +77,7 @@ export function installWorkflowIntegration({
     workflows,
     database,
     credentialStore,
+    prepareCredentials: () => credentialCrypto?.ready?.(),
     notify,
     onAttention,
     onChange: (payload) => onTriggersChange?.(payload)
@@ -192,20 +193,21 @@ export function installWorkflowIntegration({
     return { data: credentialStore.list(projectId) };
   });
 
-  ipcMain.handle("workflow-credentials:create", (_event, payload) => {
+  ipcMain.handle("workflow-credentials:create", async (_event, payload) => {
     const value = projectPayload.extend({
       name: z.string().trim().min(1).max(160),
       type: credentialType,
       values: credentialValues
     }).parse(payload);
     assertProject(value.projectId);
+    await credentialCrypto?.ready?.();
     const credential = credentialStore.create(value);
     onCredentialsChange?.({ action: "created", projectId: value.projectId, credential });
     void triggerHost.refresh();
     return credential;
   });
 
-  ipcMain.handle("workflow-credentials:update", (_event, payload) => {
+  ipcMain.handle("workflow-credentials:update", async (_event, payload) => {
     const value = projectPayload.extend({
       credentialId,
       name: z.string().trim().min(1).max(160).optional(),
@@ -213,6 +215,7 @@ export function installWorkflowIntegration({
       values: credentialValues.optional()
     }).refine((entry) => entry.name !== undefined || entry.type !== undefined || entry.values !== undefined, "A credential change is required").parse(payload);
     assertProject(value.projectId);
+    await credentialCrypto?.ready?.();
     const credential = credentialStore.update(value);
     onCredentialsChange?.({ action: "updated", projectId: value.projectId, credential });
     void triggerHost.refresh();
@@ -238,6 +241,7 @@ export function installWorkflowIntegration({
     ready,
     close: async () => {
       await triggerHost.close();
+      await workflows.close();
       store.close();
     }
   };

@@ -1,6 +1,6 @@
 # Pixice Connect
 
-Use Pixice from a web browser or connect one Pixice desktop to another. The host remains authoritative: projects, provider sessions, files, approvals, workflows, and agent execution stay on that machine. Keep its desktop app running; closing the window keeps it in the tray.
+Use Pixice from a web browser or connect one Pixice desktop to another. The host remains authoritative: projects, provider sessions, files, approvals, workflows, and agent execution stay on that machine. An independent Node backend owns this state. Closing or quitting the desktop interface leaves the backend running; native browser sessions remain in a separate Electron helper.
 
 ## Quick setup
 
@@ -14,9 +14,43 @@ Remote access is off by default. Pairing authorizes the device as a trusted oper
 
 Paired access lasts 30 days. **Revoke** disconnects a device immediately; **Revoke all** also invalidates unused pairing links. Forgetting an instance removes its credential from that client but does not revoke it on the host. Revoke on the host if a device was lost or compromised.
 
+## Background backend and lifecycle
+
+The desktop starts or reconnects to one backend for its application-data directory. Both desktop and web clients use the same application operations and event transport. Local desktop administration uses a separate authenticated loopback listener; its private token and process descriptor stay in a user-only file and are never exposed to the renderer or remote sessions.
+
+- Closing the window hides the interface. Quitting the interface unloads it and hides the dock/tray; tasks, workflows, remote access, and existing browser sessions continue.
+- **Settings → Connections → Background backend** provides explicit restart and stop actions. They refuse to interrupt active turns or workflows. **Start at login** is available on macOS and Windows and starts the native helper and backend without opening the interface.
+- Reopening Pixice reconnects to the existing backend. A lost connection never replays an action. After a backend restart, clients refresh against its current state.
+- Only one process may own the databases. An OS-managed SQLite lock on a separate ownership file prevents concurrent backend starts; stale process metadata cannot grant ownership. Do not delete `service/owner.lock` while any backend is running.
+- App installation and updates back up the durable data and stop the backend and native helper before replacing the bundle. Active work blocks the update. An unexpected backend crash marks unfinished work interrupted; it does not automatically resubmit a paid provider turn.
+
+The Electron helper owns browser rendering, OS credential wrapping, notifications, dialogs, and keep-awake behavior. It reconnects across backend restarts. If the helper itself exits, tabs restore lazily from navigation metadata using their persistent cookie partition; in-memory page state and navigation history cannot survive a helper crash. Simulator processes and tools are owned by the backend and remain available through the local desktop API.
+
+## Standalone Node commands
+
+From a source checkout with dependencies installed and the desktop web client built:
+
+```sh
+node electron/backend/cli.mjs start --data-dir /path/to/pixice-data --no-native
+node electron/backend/cli.mjs status --data-dir /path/to/pixice-data
+node electron/backend/cli.mjs configure --data-dir /path/to/pixice-data --enable
+node electron/backend/cli.mjs tunnel --data-dir /path/to/pixice-data
+node electron/backend/cli.mjs pair --data-dir /path/to/pixice-data
+node electron/backend/cli.mjs restart --data-dir /path/to/pixice-data --no-native
+node electron/backend/cli.mjs stop --data-dir /path/to/pixice-data
+```
+
+`configure` accepts `--port`, `--host`, `--endpoint`, and `--name`; `--disable` turns remote access off. `tunnel --stop` stops the temporary endpoint. Network binds still require configured TLS.
+
+Use `serve` instead of `start` to run in the foreground under a system service manager. `stop --force` explicitly interrupts active work. `pair` prints a one-use pairing link for an already-enabled remote listener. Without `--no-native`, a source checkout uses its Electron installation as the helper; `--native-executable PATH` configures an installed Pixice executable. The backend itself imports no Electron runtime. Use Node 22.20 or newer (the packaged app includes a compatible Node runtime).
+
+The default data directory is `~/Library/Application Support/Pixice` on macOS, `%APPDATA%/Pixice` on Windows, and `${XDG_CONFIG_HOME:-~/.config}/pixice` on Linux. `PIXICE_DATA_DIR` or `--data-dir` overrides it. Service logs are in `service/service.log`. Keep all files in this directory when moving a host, including Connect identities and the workflow encryption-key record.
+
+On a host without an OS credential helper, set `PIXICE_CREDENTIAL_KEY` to a securely managed base64-encoded 32-byte key before creating workflow credentials. Supply the same key on every run. The backend stores a key verifier, not the key. Existing OS-encrypted credentials require their original OS key store and the helper; there is no plaintext fallback. With a helper, an envelope key is wrapped by the OS key store and new credential values use AES-256-GCM in the backend. Legacy records remain readable and unchanged until edited.
+
 ## Permanent HTTPS endpoints
 
-Temporary Cloudflare URLs change when the tunnel stops or restarts. Create a new pairing link to update the saved address. A temporary tunnel does not start automatically after an app restart. Its executable is downloaded on first use from the official Cloudflare GitHub release, checked against pinned SHA-256 digests, and stored in Pixice's application-data directory.
+Temporary Cloudflare URLs change when the tunnel stops or restarts. Create a new pairing link to update the saved address. A temporary tunnel survives closing or reopening the interface. It does not restart automatically after the backend stops. Its executable is downloaded on first use from the official Cloudflare GitHub release, checked against pinned SHA-256 digests, and stored in Pixice's application-data directory.
 
 For a stable address, run an HTTPS reverse proxy or a user-managed Tailscale/Cloudflare endpoint in front of `http://127.0.0.1:43187`. Enter the public **origin** in Connections, for example `https://pixice.example.com`. Serve Pixice at the origin root, not a subpath. Preserve the browser's Host and Origin headers, Authorization, and JSON bodies; allow 30-second requests and disable buffering/caching for `/api/connect/*`. Only the configured hostname, loopback aliases, and explicitly allowed client origins are accepted. Forwarded headers do not grant trust.
 
@@ -35,7 +69,7 @@ A browser hosted on a different origin needs its own origin added to **Additiona
 - Task defaults and visual preferences can be changed on the client. Host-wide settings are read-only remotely. Phone-width navigation uses Pixice's existing sidebar as a drawer.
 - Use Connections or the instance name above the remote workspace to switch hosts. Drafts, selected projects, and preview caches are stored separately for each instance.
 
-This is direct, single-owner access. It does not include a Pixice-operated cloud account service, automatic account-based host discovery, multi-user roles, push delivery to closed browsers, or a standalone Node/headless agent host.
+This is direct, single-owner access. It does not include a Pixice-operated cloud account service, automatic account-based host discovery, multi-user roles, push delivery to closed browsers. A standalone Node backend is supported; native browser and OS features require the optional Electron helper.
 
 ## Unified Usage
 
@@ -66,7 +100,7 @@ HTTPS protects transport. A reverse proxy or Cloudflare tunnel that terminates H
 | Symptom | Recovery |
 | --- | --- |
 | Pairing link expired or used | Create a fresh link on the host. |
-| Instance offline | Keep Pixice and its network endpoint running; check host sleep and firewall settings. |
+| Instance offline | Keep the Pixice backend and its network endpoint running; check host sleep and firewall settings. |
 | Temporary hostname does not resolve | New addresses may need time to propagate. If public DNS resolves the address but your local resolver does not, use a stable endpoint or a network that permits the tunnel hostname. |
 | Temporary URL stopped working | Start a new tunnel and pair its fresh link, or configure a stable endpoint. |
 | Client origin rejected | Add the exact hosted client origin in host Connections settings. |
