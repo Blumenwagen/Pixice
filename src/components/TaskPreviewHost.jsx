@@ -176,7 +176,7 @@ function TaskEditor({ api, target, onClose, onOpenWorkspace, onTitleChange, tabb
     if (task?.title) onTitleChange?.(task.title);
   }, [task?.title]);
   useEffect(() => api.events?.subscribe?.((event) => {
-    if (!new Set(["BoardUpdated", "WorkflowTriggersUpdated", "WorkflowRunUpdated"]).has(event.type) || event.payload?.projectId && event.payload.projectId !== target.projectId) return;
+    if (!new Set(["BoardUpdated", "WorkflowTriggersUpdated", "WorkflowRunUpdated", "ApplicationResync"]).has(event.type) || event.payload?.projectId && event.payload.projectId !== target.projectId) return;
     if (event.type === "WorkflowTriggersUpdated" && !event.payload?.statuses?.some((status) => status.projectId === target.projectId && (!status.taskId || status.taskId === target.taskId))) return;
     if (event.type === "WorkflowRunUpdated" && !task?.workflowBindings?.some((binding) => binding.workflowId === event.payload?.workflowId)) return;
     if (event.type === "BoardUpdated" && event.payload?.task?.id && event.payload.task.id !== target.taskId) return;

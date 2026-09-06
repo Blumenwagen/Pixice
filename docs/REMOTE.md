@@ -48,6 +48,12 @@ The default data directory is `~/Library/Application Support/Pixice` on macOS, `
 
 On a host without an OS credential helper, set `PIXICE_CREDENTIAL_KEY` to a securely managed base64-encoded 32-byte key before creating workflow credentials. Supply the same key on every run. The backend stores a key verifier, not the key. Existing OS-encrypted credentials require their original OS key store and the helper; there is no plaintext fallback. With a helper, an envelope key is wrapped by the OS key store and new credential values use AES-256-GCM in the backend. Legacy records remain readable and unchanged until edited.
 
+## Reconnection recovery
+
+A transport interruption keeps the current screen, task draft, and preview tabs mounted. The client resumes from its last event cursor; a backend restart or lost event history refreshes server data in place. Interrupted commands are never automatically retried. Large event payloads request a snapshot without disconnecting the transport. The private desktop/native listener has a separate request budget from the public remote API.
+
+Desktop connection transitions and HTTP/network error codes are written to `service/desktop-connection.log` inside the Pixice application-data directory (on macOS, `~/Library/Application Support/pixice`). The log rotates at 512 KB and contains connection metadata only. This log comes from the machine experiencing the disconnects; a healthy connection on another machine does not rule out a local failure.
+
 ## Permanent HTTPS endpoints
 
 Temporary Cloudflare URLs change when the tunnel stops or restarts. Create a new pairing link to update the saved address. A temporary tunnel survives closing or reopening the interface. It does not restart automatically after the backend stops. Its executable is downloaded on first use from the official Cloudflare GitHub release, checked against pinned SHA-256 digests, and stored in Pixice's application-data directory.

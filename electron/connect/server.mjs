@@ -15,8 +15,9 @@ const SESSION_AGE = 30 * 24 * 60 * 60 * 1000;
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
 
 export class ConnectServer {
-  constructor({ directory, clientDirectory, invoke, attention = () => [], version = 'development', tls, tlsFiles, onChange = () => {}, initialState, persist = true, operations = OPERATIONS, readOperations = READ_OPERATIONS, eventFilter = (event) => REMOTE_EVENTS.has(event.type) && !(event.type === 'FilePreviewOpenRequested' && event.payload?.file?.external) }) {
+  constructor({ directory, clientDirectory, invoke, attention = () => [], version = 'development', tls, tlsFiles, onChange = () => {}, initialState, persist = true, apiRateLimit = 1200, operations = OPERATIONS, readOperations = READ_OPERATIONS, eventFilter = (event) => REMOTE_EVENTS.has(event.type) && !(event.type === 'FilePreviewOpenRequested' && event.payload?.file?.external) }) {
     this.directory = directory;
+    this.apiRateLimit = apiRateLimit; this.replayFloor = 0;
     this.persist = persist; this.allowedOperations = operations; this.readOperations = readOperations; this.eventFilter = eventFilter;
     this.clientDirectory = clientDirectory;
     this.invoke = invoke;
@@ -156,7 +157,22 @@ export class ConnectServer {
     const envelope = { ...event, instanceId: this.instanceId, sequence: ++this.sequence, protocol: PROTOCOL_VERSION };
     const encoded = JSON.stringify(envelope);
     // Large outputs are recovered from the authoritative snapshot instead of filling stream buffers.
-    if (encoded.length > 512_000) { this.events = []; this.eventBytes = 0; for (const stream of this.streams) stream.res.end(); for (const poll of this.polls) { clearTimeout(poll.timer); poll.res.end(); } this.polls.clear(); return; }
+    if (encoded.length > 512_000) {
+      this.events = []; this.eventBytes = 0; this.replayFloor = this.sequence;
+      // Return a valid reset envelope instead of an empty HTTP response. Large
+      // model outputs must not look like a broken backend connection.
+      const reset = this.resetEvent('large-event');
+      for (const stream of this.streams) {
+        if (this.state.devices.some((d) => d.id === stream.deviceId && d.expiresAt > Date.now())) this.writeEvent(stream.res, JSON.stringify(reset));
+        else stream.res.end();
+      }
+      for (const poll of this.polls) {
+        clearTimeout(poll.timer);
+        const valid = this.state.devices.some((d) => d.id === poll.deviceId && d.expiresAt > Date.now());
+        this.json(poll.res, valid ? 200 : 401, valid ? { events: [reset] } : { error: 'Device access expired' });
+      }
+      this.polls.clear(); return;
+    }
     this.events.push({ envelope, encoded });
     this.eventBytes += encoded.length;
     while (this.events.length > 2000 || this.eventBytes > 4 * 1024 * 1024) this.eventBytes -= this.events.shift().encoded.length;
@@ -170,6 +186,11 @@ export class ConnectServer {
       this.json(poll.res, 200, { events: this.events.filter((entry) => entry.envelope.sequence > poll.cursor).map((entry) => entry.envelope) });
       this.polls.delete(poll);
     }
+  }
+  resetEvent(reason = 'event-gap') { return { type: 'ConnectReset', payload: { attention: this.attention(), reason }, instanceId: this.instanceId, sequence: this.sequence, protocol: PROTOCOL_VERSION }; }
+  canResume(cursor, instanceId) {
+    return instanceId === this.instanceId && Number.isInteger(cursor) && cursor >= this.replayFloor && cursor <= this.sequence
+      && cursor >= (this.events[0]?.envelope.sequence ?? this.sequence + 1) - 1;
   }
   writeEvent(res, encoded) { if (!res.write(`data: ${encoded}\n\n`)) res.end(); }
   json(res, status, data) {
@@ -233,15 +254,16 @@ export class ConnectServer {
       return this.json(res, 200, { token, deviceId: device.id, expiresAt: device.expiresAt, hostId: this.state.hostId, name: this.state.name });
     }
     if (url.pathname.startsWith('/api/')) {
-      this.rate(req, 'api', 1200);
+      this.rate(req, 'api', this.apiRateLimit);
       const device = this.authenticate(req);
       if (url.pathname === '/api/connect/poll' && req.method === 'GET') {
         if (this.polls.size >= 40) throw fail(429, 'Too many live clients');
         const cursor = Number(url.searchParams.get('cursor'));
-        const resume = url.searchParams.get('instanceId') === this.instanceId && Number.isInteger(cursor) && cursor >= 0 && cursor <= this.sequence && cursor >= (this.events[0]?.envelope.sequence ?? this.sequence) - 1;
-        if (!resume) return this.json(res, 200, { events: [{ type: 'ConnectReset', payload: { attention: this.attention() }, instanceId: this.instanceId, sequence: this.sequence, protocol: PROTOCOL_VERSION }] });
+        const resume = this.canResume(cursor, url.searchParams.get('instanceId'));
+        if (!resume) return this.json(res, 200, { events: [this.resetEvent(url.searchParams.get('instanceId') === this.instanceId ? 'event-gap' : 'instance-changed')] });
         const events = this.events.filter((entry) => entry.envelope.sequence > cursor).map((entry) => entry.envelope);
-        if (events.length) return this.json(res, 200, { events });
+        // A reconnect handshake must finish even when the host has no new events.
+        if (events.length || url.searchParams.get('wait') === '0') return this.json(res, 200, { events });
         const poll = { deviceId: device.id, res, cursor };
         poll.timer = setTimeout(() => { this.polls.delete(poll); this.json(res, 200, { events: [] }); }, 20_000);
         this.polls.add(poll);
@@ -256,7 +278,7 @@ export class ConnectServer {
         this.streams.add(stream);
         res.on('close', () => this.streams.delete(stream));
         const cursor = Number(url.searchParams.get('cursor'));
-        const resume = url.searchParams.get('instanceId') === this.instanceId && cursor > 0 && cursor <= this.sequence && cursor >= (this.events[0]?.envelope.sequence ?? this.sequence) - 1;
+        const resume = this.canResume(cursor, url.searchParams.get('instanceId'));
         if (resume) for (const entry of this.events) { if (entry.envelope.sequence > cursor) this.writeEvent(res, entry.encoded); }
         else this.writeEvent(res, JSON.stringify({ type: 'ConnectReset', payload: { attention: this.attention() }, instanceId: this.instanceId, sequence: this.sequence, protocol: PROTOCOL_VERSION }));
         this.writeEvent(res, JSON.stringify({ type: 'ConnectReady', payload: {}, instanceId: this.instanceId, sequence: this.sequence, protocol: PROTOCOL_VERSION }));

@@ -3264,6 +3264,7 @@ function SideThreadSurface({
     return api.events.subscribe((event) => {
       const payload = event.payload ?? {};
       const targetThreadId = threadIdRef.current;
+      if (event.type === "ApplicationResync" && targetThreadId) { void refresh(targetThreadId); return; }
       if (!targetThreadId || (payload.threadId ?? payload.thread?.id) !== targetThreadId) return;
       commitPayload(payload);
       if (payload.method === "turn/completed") {
@@ -5565,6 +5566,8 @@ function BoardWorkspace({ project, threads, tasks, phases, attention, loading, o
 }
 
 export function App() {
+  const [serviceRevision, setServiceRevision] = useState(0);
+  const bootstrapLoaded = useRef(false);
   const systemReducedMotion = useReducedMotion();
   const api = getPixiceApi();
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
@@ -6004,7 +6007,7 @@ export function App() {
     } catch (cause) {
       if (requestId !== threadsLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setError(cause.message);
-      setThreads([]);
+      // Keep the last list during a transient connection failure.
     } finally {
       if (requestId === threadsLoadRequestRef.current) setLoading((state) => ({ ...state, threads: false }));
     }
@@ -6367,6 +6370,15 @@ export function App() {
     let cancelled = false;
     api.app.bootstrap().then((result) => {
       if (cancelled) return;
+      // Recover server data in place. Navigation, composer drafts, settings forms,
+      // preview tabs, and their scroll positions belong to the mounted interface.
+      if (bootstrapLoaded.current) {
+        setProjects(result.projects ?? []);
+        setModels(result.models ?? []);
+        setRuntime(result.runtime ?? { state: "unavailable", connected: false });
+        return;
+      }
+      bootstrapLoaded.current = true;
       const nextModels = result.models ?? [];
       const persisted = result.settings ?? {};
       const durableSeenThreadCompletions = persistedSeenThreadCompletions(persisted.threadCompletionsSeen);
@@ -6433,7 +6445,7 @@ export function App() {
       if (!cancelled) setLoading((state) => ({ ...state, app: false }));
     });
     return () => { cancelled = true; };
-  }, [api, savePersistentDefaults]);
+  }, [api, savePersistentDefaults, serviceRevision]);
 
   useEffect(() => {
     if (!api?.threads?.list || !projectActivityKey) {
@@ -6467,7 +6479,7 @@ export function App() {
       });
     });
     return () => { cancelled = true; };
-  }, [api, projectActivityKey, runtime.connected]);
+  }, [api, projectActivityKey, runtime.connected, serviceRevision]);
 
   useEffect(() => {
     if (!api?.browser || !previewWorkspaceId) return;
@@ -6489,7 +6501,7 @@ export function App() {
       }
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [api, previewWorkspaceId, updatePreviewWorkspace]);
+  }, [api, previewWorkspaceId, updatePreviewWorkspace, serviceRevision]);
 
   useEffect(() => {
     if (!api?.instruments || !selectedProjectId || !selectedThreadId) return;
@@ -6502,7 +6514,7 @@ export function App() {
       }));
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [api, selectedProjectId, selectedThreadId, updatePreviewWorkspace]);
+  }, [api, selectedProjectId, selectedThreadId, updatePreviewWorkspace, serviceRevision]);
 
   useEffect(() => {
     if (!api?.updates) return;
@@ -6668,7 +6680,7 @@ export function App() {
     if (activeView === "settings" && settingsPage === "usage") loadUsage(usageRangeDays);
     if (activeView === "settings" && settingsPage === "usage") loadUsageLimits();
     if (activeView === "tools" && selectedProjectId) loadProjectTools(selectedProjectId);
-  }, [activeView, loadExtensions, loadGitHubStatus, loadGitStatus, loadProjectTools, loadProviders, loadReview, loadUsage, loadUsageLimits, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey, usageLimitsRefreshKey]);
+  }, [activeView, loadExtensions, loadGitHubStatus, loadGitStatus, loadProjectTools, loadProviders, loadReview, loadUsage, loadUsageLimits, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey, usageLimitsRefreshKey, serviceRevision]);
 
   const refreshEventInstrumentSources = useCallback((capabilities, eventProjectId) => {
     if (!api?.instruments || !selectedProjectId || !selectedThreadId || eventProjectId && eventProjectId !== selectedProjectId) return;
@@ -6692,6 +6704,19 @@ export function App() {
   useEffect(() => {
     if (!api) return;
     return api.events.subscribe((event) => {
+      if (event.type === "ApplicationResync" || event.type === "ServiceReset") {
+        setServiceRevision((value) => value + 1);
+        const projectId = selectedProjectIdRef.current;
+        const threadId = selectedThreadIdRef.current;
+        if (projectId) {
+          void loadThreads(projectId);
+          void loadBoard(projectId);
+          void loadReview(projectId);
+          if (threadId) { void refreshThread(projectId, threadId); void loadAgents(projectId, threadId); }
+          void loadProactivity(projectId, threadId);
+        }
+        return;
+      }
       if (event.type === "RuntimeStatus") {
         setRuntime(event.payload);
         if (event.payload?.providers) {

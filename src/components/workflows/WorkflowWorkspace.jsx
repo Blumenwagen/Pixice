@@ -254,8 +254,18 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
 
   useEffect(() => {
     if (!api?.events?.subscribe || !projectId || !workflowId) return undefined;
-    return api.events.subscribe((event) => {
+    let disposed = false;
+    const receive = (event) => {
       const payload = event.payload ?? {};
+      if (event.type === "ApplicationResync") {
+        void api.workflows.read({ projectId, workflowId }).then((result) => {
+          if (disposed) return;
+          const runs = result.runs ?? [];
+          setRun(runs.find((run) => ACTIVE_RUN_STATUSES.has(run.status)) ?? runs[0] ?? null);
+          receive({ type: "WorkflowUpdated", payload: { projectId, workflow: result.workflow } });
+        }).catch(() => {});
+        return;
+      }
       if (payload.projectId && payload.projectId !== projectId) return;
       if (event.type === "WorkflowRunUpdated" && payload.workflowId === workflowId) {
         setRun(payload.run);
@@ -281,7 +291,9 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
         setSavingState("error");
         setError("This workflow was changed by another agent. Reload before saving over its changes.");
       }
-    });
+    };
+    const unsubscribe = api.events.subscribe(receive);
+    return () => { disposed = true; unsubscribe(); };
   }, [api, onDeleted, projectId, savingState, workflowId]);
 
   return {
@@ -415,6 +427,7 @@ export function WorkflowWorkspace({ api = getPixiceApi(), projectId, projectName
   useEffect(() => {
     if (!api?.events?.subscribe || !projectId) return undefined;
     return api.events.subscribe((event) => {
+      if (event.type === "ApplicationResync") { void loadList(selectedIdRef.current, false); return; }
       if (event.type !== "WorkflowUpdated") return;
       if (event.payload?.projectId && event.payload.projectId !== projectId) return;
       const incoming = event.payload?.workflow;

@@ -139,3 +139,5 @@
 .connect-service-overlay { position: absolute; inset: 0; z-index: 80; display: grid; place-items: center; background: var(--bg, #181818); padding: 24px; }
 .connect-service-overlay > section { width: min(520px, 100%); padding: 24px; }
 .connect-service-overlay p { color: var(--text-muted, #999); }
+
+.connect-service-notice { position: absolute; top: 36px; left: 50%; transform: translateX(-50%); z-index: 80; max-width: calc(100% - 32px); padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--foreground); font-size: 12px; pointer-events: none; }

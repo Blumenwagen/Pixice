@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { WorkflowPreview, WorkflowWorkspace } from "../src/components/workflows/WorkflowWorkspace.jsx";
 
@@ -23,6 +23,7 @@ const workflow = {
 function createApi() {
   const listeners = new Set();
   const api = {
+    emit: (event) => listeners.forEach((listener) => listener(event)),
     workflows: {
       list: vi.fn(async () => ({ data: [{ ...workflow, latestRun: null }] })),
       read: vi.fn(async () => ({ workflow, runs: [] })),
@@ -102,6 +103,19 @@ describe("WorkflowWorkspace", () => {
     expect(api.workflows.list).toHaveBeenCalledTimes(1);
     expect(api.workflows.read).toHaveBeenCalledTimes(1);
     expect(screen.getByDisplayValue("Release workflow 2")).toBeInTheDocument();
+    expect(screen.queryByText(/changed by another agent/i)).not.toBeInTheDocument();
+  });
+
+  it("preserves pending workflow edits during backend resynchronization", async () => {
+    const api = createApi();
+    api.workflows.save.mockImplementation(() => new Promise(() => {}));
+    render(<WorkflowWorkspace api={api} projectId="project-1" projectName="Pixice" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Workflow settings" }));
+    const input = await screen.findByDisplayValue("Release workflow");
+    fireEvent.change(input, { target: { value: "My unsaved workflow" } });
+    act(() => api.emit({ type: "ApplicationResync", payload: {} }));
+    await waitFor(() => expect(api.workflows.read).toHaveBeenCalledTimes(2));
+    expect(screen.getByDisplayValue("My unsaved workflow")).toBe(input);
     expect(screen.queryByText(/changed by another agent/i)).not.toBeInTheDocument();
   });
 

@@ -6,7 +6,7 @@ export async function requestJson(endpoint, route, { token, body, signal } = {})
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: signal ?? AbortSignal.timeout(120_000)
   });
   let result;
-  try { result = await response.json(); } catch { throw new Error('This address did not return a Pixice response. Check the endpoint and HTTPS proxy.'); }
+  try { result = await response.json(); } catch { throw Object.assign(new Error('This address did not return a Pixice response. Check the endpoint and HTTPS proxy.'), { code: 'INVALID_RESPONSE' }); }
   if (!response.ok) throw Object.assign(new Error(result.error || `Connection failed (${response.status})`), { status: response.status });
   return result;
 }
@@ -22,7 +22,12 @@ export class ApplicationClient {
     queueMicrotask(() => { if (this.listeners.has(listener)) for (const payload of this.attention.values()) listener({ type: 'AttentionRequired', payload }); });
     return () => this.listeners.delete(listener);
   }
-  emit(event) { for (const listener of this.listeners) listener(event); }
+  emit(event) {
+    for (const listener of this.listeners) {
+      try { listener(event); }
+      catch (error) { console.error('Pixice event listener failed:', event.type, error.message); }
+    }
+  }
   async connect() {
     const info = await requestJson(this.instance.endpoint, 'info');
     if (info.hostId !== this.instance.id) throw new Error('This address belongs to a different Pixice host. Pair again to verify its identity.');
@@ -56,26 +61,30 @@ export class ApplicationClient {
       this.abort = new AbortController();
       const timeout = setTimeout(() => this.abort?.abort(), 30_000);
       try {
-        const batch = await requestJson(this.instance.endpoint, `poll?cursor=${this.cursor}&instanceId=${encodeURIComponent(this.eventInstance)}`, { token: this.instance.token, signal: this.abort.signal });
+        const batch = await requestJson(this.instance.endpoint, `poll?cursor=${this.cursor}&instanceId=${encodeURIComponent(this.eventInstance)}${failures ? "&wait=0" : ""}`, { token: this.instance.token, signal: this.abort.signal });
         clearTimeout(timeout);
         if (this.closed) return;
+        this.online = true;
+        let resynced = false;
         for (const event of batch.events) {
           if (event.protocol !== PROTOCOL_VERSION) throw new Error('The host protocol changed. Update Pixice.');
           if (event.type === 'ConnectReset') {
             const wasConnected = this.hasSnapshot;
             this.hasSnapshot = true;
+            this.online = true;
             this.instanceId = event.instanceId;
             this.eventInstance = event.instanceId;
             this.cursor = event.sequence;
             this.attention.clear();
             this.requests.clear();
             for (const payload of event.payload.attention) { this.attention.set(String(payload.id), payload); this.requests.set(String(payload.id), payload.requestGeneration); }
-            if (wasConnected) this.onReset();
+            if (wasConnected) { resynced = true; this.onReset(); this.emit({ type: 'ApplicationResync', payload: { reason: event.payload.reason || 'snapshot' } }); }
             this.emit({ type: 'AttentionReset', payload: {} });
             for (const payload of this.attention.values()) this.emit({ type: 'AttentionRequired', payload });
             continue;
           }
-          if (event.sequence !== this.cursor + 1) { this.eventInstance = ''; throw new Error('Resynchronizing instance state'); }
+          // A missing event needs a snapshot, not a network reconnect.
+          if (event.sequence !== this.cursor + 1) { this.eventInstance = ''; break; }
           this.cursor = event.sequence;
           if (event.type === 'AttentionRequired') { this.requests.set(String(event.payload.id), event.payload.requestGeneration); this.attention.set(String(event.payload.id), event.payload); }
           if (event.type === 'AttentionResolved') { this.requests.delete(String(event.payload.requestId)); this.attention.delete(String(event.payload.requestId)); }
@@ -84,12 +93,14 @@ export class ApplicationClient {
         }
         this.online = true;
         this.onState({ state: 'connected' });
+        if (failures && !resynced && this.hasSnapshot && this.eventInstance) this.emit({ type: 'ApplicationResync', payload: { reason: 'reconnected' } });
         failures = 0;
       } catch (error) {
         clearTimeout(timeout);
         if (this.closed) return;
         this.online = false;
-        this.onState({ state: error.status === 401 ? 'unauthorized' : 'reconnecting', error: error.status ? error.message : 'Connection lost. Reconnecting…' });
+        this.onState({ state: error.status === 401 ? 'unauthorized' : 'reconnecting', error: error.status ? error.message : 'Connection lost. Reconnecting…',
+          diagnostic: error.cause?.code || error.code || error.name, status: error.status });
         if (this.resolveInstance) {
           try {
             const next = await this.resolveInstance();
@@ -97,7 +108,10 @@ export class ApplicationClient {
             if (info.hostId !== next.id || info.protocol !== PROTOCOL_VERSION) throw new Error('The local service identity or protocol changed.');
             this.instance = { ...next, endpoint: normalizeEndpoint(next.endpoint) };
             this.instanceId = info.instanceId;
-            this.eventInstance = ''; this.cursor = 0;
+            // A transport interruption does not invalidate the replay cursor.
+            // The server decides whether a snapshot is needed after a real restart
+            // or a gap in retained events.
+            if (info.instanceId !== this.eventInstance) { this.eventInstance = ''; this.cursor = 0; }
           } catch { /* Keep reconnecting; never replay an application command. */ }
         } else if (error.status === 401) return;
         await new Promise((resolve) => { this.wake = resolve; this.retry = setTimeout(resolve, Math.min(15_000, 1000 * 2 ** failures++) + Math.random() * 250); });

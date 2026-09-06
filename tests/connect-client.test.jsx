@@ -60,6 +60,59 @@ describe('remote client behavior', () => {
       expect(client.cursor).toBe(2);
     } finally { client.close(); vi.useRealTimers(); }
   });
+  it('resumes local event replay after a transport failure without resetting the app', async () => {
+    vi.useFakeTimers();
+    const onReset = vi.fn(); const onState = vi.fn();
+    const instance = { id: 'host', endpoint: 'http://127.0.0.1:43187', token: 'token' };
+    const client = new RemoteClient(instance, { onReset, onState });
+    client.resolveInstance = vi.fn(async () => instance);
+    const reset = { protocol: 1, type: 'ConnectReset', instanceId: 'process', sequence: 12, payload: { attention: [] } };
+    const receive = vi.fn(); client.subscribe(receive);
+    const fetch = vi.fn().mockResolvedValueOnce(json({ events: [reset] }))
+      .mockRejectedValueOnce(new Error('socket closed'))
+      .mockResolvedValueOnce(json({ protocol: 1, hostId: 'host', instanceId: 'process' }))
+      .mockResolvedValueOnce(json({ events: [{ protocol: 1, type: 'TaskUpdated', sequence: 13, payload: {} }] }))
+      .mockImplementation(() => { client.close(); return Promise.resolve(json({ events: [] })); });
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const polling = client.poll(); await vi.advanceTimersByTimeAsync(1500); await polling;
+      expect(fetch.mock.calls[3][0]).toContain('cursor=12&instanceId=process&wait=0');
+      expect(onReset).not.toHaveBeenCalled();
+      expect(receive).toHaveBeenCalledWith(expect.objectContaining({ type: 'TaskUpdated' }));
+      expect(client.cursor).toBe(13);
+    } finally { client.close(); vi.useRealTimers(); }
+  });
+  it('makes snapshot refresh reads available after an actual backend restart', async () => {
+    vi.useFakeTimers();
+    const instance = { id: 'host', endpoint: 'http://127.0.0.1:43187', token: 'token' };
+    const client = new RemoteClient(instance);
+    client.resolveInstance = async () => instance;
+    const reset = (id) => ({ protocol: 1, type: 'ConnectReset', instanceId: id, sequence: 0, payload: { attention: [] } });
+    const fetch = vi.fn().mockResolvedValueOnce(json({ events: [reset('old')] }))
+      .mockRejectedValueOnce(new Error('socket closed'))
+      .mockResolvedValueOnce(json({ protocol: 1, hostId: 'host', instanceId: 'new' }))
+      .mockResolvedValueOnce(json({ events: [reset('new')] }))
+      .mockResolvedValueOnce(json({ result: { projects: [] } }))
+      .mockImplementation(() => { client.close(); return Promise.resolve(json({ events: [] })); });
+    vi.stubGlobal('fetch', fetch);
+    let refreshed;
+    client.subscribe(event => { if (event.type === 'ApplicationResync') refreshed = client.call('app.bootstrap'); });
+    try {
+      const polling = client.poll(); await vi.advanceTimersByTimeAsync(1500); await polling;
+      await expect(refreshed).resolves.toEqual({ projects: [] });
+      expect(JSON.parse(fetch.mock.calls[4][1].body)).toMatchObject({ operation: 'app.bootstrap', instanceId: 'new' });
+    } finally { client.close(); vi.useRealTimers(); }
+  });
+  it('does not treat a failed interface listener as a lost backend connection', async () => {
+    const onState = vi.fn(); const client = new RemoteClient({ id: 'host', endpoint: 'https://pixice.example', token: 'token' }, { onState });
+    client.subscribe(() => { throw new Error('view failed'); });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ events: [{ protocol: 1, type: 'ConnectReset', instanceId: 'process', sequence: 0, payload: { attention: [] } }] }))
+      .mockImplementation(() => { client.close(); return Promise.resolve(json({ events: [] })); }));
+    await client.poll();
+    expect(onState).toHaveBeenCalledWith({ state: 'connected' });
+    expect(onState).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'reconnecting' }));
+  });
   it('isolates drafts and project selections while retaining saved instance identities', () => {
     localStorage.setItem('pixice.activeProjectId', 'local-project');
     localStorage.setItem('pixice.drafts', 'local draft');

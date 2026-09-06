@@ -39,7 +39,9 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
     onChange: (status) => publish({ type: 'ConnectStatus', payload: { ...status, tunnel: tunnel.status() } }) });
   if (!existsSync(path.join(paths.data, 'connect/connect.json'))) remote.save();
   const token = randomBytes(32).toString('base64url');
-  const local = new ConnectServer({ directory: paths.directory, clientDirectory, version, persist: false,
+  // Desktop/native RPC and streamed events share this private, authenticated
+  // listener. Their normal traffic must not exhaust the public API's budget.
+  const local = new ConnectServer({ directory: paths.directory, clientDirectory, version, persist: false, apiRateLimit: 60_000,
     initialState: { enabled: true, port: 0, host: '127.0.0.1', hostId: remote.state.hostId,
       devices: [{ id: 'local-owner', name: 'Local desktop and CLI', tokenHash: createHash('sha256').update(token).digest('hex'), expiresAt: Number.MAX_SAFE_INTEGER }] },
     operations: APPLICATION_OPERATIONS, readOperations: APPLICATION_READ_OPERATIONS, eventFilter: () => true,

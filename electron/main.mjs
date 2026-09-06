@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, screen, shell, Tray, WebContentsView } from 'electron';
 import { spawn } from 'node:child_process';
+import { appendFile, stat, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -34,24 +35,39 @@ const configuration = {
 function send(type, payload = {}) {
   if (mainWindow && !mainWindow.isDestroyed() && desktopLoaded) mainWindow.webContents.send('pixice:event', { type, payload, at: new Date().toISOString() });
 }
-function updateConnection(value) { connectionState = value; send('ServiceConnectionState', value); }
+let connectionLog = Promise.resolve();
+function recordConnection(value) {
+  // Only connection metadata, never credentials, commands, or task contents.
+  const entry = JSON.stringify({ at: new Date().toISOString(), ...value }) + '\n';
+  connectionLog = connectionLog.then(async () => {
+    const file = path.join(dataDirectory, 'service', 'desktop-connection.log');
+    if ((await stat(file).catch(() => null))?.size > 512_000) await rename(file, `${file}.previous`);
+    await appendFile(file, entry, { mode: 0o600 });
+  }).catch(() => {});
+}
+function updateConnection(value) {
+  if (JSON.stringify(connectionState) === JSON.stringify(value)) return;
+  connectionState = value; send('ServiceConnectionState', value); recordConnection(value);
+}
 async function connectService({ start = true } = {}) {
   if (connecting) return connecting;
   connecting = (async () => {
     const descriptor = start ? await ensureService(configuration) : await readServiceDescriptor(dataDirectory);
+    const replacingClient = Boolean(client);
     nativeHelper?.close(); client?.close();
     client = new ApplicationClient(descriptorInstance(descriptor), {
       probe: 'service.status', resolveInstance: async () => descriptorInstance(await readServiceDescriptor(dataDirectory)),
-      onState: (value) => { updateConnection(value); },
-      onReset: () => send('ServiceReset')
+      onState: (value) => { updateConnection(value); }
     });
     client.subscribe((event) => {
+      if (event.type === 'ApplicationResync') recordConnection({ state: 'resync', reason: event.payload?.reason });
       if (event.type === 'TrayState') { trayState = event.payload; updateTrayMenu(); }
       send(event.type, event.payload);
     });
     nativeHelper = new NativeHelperClient({ directory: dataDirectory, browser: browserWorkspace, sessions: browserSessions, invokeDesktop, crypto: safeStorage });
     nativeHelper.start();
     await client.connect();
+    if (replacingClient) send('ApplicationResync');
     void refreshTrayState().catch(() => {});
     return { connected: true };
   })().catch((error) => { updateConnection({ state: 'error', error: error.message }); throw error; }).finally(() => { connecting = null; });

@@ -142,6 +142,32 @@ describe('Pixice Connect host boundary', () => {
     expect((await request('/api/connect/poll', undefined, token)).status).toBe(401);
   });
 
+  it('confirms an idle reconnect immediately without forcing a snapshot', async () => {
+    const { server, pair, request } = await host(); const { token } = await pair();
+    const response = await request(`/api/connect/poll?cursor=0&instanceId=${server.instanceId}&wait=0`, undefined, token);
+    expect(response).toMatchObject({ status: 200, body: { events: [] } });
+    expect(server.polls.size).toBe(0);
+  });
+  it('resynchronizes large events without breaking a live poll or silently skipping the event', async () => {
+    const { server, pair, request } = await host(); const { token } = await pair();
+    const pending = request(`/api/connect/poll?cursor=0&instanceId=${server.instanceId}`, undefined, token);
+    await vi.waitFor(() => expect(server.polls.size).toBe(1));
+    server.publish({ type: 'ActivityReceived', payload: { delta: 'x'.repeat(512_001) } });
+    expect(await pending).toMatchObject({ status: 200, body: { events: [{ type: 'ConnectReset', sequence: 1 }] } });
+    const missed = await request(`/api/connect/poll?cursor=0&instanceId=${server.instanceId}`, undefined, token);
+    expect(missed.body.events[0]).toMatchObject({ type: 'ConnectReset', sequence: 1 });
+    server.publish({ type: 'TaskUpdated', payload: { threadId: 'task' } });
+    const replay = await request(`/api/connect/poll?cursor=1&instanceId=${server.instanceId}`, undefined, token);
+    expect(replay.body.events.map(event => event.sequence)).toEqual([2]);
+  });
+  it('keeps the public request limit while allowing the private listener to set its own budget', async () => {
+    const { server } = await host();
+    const req = { socket: { remoteAddress: '127.0.0.1' } };
+    for (let count = 0; count < 1200; count++) server.rate(req, 'api', server.apiRateLimit);
+    expect(() => server.rate(req, 'api', server.apiRateLimit)).toThrow('Too many requests');
+    const { server: local } = await host({ apiRateLimit: 60_000 });
+    expect(() => { for (let count = 0; count < 2400; count++) local.rate(req, 'api', local.apiRateLimit); }).not.toThrow();
+  });
   it('withholds an in-flight browser capture when the device is revoked', async () => {
     let finish;
     const invoke = vi.fn(() => new Promise((resolve) => { finish = resolve; }));

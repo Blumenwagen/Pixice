@@ -155,7 +155,7 @@ export function WorkflowHost({ children }) {
     if (!api?.events?.subscribe) return undefined;
     return api.events.subscribe((event) => {
       const payload = event.payload ?? {};
-      if (event.type === "RuntimeStatus" && payload.connected) void refreshCatalog();
+      if (event.type === "ApplicationResync" || event.type === "RuntimeStatus" && payload.connected) void refreshCatalog();
       if (event.type === "WorkflowOpenRequested") {
         const workspaceId = payload.workspaceId ?? payload.threadId ?? currentThreadIdRef.current;
         if (!workspaceId) return;

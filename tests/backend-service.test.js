@@ -22,6 +22,8 @@ async function fixture(directory) {
 describe('standalone application service', () => {
   it('runs workflows and the application API in plain Node without an Electron host', async () => {
     const { client, service, root } = await fixture();
+    expect(service.local.apiRateLimit).toBe(60_000);
+    expect(service.remote.apiRateLimit).toBe(1200);
     expect(service.status()).toMatchObject({ phase: 'ready', workflowError: null, native: { connected: false } });
     const folder = path.join(root, 'project'); await mkdir(folder);
     const project = await client.call('projects.create', { displayName: 'Service project', icon: 'folder', color: 'gray', folders: [folder] });

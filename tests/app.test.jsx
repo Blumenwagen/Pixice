@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift } from "../src/App.jsx";
 import { listPricingCatalog } from "../electron/usage/pricing.mjs";
+import { ConnectRoot } from "../src/connect/ConnectRoot.jsx";
 import { WorkflowHost } from "../src/components/workflows/WorkflowHost.jsx";
 
 const appCss = readFileSync("src/styles.css", "utf8");
@@ -954,6 +955,36 @@ describe("Pixice app shell", () => {
     expect(sent).toHaveClass("bridge-answer-status");
     expect(container.querySelector(".bridge-prompt-status + .user-message")).toHaveTextContent("Review the interface hierarchy");
     expect(sent.closest(".assistant-message")).toHaveTextContent("Increase the spacing between sections.");
+  });
+
+  it("keeps the current task draft and settings screen through repeated backend recovery", async () => {
+    const api = window.pixice;
+    api.service = { connection: vi.fn(async () => ({ state: "connected" })) };
+    const { container } = render(<ConnectRoot><App /></ConnectRoot>);
+    await screen.findByText("I traced the current flow.");
+    const appElement = container.querySelector(".pixice-app");
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
+    fireEvent.change(composer, { target: { value: "Keep my unsent work" } });
+    for (let cycle = 0; cycle < 3; cycle++) {
+      act(() => api.emit({ type: "ServiceConnectionState", payload: { state: "reconnecting" } }));
+      act(() => { api.emit({ type: "ServiceConnectionState", payload: { state: "connected" } }); api.emit({ type: "ApplicationResync" }); });
+      await waitFor(() => expect(api.app.bootstrap).toHaveBeenCalledTimes(cycle + 2));
+      expect(container.querySelector(".pixice-app")).toBe(appElement);
+      expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("Keep my unsent work");
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const heading = await screen.findByRole("heading", { name: "General" });
+    const scroll = container.querySelector(".settings-content-scroll"); scroll.scrollTop = 125;
+    act(() => { api.emit({ type: "ServiceReset" }); api.emit({ type: "ServiceConnectionState", payload: { state: "reconnecting" } }); });
+    expect(screen.getByRole("heading", { name: "General" })).toBe(heading);
+    act(() => { api.emit({ type: "ServiceConnectionState", payload: { state: "connected" } }); api.emit({ type: "ApplicationResync" }); });
+    await waitFor(() => expect(api.app.bootstrap).toHaveBeenCalledTimes(6));
+    expect(screen.getByRole("heading", { name: "General" })).toBe(heading);
+    expect(scroll.scrollTop).toBe(125);
+    expect(container.querySelector(".pixice-app")).toBe(appElement);
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    expect(await screen.findByRole("textbox", { name: "Task prompt" })).toHaveValue("Keep my unsent work");
+    expect(api.turns.start).not.toHaveBeenCalled();
   });
 
   it("switches top-level views without a full-screen transition", async () => {
