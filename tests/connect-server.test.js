@@ -194,6 +194,20 @@ describe('Pixice Connect host boundary', () => {
     expect((await request('/escape.txt')).status).toBe(404);
   });
 
+  it('serves the PWA manifest and worker with registration-safe cache headers', async () => {
+    const { directory, request, pair } = await host({ readiness: () => ({ provider: { connected: false, reason: 'offline' }, browser: { available: true, reason: null } }) });
+    await writeFile(path.join(directory, 'client', 'connect-sw.js'), 'self.addEventListener("fetch", () => {});');
+    await writeFile(path.join(directory, 'client', 'manifest.webmanifest'), '{"name":"Pixice"}');
+    const worker = await request('/connect-sw.js');
+    expect(worker.headers.get('cache-control')).toBe('no-store');
+    expect(worker.headers.get('service-worker-allowed')).toBe('/');
+    const manifest = await request('/manifest.webmanifest');
+    expect(manifest.headers.get('content-type')).toContain('application/manifest+json');
+    const { token } = await pair();
+    const session = await request('/api/connect/session', undefined, token);
+    expect(session.body.readiness).toMatchObject({ provider: { connected: false, reason: 'offline' }, browser: { available: true } });
+  });
+
   it('survives a host restart with paired device access intact and a new event generation', async () => {
     const { server, directory, pair } = await host();
     const { token } = await pair();
@@ -204,4 +218,56 @@ describe('Pixice Connect host boundary', () => {
     expect(restarted.state.hostId).toBe(server.state.hostId);
     expect(restarted.authenticate({ headers: { authorization: `Bearer ${token}` } }).name).toBe('Test browser');
   });
+
+  it('pairs observers only with owner-selected known projects and keeps operators unscoped', async () => {
+    const invoke = vi.fn(async (operation, payload) => operation === 'projects.list'
+      ? [{ id: 'project-a', displayName: 'A', canonicalPath: '/projects/a', repository: { private: 'remove' } }, { id: 'project-b', displayName: 'B', canonicalPath: '/projects/b' }]
+      : { operation, payload });
+    const { server, request } = await host({ invoke, knownProjectIds: () => ['project-a', 'project-b'] });
+    expect(() => server.pairOffer({ role: 'observer', projectIds: [] })).toThrow();
+    expect(() => server.pairOffer({ role: 'observer', projectIds: ['unknown'] })).toThrow();
+    expect(() => server.pairOffer({ role: 'operator', projectIds: ['project-a'] })).toThrow();
+    const offer = server.pairOffer({ role: 'observer', projectIds: ['project-a'] });
+    const pairingToken = new URLSearchParams(new URL(offer.url).hash.slice(1)).get('pair');
+    const paired = (await request('/api/connect/pair', { token: pairingToken, name: 'Observer' })).body;
+    const session = await request('/api/connect/session', undefined, paired.token);
+    expect(session.body).toMatchObject({ role: 'observer', projectIds: ['project-a'], expiresAt: paired.expiresAt });
+    expect(session.body.operations).toEqual(expect.arrayContaining(['app.overview', 'projects.list', 'files.read']));
+    expect(session.body.operations).not.toEqual(expect.arrayContaining(['projects.directories', 'turns.start', 'browser.state', 'providers.list', 'usage.summary']));
+    expect((await request('/api/connect/call', { ...serverCall(server, 'projects.list'), payload: {} }, paired.token)).body.result).toEqual([{ id: 'project-a', displayName: 'A', canonicalPath: '/projects/a' }]);
+    const denied = await request('/api/connect/call', { ...serverCall(server, 'threads.list'), payload: { projectId: 'project-b' } }, paired.token);
+    expect(denied).toMatchObject({ status: 403, body: { code: 'FORBIDDEN' } });
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    const legacy = await (async () => {
+      const legacyOffer = server.pairOffer();
+      const token = new URLSearchParams(new URL(legacyOffer.url).hash.slice(1)).get('pair');
+      return (await request('/api/connect/pair', { token, name: 'Operator' })).body;
+    })();
+    expect((await request('/api/connect/session', undefined, legacy.token)).body).toMatchObject({ role: 'operator', projectIds: null });
+    const before = server.state.devices.find((device) => device.id === legacy.deviceId);
+    const role = before.role;
+    const scope = before.projectIds;
+    server.renew({ id: legacy.deviceId });
+    expect(server.state.devices.find((device) => device.id === legacy.deviceId)).toMatchObject({ role, projectIds: scope });
+  });
+
+  it('withholds observer events by authoritative project and advances with empty cursors', async () => {
+    const { server, pair, request } = await host({ knownProjectIds: () => ['project-a', 'project-b'], eventFilter: () => true });
+    const offer = server.pairOffer({ role: 'observer', projectIds: ['project-a'] });
+    const pairingToken = new URLSearchParams(new URL(offer.url).hash.slice(1)).get('pair');
+    const observer = (await request('/api/connect/pair', { token: pairingToken, name: 'Observer' })).body;
+    server.publish({ type: 'TaskUpdated', payload: { projectId: 'project-a', method: 'thread/status/changed', threadId: 'allowed', secret: 'keep' } });
+    server.publish({ type: 'TaskUpdated', payload: { projectId: 'project-b', method: 'thread/status/changed', threadId: 'forbidden', secret: 'drop' } });
+    server.publish({ type: 'UnknownEvent', payload: { projectId: 'project-a', secret: 'drop' } });
+    const response = await request(`/api/connect/poll?cursor=0&instanceId=${server.instanceId}`, undefined, observer.token);
+    expect(response.body.events.map((event) => event.type)).toEqual(['TaskUpdated', 'ConnectCursor', 'ConnectCursor']);
+    expect(response.body.events[0].payload).toMatchObject({ projectId: 'project-a', threadId: 'allowed' });
+    expect(JSON.stringify(response.body)).not.toContain('forbidden');
+    expect(JSON.stringify(response.body)).not.toContain('drop');
+  });
 });
+
+function serverCall(server, operation) {
+  return { operation, instanceId: server.instanceId, id: randomUUID(), issuedAt: Date.now() };
+}

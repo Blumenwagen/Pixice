@@ -208,7 +208,7 @@ describe("WorkflowHost", () => {
 
     await waitFor(() => expect(opened).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining({
       workspaceId: "thread-lead",
-      tab: expect.objectContaining({ id: "workflow:workflow-1", kind: "workflow", title: "Release workflow" })
+      tab: expect.objectContaining({ id: "local:workflow:workflow-1", kind: "workflow", title: "Release workflow" })
     }) })));
     expect(onTaskClick).not.toHaveBeenCalled();
     window.removeEventListener("pixice:open-preview-tab", opened);
@@ -282,7 +282,7 @@ describe("WorkflowHost", () => {
     );
     await waitFor(() => expect(opened).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining({
       workspaceId: "thread-foreground",
-      tab: expect.objectContaining({ id: "workflow:workflow-1", kind: "workflow", payload: expect.objectContaining({ reason: "run" }) })
+      tab: expect.objectContaining({ id: "local:workflow:workflow-1", kind: "workflow", payload: expect.objectContaining({ reason: "run" }) })
     }) })));
     window.removeEventListener("pixice:open-preview-tab", opened);
   });

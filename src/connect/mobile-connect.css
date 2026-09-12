@@ -1,0 +1,173 @@
+.connect-mobile-shell { padding-bottom: max(18px, env(safe-area-inset-bottom)); }
+.connect-pair-qr { width: 220px; height: 220px; justify-self: start; image-rendering: pixelated; background: #fff; padding: 10px; border-radius: 10px; }
+.connect-pair-link { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.connect-endpoint-guide { padding: 13px 14px 15px; border-top: 1px solid var(--border); }
+.connect-endpoint-guide strong { font-size: 12px; }
+.connect-endpoint-guide p { margin: 5px 0 0; color: var(--quiet); font-size: 11px; line-height: 1.5; }
+.connect-endpoint-guide code { color: var(--muted); font-family: var(--font-mono, monospace); }
+.connect-pair-options { display: grid; gap: 10px; margin: 0; padding: 14px; border: 0; border-bottom: 1px solid var(--border); }
+.connect-pair-options legend { padding: 0; color: var(--foreground); font-size: 12px; font-weight: 620; }
+.connect-pair-options > label { display: grid; gap: 6px; color: var(--quiet); font-size: 11px; }
+.connect-pair-options select { min-height: 36px; padding: 6px 8px; color: var(--foreground); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 7px; font: inherit; }
+.connect-project-options { display: grid; gap: 7px; }
+.connect-project-options label { display: flex; align-items: center; gap: 8px; min-height: 36px; color: var(--muted); font-size: 11px; }
+.connect-project-options input { width: 18px; height: 18px; }
+.connect-overview { width: min(720px, 100%); margin: 0 auto; color: var(--foreground); }
+.connect-overview-header, .connect-overview-task-heading, .connect-overview-host, .connect-overview-task, .connect-mobile-attention article { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.connect-overview-header { gap: 24px; margin-bottom: 18px; }
+.connect-overview h2, .connect-mobile-attention h2 { margin: 0; font-size: 18px; letter-spacing: -.025em; }
+.connect-overview h3 { margin: 0; font-size: 14px; }
+.connect-overview p, .connect-mobile-attention p { margin: 5px 0 0; color: var(--quiet); font-size: 11px; line-height: 1.45; }
+.connect-overview-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 18px; }
+.connect-overview-counts span { display: grid; gap: 3px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in oklab, var(--surface) 78%, transparent); }
+.connect-overview-counts strong { font-size: 20px; }
+.connect-overview-counts small, .connect-overview-host small, .connect-overview-task small, .connect-mobile-attention small { color: var(--quiet); font-size: 10px; }
+.connect-overview-hosts, .connect-overview-task-list, .connect-mobile-attention { display: grid; gap: 0; }
+.connect-overview-host, .connect-overview-task, .connect-mobile-attention article { min-height: 62px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+.connect-overview-host > span, .connect-overview-task > span { min-width: 0; display: grid; gap: 4px; }
+.connect-overview-host strong, .connect-overview-task strong, .connect-mobile-attention strong { overflow-wrap: anywhere; font-size: 12px; font-weight: 620; }
+.connect-overview-task-heading { margin-top: 24px; padding-bottom: 8px; }
+.connect-overview-task-heading label { display: flex; align-items: center; gap: 7px; color: var(--quiet); font-size: 10px; }
+.connect-overview-task-heading select { min-height: 32px; padding: 4px 8px; color: var(--foreground); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 7px; font: inherit; }
+.connect-mobile-attention { gap: 0; padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+.connect-mobile-attention header { margin-bottom: 8px; }
+.connect-mobile-attention article > div { min-width: 0; display: grid; gap: 5px; }
+.connect-mobile-attention button, .connect-mobile-attention [role="button"], .connect-overview button { min-height: 44px; }
+@media (max-width: 560px) {
+  .connect-overview-header, .connect-overview-task, .connect-overview-host, .connect-mobile-attention article { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .connect-overview-header .settings-action, .connect-overview-task .settings-action, .connect-overview-host .settings-action, .connect-mobile-attention .settings-action { width: 100%; justify-content: center; }
+  .connect-overview-task-heading { align-items: flex-start; flex-direction: column; }
+  .connect-overview-task-heading select { min-height: 44px; }
+}
+@media (max-width: 720px) {
+  .connect-root.is-remote .approval-actions button,
+  .connect-root.is-remote .approval-questions > button,
+  .connect-root.is-remote .question-option,
+  .connect-root.is-remote .question-custom-form button,
+  .connect-root.is-remote .question-submit,
+  .connect-root.is-remote .question-custom,
+  .connect-root.is-remote .question-skip,
+  .connect-root.is-remote .question-close { min-height: 44px; }
+}
+
+/* Observer workspace. Keep the conversation chrome from the main app, but
+   give the read-only project snapshot its own compact inspection surface. */
+.connect-observer-workspace {
+  width: min(1180px, 100%);
+  height: 100%;
+  margin: 0 auto;
+  padding: 24px clamp(16px, 3vw, 34px) max(24px, env(safe-area-inset-bottom));
+  overflow-y: auto;
+  scrollbar-color: var(--border) transparent;
+}
+.observer-workspace-header { align-items: flex-start; margin-bottom: 10px; }
+.observer-workspace-header > div { min-width: 0; }
+.observer-kicker,
+.observer-panel-kicker {
+  display: block;
+  color: color-mix(in oklab, var(--primary) 74%, var(--foreground));
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.observer-workspace-header h2 { margin: 5px 0 0; color: var(--foreground); font-size: 20px; letter-spacing: -.03em; }
+.observer-workspace-header p { max-width: 72ch; margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.observer-workspace-header .settings-footnote { display: block; margin-top: 9px; }
+.observer-inspection-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, .9fr) minmax(360px, 1.45fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.observer-panel {
+  min-width: 0;
+  padding: 16px;
+  color: var(--foreground);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.observer-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.observer-panel h3 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
+.observer-panel > header > small { max-width: 55%; color: var(--quiet); font: 10px/1.4 var(--font-mono, monospace); overflow-wrap: anywhere; text-align: right; }
+.observer-board-list { display: grid; min-width: 0; }
+.observer-board-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(80px, .8fr) minmax(72px, .75fr);
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.observer-board-head { padding-block: 0 8px; border-top: 0; color: var(--quiet); font-size: 9px; text-transform: uppercase; }
+.observer-board-row > span { min-width: 0; overflow-wrap: anywhere; }
+.observer-board-row strong,
+.observer-board-row small { display: block; }
+.observer-board-row strong { color: var(--foreground); font-size: 11px; font-weight: 620; }
+.observer-board-row small { margin-top: 3px; color: var(--quiet); }
+.observer-empty { margin: 0; color: var(--quiet); font-size: 11px; line-height: 1.5; }
+.observer-files-layout { display: grid; grid-template-columns: minmax(130px, .65fr) minmax(0, 1.35fr); gap: 10px; min-width: 0; }
+.observer-file-list { display: grid; align-content: start; gap: 3px; min-width: 0; }
+.observer-file-list button {
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 9px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.observer-file-list button:hover { background: color-mix(in oklab, var(--foreground) 6%, transparent); }
+.observer-file-list button.selected { color: var(--foreground); background: var(--primary-soft); }
+.observer-file-list button span { min-width: 0; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.observer-file-list button small { color: var(--quiet); font: 9px var(--font-mono, monospace); white-space: nowrap; }
+.observer-file-content { min-width: 0; min-height: 180px; overflow: hidden; background: var(--canvas); border: 1px solid var(--border); border-radius: 9px; }
+.observer-file-heading { display: grid; gap: 3px; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+.observer-file-heading strong { overflow: hidden; color: var(--foreground); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.observer-file-heading small { overflow-wrap: anywhere; color: var(--quiet); font: 9px/1.4 var(--font-mono, monospace); }
+.observer-file-content pre { max-height: 240px; margin: 0; padding: 10px; overflow: auto; color: var(--muted); font: 10px/1.55 var(--font-mono, monospace); white-space: pre-wrap; user-select: text; }
+.observer-file-content img { display: block; max-width: 100%; max-height: 240px; margin: 10px auto; object-fit: contain; }
+.connect-observer-workspace > .task-workspace { min-height: 560px; margin-bottom: 12px; flex: 1 1 640px; border: 1px solid var(--border); border-radius: 14px; }
+.connect-observer-workspace > .task-workspace .main-canvas { margin: 0; border-radius: 13px; }
+.connect-observer-receipt { margin-top: 0; }
+.observer-receipt-status { padding: 4px 7px; color: var(--green); background: color-mix(in oklab, var(--green) 12%, transparent); border-radius: 5px; font: 9px var(--font-mono, monospace); text-transform: uppercase; }
+.observer-receipt-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.observer-receipt-facts div { min-width: 0; }
+.observer-receipt-facts dt { color: var(--quiet); font-size: 9px; }
+.observer-receipt-facts dd { margin: 4px 0 0; overflow: hidden; color: var(--muted); font: 10px var(--font-mono, monospace); text-overflow: ellipsis; white-space: nowrap; }
+.observer-receipt-summary { margin: 14px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.connect-observer-receipt details { margin-top: 12px; }
+.connect-observer-receipt summary { min-height: 44px; display: flex; align-items: center; color: var(--muted); cursor: pointer; font-size: 11px; }
+.connect-observer-receipt pre { max-height: 240px; margin: 0; padding: 10px; overflow: auto; color: var(--quiet); background: var(--canvas); border-radius: 8px; font: 10px/1.5 var(--font-mono, monospace); white-space: pre-wrap; user-select: text; }
+
+@media (max-width: 860px) {
+  .observer-inspection-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .connect-observer-workspace { padding: 16px 12px max(18px, env(safe-area-inset-bottom)); }
+  .observer-workspace-header { align-items: stretch; flex-direction: column; }
+  .observer-workspace-header .settings-action { width: 100%; justify-content: center; min-height: 44px; }
+  .observer-board-row { grid-template-columns: minmax(0, 1.5fr) minmax(74px, .8fr); }
+  .observer-board-row > span:last-child { display: none; }
+  .observer-files-layout { grid-template-columns: 1fr; }
+  .observer-file-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .observer-file-content pre { max-height: 220px; }
+  .connect-observer-workspace > .task-workspace { min-height: 500px; }
+  .observer-receipt-facts { grid-template-columns: 1fr; gap: 8px; }
+}

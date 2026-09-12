@@ -2,7 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 const scope = z.object({ workspaceId: z.string().trim().min(1).max(240), tabId: z.string().min(1).max(160) });
-export const browserFrameSchema = scope.extend({ width: z.number().int().min(1).max(4096), height: z.number().int().min(1).max(4096) }).strict();
+export const MIN_BROWSER_QUALITY = 35;
+export const MAX_BROWSER_QUALITY = 90;
+export const DEFAULT_BROWSER_QUALITY = 72;
+export const browserFrameSchema = scope.extend({
+  width: z.number().int().min(1).max(4096),
+  height: z.number().int().min(1).max(4096),
+  quality: z.number().int().min(MIN_BROWSER_QUALITY).max(MAX_BROWSER_QUALITY).optional()
+}).strict();
 const modifiers = z.array(z.enum(['alt', 'control', 'meta', 'shift'])).max(4).default([]);
 const point = { x: z.number().finite().min(0), y: z.number().finite().min(0) };
 const input = z.discriminatedUnion('type', [
@@ -84,7 +91,7 @@ export class RemoteBrowser {
       await this.keepRendering(contents, page);
       // Capture through Chromium: capturePage can stall on tabs that have never been shown.
       const screenshot = await this.command(contents, 'Page.captureScreenshot', {
-        format: 'jpeg', quality: 72, fromSurface: true, captureBeyondViewport: false
+        format: 'jpeg', quality: value.quality ?? DEFAULT_BROWSER_QUALITY, fromSurface: true, captureBeyondViewport: false
       });
       const encoded = screenshot.data;
       if (typeof encoded !== 'string' || !encoded || encoded.length > 8 * 1024 * 1024) throw new Error('The browser could not produce a bounded preview.');
@@ -92,7 +99,7 @@ export class RemoteBrowser {
       const frameId = randomUUID();
       this.prune();
       this.frames.set(frameId, { workspaceId: value.workspaceId, tabId: value.tabId, revision, bounds, at: this.now() });
-      return { frameId, width: bounds.width, height: bounds.height, image: `data:image/jpeg;base64,${encoded}` };
+      return { frameId, width: bounds.width, height: bounds.height, image: `data:image/jpeg;base64,${encoded}`, supportedOptions: ['quality'] };
     });
   }
   async input(payload) {

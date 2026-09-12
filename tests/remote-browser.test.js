@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { RemoteBrowser } from '../electron/browser/remote-browser.mjs';
+import { browserFrameSchema, DEFAULT_BROWSER_QUALITY, MAX_BROWSER_QUALITY, MIN_BROWSER_QUALITY, RemoteBrowser } from '../electron/browser/remote-browser.mjs';
 function harness() {
   let time = 1000;
   let visible = false;
@@ -16,10 +16,21 @@ function harness() {
   return {browser,contents,tab,scope,frame:()=>browser.frame({...scope,width:640,height:480}),expire:()=>{time+=5001;},visible:()=>{visible=true;}};
 }
 describe('remote host browser boundary',()=>{
+  it('bounds optional screenshot quality and defaults new frames to balanced quality',async()=>{
+    const h=harness();
+    expect(browserFrameSchema.parse({...h.scope,width:640,height:480})).not.toHaveProperty('quality');
+    expect(browserFrameSchema.parse({...h.scope,width:640,height:480,quality:MIN_BROWSER_QUALITY}).quality).toBe(MIN_BROWSER_QUALITY);
+    expect(browserFrameSchema.parse({...h.scope,width:640,height:480,quality:MAX_BROWSER_QUALITY}).quality).toBe(MAX_BROWSER_QUALITY);
+    await h.frame();
+    expect(h.contents.debugger.sendCommand).toHaveBeenCalledWith('Page.captureScreenshot',expect.objectContaining({quality:DEFAULT_BROWSER_QUALITY}));
+    await expect(h.browser.frame({...h.scope,width:640,height:480,quality:MIN_BROWSER_QUALITY - 1})).rejects.toThrow();
+    await expect(h.browser.frame({...h.scope,width:640,height:480,quality:MAX_BROWSER_QUALITY + 1})).rejects.toThrow();
+  });
+
   it('captures detached tabs at a bounded size without moving a visible host view',async()=>{
     const h=harness();
     const frame=await h.frame();
-    expect(frame).toMatchObject({width:640,height:480,image:'data:image/jpeg;base64,anBlZw=='});
+    expect(frame).toMatchObject({width:640,height:480,image:'data:image/jpeg;base64,anBlZw==',supportedOptions:['quality']});
     expect(h.contents.debugger.sendCommand).toHaveBeenCalledWith('Page.captureScreenshot',{format:'jpeg',quality:72,fromSurface:true,captureBeyondViewport:false});
     h.visible();h.tab.view.setBounds({x:20,y:30,width:900,height:600});h.tab.view.setBounds.mockClear();
     expect(await h.frame()).toMatchObject({width:900,height:600});

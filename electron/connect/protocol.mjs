@@ -1,7 +1,33 @@
 // Explicit product capability registry. Local IPC additions are never exported automatically.
 export const PROTOCOL_VERSION = 1;
+export const CONNECT_LIMITS = Object.freeze({
+  maxBodyBytes: 48 * 1024 * 1024,
+  maxAttachmentBytes: 25 * 1024 * 1024,
+  maxAttachments: 10
+});
+export const CONNECT_ERROR_CODES = Object.freeze({
+  AUTH_REQUIRED: 'AUTH_REQUIRED',
+  FORBIDDEN: 'FORBIDDEN',
+  NOT_FOUND: 'NOT_FOUND',
+  METHOD_NOT_ALLOWED: 'METHOD_NOT_ALLOWED',
+  RATE_LIMITED: 'RATE_LIMITED',
+  INVALID_REQUEST: 'INVALID_REQUEST',
+  INVALID_RESPONSE: 'INVALID_RESPONSE',
+  REQUEST_TOO_LARGE: 'REQUEST_TOO_LARGE',
+  HOST_RESTARTED: 'HOST_RESTARTED',
+  OUTCOME_UNAVAILABLE: 'OUTCOME_UNAVAILABLE',
+  COMMAND_ID_REUSED: 'COMMAND_ID_REUSED',
+  ACTION_FAILED: 'ACTION_FAILED',
+  CONFLICT: 'CONFLICT',
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+  NETWORK_ERROR: 'NETWORK_ERROR',
+  OFFLINE: 'OFFLINE',
+  REQUEST_ABORTED: 'REQUEST_ABORTED'
+});
+export const CONNECT_RECOVERY_LIMITS = Object.freeze({ maxUncertainCommands: 100, maxCommandDescriptors: 500, maxIdentifierLength: 256 });
+export const CONNECT_RECOVERY_EVENTS = Object.freeze({ issued: 'CommandIssued', settled: 'CommandSettled', uncertain: 'CommandUncertain', resolved: 'CommandUncertainResolved' });
 export const CAPABILITIES = {
-  app: { bootstrap: 'app:bootstrap' },
+  app: { bootstrap: 'app:bootstrap', overview: 'app:overview' },
   runtime: { status: 'runtime:status' },
   browser: { state: 'browser:state', create: 'browser:create', close: 'browser:close', activate: 'browser:activate', navigate: 'browser:navigate', history: 'browser:history', frame: 'browser:remote-frame', input: 'browser:remote-input', adopt: 'browser:remote-adopt', destroy: 'browser:remote-destroy' },
   git: { status: 'git:status' },
@@ -32,4 +58,4 @@ export function normalizeEndpoint(value) {
   return url.origin;
 }
 
-export const READ_OPERATIONS = new Set(['browser.state', 'browser.frame', 'app.bootstrap', 'runtime.status', 'git.status', 'providers.list', 'usage.summary', 'usage.limits', 'projects.list', 'projects.directories', 'threads.list', 'threads.read', 'threads.children', 'review.read', 'review.file', 'files.read', 'files.preview', 'models.list', 'tasks.receipts', 'tasks.receipt', 'tasks.interventions', 'board.list', 'board.read', 'board.activity', 'board.readProposal', 'proactivity.list', 'instruments.list', 'instruments.tools', 'instruments.read', 'instruments.events', 'instruments.receipts', 'instruments.revisions', 'workflows.list', 'workflows.read', 'workflows.taskRuns', 'workflows.triggers']);
+export const READ_OPERATIONS = new Set(['browser.state', 'browser.frame', 'app.bootstrap', 'app.overview', 'runtime.status', 'git.status', 'providers.list', 'usage.summary', 'usage.limits', 'projects.list', 'projects.directories', 'threads.list', 'threads.read', 'threads.children', 'review.read', 'review.file', 'files.read', 'files.preview', 'models.list', 'tasks.receipts', 'tasks.receipt', 'tasks.interventions', 'board.list', 'board.read', 'board.activity', 'board.readProposal', 'proactivity.list', 'instruments.list', 'instruments.tools', 'instruments.read', 'instruments.events', 'instruments.receipts', 'instruments.revisions', 'workflows.list', 'workflows.read', 'workflows.taskRuns', 'workflows.triggers']);

@@ -275,11 +275,11 @@ function semanticZoom(value) {
   return "phase";
 }
 
-function initialZoomPosition(projectId, tasks) {
-  const storedValue = localStorage.getItem(`pixice.timelineZoomPosition.${projectId}`);
+function initialZoomPosition(projectId, tasks, storage = localStorage) {
+  const storedValue = storage.getItem(`pixice.timelineZoomPosition.${projectId}`);
   const stored = Number(storedValue);
   if (storedValue !== null && Number.isFinite(stored)) return clampZoom(stored);
-  const legacy = localStorage.getItem(`pixice.timelineZoom.${projectId}`);
+  const legacy = storage.getItem(`pixice.timelineZoom.${projectId}`);
   const scale = legacy && legacy !== "fit" ? legacy : fittedZoom(tasks);
   return ZOOM_POSITIONS[scale] ?? ZOOM_POSITIONS.day;
 }
@@ -327,10 +327,10 @@ function positionWithin(value, start, end) {
   return (timestampMs(value) - start.getTime()) / (end.getTime() - start.getTime());
 }
 
-function TimelineView({ projectId, tasks, phases = [], onOpenTask, onScheduleMove, onCreatePhase }) {
+function TimelineView({ projectId, tasks, phases = [], onOpenTask, onScheduleMove, onCreatePhase, storage = localStorage }) {
   const scheduled = tasks.filter((task) => task.schedule?.plannedStart).sort((left, right) => timestampMs(left.schedule.plannedStart) - timestampMs(right.schedule.plannedStart) || plannedEnd(left) - plannedEnd(right) || left.position - right.position);
-  const [zoomPosition, setZoomPosition] = useState(() => initialZoomPosition(projectId, scheduled));
-  const [focusDay, setFocusDay] = useState(() => localStorage.getItem(`pixice.timelineFocusDay.${projectId}`));
+  const [zoomPosition, setZoomPosition] = useState(() => initialZoomPosition(projectId, scheduled, storage));
+  const [focusDay, setFocusDay] = useState(() => storage.getItem(`pixice.timelineFocusDay.${projectId}`));
   const [reviewing, setReviewing] = useState(null);
   const [phaseName, setPhaseName] = useState("");
   const [phaseBusy, setPhaseBusy] = useState(false);
@@ -340,8 +340,8 @@ function TimelineView({ projectId, tasks, phases = [], onOpenTask, onScheduleMov
   const pendingAnchorRef = useRef(null);
   const anchorTimerRef = useRef(null);
   useEffect(() => {
-    setZoomPosition(initialZoomPosition(projectId, scheduled));
-    setFocusDay(localStorage.getItem(`pixice.timelineFocusDay.${projectId}`));
+    setZoomPosition(initialZoomPosition(projectId, scheduled, storage));
+    setFocusDay(storage.getItem(`pixice.timelineFocusDay.${projectId}`));
     setReviewing(null);
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
   const resolvedZoom = semanticZoom(zoomPosition);
@@ -354,10 +354,10 @@ function TimelineView({ projectId, tasks, phases = [], onOpenTask, onScheduleMov
     setZoomPosition(nextPosition);
     setFocusDay(nextDay);
     setReviewing(null);
-    localStorage.setItem(`pixice.timelineZoomPosition.${projectId}`, String(nextPosition));
-    localStorage.setItem(`pixice.timelineZoom.${projectId}`, next);
-    if (nextDay) localStorage.setItem(`pixice.timelineFocusDay.${projectId}`, nextDay);
-    else localStorage.removeItem(`pixice.timelineFocusDay.${projectId}`);
+    storage.setItem(`pixice.timelineZoomPosition.${projectId}`, String(nextPosition));
+    storage.setItem(`pixice.timelineZoom.${projectId}`, next);
+    if (nextDay) storage.setItem(`pixice.timelineFocusDay.${projectId}`, nextDay);
+    else storage.removeItem(`pixice.timelineFocusDay.${projectId}`);
   };
   const openSuggestion = (suggestion) => {
     setReviewing(suggestion);
@@ -476,11 +476,11 @@ function TimelineView({ projectId, tasks, phases = [], onOpenTask, onScheduleMov
       if (nextScale === "hour" && currentScale !== "hour") {
         const nextDay = dayKey(timestamp);
         setFocusDay(nextDay);
-        localStorage.setItem(`pixice.timelineFocusDay.${projectId}`, nextDay);
+        storage.setItem(`pixice.timelineFocusDay.${projectId}`, nextDay);
       }
       if (nextScale !== currentScale) setReviewing(null);
-      localStorage.setItem(`pixice.timelineZoomPosition.${projectId}`, String(next));
-      localStorage.setItem(`pixice.timelineZoom.${projectId}`, nextScale);
+      storage.setItem(`pixice.timelineZoomPosition.${projectId}`, String(next));
+      storage.setItem(`pixice.timelineZoom.${projectId}`, nextScale);
       return next;
     });
   };
@@ -536,10 +536,10 @@ function TimelineView({ projectId, tasks, phases = [], onOpenTask, onScheduleMov
   );
 }
 
-export function KanbanBoard({ project, tasks = [], phases = [], threads = [], attention = [], loading = false, onCreate, onCreatePhase, onMove, onOpenThread, onOpenTask, onScheduleMove, onStartTask }) {
-  const [query, setQuery] = useState(() => localStorage.getItem(`pixice.boardFilter.${project?.id}`) ?? "");
+export function KanbanBoard({ project, tasks = [], phases = [], threads = [], attention = [], loading = false, onCreate, onCreatePhase, onMove, onOpenThread, onOpenTask, onScheduleMove, onStartTask, storage = localStorage }) {
+  const [query, setQuery] = useState(() => storage.getItem(`pixice.boardFilter.${project?.id}`) ?? "");
   const [view, setView] = useState("board");
-  const [selectedTaskId, setSelectedTaskId] = useState(() => localStorage.getItem(`pixice.boardSelection.${project?.id}`));
+  const [selectedTaskId, setSelectedTaskId] = useState(() => storage.getItem(`pixice.boardSelection.${project?.id}`));
   const [draggingId, setDraggingId] = useState(null);
   const [addingColumn, setAddingColumn] = useState(null);
   const [creating, setCreating] = useState(false);
@@ -549,8 +549,8 @@ export function KanbanBoard({ project, tasks = [], phases = [], threads = [], at
   const phasesByTaskId = useMemo(() => new Map(phases.flatMap((phase) => (phase.taskIds ?? []).map((taskId) => [taskId, phase]))), [phases]);
   useEffect(() => {
     setView("board");
-    if (project?.id) localStorage.setItem(`pixice.boardView.${project.id}`, "board");
-  }, [project?.id]);
+    if (project?.id) storage.setItem(`pixice.boardView.${project.id}`, "board");
+  }, [project?.id, storage]);
   const columns = useMemo(() => {
     const result = new Map(KANBAN_COLUMNS.map((column) => [column.id, []]));
     const normalizedQuery = query.trim().toLowerCase();
@@ -567,14 +567,14 @@ export function KanbanBoard({ project, tasks = [], phases = [], threads = [], at
   };
   if (!project) return <div className={styles.noProject}><Circle size={28} /><h1>Open a project to use the board</h1><p>Each project keeps its own tasks.</p></div>;
   const changeView = (next) => setView(next);
-  const openTask = (task) => { setSelectedTaskId(task.id); localStorage.setItem(`pixice.boardSelection.${project.id}`, task.id); onOpenTask(task); };
+  const openTask = (task) => { setSelectedTaskId(task.id); storage.setItem(`pixice.boardSelection.${project.id}`, task.id); onOpenTask(task); };
   const visibleTasks = tasks.filter((task) => !query.trim() || `${task.title} ${task.description ?? ""} ${task.owner ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()));
   return (
     <div className={styles.boardWorkspace}>
-      <div className={styles.boardHeader}><div><span>Scheduled work</span><h1>{view === "board" ? "Plan work before it runs" : "Delivery timeline"}</h1><p>Board status, dates, dependencies, agents, and Workflows all stay attached to the same work item.</p></div><div className={styles.boardActions}><label className={styles.search}><MagnifyingGlass size={15} /><input value={query} onChange={(event) => { setQuery(event.target.value); localStorage.setItem(`pixice.boardFilter.${project.id}`, event.target.value); }} placeholder="Filter work" aria-label="Filter work items" /></label><button className={styles.newTask} aria-label="Add task" onClick={() => setAddingColumn("backlog")}><Plus size={15} />Add work</button></div></div>
+      <div className={styles.boardHeader}><div><span>Scheduled work</span><h1>{view === "board" ? "Plan work before it runs" : "Delivery timeline"}</h1><p>Board status, dates, dependencies, agents, and Workflows all stay attached to the same work item.</p></div><div className={styles.boardActions}><label className={styles.search}><MagnifyingGlass size={15} /><input value={query} onChange={(event) => { setQuery(event.target.value); storage.setItem(`pixice.boardFilter.${project.id}`, event.target.value); }} placeholder="Filter work" aria-label="Filter work items" /></label><button className={styles.newTask} aria-label="Add task" onClick={() => setAddingColumn("backlog")}><Plus size={15} />Add work</button></div></div>
       <div className={styles.viewToolbar}><div className={styles.viewSwitch} role="tablist" aria-label="Board view"><button role="tab" aria-selected={view === "board"} onClick={() => changeView("board")}><List size={14} />Board</button><button role="tab" aria-selected={view === "timeline"} onClick={() => changeView("timeline")}><ChartLineUp size={14} />Timeline</button></div><span className={styles.viewSummary}>{visibleTasks.filter((task) => task.schedule).length} scheduled · {visibleTasks.length} total</span></div>
       {addingColumn && view !== "board" && <div className={styles.floatingQuickAdd}><QuickAdd column={addingColumn} busy={creating} onCreate={create} onCancel={() => setAddingColumn(null)} /></div>}
-      {loading ? <div className={styles.loading}><SpinnerGap size={22} className="spin-icon" />Loading work</div> : view === "board" ? <div className={styles.columns} role="region" aria-label={`${project.displayName} task board`}>{KANBAN_COLUMNS.map((column) => <BoardColumn key={column.id} column={column} tasks={columns.get(column.id) ?? []} phasesByTaskId={phasesByTaskId} threadsById={threadsById} draggingId={draggingId} waitingThreadIds={waitingThreadIds} adding={addingColumn === column.id} creating={creating} startingId={startingId} selectedTaskId={selectedTaskId} onBeginAdd={setAddingColumn} onCancelAdd={() => setAddingColumn(null)} onCreate={create} onOpen={onOpenThread} onEdit={openTask} onStart={start} onMove={onMove} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} />)}</div> : <TimelineView projectId={project.id} tasks={visibleTasks} phases={phases} onOpenTask={openTask} onScheduleMove={onScheduleMove} onCreatePhase={onCreatePhase} />}
+      {loading ? <div className={styles.loading}><SpinnerGap size={22} className="spin-icon" />Loading work</div> : view === "board" ? <div className={styles.columns} role="region" aria-label={`${project.displayName} task board`}>{KANBAN_COLUMNS.map((column) => <BoardColumn key={column.id} column={column} tasks={columns.get(column.id) ?? []} phasesByTaskId={phasesByTaskId} threadsById={threadsById} draggingId={draggingId} waitingThreadIds={waitingThreadIds} adding={addingColumn === column.id} creating={creating} startingId={startingId} selectedTaskId={selectedTaskId} onBeginAdd={setAddingColumn} onCancelAdd={() => setAddingColumn(null)} onCreate={create} onOpen={onOpenThread} onEdit={openTask} onStart={start} onMove={onMove} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} />)}</div> : <TimelineView projectId={project.id} tasks={visibleTasks} phases={phases} onOpenTask={openTask} onScheduleMove={onScheduleMove} onCreatePhase={onCreatePhase} storage={storage} />}
     </div>
   );
 }

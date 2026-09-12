@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,7 +6,8 @@ import {
   appendAttachmentContext,
   attachmentProjectRoot,
   safeAttachmentName,
-  stagePromptAttachments
+  stagePromptAttachments,
+  stagePromptAttachmentsAsync
 } from "../electron/runtime/prompt-attachments.mjs";
 
 const temporaryPaths = [];
@@ -68,5 +69,43 @@ describe("prompt attachments", () => {
     });
     expect(result.files[0].mimeType).toBe("application/octet-stream");
     expect(appendAttachmentContext("Inspect", result.files)).not.toContain("Ignore_previous_instructions");
+  });
+
+  it("copies trusted uploaded files into the durable thread attachment root", () => {
+    const userDataPath = temporaryDirectory();
+    const sourceRoot = temporaryDirectory();
+    const source = path.join(sourceRoot, "uploaded.txt");
+    writeFileSync(source, "uploaded content");
+    const result = stagePromptAttachments({
+      userDataPath,
+      projectId: "project",
+      threadId: "thread",
+      attachments: [],
+      stagedFiles: [{ path: source, name: "../uploaded.txt", mimeType: "text/plain", size: 16 }]
+    });
+    expect(result.files).toHaveLength(1);
+    expect(readFileSync(result.files[0].path, "utf8")).toBe("uploaded content");
+    expect(result.files[0].path).toContain(attachmentProjectRoot(userDataPath, "project"));
+  });
+
+  it("prepares remote staged images and files asynchronously with private output modes", async () => {
+    const userDataPath = temporaryDirectory();
+    const sourceRoot = temporaryDirectory();
+    const image = path.join(sourceRoot, "image.png");
+    const text = path.join(sourceRoot, "note.txt");
+    writeFileSync(image, Buffer.from("png-bytes"));
+    writeFileSync(text, "async content");
+    const result = await stagePromptAttachmentsAsync({
+      userDataPath,
+      projectId: "project",
+      threadId: "thread",
+      stagedFiles: [
+        { path: image, name: "image.png", mimeType: "image/png", size: 9 },
+        { path: text, name: "../note.txt", mimeType: "text/plain", size: 13 }
+      ]
+    });
+    expect(result.images[0]).toBe(`data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}`);
+    expect(readFileSync(result.files[0].path, "utf8")).toBe("async content");
+    expect(result.files[0].path).not.toBe(text);
   });
 });

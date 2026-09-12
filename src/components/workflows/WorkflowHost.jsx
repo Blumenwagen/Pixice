@@ -1,18 +1,20 @@
 import { getPixiceApi } from "../../connect/client.js";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createWorkspaceStorage } from "../../connect/execution-storage.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { TreeStructure } from "../icons/index.jsx";
 import { WorkflowWorkspace } from "./WorkflowWorkspace.jsx";
 import styles from "./WorkflowWorkspace.module.css";
 
-export function WorkflowHost({ children }) {
-  const api = getPixiceApi();
+export function WorkflowHost({ children, api: explicitApi = null, storage: suppliedStorage = null }) {
+  const api = explicitApi ?? getPixiceApi();
+  const storage = useMemo(() => suppliedStorage ?? createWorkspaceStorage(api?.remote?.hostId ?? 'local'), [api, suppliedStorage]);
   const [navTarget, setNavTarget] = useState(null);
   const [appTarget, setAppTarget] = useState(null);
   const [active, setActive] = useState(false);
   const [projects, setProjects] = useState([]);
   const [models, setModels] = useState([]);
-  const [projectId, setProjectId] = useState(() => localStorage.getItem("pixice.activeProjectId"));
+  const [projectId, setProjectId] = useState(() => storage.getItem("pixice.activeProjectId"));
   const [requestedWorkflowId, setRequestedWorkflowId] = useState(null);
   const currentThreadIdRef = useRef(null);
   const pendingPreviewsRef = useRef(new Map());
@@ -49,7 +51,7 @@ export function WorkflowHost({ children }) {
 
   useEffect(() => {
     const sync = (event) => {
-      const nextProjectId = event?.detail ?? localStorage.getItem("pixice.activeProjectId");
+      const nextProjectId = event?.detail ?? storage.getItem("pixice.activeProjectId");
       setProjectId((current) => current === nextProjectId ? current : nextProjectId);
     };
     sync();
@@ -59,7 +61,7 @@ export function WorkflowHost({ children }) {
       window.removeEventListener("pixice:active-project-changed", sync);
       window.removeEventListener("storage", sync);
     };
-  }, []);
+  }, [storage]);
 
   useEffect(() => {
     if (projectId) void refreshCatalog();
@@ -122,16 +124,17 @@ export function WorkflowHost({ children }) {
     window.dispatchEvent(new CustomEvent("pixice:open-preview-tab", {
       detail: {
         workspaceId: targetWorkspaceId,
+        hostId: api?.remote?.hostId ?? "local",
         tab: {
-          id: `workflow:${pending.workflowId}`,
+          id: `${api?.remote?.hostId ?? "local"}:workflow:${pending.workflowId}`,
           kind: "workflow",
           title: pending.workflowName || "Workflow",
-          payload: pending
+          payload: { ...pending, hostId: api?.remote?.hostId ?? "local" }
         }
       }
     }));
     return true;
-  }, []);
+  }, [api]);
 
   useEffect(() => {
     const syncThread = (event) => {
@@ -160,6 +163,7 @@ export function WorkflowHost({ children }) {
         const workspaceId = payload.workspaceId ?? payload.threadId ?? currentThreadIdRef.current;
         if (!workspaceId) return;
         pendingPreviewsRef.current.set(workspaceId, {
+          hostId: api?.remote?.hostId ?? "local",
           projectId: payload.projectId,
           workflowId: payload.workflowId,
           workflowName: payload.workflowName,
@@ -172,6 +176,7 @@ export function WorkflowHost({ children }) {
       if (event.type === "WorkflowForegroundRequested") {
         if (!payload.threadId) return;
         pendingPreviewsRef.current.set(payload.threadId, {
+          hostId: api?.remote?.hostId ?? "local",
           projectId: payload.projectId,
           workflowId: payload.workflowId,
           workflowName: payload.workflowName,
@@ -185,12 +190,13 @@ export function WorkflowHost({ children }) {
 
   useEffect(() => {
     const openWorkspace = (event) => {
+      if (event.detail?.hostId !== undefined && event.detail.hostId !== (api?.remote?.hostId ?? "local")) return;
       setRequestedWorkflowId(event.detail?.workflowId ?? null);
       setActive(true);
     };
     window.addEventListener("pixice:open-workflow-workspace", openWorkspace);
     return () => window.removeEventListener("pixice:open-workflow-workspace", openWorkspace);
-  }, []);
+  }, [api]);
 
   const project = projects.find((candidate) => candidate.id === projectId) ?? null;
   const nav = navTarget ? createPortal(

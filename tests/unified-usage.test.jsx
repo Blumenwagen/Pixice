@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { collectUnifiedUsage, combineUsage, readInstanceUsage, validateUsageSummary, projectUsageSnapshot } from '../src/connect/unified-usage.js';
 import { saveInstance, forgetInstance } from '../src/connect/client.js';
 import { cacheUsage, cachedUsage } from '../src/connect/usage-cache.js';
-import { ConnectRoot, switchInstanceStorage } from '../src/connect/ConnectRoot.jsx';
+import { ConnectRoot } from '../src/connect/ConnectRoot.jsx';
 import { UsagePage } from '../src/App.jsx';
 
 const summary = (cost = 10, trackingDays = 10, overrides = {}) => ({
@@ -154,7 +154,6 @@ describe('durable usage snapshots', () => {
     const first = await collect({ instances: [instance('a')] });
     const checkedAt = first[0].checkedAt;
     expect(cachedUsage('a', 30).summary.stats.allTimeCostUsd).toBe(20);
-    switchInstanceStorage(null, 'another-host');
     mockRemote({ a: new Error('Offline') });
     const offline = await collect({ instances: [instance('a')], days: 7 });
     expect(offline[0]).toMatchObject({ cached: true, status: 'unavailable', checkedAt });

@@ -229,25 +229,31 @@ export function TaskPreviewContent({ api = getPixiceApi(), target, onClose, onOp
     : <TaskEditor key={`${target.taskId}:${target.scheduleProposal?.plannedStart ?? "saved"}`} api={api} target={target} onClose={onClose} onOpenWorkspace={onOpenWorkspace} onTitleChange={onTitleChange} tabbed={tabbed} />;
 }
 
-export function TaskPreviewHost({ children }) {
-  const api = getPixiceApi();
+export function TaskPreviewHost({ children, api: explicitApi = null }) {
+  const api = explicitApi ?? getPixiceApi();
   const open = useCallback((detail) => {
     if (!detail?.workspaceId || (!detail.taskId && !detail.proposalId)) return;
-    window.dispatchEvent(new CustomEvent("pixice:request-task-preview", { detail }));
+    const currentHostId = api?.remote?.hostId ?? "local";
+    const hostId = detail.hostId ?? api?.remote?.hostId ?? "local";
+    if (detail.hostId !== undefined && detail.hostId !== currentHostId) return;
+    const scopedDetail = { ...detail, hostId };
+    window.dispatchEvent(new CustomEvent("pixice:request-task-preview", { detail: scopedDetail }));
     const kind = detail.proposalId ? "plan" : "task";
     const entityId = detail.proposalId ?? detail.taskId;
+    const tabId = `${hostId}:${kind}:${entityId}`;
     window.dispatchEvent(new CustomEvent("pixice:open-preview-tab", {
       detail: {
         workspaceId: detail.workspaceId,
+        ...(hostId ? { hostId } : {}),
         tab: {
-          id: `${kind}:${entityId}`,
+          id: tabId,
           kind,
           title: kind === "plan" ? "Plan proposal" : "Work item",
-          payload: detail
+          payload: scopedDetail
         }
       }
     }));
-  }, []);
+  }, [api]);
   useEffect(() => {
     const custom = (event) => open(event.detail);
     window.addEventListener("pixice:task-preview-requested", custom);

@@ -14,7 +14,7 @@ import {
   MAX_PROMPT_ATTACHMENT_BYTES,
   appendAttachmentContext,
   attachmentProjectRoot,
-  stagePromptAttachments
+  stagePromptAttachmentsAsync
 } from "../runtime/prompt-attachments.mjs";
 import { AGENT_BEHAVIOR_IDS, agentBehaviorCatalog, composeAgentInstructions } from "../runtime/agent-behavior.mjs";
 import { CodexProvider } from "../providers/codex-provider.mjs";
@@ -78,7 +78,7 @@ import { installWorkflowRuntimeHost } from "../workflows/workflow-runtime-host.m
 
 // Application state lives in this service instance. Native UI and network transports
 // are adapters; neither owns provider execution, projects, approvals, or workflows.
-export function createApplication({ userDataPath, resourcesPath, version, platform, handlers, providerFactories = {} }) {
+export function createApplication({ userDataPath, resourcesPath, version, platform, handlers, providerFactories = {}, nativeReadiness = () => ({ available: false, reason: "The Pixice native helper is unavailable." }), transferStore = null }) {
   const events = new EventEmitter();
   let stopped = false;
   let started = false;
@@ -118,6 +118,7 @@ const threadPlans = new Map();
 const trayCompletionRevisions = new Map();
 const threadMonitorCache = new Map();
 const threadProjects = new Map();
+const projectDeletionTombstones = new Map();
 const pendingRequests = new Map();
 const pendingTaskNames = new Set();
 const scheduledThreadNames = new Set();
@@ -259,11 +260,15 @@ const promptInputSchema = {
   text: z.string().trim().max(100_000).default(""),
   images: z.array(imageDataUrlSchema).max(10).default([]),
   attachments: z.array(promptAttachmentSchema).max(MAX_PROMPT_ATTACHMENTS).default([]),
+  attachmentIds: z.array(z.string().uuid()).max(MAX_PROMPT_ATTACHMENTS).default([]),
   previewContext: previewContextSchema.optional()
 };
 const requirePromptInput = (value, context) => {
-  if (!value.text && value.images.length === 0 && value.attachments.length === 0) {
+  if (!value.text && value.images.length === 0 && value.attachments.length === 0 && value.attachmentIds.length === 0) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "A message or attachment is required" });
+  }
+  if (value.images.length + value.attachments.length + value.attachmentIds.length > MAX_PROMPT_ATTACHMENTS) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: `A message may contain at most ${MAX_PROMPT_ATTACHMENTS} attachments.` });
   }
 };
 const send = (type, payload = {}) => {
@@ -349,10 +354,12 @@ function runtimeRoots(project) {
   return [...new Set([...projectRoots(project), attachmentRoot])];
 }
 
-function preparePromptInput(value, project, threadId) {
+async function preparePromptInput(value, project, threadId, context = {}) {
   if (value.previewContext) previewContextRegistry?.set(threadId, value.previewContext);
-  const staged = stagePromptAttachments({
+  if (value.attachmentIds.length && !Array.isArray(context.stagedFiles)) throw new Error("Uploaded attachment IDs require an authenticated remote Connect request.");
+  const staged = await stagePromptAttachmentsAsync({
     attachments: value.attachments,
+    stagedFiles: context.stagedFiles ?? [],
     userDataPath: userDataPath,
     projectId: project.id,
     threadId
@@ -433,12 +440,26 @@ function projectForPath(target) {
     .sort((left, right) => right.root.length - left.root.length)[0]?.project ?? null;
 }
 
+function authoritativeThreadProjectId(threadId, cwd = null) {
+  if (!threadId || !database) return null;
+  const receiptProjectId = taskResults?.get(threadId)?.projectId;
+  if (receiptProjectId && database.getProject(receiptProjectId)) return receiptProjectId;
+  const binding = database.getThreadProviderBinding(threadId);
+  const project = projectForPath(cwd ?? binding?.cwd);
+  if (project) return project.id;
+  return null;
+}
+
 function rememberThread(project, thread, { loaded = false } = {}) {
   if (!thread?.id) return;
-  const cwd = realpathSync(thread.cwd ?? projectPrimaryRoot(project));
+  const binding = database.getThreadProviderBinding(thread.id);
+  const cwd = realpathSync(thread.cwd ?? binding?.cwd ?? projectPrimaryRoot(project));
   if (!isWithinProject(project, cwd)) throw new Error("Thread is outside the selected project");
+  const ownerProjectId = authoritativeThreadProjectId(thread.id, cwd);
+  if (ownerProjectId && ownerProjectId !== project.id) return false;
   threadSessions.remember(thread.id, cwd, { loaded });
   threadProjects.set(thread.id, project.id);
+  return true;
 }
 
 function withPersistedThreadName(thread) {
@@ -540,8 +561,82 @@ async function projectWithRepository(project) {
   return { ...project, repository: await inspectRepository(projectPrimaryRoot(project)) };
 }
 
-async function listProjects() {
-  return Promise.all(database.listProjects().map(projectWithRepository));
+async function listProjects(projectIds = null) {
+  const projects = database.listProjects().filter((project) => !Array.isArray(projectIds) || projectIds.includes(project.id));
+  return Promise.all(projects.map(projectWithRepository));
+}
+
+function overviewProjectForThread(threadId, cwd = null) {
+  const authoritativeProjectId = authoritativeThreadProjectId(threadId, cwd);
+  const authoritativeProject = authoritativeProjectId ? database.getProject(authoritativeProjectId) : null;
+  if (authoritativeProject) return authoritativeProject;
+  const knownProjectId = threadProjects.get(threadId);
+  const knownProject = knownProjectId ? database.getProject(knownProjectId) : null;
+  return knownProject ?? resolveThreadProject({ database, projectId: null, cwd, projectForPath });
+}
+
+function connectOverview() {
+  const pendingThreadIds = [...pendingRequests.values()]
+    .map(({ request }) => request?.params?.threadId)
+    .filter((threadId) => typeof threadId === "string" && threadId.length <= 256);
+  const activeThreadIds = [...activeTurns.keys()];
+  const snapshot = database.listConnectOverview({ limit: 200, threadIds: [...activeThreadIds, ...pendingThreadIds] });
+  const summaries = new Map(snapshot.providerThreads.map((thread) => [thread.id, thread]));
+  const receipts = new Map(snapshot.taskResults.map(({ threadId, data, updatedAt }) => [threadId, { ...(data ?? {}), updatedAt: data?.updatedAt ?? updatedAt }]));
+  const attention = new Set(pendingThreadIds);
+  const threadIds = new Set([...summaries.keys(), ...receipts.keys(), ...activeThreadIds, ...attention]);
+  const tasks = [...threadIds].map((threadId) => {
+    const summary = summaries.get(threadId);
+    const receipt = receipts.get(threadId);
+    const project = receipt?.projectId ? database.getProject(receipt.projectId) : overviewProjectForThread(threadId, summary?.cwd);
+    if (!project) return null;
+    const status = attention.has(threadId)
+      ? "waiting"
+      : activeTurns.has(threadId) || receipt?.status === "running" || summary?.status?.type === "active"
+        ? "running"
+        : receipt?.status === "failed"
+          ? "failed"
+          : "completed";
+    return {
+      threadId,
+      projectId: project.id,
+      title: String(database.getThreadName(threadId) ?? receipt?.title ?? summary?.name ?? summary?.preview ?? "Untitled task").slice(0, 240),
+      status,
+      updatedAt: receipt?.updatedAt ?? summary?.updatedAt ?? new Date().toISOString()
+    };
+  }).filter(Boolean)
+    .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)))
+    .slice(0, 200);
+  return {
+    projects: database.listProjects().slice(0, 200).map((project) => ({ id: project.id, displayName: project.displayName, canonicalPath: project.canonicalPath })),
+    tasks,
+    checkedAt: new Date().toISOString()
+  };
+}
+
+function connectProjectIdForEvent(event) {
+  const payload = event?.payload ?? {};
+  if (event?.type === "ProjectDeleted" && typeof payload.projectId === "string") {
+    const tombstone = projectDeletionTombstones.get(payload.projectId);
+    if (tombstone && tombstone.expiresAt > Date.now()) return tombstone.projectId;
+    if (tombstone) projectDeletionTombstones.delete(payload.projectId);
+    return null;
+  }
+  if (event?.type === "TaskReceiptUpdated" && typeof payload.threadId === "string") {
+    const receipt = taskResults?.get(payload.threadId);
+    if (receipt?.projectId && database.getProject(receipt.projectId)) return receipt.projectId;
+  }
+  const threadId = payload.threadId ?? payload.params?.threadId ?? payload.thread?.id ?? payload.item?.senderThreadId;
+  if (typeof threadId === "string") {
+    const projectId = authoritativeThreadProjectId(threadId, payload.thread?.cwd);
+    if (projectId) return projectId;
+  }
+  if (event?.type === "BoardUpdated") {
+    const task = payload.task?.id ? database.getBoardTask(payload.task.id) : null;
+    if (task?.projectId) return task.projectId;
+    if (typeof payload.projectId === "string" && database.getProject(payload.projectId)) return payload.projectId;
+  }
+  return null;
 }
 
 async function listProjectThreads(project, parameters = {}) {
@@ -799,6 +894,8 @@ async function ensureThreadLoaded(project, threadId) {
     return realpathSync(resumedCwd);
   });
   if (!isWithinProject(project, cwd)) throw new Error("Thread is outside the selected project");
+  const ownerProjectId = authoritativeThreadProjectId(threadId, cwd);
+  if (ownerProjectId && ownerProjectId !== project.id) throw new Error("Thread is outside the selected project");
   threadProjects.set(threadId, project.id);
   return cwd;
 }
@@ -1167,13 +1264,14 @@ function registerHandlers() {
     await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(text, []) });
     return { queued: true, threadId, turnId };
   });
-  handlers.handle("app:bootstrap", async () => ({
-    projects: await listProjects(),
+  handlers.handle("app:bootstrap", async (context = {}, _payload) => ({
+    projects: await listProjects(context.remote && context.access?.role === "observer" ? context.access.projectIds : null),
     models: await listModels().catch(() => []),
     runtime: { ...runtimeStatus, connected: runtime.connected },
     settings: database.getAppSettings(),
     agentBehaviors: agentBehaviorCatalog()
   }));
+  handlers.handle("app:overview", () => connectOverview());
   handlers.handle("app:settings:update", async (_event, payload) => {
     const value = appDefaultsSchema.parse(payload);
     const settings = database.saveAppSettings(value);
@@ -1219,7 +1317,11 @@ function registerHandlers() {
     return taskResults.replay({ ...value, model: selected.id ?? selected.model });
   });
   handlers.handle("tasks:interventions", () => ({
-    requests: [...pendingRequests.values()].map(({ request, displayRequest, generation }) => ({ ...(displayRequest ?? request), requestGeneration: generation, taskTitle: request.params?.threadId ? database.getThreadName(request.params.threadId) : null, projectId: threadProjects.get(request.params?.threadId) })),
+    requests: [...pendingRequests.values()].map(({ request, displayRequest, generation }) => {
+      const threadId = request.params?.threadId;
+      const projectId = connectProjectIdForEvent({ type: "AttentionRequired", payload: { ...(displayRequest ?? request), threadId } });
+      return { ...(displayRequest ?? request), requestGeneration: generation, taskTitle: threadId ? database.getThreadName(threadId) : null, projectId };
+    }),
   }));
   handlers.handle("providers:login", (_event, payload) => {
     const { provider } = z.object({ provider: z.string().trim().min(1).max(64) }).parse(payload);
@@ -1378,7 +1480,7 @@ function registerHandlers() {
     return iosRuntimeService.adopt(value.fromWorkspaceId, value.toWorkspaceId);
   });
 
-  handlers.handle("projects:list", () => listProjects());
+  handlers.handle("projects:list", (context = {}, _payload) => listProjects(context.remote && context.access?.role === "observer" ? context.access.projectIds : null));
   handlers.handle("projects:touch", (_event, payload) => {
     const { projectId } = idPayload.parse(payload);
     const project = database.touchProject(projectId);
@@ -1408,6 +1510,7 @@ function registerHandlers() {
   handlers.handle("projects:delete", async (_event, payload) => {
     const { projectId } = idPayload.parse(payload);
     const project = getProject(projectId);
+    projectDeletionTombstones.set(projectId, { projectId, expiresAt: Date.now() + 60 * 60_000 });
     const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
     integration.workflows.deleteProject(projectId);
     integration.credentialStore.deleteProject(projectId);
@@ -1714,37 +1817,54 @@ function registerHandlers() {
     return pixiceInstruments.delete(value.projectId, value.instrumentId);
   });
 
-  handlers.handle("threads:list", async (_event, payload) => {
+  handlers.handle("threads:list", async (context = {}, payload) => {
     const { projectId } = idPayload.parse(payload);
     const project = getProject(projectId);
     const response = await listProjectThreads(project);
+    const observer = context.remote && context.access?.role === "observer";
     const data = (response.data ?? []).map((thread) => {
+      const ownerProjectId = authoritativeThreadProjectId(thread.id, thread.cwd);
+      if (observer && ownerProjectId !== project.id) return null;
+      if (ownerProjectId && ownerProjectId !== project.id) return thread;
       rememberThread(project, thread);
       const plan = threadPlans.get(thread.id) ?? database.getThreadPlan(thread.id);
       return {
         ...reconcileThreadActivity(withPersistedThreadName(thread), activeTurns.get(thread.id)),
         planProgress: summarizeThreadPlan(plan)
       };
-    });
+    }).filter(Boolean);
     return { ...response, data };
   });
-  handlers.handle("threads:read", async (_event, payload) => {
+  handlers.handle("threads:read", async (context = {}, payload) => {
     const { projectId, threadId } = threadPayload.parse(payload);
     const project = getProject(projectId);
     const response = await runtime.request("thread/read", { threadId, includeTurns: true });
     if (!isWithinProject(project, response.thread.cwd)) throw new Error("Thread is outside the selected project");
-    await taskResults.observeThread(project, response.thread);
-    rememberThread(project, response.thread);
+    const ownerProjectId = authoritativeThreadProjectId(threadId, response.thread.cwd);
+    if (context.remote && context.access?.role === "observer" && ownerProjectId !== project.id) throw new Error("Thread is outside the selected project");
+    if (!ownerProjectId || ownerProjectId === project.id) {
+      await taskResults.observeThread(project, response.thread);
+      rememberThread(project, response.thread);
+    }
     const thread = projectRendererThread(withPersistedThreadName(response.thread));
     return { ...response, thread, plan: threadPlans.get(threadId) ?? database.getThreadPlan(threadId) };
   });
-  handlers.handle("threads:children", async (_event, payload) => {
+  handlers.handle("threads:children", async (context = {}, payload) => {
     const { projectId, threadId } = threadPayload.parse(payload);
     const project = getProject(projectId);
     if (!runtime.connected) return { data: [], nextCursor: null };
     const response = await listProjectThreads(project, { ancestorThreadId: threadId });
-    for (const thread of response.data ?? []) rememberThread(project, thread);
-    const data = await Promise.all((response.data ?? []).map(async (rawCandidate) => {
+    const observer = context.remote && context.access?.role === "observer";
+    const candidates = (response.data ?? []).filter((candidate) => {
+      const ownerProjectId = authoritativeThreadProjectId(candidate.id, candidate.cwd);
+      if (observer) return ownerProjectId === project.id;
+      return true;
+    });
+    for (const thread of candidates) {
+      const ownerProjectId = authoritativeThreadProjectId(thread.id, thread.cwd);
+      if (!ownerProjectId || ownerProjectId === project.id) rememberThread(project, thread);
+    }
+    const data = await Promise.all(candidates.map(async (rawCandidate) => {
       const candidate = withPersistedThreadName(rawCandidate);
       if (candidate.status?.type !== "notLoaded") return reconcileThreadActivity(candidate, activeTurns.get(candidate.id));
       const cached = threadMonitorCache.get(candidate.id);
@@ -1848,7 +1968,7 @@ function registerHandlers() {
     return response;
   });
 
-  handlers.handle("turns:start", async (_event, payload) => {
+  handlers.handle("turns:start", async (context = {}, payload) => {
     const value = threadPayload.extend({
       ...promptInputSchema,
       model: z.string().optional(),
@@ -1857,13 +1977,13 @@ function registerHandlers() {
       permissionMode: permissionModeSchema.default("workspace-write")
     }).superRefine(requirePromptInput).parse(payload);
     const project = getProject(value.projectId);
-    const prompt = preparePromptInput(value, project, value.threadId);
+    const prompt = await preparePromptInput(value, project, value.threadId, context);
     const response = await startTrackedTurn({
       project, threadId: value.threadId, input: buildCodexUserInput(prompt.text, prompt.images),
       text: value.text, model: value.model, effort: value.effort, serviceTier: value.serviceTier, permissionMode: value.permissionMode
     });
     if (pendingTaskNames.delete(value.threadId)) {
-      const attachmentCount = value.images.length + value.attachments.length;
+      const attachmentCount = value.images.length + value.attachments.length + value.attachmentIds.length;
       scheduleThreadName({ project, threadId: value.threadId, source: value.text || `${attachmentCount} attached file${attachmentCount === 1 ? "" : "s"}`, kind: "task" });
     }
     try {
@@ -1879,14 +1999,14 @@ function registerHandlers() {
     }
     return response;
   });
-  handlers.handle("turns:steer", async (_event, payload) => {
+  handlers.handle("turns:steer", async (context = {}, payload) => {
     const value = threadPayload.extend({
       turnId: z.string().min(1),
       ...promptInputSchema
     }).superRefine(requirePromptInput).parse(payload);
     const project = getProject(value.projectId);
     await ensureThreadLoaded(project, value.threadId);
-    const prompt = preparePromptInput(value, project, value.threadId);
+    const prompt = await preparePromptInput(value, project, value.threadId, context);
     taskResults.stopReplay(value.threadId, true);
     return runtime.request("turn/steer", {
       threadId: value.threadId,
@@ -2439,7 +2559,7 @@ function registerHandlers() {
     scheduleDelegatedThreadNames(event);
     sendRuntimeEvent(event.type, {
       ...event.payload,
-      projectId: threadProjects.get(threadId ?? event.payload?.thread?.id)
+      projectId: authoritativeThreadProjectId(threadId ?? event.payload?.thread?.id, event.payload?.thread?.cwd)
     });
   }, (error, event) => {
     const method = event?.payload?.method ?? event?.type ?? "unknown";
@@ -2497,7 +2617,8 @@ function registerHandlers() {
       }
     } else if (request.method === PIXICE_QUESTION_METHOD) kind = "pixice-question";
     pendingRequests.set(requestKey(request.id), { request, displayRequest, kind, generation: runtimeGeneration });
-    send("AttentionRequired", { ...displayRequest, taskTitle: request.params?.threadId ? database.getThreadName(request.params.threadId) : null, projectId: threadProjects.get(request.params?.threadId) });
+    const threadId = request.params?.threadId;
+    send("AttentionRequired", { ...displayRequest, taskTitle: threadId ? database.getThreadName(threadId) : null, projectId: threadId ? authoritativeThreadProjectId(threadId) : null });
     const settings = database.getAppSettings();
     if (settings.attentionNotifications !== false) {
       void platform.notify({
@@ -2542,10 +2663,32 @@ function registerHandlers() {
     backup: ({ currentVersion, targetVersion }) => createUpdateDataBackup({ userDataPath, currentVersion, targetVersion, reason: "app-update" }),
     freeze: (value) => { acceptingWork = !value; if (pixiceBridge?.workflowIntegration) pixiceBridge.workflowIntegration.workflows.acceptingRuns = !value; },
     state: () => ({ activeTurns: activeTurns.size, startingTurns: startingTurns.size, activeWorkflows: pixiceBridge?.workflowIntegration?.workflows.activeRuns.size ?? 0, runtime: { ...runtimeStatus, connected: Boolean(runtime?.connected) }, workflowError: pixiceBridge?.workflowError?.message ?? null }),
-    attention: () => [...pendingRequests.values()].map(({ request, displayRequest, generation }) => ({ ...(displayRequest ?? request), requestGeneration: generation, projectId: threadProjects.get(request.params?.threadId) })),
-    remoteInvoker: (hostId) => createRemoteInvoker({ handlers: { get: (channel) => handlers.entries.has(channel) ? (_event, payload) => handlers.invoke(channel, payload, { remote: true }) : undefined },
-      validateThread: createRemoteThreadValidator({ getProject, contains: isWithinProject, request: (method, payload) => runtime.request(method, payload) }),
+    attention: () => [...pendingRequests.values()].map(({ request, displayRequest, generation }) => {
+      const threadId = request.params?.threadId;
+      return { ...(displayRequest ?? request), requestGeneration: generation, projectId: threadId ? authoritativeThreadProjectId(threadId) : null };
+    }),
+    knownProjectIds: () => database?.listProjects().map((project) => project.id) ?? [],
+    connectReadiness: () => {
+      const connected = runtime?.connected === true;
+      const runtimeReason = connected ? null : String(runtimeStatus?.error ?? `Provider runtime is ${runtimeStatus?.state ?? "unavailable"}.`).slice(0, 240);
+      let browserStatus;
+      try { browserStatus = nativeReadiness(); }
+      catch { browserStatus = { available: false, reason: "The Pixice native helper is unavailable." }; }
+      const browserAvailable = browserStatus?.available === true;
+      const browserCanStart = browserAvailable || browserStatus?.canStart === true;
+      const browserReason = browserAvailable ? null : String(browserStatus?.reason ?? "The Pixice native helper is unavailable.").slice(0, 240);
+      return {
+        provider: { connected, reason: runtimeReason },
+        browser: { available: browserAvailable, canStart: browserCanStart, reason: browserReason }
+      };
+    },
+    resolveConnectEventProject: connectProjectIdForEvent,
+    connectProjectExists: (projectId) => database ? Boolean(database.getProject(projectId)) : true,
+    connectFileOptions: (projectId, reference, allowExternal = false) => previewFileOptions(projectId, reference, allowExternal),
+    connectTaskReceipt: (threadId) => taskResults?.get(threadId) ?? null,
+    remoteInvoker: (hostId) => createRemoteInvoker({ handlers: { get: (channel) => handlers.entries.has(channel) ? (_event, payload, context) => handlers.invoke(channel, payload, { remote: true, ...context }) : undefined },
+      validateThread: createRemoteThreadValidator({ getProject, contains: isWithinProject, request: (method, payload) => runtime.request(method, payload), resolveOwner: ({ threadId, thread }) => authoritativeThreadProjectId(threadId, thread.cwd) }),
       pendingRequest: (id) => pendingRequests.get(requestKey(id)), generation: () => runtimeGeneration,
-      activeTurnId: (id) => activeTurns.get(id), fileOptions: previewFileOptions, hostId })
+      activeTurnId: (id) => activeTurns.get(id), fileOptions: previewFileOptions, hostId, transferStore })
   };
 }

@@ -6,7 +6,7 @@ import { previewFileTarget } from '../runtime/preview-files.mjs';
 import { OPERATIONS, PROTOCOL_VERSION } from './protocol.mjs';
 const RESPONSES = new Set(['approvals.resolve', 'requests.respond', 'questions.respond', 'elicitations.respond']);
 
-export function createRemoteThreadValidator({ getProject, request, contains }) {
+export function createRemoteThreadValidator({ getProject, request, contains, resolveOwner }) {
   return async (payload) => {
     const { projectId, threadId } = z.object({ projectId: z.string().min(1), threadId: z.string().min(1) }).parse(payload);
     const project = getProject(projectId);
@@ -14,11 +14,13 @@ export function createRemoteThreadValidator({ getProject, request, contains }) {
     // for newly created Codex threads and also triggers receipt hydration in IPC.
     const { thread } = await request('thread/read', { threadId, includeTurns: false });
     if (thread?.id !== threadId || !thread.cwd || !contains(project, thread.cwd)) throw new Error('Thread is outside the selected project');
+    const ownerProjectId = await resolveOwner?.({ projectId, threadId, thread });
+    if (ownerProjectId && ownerProjectId !== projectId) throw new Error('Thread is outside the selected project');
   };
 }
 
-export function createRemoteInvoker({ handlers, pendingRequest, generation, activeTurnId, fileOptions, hostId, validateThread }) {
-  return async (operation, payload) => {
+export function createRemoteInvoker({ handlers, pendingRequest, generation, activeTurnId, fileOptions, hostId, validateThread, transferStore }) {
+  return async (operation, payload, context = {}) => {
     if (operation === 'projects.directories') {
       const value = z.object({ path: z.string().max(4096).optional() }).strict().parse(payload ?? {});
       const directory = await realpath(value.path || homedir());
@@ -37,11 +39,16 @@ export function createRemoteInvoker({ handlers, pendingRequest, generation, acti
       previewFileTarget({ ...fileOptions(value.projectId, value.path), allowExternal: false });
       if (operation === 'files.write' && !Number.isFinite(payload.expectedMtimeMs)) throw new Error('Read the current file before saving it.');
     }
-    if (payload?.threadId && payload?.projectId && !['threads.read', 'threads.children', 'threads.create'].includes(operation)) {
+    if (['turns.start', 'turns.steer'].includes(operation) && Array.isArray(payload?.attachmentIds) && payload.attachmentIds.length) {
+      if (!context?.deviceId || !transferStore) throw new Error('Uploaded attachment IDs require an authenticated remote Connect request.');
+      const stagedFiles = await transferStore.resolveAttachmentIds({ deviceId: context.deviceId, projectId: payload.projectId, attachmentIds: payload.attachmentIds });
+      context = { ...context, stagedFiles };
+    }
+    if (payload?.threadId && payload?.projectId && !['threads.create', 'tasks.receipt'].includes(operation)) {
       await validateThread({ projectId: payload.projectId, threadId: payload.threadId });
     }
     if (['turns.steer', 'turns.interrupt'].includes(operation) && activeTurnId(payload.threadId) !== payload.turnId) throw new Error('That turn is no longer active. Refresh the task.');
-    const result = await handler(null, payload);
+    const result = await handler(null, payload, { remote: true, ...context });
     if (operation === 'app.bootstrap') {
       const { providerExecutablePaths, ...settings } = result.settings ?? {};
       return { ...result, settings, remote: { protocol: PROTOCOL_VERSION, hostId: hostId() } };

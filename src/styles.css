@@ -772,6 +772,22 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
   overflow: hidden;
   transition: grid-template-columns 280ms var(--ease);
 }
+.origin-task-workspace {
+  position: relative;
+  z-index: 0;
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.origin-task-workspace > .task-workspace { width: 100%; height: 100%; }
+.origin-task-workspace[data-execution-active="true"] {
+  visibility: hidden;
+  pointer-events: none;
+}
 .main-canvas {
   position: relative;
   min-width: 0;
@@ -850,6 +866,20 @@ body.sidebar-resizing .sidebar-resizer::after { background: var(--primary); }
 .preview-mode .composer-fast-toggle span,
 .preview-mode .composer-picker.permission .picker-trigger-label,
 .preview-mode .composer-picker.permission .picker-chevron { display: none; }
+.preview-mode .composer-dock {
+  right: auto;
+  bottom: 12px;
+  left: 17px;
+  width: calc(100% - 34px);
+}
+.preview-mode .composer-dock > .composer {
+  right: auto;
+  bottom: auto;
+  left: auto;
+  width: 100%;
+  padding: 12px 12px 9px;
+  border-radius: 18px;
+}
 
 .preview-resizer {
   position: relative;
@@ -1112,6 +1142,10 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .file-actions button:disabled { cursor: default; opacity: .35; }
 .file-actions .save-file:not(:disabled) { color: #111; background: var(--foreground); }
 .file-editor-shell { position: relative; min-height: 0; display: flex; flex: 1; }
+.file-surface { min-height: 0; display: flex; flex: 1; flex-direction: column; }
+.file-surface-actions { min-height: 42px; padding: 6px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+.file-surface-actions .file-save-error { position: static; min-height: 0; padding: 6px 8px; }
+.file-download-progress { color: var(--quiet); font-size: 10px; }
 .file-editor {
   width: 100%;
   min-height: 0;
@@ -1805,6 +1839,30 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   transform: none !important;
   transition: none !important;
 }
+.composer-dock {
+  position: absolute;
+  right: 0;
+  bottom: 16px;
+  left: 0;
+  z-index: 8;
+  width: min(var(--conversation-width), calc(100% - 64px));
+  margin: auto;
+}
+.composer-dock > .composer {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  margin: 0;
+}
+.execution-preflight {
+  min-height: 28px;
+  margin: 0 4px 7px;
+  display: flex;
+  align-items: center;
+}
+.execution-preflight .execution-target-control { gap: 8px; }
+.execution-preflight .execution-target-control label { font-size: 10px; }
+.execution-preflight .execution-target-control select { background: transparent; }
 .composer {
   position: absolute;
   right: 0;
@@ -2077,6 +2135,21 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .composer-attachment > button svg { display: block; transform: translate(-.5px, -.5px); }
 .composer-attachment > button:hover { background: white; transform: scale(1.06); }
 .composer-attachment > button:active { transform: scale(.94); }
+.composer-attachment > .composer-reselect {
+  top: auto;
+  right: 4px;
+  bottom: 4px;
+  width: auto;
+  height: auto;
+  padding: 3px 5px;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--surface) 90%, var(--primary) 10%);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: none;
+  font-size: 8px;
+}
+.composer-attachment > .composer-reselect:hover { background: var(--surface-raised); transform: none; }
 .slash-command-menu {
   position: absolute;
   right: 0;
@@ -2168,6 +2241,11 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   font-size: 10px;
   line-height: 1.35;
 }
+.composer-upload-status { margin: -3px 2px 7px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; }
+.composer-upload-status > span { color: var(--foreground); }
+.composer-upload-status small { color: var(--quiet); }
+.composer-upload-actions { margin-left: auto; display: flex; gap: 5px; }
+.composer-upload-actions .settings-action { min-height: 24px; padding: 3px 7px; font-size: 9px; }
 .composer-picker { position: relative; display: inline-flex; min-width: 0; }
 .picker-trigger {
   height: 30px;
@@ -3291,11 +3369,19 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   .pixice-app[data-inspector-open="true"] { --inspector-chat-left: 24px; --inspector-chat-width: calc(100% - 340px); }
   .pixice-app[data-inspector-open="true"] .conversation-column { width: var(--inspector-chat-width); margin-right: 320px; margin-left: var(--inspector-chat-left); }
   .pixice-app[data-inspector-open="true"] .composer { right: auto; left: var(--inspector-chat-left); width: var(--inspector-chat-width); margin: 0; }
+  .pixice-app[data-inspector-open="true"] .composer-dock { right: auto; left: var(--inspector-chat-left); width: var(--inspector-chat-width); margin: 0; }
+  .pixice-app[data-inspector-open="true"] .composer-dock > .composer { right: auto; left: auto; width: 100%; margin: 0; }
   .inspector { width: 288px; }
   .usage-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .usage-stat-grid article:nth-child(4) { padding-left: 0; border-left: 0; }
   .usage-stat-grid article:nth-child(n + 4) { padding-top: 13px; border-top: 1px solid color-mix(in oklab, var(--border) 70%, transparent); }
   .usage-chart-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .composer-dock { right: 12px; bottom: 12px; left: 12px; width: auto; }
+  .execution-preflight { margin-inline: 0; }
+  .execution-preflight .execution-target-control { flex-wrap: wrap; }
 }
 
 @media (max-width: 640px) {
@@ -3328,7 +3414,8 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .composer-question[data-asynchronous="true"] .question-footer { flex-wrap: wrap; }
 
 /* Questions occupy layout space so their controls never cover the last reply. */
-.main-canvas:has(> .composer[data-question-present="true"]) > .composer {
+.main-canvas:has(> .composer[data-question-present="true"]) > .composer,
+.main-canvas:has(> .composer-dock .composer[data-question-present="true"]) > .composer-dock {
   position: relative;
   inset: auto;
   flex: none;

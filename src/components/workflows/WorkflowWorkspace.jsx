@@ -312,7 +312,7 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
   };
 }
 
-function WorkflowEditor({ api, projectId, workflowId, workflows = EMPTY_WORKFLOW_LIST, models, compact = false, onSaved, onDeleted, onDelete }) {
+function WorkflowEditor({ api, projectId, workflowId, workflows = EMPTY_WORKFLOW_LIST, models, compact = false, hostId = "local", previewWorkspaceId = null, onSaved, onDeleted, onDelete }) {
   const editor = useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted });
   const [loadedWorkflows, setLoadedWorkflows] = useState(workflows);
 
@@ -351,6 +351,8 @@ function WorkflowEditor({ api, projectId, workflowId, workflows = EMPTY_WORKFLOW
         savingState={editor.savingState}
         generation={editor.generation}
         compact={compact}
+        hostId={hostId}
+        previewWorkspaceId={previewWorkspaceId}
         onChange={editor.change}
         onGenerate={editor.generateWorkflow}
         onRun={editor.runWorkflow}
@@ -555,7 +557,7 @@ export function WorkflowWorkspace({ api = getPixiceApi(), projectId, projectName
   );
 }
 
-export function WorkflowPreview({ api = getPixiceApi(), projectId, workflowId, workflowName = "Workflow", models = EMPTY_WORKFLOW_LIST, reason = "open", onOpenWorkspace, onClose, onTitleChange, tabbed = false }) {
+export function WorkflowPreview({ api = getPixiceApi(), projectId, workflowId, workflowName = "Workflow", models = EMPTY_WORKFLOW_LIST, reason = "open", hostId = "local", previewWorkspaceId = null, onOpenWorkspace, onClose, onTitleChange, tabbed = false }) {
   const [title, setTitle] = useState(workflowName || "Workflow");
   const handleSaved = useCallback((saved) => setTitle(saved.name), []);
 
@@ -583,6 +585,8 @@ export function WorkflowPreview({ api = getPixiceApi(), projectId, workflowId, w
           projectId={projectId}
           workflowId={workflowId}
           models={models}
+          hostId={hostId}
+          previewWorkspaceId={previewWorkspaceId}
           compact
           onSaved={handleSaved}
           onDeleted={onClose}

@@ -1365,6 +1365,46 @@ export class PixiceDatabase {
     });
   }
 
+  listConnectOverview({ limit = 200, threadIds = [] } = {}) {
+    const boundedLimit = Math.min(200, Math.max(1, Math.floor(Number(limit) || 200)));
+    const pinned = [...new Set((Array.isArray(threadIds) ? threadIds : [])
+      .filter((id) => typeof id === "string" && id.length > 0 && id.length <= 256))].slice(0, 200);
+    const mapThread = (row) => {
+      const summary = providerThreadSummary(parsedJson(row.summary, {}));
+      return {
+        ...summary,
+        id: row.thread_id,
+        providerThreadId: row.provider_thread_id,
+        cwd: row.cwd,
+        provider: row.provider,
+        forkedFromId: summary.forkedFromId ?? row.forked_from_id ?? null,
+        createdAt: summary.createdAt ?? row.created_at,
+        updatedAt: summary.updatedAt ?? row.updated_at
+      };
+    };
+    const recentThreads = this.db.prepare(`
+      SELECT bindings.*, snapshots.summary
+      FROM thread_provider_bindings AS bindings
+      JOIN provider_thread_snapshots AS snapshots ON snapshots.thread_id = bindings.thread_id
+      ORDER BY bindings.updated_at DESC LIMIT ?
+    `).all(boundedLimit).map(mapThread);
+    const pinnedThreads = pinned.length ? this.db.prepare(`
+      SELECT bindings.*, snapshots.summary
+      FROM thread_provider_bindings AS bindings
+      JOIN provider_thread_snapshots AS snapshots ON snapshots.thread_id = bindings.thread_id
+      WHERE bindings.thread_id IN (${pinned.map(() => "?").join(",")})
+    `).all(...pinned).map(mapThread) : [];
+    const recentResults = this.db.prepare("SELECT thread_id, data, updated_at FROM task_results ORDER BY updated_at DESC LIMIT ?").all(boundedLimit);
+    const pinnedResults = pinned.length ? this.db.prepare(`
+      SELECT thread_id, data, updated_at FROM task_results
+      WHERE thread_id IN (${pinned.map(() => "?").join(",")})
+    `).all(...pinned) : [];
+    const taskResults = [...new Map([...recentResults, ...pinnedResults].map((row) => [row.thread_id, row])).values()]
+      .map((row) => ({ threadId: row.thread_id, updatedAt: row.updated_at, data: parsedJson(row.data, null) }))
+      .filter((row) => row.data && typeof row.data === "object");
+    return { providerThreads: [...new Map([...recentThreads, ...pinnedThreads].map((thread) => [thread.id, thread])).values()], taskResults };
+  }
+
   getProviderThreadSummary(threadId) {
     const row = this.db.prepare(`
       SELECT snapshots.summary, bindings.forked_from_id

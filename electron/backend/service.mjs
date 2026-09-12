@@ -12,6 +12,10 @@ import { ConnectServer } from '../connect/server.mjs';
 import { ConnectTunnel } from '../connect/tunnel.mjs';
 import { APPLICATION_OPERATIONS, APPLICATION_READ_OPERATIONS } from '../connect/application-protocol.mjs';
 import { PROTOCOL_VERSION } from '../connect/protocol.mjs';
+import { TransferStore } from '../connect/transfer-store.mjs';
+import { createPushNotificationService } from '../connect/push-notifications.mjs';
+import { normalizeExternalOrigin } from '../connect/push-contract.mjs';
+import { canAccessProject, persistedDeviceAccess } from '../connect/access-policy.mjs';
 
 export async function startService(options) {
   const ownership = await acquireServiceOwnership(options.dataDirectory);
@@ -19,24 +23,38 @@ export async function startService(options) {
   catch (error) { await ownership.release(); throw error; }
 }
 async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory, version = 'development', buildId = version,
-  launchNative, nativeConfiguration, providerFactories, ownership, platform: suppliedPlatform, environment = process.env, onStopped = () => {} }) {
+  launchNative, nativeConfiguration, providerFactories, pushSender, pushWebPushImpl, ownership, platform: suppliedPlatform, environment = process.env, onStopped = () => {} }) {
   const { paths, owner } = ownership;
   const registry = new ApplicationRegistry(); const control = new ApplicationRegistry();
   const native = new NativeBridge({ launch: launchNative });
   const platform = suppliedPlatform ?? createNativePlatform({ native, directory: paths.data, environment });
-  const application = createApplication({ userDataPath: paths.data, resourcesPath, version, platform, handlers: registry, providerFactories });
+  let application;
+  const transferStore = new TransferStore({ directory: path.join(paths.data, 'connect', 'transfers'), projectExists: (projectId) => application?.connectProjectExists?.(projectId) ?? true });
+  application = createApplication({ userDataPath: paths.data, resourcesPath, version, platform, handlers: registry, providerFactories, transferStore,
+    nativeReadiness: () => {
+      const status = native.status();
+      return { available: status.connected === true, canStart: typeof launchNative === 'function', reason: status.connected ? null : "The Pixice native helper is unavailable." };
+    } });
   let phase = 'starting'; let stopped = false; let shutdownPromise; let descriptor; let startupTask;
   let resolveReady, rejectReady;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   // Consumers may attach while startup is still in progress, including the native
   // helper needed by a configured OS facility. Core calls wait for readiness.
   ready.catch(() => {});
+  let pushService;
   const remote = new ConnectServer({ directory: path.join(paths.data, 'connect'), clientDirectory, version,
     tlsFiles: environment.PIXICE_CONNECT_TLS_CERT || environment.PIXICE_CONNECT_TLS_KEY
       ? { cert: environment.PIXICE_CONNECT_TLS_CERT, key: environment.PIXICE_CONNECT_TLS_KEY } : undefined,
+    readiness: () => application.connectReadiness(),
+    knownProjectIds: () => application.knownProjectIds(),
+    projectExists: (projectId) => application.connectProjectExists(projectId),
+    resolveFile: (projectId, reference, allowExternal) => application.connectFileOptions(projectId, reference, allowExternal),
+    resolveEventProject: (event) => application.resolveConnectEventProject(event),
+    transferStore,
     attention: application.attention,
     invoke: application.remoteInvoker(() => remote.state.hostId),
-    onChange: (status) => publish({ type: 'ConnectStatus', payload: { ...status, tunnel: tunnel.status() } }) });
+    onDeviceRevoked: (deviceId) => pushService?.revokeDevice(deviceId),
+    onChange: (status) => { void pushService?.revalidateSubscriptions(); publish({ type: 'ConnectStatus', payload: { ...status, tunnel: tunnel.status() } }); } });
   if (!existsSync(path.join(paths.data, 'connect/connect.json'))) remote.save();
   const token = randomBytes(32).toString('base64url');
   // Desktop/native RPC and streamed events share this private, authenticated
@@ -44,6 +62,12 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
   const local = new ConnectServer({ directory: paths.directory, clientDirectory, version, persist: false, apiRateLimit: 60_000,
     initialState: { enabled: true, port: 0, host: '127.0.0.1', hostId: remote.state.hostId,
       devices: [{ id: 'local-owner', name: 'Local desktop and CLI', tokenHash: createHash('sha256').update(token).digest('hex'), expiresAt: Number.MAX_SAFE_INTEGER }] },
+    readiness: () => application.connectReadiness(),
+    knownProjectIds: () => application.knownProjectIds(),
+    projectExists: (projectId) => application.connectProjectExists(projectId),
+    resolveFile: (projectId, reference, allowExternal) => application.connectFileOptions(projectId, reference, allowExternal),
+    resolveEventProject: (event) => application.resolveConnectEventProject(event),
+    transferStore,
     operations: APPLICATION_OPERATIONS, readOperations: APPLICATION_READ_OPERATIONS, eventFilter: () => true,
     attention: application.attention,
     invoke: async (operation, payload) => {
@@ -54,7 +78,48 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
     } });
   const tunnel = new ConnectTunnel({ directory: path.join(paths.data, 'connect'), server: remote,
     onChange: () => publish({ type: 'ConnectStatus', payload: { ...remote.status(), tunnel: tunnel.status() } }) });
-  function publish(event) { const envelope = { at: new Date().toISOString(), ...event }; local.publish(envelope); remote.publish(envelope); }
+  pushService = createPushNotificationService({
+    directory: path.join(paths.data, 'connect'),
+    hostId: remote.state.hostId,
+    getCurrentConfig: () => ({
+      publicUrl: remote.state.publicUrl,
+      contact: environment.PIXICE_PUSH_CONTACT || environment.PIXICE_CONNECT_CONTACT,
+      allowedOrigins: [remote.state.publicUrl, ...(remote.state.origins ?? [])]
+    }),
+    sender: pushSender,
+    webPushImpl: pushWebPushImpl,
+    authorizeDelivery: async ({ deviceId, origin, hostId, projectId, threadId }) => {
+      if (hostId !== remote.state.hostId || !remote.state.enabled || !remote.server?.listening) return false;
+      const device = remote.state.devices.find((candidate) => candidate.id === deviceId);
+      const access = persistedDeviceAccess(device);
+      if (!device || !access || device.expiresAt <= Date.now()) return false;
+      const allowedOrigins = [remote.state.publicUrl, ...(remote.state.origins ?? [])].map(normalizeExternalOrigin).filter(Boolean);
+      if (!allowedOrigins.includes(origin)) return false;
+      if (!application.connectProjectExists(projectId)) return false;
+      const authoritative = application.resolveConnectEventProject({ type: threadId ? 'TaskUpdated' : 'AttentionRequired', payload: { projectId, threadId } });
+      if (authoritative !== projectId) return false;
+      return canAccessProject(access, projectId);
+    }
+  });
+  remote.pushService = pushService;
+  function publish(event) {
+    const envelope = { at: new Date().toISOString(), ...event };
+    local.publish(envelope); remote.publish(envelope);
+    if (pushService && event.type === 'AttentionRequired') {
+      const payload = event.payload ?? {};
+      const projectId = application.resolveConnectEventProject(event) ?? payload.projectId;
+      const threadId = payload.threadId;
+      const identity = payload.requestId ?? payload.id;
+      if (projectId && threadId && identity) void pushService.sendEvent({ type: 'attention', hostId: remote.state.hostId, projectId, threadId, eventId: `attention:${String(identity).slice(0, 96)}` }).catch(() => {});
+    } else if (pushService && event.type === 'TaskReceiptUpdated' && event.payload?.threadId) {
+      const receipt = application.connectTaskReceipt(event.payload.threadId);
+      if (receipt?.status === 'completed') {
+        const projectId = application.resolveConnectEventProject(event) ?? receipt.projectId;
+        const identity = receipt.revision ?? event.payload.updatedAt ?? event.payload.threadId;
+        if (projectId) void pushService.sendEvent({ type: 'task-completed', hostId: remote.state.hostId, projectId, threadId: event.payload.threadId, eventId: `completed:${String(identity).slice(0, 96)}` }).catch(() => {});
+      }
+    }
+  }
   application.events.on('event', publish);
   native.on('event', publish);
   native.on('status', (status) => publish({ type: 'NativeState', payload: status }));
@@ -83,7 +148,8 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
   control.handle('service:prepare-update', (_context, payload) => requestStop(payload, 'update'));
   control.handle('connect:status', () => ({ ...remote.status(), tunnel: tunnel.status(), service: status() }));
   control.handle('connect:configure', async (_context, payload) => { await tunnel.stop(); return remote.configure(payload); });
-  control.handle('connect:pair', () => remote.pairOffer());
+  control.handle('connect:pair', (_context, payload) => remote.pairOffer(payload));
+  control.handle('connect:renew', (_context, payload) => remote.renew(z.object({ id: z.string().trim().min(1).max(256) }).strict().parse(payload)));
   control.handle('connect:revoke', (_context, payload) => remote.revoke(z.object({ id: z.string().optional(), all: z.boolean().optional() }).strict().parse(payload)));
   control.handle('connect:tunnel:start', () => tunnel.start());
   control.handle('connect:tunnel:stop', () => tunnel.stop());
@@ -95,11 +161,13 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
       const current = application.state();
       if (!force && (current.activeTurns || current.startingTurns || current.activeWorkflows)) throw new Error('Active work is still running. Finish it first or explicitly interrupt it.');
       phase = 'stopping'; application.freeze(true);
+      await pushService?.close().catch(() => {});
       if (startupTask) { if (!native.status().connected) native.close(); await startupTask.catch(() => {}); }
       if (force) await application.quiesce();
       await registry.drain();
       try {
         await application.stop({ force });
+        await transferStore.close().catch(() => {});
         await tunnel.stop();
         await remote.stop();
         if (native.status().connected) {
@@ -133,7 +201,7 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
       phase = 'failed'; console.error('Pixice service startup failed:', error.message);
       await stop({ force: true }).catch(() => {});
     });
-    return { ready, stop, status, descriptor, paths, application, local, remote, native, tunnel };
+    return { ready, stop, status, descriptor, paths, application, local, remote, native, tunnel, transferStore, pushService };
   } catch (error) {
     rejectReady(error); await stop({ force: true }).catch(() => {}); throw error;
   }

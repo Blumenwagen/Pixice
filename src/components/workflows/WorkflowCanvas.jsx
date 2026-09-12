@@ -392,6 +392,8 @@ export function WorkflowCanvas({
   savingState = "saved",
   generation = { state: "idle" },
   compact = false,
+  hostId = "local",
+  previewWorkspaceId = null,
   onChange,
   onGenerate,
   onRun,
@@ -627,20 +629,20 @@ export function WorkflowCanvas({
   const runOutput = typeof run?.output === "string" ? run.output : stringifyWorkflowValue(run?.output);
   const runProposal = run?.output?.proposal ?? null;
   const openRunProposal = useCallback(() => {
-    const workspaceId = document.querySelector(".pixice-app")?.dataset.activeThreadId;
-    if (!workspaceId || !runProposal?.id) return;
+    if (!previewWorkspaceId || !runProposal?.id) return;
     window.dispatchEvent(new CustomEvent("pixice:task-preview-requested", {
       detail: {
+        hostId,
         projectId: workflow.projectId,
         proposalId: runProposal.id,
-        workspaceId,
-        threadId: workspaceId,
+        workspaceId: previewWorkspaceId,
+        threadId: previewWorkspaceId,
         reason: "workflow-plan",
         actorKind: "workflow",
         actorId: workflow.id
       }
     }));
-  }, [runProposal?.id, workflow.id, workflow.projectId]);
+  }, [hostId, previewWorkspaceId, runProposal?.id, workflow.id, workflow.projectId]);
 
   return (
     <section className={`${styles.editor} ${compact ? styles.compactEditor : ""}`}>

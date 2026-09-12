@@ -2,6 +2,24 @@ import { useUnifiedUsage } from "./connect/useUnifiedUsage.js";
 import { RemoteBrowserSurface } from "./connect/RemoteBrowserSurface.jsx";
 import { ConnectionsSettings } from "./connect/ConnectionsSettings.jsx";
 import { getPixiceApi } from "./connect/client.js";
+import { useConnect } from "./connect/ConnectRoot.jsx";
+import { createWorkspaceStorage, listRemoteThreadLinks, loadRemoteThreadLinks, upsertRemoteThreadLink } from "./connect/execution-storage.js";
+import {
+  attachmentPolicy,
+  createAttachmentScope,
+  createComposerAttachment,
+  disposeComposerAttachment,
+  prepareSubmissionAttachments,
+  requestPayloadWithAttachments,
+  restoreAttachmentMetadata,
+  resumeAttachmentUploads,
+  serializeAttachmentMetadata,
+  transferScopeKey,
+  canDownloadRemoteFile,
+  downloadRemoteFile,
+  assertSubmissionRequestBudget,
+  sha256File
+} from "./connect/transfer-client.js";
 import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useContext } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import {
@@ -73,6 +91,7 @@ const MAX_COMPOSER_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MIN_COMPOSER_TEXTAREA_HEIGHT = 24;
 const MAX_COMPOSER_TEXTAREA_HEIGHT = 240;
 const MAX_RETAINED_PREVIEW_WORKSPACES = 2;
+const PROSPECTIVE_THREAD_ID = "00000000-0000-0000-0000-000000000000";
 const THREAD_COMPLETIONS_SEEN_KEY = "pixice.threadCompletionsSeen";
 const THREAD_COMPLETIONS_SEEN_BASELINE_KEY = "__baselineAt";
 const THREAD_MESSAGE_RECENCY_KEY = "pixice.threadMessageRecency";
@@ -304,9 +323,9 @@ const SLASH_COMMANDS = [
   { name: "clear", description: "Clear the surface and start a new chat" }
 ];
 
-function loadPreferences() {
+function loadPreferences(storage = localStorage) {
   try {
-    const saved = JSON.parse(localStorage.getItem("pixice.preferences") ?? "{}");
+    const saved = JSON.parse(storage.getItem("pixice.preferences") ?? "{}");
     const preferences = { ...DEFAULT_PREFERENCES, ...saved };
     preferences.threadCleanupAgeDays = normalizeThreadCleanupAgeDays(preferences.threadCleanupAgeDays);
     Object.entries({ ...APPEARANCE_PREFERENCE_OPTIONS, ...BEHAVIOR_PREFERENCE_OPTIONS }).forEach(([key, options]) => {
@@ -326,18 +345,18 @@ function threadConfigurationKey(threadId) {
   return `pixice.threadConfiguration.${threadId}`;
 }
 
-function loadThreadConfiguration(threadId) {
+function loadThreadConfiguration(threadId, storage = localStorage) {
   if (!threadId) return null;
   try {
-    return JSON.parse(localStorage.getItem(threadConfigurationKey(threadId)) ?? "null");
+    return JSON.parse(storage.getItem(threadConfigurationKey(threadId)) ?? "null");
   } catch {
     return null;
   }
 }
 
-function saveThreadConfiguration(threadId, configuration) {
+function saveThreadConfiguration(threadId, configuration, storage = localStorage) {
   if (!threadId) return;
-  localStorage.setItem(threadConfigurationKey(threadId), JSON.stringify(configuration));
+  storage.setItem(threadConfigurationKey(threadId), JSON.stringify(configuration));
 }
 
 function resolveReasoningEffort(candidate, model, fallback) {
@@ -491,10 +510,10 @@ function threadCompletionRevision(candidate) {
   return String(candidate.updatedAt ?? `status:${status}`);
 }
 
-function loadSeenThreadCompletions() {
+function loadSeenThreadCompletions(storage = localStorage) {
   let value = {};
   try {
-    const stored = persistedSeenThreadCompletions(JSON.parse(localStorage.getItem(THREAD_COMPLETIONS_SEEN_KEY) ?? "{}"));
+    const stored = persistedSeenThreadCompletions(JSON.parse(storage.getItem(THREAD_COMPLETIONS_SEEN_KEY) ?? "{}"));
     if (stored) value = stored;
   } catch {
     // Replace malformed legacy state with a clean migration baseline below.
@@ -503,7 +522,7 @@ function loadSeenThreadCompletions() {
   if (Number.isFinite(value[THREAD_COMPLETIONS_SEEN_BASELINE_KEY])) return value;
   const migrated = { ...value, [THREAD_COMPLETIONS_SEEN_BASELINE_KEY]: Date.now() };
   try {
-    localStorage.setItem(THREAD_COMPLETIONS_SEEN_KEY, JSON.stringify(migrated));
+    storage.setItem(THREAD_COMPLETIONS_SEEN_KEY, JSON.stringify(migrated));
   } catch {
     // The in-memory baseline still prevents historical threads from appearing unseen.
   }
@@ -531,9 +550,9 @@ function persistedSeenThreadCompletions(value) {
   return entries.length ? Object.fromEntries(entries.slice(0, 10_000)) : null;
 }
 
-function loadThreadMessageRecency() {
+function loadThreadMessageRecency(storage = localStorage) {
   try {
-    const value = JSON.parse(localStorage.getItem(THREAD_MESSAGE_RECENCY_KEY) ?? "{}");
+    const value = JSON.parse(storage.getItem(THREAD_MESSAGE_RECENCY_KEY) ?? "{}");
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).filter(([, timestamp]) => Number.isFinite(timestamp)));
   } catch {
@@ -563,23 +582,16 @@ function IconButton({ label, children, className = "", ...props }) {
   return <button className={`icon-button ${className}`} aria-label={label} title={label} {...props}>{children}</button>;
 }
 
-function readComposerAttachment(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => resolve({
-      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
-      name: file.name || "Attachment",
-      type: file.type || "application/octet-stream",
-      size: file.size,
-      url: reader.result
-    }));
-    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read attachment")));
-    reader.readAsDataURL(file);
-  });
-}
-
 function attachmentFilesFromTransfer(transfer) {
   return Array.from(transfer?.files ?? []);
+}
+
+function readComposerAttachment(file, scope) {
+  if (!file) return null;
+  return createComposerAttachment(file, {
+    scope,
+    scopeKey: transferScopeKey(scope)
+  });
 }
 
 function transferHasFiles(transfer) {
@@ -597,6 +609,11 @@ function attachmentSize(size) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function assertSubmissionActive(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason ?? Object.assign(new Error("The submission was cancelled."), { name: "AbortError" });
 }
 
 function resizeComposerTextarea(textarea) {
@@ -763,6 +780,41 @@ function SidebarThreadList({ tasks, seenThreadCompletions, selectedThreadId, act
   );
 }
 
+function linkedThreadIdentity(link) {
+  return `${link.executionHostId}:${link.executionProjectId}:${link.rawThreadId}`;
+}
+
+function LinkedThreadList({ links, onOpenThread, hostStates = {}, selectedIdentity = null, ariaLabel = "Linked threads" }) {
+  if (!links?.length) return null;
+  return (
+    <div className="linked-thread-group">
+      <div className="rail-section-heading linked-thread-heading"><span className="rail-group-label"><i />Linked</span></div>
+      <div className="task-tree linked-thread-tree" aria-label={ariaLabel}>
+        {links.map((link) => {
+          const title = link.cachedThreadTitle || link.rawTaskName || link.cachedProjectLabel || "Linked task";
+          const host = link.cachedExecutionHostLabel || link.executionHostId;
+          const project = link.cachedProjectLabel || link.executionProjectId;
+          const state = hostStates[link.executionHostId]?.state;
+          const availability = state === "forgotten" ? "Forgotten" : ["error", "unauthorized"].includes(state) ? "Unavailable" : state === "reconnecting" ? "Offline" : null;
+          return (
+            <div className={`task-row linked-thread-row${selectedIdentity === linkedThreadIdentity(link) ? " selected" : ""}`} key={linkedThreadIdentity(link)}>
+              <button
+                className="task-select"
+                aria-current={selectedIdentity === linkedThreadIdentity(link) ? "page" : undefined}
+                onClick={() => onOpenThread(link)}
+                title={`${title} · ${host} · ${project}`}
+              >
+                <span className="task-fork-icon" aria-hidden="true"><GitBranch size={11} /></span>
+                <span className="task-title"><strong>{title}</strong><small>{host} · {project}{availability ? ` · ${availability}` : ""}</small></span>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function SidebarThreadScroll({ children, heading, className = "" }) {
   const scrollRef = useRef(null);
   const [hasMoreBelow, setHasMoreBelow] = useState(false);
@@ -823,9 +875,14 @@ export function Sidebar({
   collapseForPreview = false,
   onExpandedChange,
   width,
-  onWidthChange
+  onWidthChange,
+  storage = localStorage,
+  linkedThreads = [],
+  linkedThreadHostStates = {},
+  onOpenLinkedThread = () => {},
+  selectedLinkedThread = null
 }) {
-  const [pinnedExpanded, setPinnedExpanded] = useState(() => localStorage.getItem("pixice.sidebarPinned") !== "false");
+  const [pinnedExpanded, setPinnedExpanded] = useState(() => storage.getItem("pixice.sidebarPinned") !== "false");
   const [previewPinnedExpanded, setPreviewPinnedExpanded] = useState(false);
   const sidebarHoveredRef = useRef(false);
   const previewModeRef = useRef(collapseForPreview);
@@ -870,7 +927,7 @@ export function Sidebar({
     }
     const next = !expanded;
     setPinnedExpanded(next);
-    localStorage.setItem("pixice.sidebarPinned", String(next));
+    storage.setItem("pixice.sidebarPinned", String(next));
   };
 
   const keepExpanded = () => {
@@ -879,7 +936,7 @@ export function Sidebar({
       return;
     }
     setPinnedExpanded(true);
-    localStorage.setItem("pixice.sidebarPinned", "true");
+    storage.setItem("pixice.sidebarPinned", "true");
   };
 
   const resizeFromPointer = (event) => {
@@ -898,7 +955,7 @@ export function Sidebar({
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
       document.body.classList.remove("sidebar-resizing");
-      localStorage.setItem("pixice.sidebarWidth", String(nextWidth));
+      storage.setItem("pixice.sidebarWidth", String(nextWidth));
       resizeCleanup.current = null;
     };
 
@@ -921,7 +978,7 @@ export function Sidebar({
     keepExpanded();
     const nextWidth = clampSidebarWidth(adjustments[event.key]);
     onWidthChange(nextWidth);
-    localStorage.setItem("pixice.sidebarWidth", String(nextWidth));
+    storage.setItem("pixice.sidebarWidth", String(nextWidth));
   };
 
   return (
@@ -1025,6 +1082,7 @@ export function Sidebar({
                   );
                 })}
               </div>
+              <LinkedThreadList links={linkedThreads} hostStates={linkedThreadHostStates} selectedIdentity={selectedLinkedThread} onOpenThread={onOpenLinkedThread} />
             </>
           </SidebarThreadScroll>
         ) : (
@@ -1055,6 +1113,7 @@ export function Sidebar({
               emptyMessage={selectedProjectId ? "No Codex threads yet" : "Choose a project above"}
               reduceMotion={reduceMotion}
             />
+            <LinkedThreadList links={linkedThreads} hostStates={linkedThreadHostStates} selectedIdentity={selectedLinkedThread} onOpenThread={onOpenLinkedThread} />
           </SidebarThreadScroll>
         )}
       </nav>
@@ -1098,7 +1157,7 @@ export function Sidebar({
   );
 }
 
-function AppToolbar({ icon: Icon = Folder, title, subtitle, inspectorOpen, onInspectorToggle, showInspector = false, previewOpen, onPreviewToggle, showPreview = false }) {
+function AppToolbar({ icon: Icon = Folder, title, subtitle, inspectorOpen, onInspectorToggle, showInspector = false, previewOpen, onPreviewToggle, showPreview = false, executionStatus = null, executionAction = null }) {
   return (
     <header className="app-toolbar">
       <div className="toolbar-title">
@@ -1106,6 +1165,8 @@ function AppToolbar({ icon: Icon = Folder, title, subtitle, inspectorOpen, onIns
         <span><strong>{title}</strong>{subtitle && <small>{subtitle}</small>}</span>
       </div>
       <div className="toolbar-actions">
+        {executionStatus}
+        {executionAction}
         {showPreview && (
           <IconButton label={previewOpen ? "Close preview workspace" : "Open preview workspace"} className={previewOpen ? "active" : ""} onClick={onPreviewToggle}>
             <PreviewIcon size={18} />
@@ -1135,11 +1196,11 @@ function fileTabFromPayload(file) {
   };
 }
 
-function FileSurface({ file, onUpdate, onSave }) {
+function FileSurface({ file, onUpdate, onSave, onDownload = null, onDownloadCancel = null, downloadBusy = false, downloadProgress = null, downloadError = "", visible = true }) {
   const source = file.draft ?? file.content ?? "";
 
   useEffect(() => {
-    if (!file.editing) return undefined;
+    if (!visible || !file.editing) return undefined;
     const saveShortcut = (event) => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
       event.preventDefault();
@@ -1149,8 +1210,9 @@ function FileSurface({ file, onUpdate, onSave }) {
     return () => window.removeEventListener("keydown", saveShortcut);
   }, [file, onSave]);
 
+  let content;
   if (file.editing) {
-    return (
+    content = (
       <div className="file-editor-shell">
         <textarea
           className="file-editor"
@@ -1162,13 +1224,21 @@ function FileSurface({ file, onUpdate, onSave }) {
         {file.error && <div className="file-save-error"><Warning size={13} />{file.error}</div>}
       </div>
     );
-  }
-  if (file.previewKind === "markdown") return <div className="file-document markdown-document"><MarkdownMessage text={source} /></div>;
-  if (file.previewKind === "html") return <iframe className="html-preview" title={`Preview ${file.name}`} srcDoc={source} sandbox="allow-scripts allow-forms allow-modals" />;
-  if (file.previewKind === "image") return <div className="file-media-preview"><img src={file.dataUrl} alt={file.name} /></div>;
-  if (file.previewKind === "pdf") return <iframe className="pdf-preview" title={file.name} src={file.dataUrl} />;
-  if (file.previewKind === "unsupported") return <div className="file-empty"><File size={28} /><strong>Preview unavailable</strong><small>This binary format cannot be displayed or edited in Pixice yet.</small></div>;
-  return <pre className="text-file-preview"><code>{source}</code></pre>;
+  } else if (file.previewKind === "markdown") content = <div className="file-document markdown-document"><MarkdownMessage text={source} /></div>;
+  else if (file.previewKind === "html") content = <iframe className="html-preview" title={`Preview ${file.name}`} srcDoc={source} sandbox="allow-scripts allow-forms allow-modals" />;
+  else if (file.previewKind === "image") content = <div className="file-media-preview"><img src={file.dataUrl} alt={file.name} /></div>;
+  else if (file.previewKind === "pdf") content = <iframe className="pdf-preview" title={file.name} src={file.dataUrl} />;
+  else if (file.previewKind === "unsupported") content = <div className="file-empty"><File size={28} /><strong>Preview unavailable</strong><small>This binary format cannot be displayed or edited in Pixice yet.</small></div>;
+  else content = <pre className="text-file-preview"><code>{source}</code></pre>;
+  return <div className="file-surface">
+    {(onDownload || downloadError) && <div className="file-surface-actions">
+      {onDownload && <button type="button" className="settings-action" onClick={() => void onDownload(file)} disabled={downloadBusy}>{downloadBusy ? <SpinnerGap className="spin-icon" size={13} /> : <ArrowClockwise size={13} />}{downloadBusy ? "Downloading…" : "Download file"}</button>}
+      {downloadBusy && onDownloadCancel && <button type="button" className="settings-action" onClick={onDownloadCancel}>Cancel download</button>}
+      {downloadBusy && downloadProgress && <small className="file-download-progress">{attachmentSize(downloadProgress.loaded ?? 0)}{Number.isFinite(downloadProgress.total) ? ` of ${attachmentSize(downloadProgress.total)}` : ""}</small>}
+      {downloadError && <span className="file-save-error" role="alert"><Warning size={13} />{downloadError}</span>}
+    </div>}
+    {content}
+  </div>;
 }
 
 function PreviewTabSurface({ workspaceId, reduceMotion }) {
@@ -1200,6 +1270,8 @@ function PreviewNewTab({ api, projectId, hostThreadId, threads, onChooseBrowser,
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const browserReadiness = api?.remote?.readiness?.browser;
+  const browserAvailable = !api?.remote || !browserReadiness || browserReadiness.available === true || browserReadiness.canStart === true;
 
   const loadItems = useCallback(async (nextMode) => {
     setMode(nextMode);
@@ -1239,7 +1311,7 @@ function PreviewNewTab({ api, projectId, hostThreadId, threads, onChooseBrowser,
     <div className="preview-new-tab">
       <div className="preview-new-tab-inner">
         <div className="preview-new-tab-grid" aria-label="New preview tab options">
-          <button type="button" onClick={() => void onChooseBrowser()}><Globe size={16} /><span><strong>Browser</strong><small>Open a web page</small></span></button>
+          <button type="button" disabled={!browserAvailable} title={!browserAvailable ? browserReadiness?.reason || "The host browser is unavailable." : undefined} onClick={() => void onChooseBrowser()}><Globe size={16} /><span><strong>Browser</strong><small>{browserAvailable ? "Open a web page" : "Host browser unavailable"}</small></span></button>
           <button type="button" onClick={() => { setMode("file"); setItems([]); setError(""); }}><Files size={16} /><span><strong>File</strong><small>Open a local file</small></span></button>
           <button type="button" onClick={() => void loadItems("thread")}><GitBranch size={16} /><span><strong>Side thread</strong><small>Chat beside this task</small></span></button>
           <button type="button" onClick={() => void loadItems("task")}><Circle size={16} /><span><strong>Work item</strong><small>Open a Board item</small></span></button>
@@ -1286,7 +1358,7 @@ function PreviewNewTab({ api, projectId, hostThreadId, threads, onChooseBrowser,
   );
 }
 
-function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onClose, onBrowserClose, projectId, hostThreadId, fileTabs, instrumentTabs, customTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onCustomTabOpen, onCustomTabUpdate, onCustomTabClose, onNewTab, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource, sideThreadProps, taskMapProps }) {
+function BrowserPanel({ api, workspaceId, apiWorkspaceId = workspaceId, state, onState, onBrowserCreated, onClose, onBrowserClose, projectId, hostThreadId, fileTabs, instrumentTabs, customTabs, activeTabId, onActiveTabChange, onFileUpdate, onFileClose, onInstrumentClose, onCustomTabOpen, onCustomTabUpdate, onCustomTabClose, onNewTab, onInstrumentRefresh, onInstrumentEvent, onInstrumentInvoke, onInstrumentPin, onOpenResource, onOpenBoardWorkspace, onOpenWorkflowWorkspace, sideThreadProps, taskMapProps, visible = true }) {
   const viewportRef = useRef(null);
   const systemReducedMotion = useReducedMotion();
   const isPresent = useIsPresent();
@@ -1295,12 +1367,20 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
   const activeCustomTab = customTabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeTab = activeFile || activeInstrument || activeCustomTab ? null : state.tabs.find((tab) => tab.id === activeTabId) ?? state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
   const [address, setAddress] = useState(activeTab?.url ?? "");
+  const [downloadState, setDownloadState] = useState(null);
+  const downloadAbortRef = useRef(null);
+  const downloadMountedRef = useRef(true);
+
+  useEffect(() => () => {
+    downloadMountedRef.current = false;
+    downloadAbortRef.current?.abort(new DOMException("The preview closed.", "AbortError"));
+  }, []);
 
   useEffect(() => setAddress(activeTab?.url ?? ""), [activeTab?.id, activeTab?.url]);
   useEffect(() => {
-    if (api?.remote) return undefined;
+    if (!visible || !isPresent || api?.remote) return undefined;
     if (!api?.browser || !activeTab || !viewportRef.current) {
-      if (workspaceId) void api?.browser?.setViewport({ workspaceId, visible: false }).catch(() => {});
+      if (apiWorkspaceId) void api?.browser?.setViewport({ workspaceId: apiWorkspaceId, visible: false }).catch(() => {});
       return undefined;
     }
     const occluderSelector = '[aria-modal="true"], [data-native-preview-occluder="true"]';
@@ -1314,13 +1394,13 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
     };
     const updateBounds = () => {
       if (previewOccluded()) {
-        void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
+        void api.browser.setViewport({ workspaceId: apiWorkspaceId, visible: false }).catch(() => {});
         return;
       }
       const rect = viewportRef.current?.getBoundingClientRect();
       if (!rect) return;
       void api.browser.setViewport({
-        workspaceId,
+        workspaceId: apiWorkspaceId,
         visible: true,
         bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
       }).then(onState).catch(() => {});
@@ -1344,9 +1424,9 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
       observer?.disconnect();
       occlusionObserver?.disconnect();
       window.removeEventListener("resize", updateBounds);
-      void api.browser.setViewport({ workspaceId, visible: false }).catch(() => {});
+      void api.browser.setViewport({ workspaceId: apiWorkspaceId, visible: false }).catch(() => {});
     };
-  }, [activeTab?.id, api, onState, workspaceId]);
+  }, [activeTab?.id, api, apiWorkspaceId, isPresent, onState, visible, workspaceId]);
 
   const run = async (operation, activate = false) => {
     try {
@@ -1362,7 +1442,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
   const submitAddress = (event) => {
     event.preventDefault();
     if (!address.trim()) return;
-    void run(() => api.browser.navigate({ workspaceId, tabId: activeTab?.id, url: address }));
+    void run(() => api.browser.navigate({ workspaceId: apiWorkspaceId, tabId: activeTab?.id, url: address }));
   };
   const saveFile = useCallback(async (file) => {
     if (!file?.editable || !file.dirty || file.saving) return;
@@ -1381,14 +1461,48 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
       onFileUpdate(file.id, { saving: false, error: cause.message });
     }
   }, [api, onFileUpdate, projectId]);
+  const downloadFile = useCallback(async (file) => {
+    if (!canDownloadRemoteFile(api, file) || !projectId || (downloadState?.path === file.path && !downloadState.error)) return;
+    const controller = new AbortController();
+    downloadAbortRef.current?.abort(new DOMException("A newer download started.", "AbortError"));
+    downloadAbortRef.current = controller;
+    setDownloadState({ path: file.path, loaded: 0, total: file.size ?? null, error: "" });
+    try {
+      const result = await downloadRemoteFile({
+        api,
+        projectId,
+        path: file.path,
+        signal: controller.signal,
+        onProgress: (progress) => setDownloadState((current) => current?.path === file.path ? { ...current, ...progress } : current)
+      });
+      if (controller.signal.aborted || !downloadMountedRef.current) return;
+      const url = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = result.filename || file.name || "download";
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setDownloadState(null);
+    } catch (cause) {
+      if (downloadMountedRef.current) setDownloadState({ path: file.path, loaded: 0, total: file.size ?? null, error: cause.message });
+    } finally {
+      if (downloadAbortRef.current === controller) downloadAbortRef.current = null;
+    }
+  }, [api, downloadState?.path, projectId]);
+  const cancelDownload = useCallback(() => {
+    const controller = downloadAbortRef.current;
+    if (!controller) return;
+    controller.abort(new DOMException("The download was cancelled.", "AbortError"));
+    setDownloadState((current) => current ? { ...current, error: "Download cancelled." } : current);
+  }, []);
 
   return (
     <motion.section
       className="browser-panel"
       data-preview-workspace-id={workspaceId}
       aria-label="Preview workspace"
-      aria-hidden={!isPresent}
-      inert={!isPresent ? true : undefined}
+      aria-hidden={!isPresent || !visible}
+      inert={!isPresent || !visible ? true : undefined}
       initial={systemReducedMotion ? false : { opacity: 0, x: 12, filter: "blur(2px)" }}
       animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
       exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, x: 10, filter: "blur(2px)" }}
@@ -1399,7 +1513,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
           {state.tabs.map((tab) => (
             <div className={`browser-tab${tab.id === activeTabId ? " active" : ""}`} role="presentation" key={tab.id}>
               {tab.id === activeTabId && <PreviewTabSurface workspaceId={workspaceId} reduceMotion={systemReducedMotion} />}
-              <button role="tab" aria-selected={tab.id === activeTabId} onClick={() => void run(() => api.browser.activate({ workspaceId, tabId: tab.id }), true)}>
+              <button role="tab" aria-selected={tab.id === activeTabId} onClick={() => void run(() => api.browser.activate({ workspaceId: apiWorkspaceId, tabId: tab.id }), true)}>
                 {tab.loading ? <SpinnerGap className="spin-icon" size={12} /> : <Globe size={12} />}
                 <span>{tab.title || "New tab"}</span>
               </button>
@@ -1456,9 +1570,9 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
         </div>
       ) : (
         <div className="browser-navigation">
-          <IconButton label="Back" disabled={!activeTab?.canGoBack} onClick={() => void run(() => api.browser.history({ workspaceId, action: "back" }))}><CaretLeft size={16} /></IconButton>
-          <IconButton label="Forward" disabled={!activeTab?.canGoForward} onClick={() => void run(() => api.browser.history({ workspaceId, action: "forward" }))}><CaretRight size={16} /></IconButton>
-          <IconButton label={activeTab?.loading ? "Stop loading" : "Reload"} onClick={() => void run(() => api.browser.history({ workspaceId, action: activeTab?.loading ? "stop" : "reload" }))}>{activeTab?.loading ? <X size={14} /> : <ArrowClockwise size={15} />}</IconButton>
+          <IconButton label="Back" disabled={!activeTab?.canGoBack} onClick={() => void run(() => api.browser.history({ workspaceId: apiWorkspaceId, action: "back" }))}><CaretLeft size={16} /></IconButton>
+          <IconButton label="Forward" disabled={!activeTab?.canGoForward} onClick={() => void run(() => api.browser.history({ workspaceId: apiWorkspaceId, action: "forward" }))}><CaretRight size={16} /></IconButton>
+          <IconButton label={activeTab?.loading ? "Stop loading" : "Reload"} onClick={() => void run(() => api.browser.history({ workspaceId: apiWorkspaceId, action: activeTab?.loading ? "stop" : "reload" }))}>{activeTab?.loading ? <X size={14} /> : <ArrowClockwise size={15} />}</IconButton>
           <form className="browser-address" onSubmit={submitAddress}>
             <LockKey size={13} />
             <input aria-label="Browser address" value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Search or enter address" spellCheck="false" />
@@ -1473,7 +1587,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
           hostThreadId={hostThreadId}
           threads={sideThreadProps?.threads}
           onChooseBrowser={async () => {
-            const next = await api.browser.create({ workspaceId });
+            const next = await api.browser.create({ workspaceId: apiWorkspaceId });
             onBrowserCreated(activeCustomTab.id, next);
           }}
           onChooseFile={async (path) => {
@@ -1508,7 +1622,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
         <IosSimulatorPreview
           api={api}
           projectId={activeCustomTab.payload.projectId ?? projectId}
-          workspaceId={workspaceId}
+          workspaceId={apiWorkspaceId}
           initialSession={activeCustomTab.payload.session ?? null}
           onTitleChange={(title) => onCustomTabUpdate(activeCustomTab.id, { title })}
           onSessionChange={(session) => onCustomTabUpdate(activeCustomTab.id, {
@@ -1519,13 +1633,15 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
       ) : activeCustomTab?.kind === "workflow" ? (
         <WorkflowPreview
           api={api}
+          hostId={api?.remote?.hostId ?? "local"}
+          previewWorkspaceId={apiWorkspaceId}
           projectId={activeCustomTab.payload.projectId}
           workflowId={activeCustomTab.payload.workflowId}
           workflowName={activeCustomTab.payload.workflowName ?? activeCustomTab.title}
           reason={activeCustomTab.payload.reason}
           tabbed
           onTitleChange={(title) => onCustomTabUpdate(activeCustomTab.id, { title })}
-          onOpenWorkspace={(workflowId) => window.dispatchEvent(new CustomEvent("pixice:open-workflow-workspace", { detail: { workflowId } }))}
+          onOpenWorkspace={(workflowId) => onOpenWorkflowWorkspace?.({ workflowId, projectId }) ?? window.dispatchEvent(new CustomEvent("pixice:open-workflow-workspace", { detail: { workflowId, projectId, hostId: api?.remote?.hostId ?? "local" } }))}
           onClose={() => onCustomTabClose(activeCustomTab.id)}
         />
       ) : activeCustomTab?.kind === "task" || activeCustomTab?.kind === "plan" ? (
@@ -1534,7 +1650,7 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
           target={activeCustomTab.payload}
           tabbed
           onTitleChange={(title) => onCustomTabUpdate(activeCustomTab.id, { title })}
-          onOpenWorkspace={() => window.dispatchEvent(new CustomEvent("pixice:open-board-workspace", { detail: activeCustomTab.payload }))}
+          onOpenWorkspace={() => onOpenBoardWorkspace?.(activeCustomTab.payload) ?? window.dispatchEvent(new CustomEvent("pixice:open-board-workspace", { detail: { ...activeCustomTab.payload, hostId: api?.remote?.hostId ?? "local" } }))}
           onClose={() => onCustomTabClose(activeCustomTab.id)}
         />
       ) : activeInstrument ? (
@@ -1547,9 +1663,19 @@ function BrowserPanel({ api, workspaceId, state, onState, onBrowserCreated, onCl
           onSetPinned={(pinned) => onInstrumentPin(activeInstrument.id, pinned)}
         />
       ) : activeFile ? (
-        <FileSurface file={activeFile} onUpdate={onFileUpdate} onSave={saveFile} />
+        <FileSurface
+          file={activeFile}
+          onUpdate={onFileUpdate}
+          onSave={saveFile}
+          onDownload={canDownloadRemoteFile(api, activeFile) ? downloadFile : null}
+          onDownloadCancel={downloadState?.path === activeFile.path ? cancelDownload : null}
+          downloadBusy={downloadState?.path === activeFile.path && !downloadState?.error}
+          downloadProgress={downloadState?.path === activeFile.path ? downloadState : null}
+          downloadError={downloadState?.path === activeFile.path ? downloadState.error : ""}
+          visible={visible}
+        />
       ) : activeTab && api.remote ? (
-        <RemoteBrowserSurface api={api} workspaceId={workspaceId} tabId={activeTab.id} key={`${workspaceId}:${activeTab.id}`} />
+        <RemoteBrowserSurface api={api} workspaceId={apiWorkspaceId} tabId={activeTab.id} key={`${workspaceId}:${activeTab.id}`} />
       ) : activeTab ? (
         <div className="browser-viewport" ref={viewportRef}>
           {!state.native && (
@@ -2666,6 +2792,51 @@ function isQuestionRequest(request) {
   return request?.method?.includes("requestUserInput") && Array.isArray(request.params?.questions) && request.params.questions.length > 0;
 }
 
+function normalizedRequestGeneration(request) {
+  const value = request?.requestGeneration;
+  if (value === undefined || value === null) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : value;
+}
+
+function requestGenerationPayload(request) {
+  return request?.requestGeneration === undefined || request?.requestGeneration === null
+    ? {}
+    : { requestGeneration: request.requestGeneration };
+}
+
+function sameAttentionRequest(request, other) {
+  return String(request?.id) === String(other?.id)
+    && normalizedRequestGeneration(request) === normalizedRequestGeneration(other);
+}
+
+function mergeAttentionRequests(current, incoming) {
+  const next = [...current];
+  for (const request of incoming ?? []) {
+    if (request?.id === undefined || request?.id === null) continue;
+    const index = next.findIndex((candidate) => String(candidate?.id) === String(request.id));
+    if (index === -1) {
+      next.push(request);
+      continue;
+    }
+    const existingGeneration = normalizedRequestGeneration(next[index]);
+    const incomingGeneration = normalizedRequestGeneration(request);
+    if (typeof existingGeneration === "number" && typeof incomingGeneration === "number" && incomingGeneration < existingGeneration) continue;
+    next[index] = request;
+  }
+  return next;
+}
+
+function attentionResolvedRequest(request, payload) {
+  if (String(request?.id) !== String(payload?.requestId)) return false;
+  const resolvedGeneration = normalizedRequestGeneration(payload);
+  return resolvedGeneration === null || resolvedGeneration === normalizedRequestGeneration(request);
+}
+
+function questionRequestKey(request) {
+  return `${request?.id}:${normalizedRequestGeneration(request) ?? "legacy"}`;
+}
+
 function optionIsRecommended(option) {
   return option?.recommended === true || /\(recommended\)\s*$/i.test(option?.label ?? "");
 }
@@ -2703,7 +2874,7 @@ function ComposerQuestion({ request, onResolve }) {
     setCustomOpen(false);
     setCustomAnswer("");
     return () => timersRef.current.splice(0).forEach(window.clearTimeout);
-  }, [request.id]);
+  }, [request.id, request.requestGeneration]);
 
   useEffect(() => {
     if (customOpen) customInputRef.current?.focus();
@@ -2807,7 +2978,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true }) {
+export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null }) {
   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
@@ -2815,11 +2986,43 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
   const [attachmentNotice, setAttachmentNotice] = useState("");
   const [commandSelection, setCommandSelection] = useState(0);
   const [commandsDismissed, setCommandsDismissed] = useState(false);
+  const [draftHydratedKey, setDraftHydratedKey] = useState(null);
+  const [uploadState, setUploadState] = useState(null);
+  const [submissionBusy, setSubmissionBusy] = useState(false);
   const storageKey = `pixice.draft.${draftKey}`;
+  const attachmentStorageKey = `${storageKey}.attachments`;
+  const currentAttachmentScope = useMemo(() => attachmentContext?.scope ?? createAttachmentScope(attachmentContext ?? {}), [
+    attachmentContext?.api,
+    attachmentContext?.deviceId,
+    attachmentContext?.hostId,
+    attachmentContext?.projectId,
+    attachmentContext?.scope?.deviceId,
+    attachmentContext?.scope?.hostId,
+    attachmentContext?.scope?.projectId
+  ]);
+  const currentAttachmentScopeKey = attachmentScopeKey ?? attachmentContext?.scopeKey ?? transferScopeKey(currentAttachmentScope);
   const commandListId = useId();
   const composerRef = useRef(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+  const reselectInputRefs = useRef(new Map());
+  const uploadAbortRef = useRef(null);
+  const uploadStateRef = useRef(null);
+  const submissionRef = useRef(null);
+  const draftInteractionRef = useRef(false);
+  const hydratedDraftIdentityRef = useRef(null);
+  const attachmentScopeRef = useRef(currentAttachmentScopeKey);
+  const attachmentsRef = useRef(attachments);
+  const textRef = useRef(text);
+  const mountedRef = useRef(true);
+  const uploadAttemptRef = useRef(null);
+  const reselectAttemptsRef = useRef(new Map());
+  const storageKeyRef = useRef(storageKey);
+  const attachmentScopeKeyRef = useRef(currentAttachmentScopeKey);
+  attachmentsRef.current = attachments;
+  textRef.current = text;
+  storageKeyRef.current = storageKey;
+  attachmentScopeKeyRef.current = currentAttachmentScopeKey;
   const selected = models.find((model) => model.model === selectedModel);
   const fastTier = fastServiceTier(selected);
   const efforts = selected?.supportedReasoningEfforts ?? [];
@@ -2834,13 +3037,91 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
     return { value, ...(EFFORT_META[value] ?? { label: String(value).replace(/^./, (letter) => letter.toUpperCase()), description: "Adjust how deeply Codex reasons.", icon: Brain }) };
   });
   useEffect(() => {
-    setText(preserveDrafts ? localStorage.getItem(storageKey) ?? "" : "");
-    setAttachments([]);
+    const identityChanged = hydratedDraftIdentityRef.current !== storageKey;
+    if (identityChanged) reselectAttemptsRef.current.clear();
+    if (identityChanged && (submissionRef.current || uploadAbortRef.current)) {
+      if (uploadAttemptRef.current) uploadAttemptRef.current.cancelled = true;
+      uploadAttemptRef.current = null;
+      uploadAbortRef.current?.abort(new DOMException("The draft changed.", "AbortError"));
+      submissionRef.current?.controller.abort(new DOMException("The draft changed.", "AbortError"));
+      uploadStateRef.current = null;
+      setUploadState(null);
+      hydratedDraftIdentityRef.current = storageKey;
+      setDraftHydratedKey(storageKey);
+      return;
+    }
+    if (!identityChanged && draftReloadToken > 0 && draftInteractionRef.current) return;
+    setText(preserveDrafts ? storage.getItem(storageKey) ?? "" : "");
+    let restored = [];
+    if (preserveDrafts) {
+      try {
+        const value = JSON.parse(storage.getItem(attachmentStorageKey) || "[]");
+        restored = restoreAttachmentMetadata(value, currentAttachmentScope);
+      } catch { /* A damaged attachment draft is disposable; text remains recoverable. */ }
+    }
+    setAttachments(restored);
     setAttachmentNotice("");
     setCommandsDismissed(false);
     setCommandSelection(0);
-    if (!preserveDrafts) localStorage.removeItem(storageKey);
-  }, [preserveDrafts, storageKey]);
+    setDraftHydratedKey(storageKey);
+    hydratedDraftIdentityRef.current = storageKey;
+    draftInteractionRef.current = false;
+    if (!preserveDrafts) {
+      storage.removeItem(storageKey);
+      storage.removeItem(attachmentStorageKey);
+    }
+  }, [draftReloadToken, preserveDrafts, storage, storageKey]);
+
+  useEffect(() => {
+    const previous = attachmentScopeRef.current;
+    if (previous && previous !== currentAttachmentScopeKey) {
+      reselectAttemptsRef.current.clear();
+      if (uploadAttemptRef.current) uploadAttemptRef.current.cancelled = true;
+      uploadAttemptRef.current = null;
+      uploadAbortRef.current?.abort(new DOMException("The upload target changed.", "AbortError"));
+      if (submissionRef.current) {
+        submissionRef.current.cancelled = true;
+        submissionRef.current.controller.abort(new DOMException("The upload target changed.", "AbortError"));
+      }
+      uploadStateRef.current = null;
+      setUploadState(null);
+      setAttachments((current) => current.map((attachment) => ({
+        ...attachment,
+        transferId: null,
+        transferState: null,
+        uploadOffset: 0,
+        scope: currentAttachmentScope,
+        scopeKey: currentAttachmentScopeKey,
+        needsReselect: !attachment.file
+      })));
+      setAttachmentNotice("The target changed. Selected files remain here and will upload to the new target.");
+    }
+    attachmentScopeRef.current = currentAttachmentScopeKey;
+  }, [currentAttachmentScope, currentAttachmentScopeKey]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (uploadAttemptRef.current) uploadAttemptRef.current.cancelled = true;
+      uploadAttemptRef.current = null;
+      reselectAttemptsRef.current.clear();
+      uploadAbortRef.current?.abort(new DOMException("The composer closed.", "AbortError"));
+      if (submissionRef.current) {
+        submissionRef.current.cancelled = true;
+        submissionRef.current.controller.abort(new DOMException("The composer closed.", "AbortError"));
+      }
+      attachmentsRef.current.forEach(disposeComposerAttachment);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!preserveDrafts || draftHydratedKey !== storageKey) return;
+    try {
+      if (attachments.length) storage.setItem(attachmentStorageKey, JSON.stringify(serializeAttachmentMetadata(attachments, currentAttachmentScope)));
+      else if (!busy) storage.removeItem(attachmentStorageKey);
+    } catch { /* Large or unavailable storage must not prevent sending. */ }
+  }, [attachmentStorageKey, attachments, busy, currentAttachmentScope, draftHydratedKey, preserveDrafts, storage, storageKey]);
 
   useLayoutEffect(() => {
     resizeComposerTextarea(textareaRef.current);
@@ -2868,14 +3149,15 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
       return;
     }
     try {
-      const additions = await Promise.all(withinLimit.slice(0, available).map(readComposerAttachment));
+      const additions = withinLimit.slice(0, available).map((file) => readComposerAttachment(file, currentAttachmentScope));
+      draftInteractionRef.current = true;
       setAttachments((current) => [...current, ...additions].slice(0, MAX_COMPOSER_ATTACHMENTS));
       if (withinLimit.length > available) setAttachmentNotice(`You can attach up to ${MAX_COMPOSER_ATTACHMENTS} files.`);
       textareaRef.current?.focus();
     } catch {
       setAttachmentNotice("One of the files could not be read.");
     }
-  }, [attachments.length, disabled]);
+  }, [attachments.length, currentAttachmentScope, disabled]);
 
   useEffect(() => {
     const target = globalFileDrop ? window : composerRef.current;
@@ -2924,44 +3206,241 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
   const completeCommand = (command) => {
     if (!command || disabled) return;
     const value = `/${command.name} `;
+    draftInteractionRef.current = true;
     setText(value);
     setCommandsDismissed(true);
-    if (preserveDrafts) localStorage.setItem(storageKey, value);
+    if (preserveDrafts) storage.setItem(storageKey, value);
     window.setTimeout(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(value.length, value.length);
     }, 0);
   };
+  const updateAttachment = useCallback((updated) => {
+    setAttachments((current) => current.map((attachment) => attachment.id === updated.id ? { ...attachment, ...updated } : attachment));
+  }, []);
+  const prepareAttachments = useCallback(async (submittedAttachments, signal, resumeOnly = false, attempt = null) => {
+    const attemptIsCurrent = () => mountedRef.current
+      && (!attempt || (uploadAttemptRef.current === attempt
+        && storageKeyRef.current === attempt.storageKey
+        && attachmentScopeKeyRef.current === attempt.scopeKey
+        && !attempt.cancelled))
+      && !signal?.aborted;
+    const prepared = await (resumeOnly ? resumeAttachmentUploads : prepareSubmissionAttachments)({
+      ...(attachmentContext ?? {}),
+      projectId: attachmentContext?.projectId ?? null,
+      attachments: submittedAttachments,
+      signal,
+      resumeOnly,
+      onProgress: (progress) => {
+        if (!attemptIsCurrent()) return;
+        uploadStateRef.current = progress;
+        setUploadState(progress);
+      },
+      onAttachmentUpdate: (updated) => { if (attemptIsCurrent()) updateAttachment(updated); }
+    });
+    return prepared;
+  }, [attachmentContext, updateAttachment]);
+  const reselectAttachment = useCallback(async (attachment, file) => {
+    if (!file || disabled || !attachment?.needsReselect) return;
+    const reselectAttempt = (reselectAttemptsRef.current.get(attachment.id) ?? 0) + 1;
+    reselectAttemptsRef.current.set(attachment.id, reselectAttempt);
+    const expectedStorageKey = storageKey;
+    const expectedScopeKey = currentAttachmentScopeKey;
+    const isCurrentAttempt = () => mountedRef.current
+      && storageKeyRef.current === expectedStorageKey
+      && attachmentScopeKeyRef.current === expectedScopeKey
+      && reselectAttemptsRef.current.get(attachment.id) === reselectAttempt
+      && attachmentsRef.current.some((candidate) => candidate.id === attachment.id && candidate === attachment);
+    if (file.size !== attachment.size) {
+      setAttachmentNotice(`${attachment.name} must be ${attachmentSize(attachment.size)}.`);
+      return;
+    }
+    setAttachmentNotice(`Checking ${attachment.name}…`);
+    let hash;
+    try {
+      hash = await sha256File(file);
+    } catch (cause) {
+      if (isCurrentAttempt()) setAttachmentNotice(cause.message);
+      return;
+    }
+    if (!isCurrentAttempt()) return;
+    if (attachment.sha256 && hash !== attachment.sha256) {
+      setAttachmentNotice(`${attachment.name} does not match the saved attachment. Choose the original file.`);
+      return;
+    }
+    const canReuseTransfer = Boolean(attachment.sha256 && hash === attachment.sha256 && attachment.transferId);
+    const replacement = {
+      ...createComposerAttachment(file, {
+        id: attachment.id,
+        name: attachment.name,
+        type: attachment.type,
+        size: attachment.size,
+        sha256: hash,
+        transferId: canReuseTransfer ? attachment.transferId : null,
+        transferState: canReuseTransfer ? attachment.transferState : null,
+        uploadOffset: canReuseTransfer ? attachment.uploadOffset : 0,
+        scopeKey: currentAttachmentScopeKey
+      }),
+      scope: currentAttachmentScope,
+      scopeKey: currentAttachmentScopeKey,
+      needsReselect: false
+    };
+    draftInteractionRef.current = true;
+    let replacementDisposed = false;
+    const disposeReplacement = () => {
+      if (replacementDisposed) return;
+      replacementDisposed = true;
+      disposeComposerAttachment(replacement);
+    };
+    setAttachments((current) => {
+      if (!isCurrentAttempt()) {
+        disposeReplacement();
+        return current;
+      }
+      return current.map((candidate) => candidate.id === attachment.id && candidate === attachment ? replacement : candidate);
+    });
+    if (!isCurrentAttempt()) {
+      disposeReplacement();
+      return;
+    }
+    setAttachmentNotice(canReuseTransfer ? `${attachment.name} is ready to resume.` : `${attachment.name} selected.`);
+  }, [currentAttachmentScope, currentAttachmentScopeKey, disabled, storageKey]);
+  const resumeUploads = async () => {
+    const resumable = attachments.filter((attachment) => attachment.file && attachment.transferId && attachment.transferState !== "ready");
+    if (!resumable.length || disabled || busy || submissionBusy) return;
+    const controller = new AbortController();
+    const attempt = { controller, kind: "resume", attachmentIds: new Set(resumable.map((attachment) => attachment.id)), storageKey, scopeKey: currentAttachmentScopeKey, cancelled: false };
+    uploadAttemptRef.current = attempt;
+    uploadAbortRef.current = controller;
+    uploadStateRef.current = { files: resumable.map((attachment) => ({ id: attachment.id, name: attachment.name, size: attachment.size, offset: attachment.uploadOffset ?? 0, state: "resuming" })), totalBytes: resumable.reduce((total, attachment) => total + attachment.size, 0), uploadedBytes: 0, activeCount: resumable.length };
+    setUploadState(uploadStateRef.current);
+    try {
+      await prepareAttachments(resumable, controller.signal, true, attempt);
+      if (!mountedRef.current || uploadAttemptRef.current !== attempt || controller.signal.aborted || attempt.cancelled) return;
+      uploadStateRef.current = null;
+      setUploadState(null);
+      setAttachmentNotice("Uploads resumed. Send the message when you are ready.");
+    } catch (cause) {
+      if (mountedRef.current && uploadAttemptRef.current === attempt) {
+        const cancelled = controller.signal.aborted || cause?.code === "REQUEST_ABORTED";
+        const message = cancelled ? "Upload cancelled. Send again to restart." : cause.message;
+        if (message) setAttachmentNotice(message);
+        uploadStateRef.current = uploadStateRef.current
+          ? { ...uploadStateRef.current, state: cancelled ? "cancelled" : "failed", activeCount: 0, message }
+          : null;
+        setUploadState(uploadStateRef.current);
+      }
+    } finally {
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+      if (uploadAttemptRef.current === attempt) uploadAttemptRef.current = null;
+    }
+  };
+  const removeAttachment = (attachment) => {
+    reselectAttemptsRef.current.delete(attachment.id);
+    const attempt = uploadAttemptRef.current;
+    if (attempt?.attachmentIds.has(attachment.id)) {
+      attempt.cancelled = true;
+      attempt.controller.abort(new DOMException("The attachment was removed.", "AbortError"));
+      uploadAttemptRef.current = null;
+      uploadStateRef.current = uploadStateRef.current
+        ? { ...uploadStateRef.current, state: "cancelled", activeCount: 0, message: "Upload cancelled. Send again to restart." }
+        : null;
+      setUploadState(uploadStateRef.current);
+      setAttachmentNotice("Upload cancelled. Send again to restart.");
+    }
+    draftInteractionRef.current = true;
+    disposeComposerAttachment(attachment);
+    setAttachments((current) => current.filter((candidate) => candidate.id !== attachment.id));
+  };
+  const cancelUploads = () => {
+    const controller = uploadAbortRef.current;
+    if (!controller) return;
+    controller.abort(new DOMException("The upload was cancelled.", "AbortError"));
+    if (uploadAttemptRef.current) uploadAttemptRef.current.cancelled = true;
+    uploadAttemptRef.current = null;
+    uploadStateRef.current = { ...(uploadStateRef.current ?? {}), state: "cancelled", activeCount: 0, message: "Upload cancelled. Send again to restart." };
+    setUploadState(uploadStateRef.current);
+    setAttachmentNotice("Upload cancelled. Send again to restart.");
+  };
   const submit = async () => {
     const value = text.trim();
-    if ((!value && attachments.length === 0) || disabled || busy || !selected) return;
-    const submittedAttachments = attachments;
-    setText("");
-    setAttachments([]);
-    setAttachmentNotice("");
-    localStorage.removeItem(storageKey);
-    const accepted = await onSubmit(value, submittedAttachments.map((attachment) => ({
+    if (attachments.some((attachment) => attachment.needsReselect)) {
+      setAttachmentNotice("Reselect each saved attachment before sending.");
+      return;
+    }
+    if ((!value && attachments.length === 0) || disabled || busy || submissionBusy || submissionRef.current || !selected || uploadStateRef.current?.activeCount > 0) return;
+    const submittedText = text;
+    const submittedAttachments = attachments.slice();
+    const submittedAttachmentIds = new Set(submittedAttachments.map((attachment) => attachment.id));
+    const displayAttachments = submittedAttachments.map((attachment) => ({
       name: attachment.name,
       type: attachment.type,
       size: attachment.size,
-      dataUrl: attachment.url
-    })));
-    if (accepted === false) {
-      setText((current) => current || value);
-      setAttachments((current) => current.length ? current : submittedAttachments);
-      if (preserveDrafts) localStorage.setItem(storageKey, value);
+      dataUrl: attachment.dataUrl ?? attachment.url
+    }));
+    const controller = new AbortController();
+    const attempt = { controller, kind: "submit", attachmentIds: submittedAttachmentIds, cancelled: false, storageKey, scopeKey: currentAttachmentScopeKey };
+    submissionRef.current = attempt;
+    uploadAttemptRef.current = attempt;
+    setSubmissionBusy(true);
+    uploadAbortRef.current = controller;
+    setAttachmentNotice("");
+    uploadStateRef.current = { files: submittedAttachments.map((attachment) => ({ id: attachment.id, name: attachment.name, size: attachment.size, offset: attachment.uploadOffset ?? 0, state: "preparing" })), totalBytes: submittedAttachments.reduce((total, attachment) => total + attachment.size, 0), uploadedBytes: 0, activeCount: submittedAttachments.length };
+    setUploadState(uploadStateRef.current);
+    try {
+      const prepared = await prepareAttachments(submittedAttachments, controller.signal, false, attempt);
+      if (!mountedRef.current || uploadAttemptRef.current !== attempt || controller.signal.aborted || submissionRef.current?.cancelled) return;
+      const accepted = await onSubmit(value, displayAttachments, prepared, submittedAttachments, controller.signal);
+      if (!mountedRef.current || uploadAttemptRef.current !== attempt || controller.signal.aborted || submissionRef.current?.cancelled) return;
+      if (accepted === false) {
+        uploadStateRef.current = null;
+        setUploadState(null);
+      } else {
+        const submittedStorageKey = submissionRef.current?.storageKey;
+        if (textRef.current === submittedText) {
+          setText("");
+          storage.removeItem(storageKey);
+        }
+        setAttachments((current) => current.filter((attachment) => !submittedAttachmentIds.has(attachment.id)));
+        if (textRef.current === submittedText) storage.removeItem(storageKey);
+        if (submittedStorageKey && submittedStorageKey !== storageKey) {
+          storage.removeItem(submittedStorageKey);
+          storage.removeItem(`${submittedStorageKey}.attachments`);
+        }
+      }
+    } catch (cause) {
+      if (mountedRef.current && uploadAttemptRef.current === attempt && !controller.signal.aborted && !attempt.cancelled) {
+        setAttachmentNotice(cause.message);
+        uploadStateRef.current = uploadStateRef.current
+          ? { ...uploadStateRef.current, state: "failed", activeCount: 0, message: cause.message }
+          : { state: "failed", activeCount: 0, message: cause.message };
+        setUploadState(uploadStateRef.current);
+      }
+    } finally {
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+      if (submissionRef.current?.controller === controller) submissionRef.current = null;
+      if (uploadAttemptRef.current === attempt) uploadAttemptRef.current = null;
+      if (!mountedRef.current) return;
+      setSubmissionBusy(false);
+      if (!controller.signal.aborted && uploadStateRef.current?.state !== "failed") {
+        uploadStateRef.current = null;
+        setUploadState(null);
+      } else if (controller.signal.aborted && uploadStateRef.current?.activeCount > 0) {
+        uploadStateRef.current = { ...uploadStateRef.current, state: "cancelled", activeCount: 0, message: "Upload cancelled. Send again to restart." };
+        setUploadState(uploadStateRef.current);
+      }
     }
   };
   if (blockingQuestion) {
     return (
       <div className="composer" data-question-active="true" data-question-present="true" data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
-        <ComposerQuestion key={questionRequest.id} request={questionRequest} onResolve={onQuestionResolve} />
+        <ComposerQuestion key={questionRequestKey(questionRequest)} request={questionRequest} onResolve={onQuestionResolve} />
       </div>
     );
   }
   return (
     <div className="composer" data-question-present={Boolean(questionRequest)} data-dragging-files={draggingFiles} data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
-      {questionRequest && <ComposerQuestion key={questionRequest.id} request={questionRequest} onResolve={onQuestionResolve} />}
+      {questionRequest && <ComposerQuestion key={questionRequestKey(questionRequest)} request={questionRequest} onResolve={onQuestionResolve} />}
       {draggingFiles && (
         <div className="composer-drop-target" role="status">
           <Files size={22} />
@@ -3002,16 +3481,26 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
         <div className="composer-attachments" aria-label="Attached files">
           {attachments.map((attachment) => (
             <figure className="composer-attachment" key={attachment.id} title={`${attachment.name} · ${attachmentSize(attachment.size)}`}>
-              {COMPOSER_IMAGE_TYPES.has(attachment.type) ? (
-                <img src={attachment.url} alt={attachment.name} />
+              {COMPOSER_IMAGE_TYPES.has(attachment.type) && !attachment.needsReselect ? (
+                <img src={attachment.url || "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="} alt={attachment.name} />
               ) : (
                 <div className="composer-file-tile">
-                  <File size={24} />
+                  {attachment.needsReselect ? <Warning size={24} /> : <File size={24} />}
                   <strong>{attachmentExtension(attachment.name)}</strong>
-                  <span>{attachment.name}</span>
+                  <span>{attachment.needsReselect ? "Reselect file" : attachment.name}</span>
                 </div>
               )}
-              <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((candidate) => candidate.id !== attachment.id))}>
+              {attachment.needsReselect && <>
+                <input
+                  ref={(node) => { if (node) reselectInputRefs.current.set(attachment.id, node); else reselectInputRefs.current.delete(attachment.id); }}
+                  className="composer-file-input"
+                  type="file"
+                  aria-label={`Choose ${attachment.name}`}
+                  onChange={(event) => { void reselectAttachment(attachment, event.target.files?.[0]); event.target.value = ""; }}
+                />
+                <button type="button" className="composer-reselect" onClick={() => reselectInputRefs.current.get(attachment.id)?.click()}>Reselect file</button>
+              </>}
+              <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => removeAttachment(attachment)}>
                 <X size={10} weight="bold" />
               </button>
             </figure>
@@ -3037,10 +3526,11 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
         onBlur={() => setCommandsDismissed(true)}
         onChange={(event) => {
           const value = event.target.value;
+          draftInteractionRef.current = true;
           setText(value);
           setCommandsDismissed(false);
           setCommandSelection(0);
-          if (preserveDrafts) localStorage.setItem(storageKey, value);
+          if (preserveDrafts) storage.setItem(storageKey, value);
         }}
         onKeyDown={(event) => {
           if (commandMenuOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
@@ -3068,6 +3558,16 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
         }}
       />
       {attachmentNotice && <div className="composer-image-notice" role="status">{attachmentNotice}</div>}
+      {uploadState && (
+        <div className="composer-upload-status" role="status" aria-label="Attachment upload progress">
+          <span>{uploadState.state === "failed" ? "Upload failed" : uploadState.state === "cancelled" ? "Upload cancelled" : "Uploading attachments"}</span>
+          <small>{uploadState.files?.filter((file) => file.state === "ready").length ?? 0}/{uploadState.files?.length ?? 0} files · {attachmentSize(uploadState.uploadedBytes ?? 0)} of {attachmentSize(uploadState.totalBytes ?? 0)}</small>
+          <div className="composer-upload-actions">
+            {uploadState.activeCount > 0 && <button type="button" className="settings-action" onClick={cancelUploads}>Cancel upload</button>}
+            {uploadState.activeCount === 0 && !["preparing", "cancelled"].includes(uploadState.state) && attachments.some((attachment) => attachment.file && attachment.transferId && attachment.transferState !== "ready") && <button type="button" className="settings-action" onClick={() => void resumeUploads()}>Resume upload</button>}
+          </div>
+        </div>
+      )}
       <div className="composer-controls">
         <div className="composer-primary-actions">
           <input
@@ -3076,6 +3576,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
             type="file"
             multiple
             tabIndex={-1}
+            disabled={disabled}
             onChange={(event) => {
               addAttachmentFiles(event.target.files);
               event.target.value = "";
@@ -3132,7 +3633,7 @@ function Composer({ disabled, busy, draftKey, preserveDrafts, sendShortcut, spel
             disabled={disabled || running}
           />
           {running && <IconButton label="Interrupt task" className="turn-button" onClick={onInterrupt}><Pause size={16} weight="fill" /></IconButton>}
-          <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || !selected || (!text.trim() && attachments.length === 0)}>
+          <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || submissionBusy || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || (!text.trim() && attachments.length === 0)}>
             <PaperPlaneTilt size={17} weight="fill" />
           </IconButton>
         </div>
@@ -3171,7 +3672,8 @@ function SideThreadSurface({
   onOpenMain,
   onForkResponse,
   onTabUpdate,
-  onError
+  onError,
+  storage = localStorage
 }) {
   const projectId = tab.payload?.projectId;
   const threadId = tab.payload?.threadId ?? null;
@@ -3190,11 +3692,26 @@ function SideThreadSurface({
   const followedThreadRef = useRef(threadId);
   const pendingDeltasRef = useRef([]);
   const deltaFrameRef = useRef(null);
+  const mountedRef = useRef(true);
   threadIdRef.current = threadId;
+  const selectedModelInfo = models.find((candidate) => candidate.model === selectedModel);
+  const selectedProvider = selectedModelInfo?.provider
+    ? providers.find((provider) => provider.id === selectedModelInfo.provider)
+    : null;
+  const providerReady = selectedProvider
+    ? selectedProvider.connected !== false && !["error", "stopped", "unavailable"].includes(selectedProvider.status?.state)
+    : selectedModelInfo
+      ? selectedModelInfo.connected !== false && selectedModelInfo.availability !== "disconnected"
+      : false;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     if (!models?.length) return;
-    const saved = loadThreadConfiguration(threadId);
+    const saved = loadThreadConfiguration(threadId, storage);
     const model = models.find((candidate) => candidate.model === saved?.model)
       ?? models.find((candidate) => candidate.model === defaultModel)
       ?? models[0];
@@ -3204,22 +3721,22 @@ function SideThreadSurface({
     setPermissionMode(PERMISSION_OPTIONS.some((option) => option.value === saved?.permissionMode)
       ? saved.permissionMode
       : defaultPermissionMode);
-  }, [defaultEffort, defaultFastMode, defaultModel, defaultPermissionMode, models, threadId]);
+  }, [defaultEffort, defaultFastMode, defaultModel, defaultPermissionMode, models, storage, threadId]);
 
   const refresh = useCallback(async (targetThreadId = threadIdRef.current) => {
     if (!api?.threads?.read || !projectId || !targetThreadId) return;
     try {
       const response = await api.threads.read({ projectId, threadId: targetThreadId });
-      if (threadIdRef.current !== targetThreadId) return;
+      if (!mountedRef.current || threadIdRef.current !== targetThreadId) return;
       markResponsesSeen(response.thread, seenResponseIds);
       onThreadViewed(response.thread);
       setSnapshot((current) => mergeThreadSnapshot(current, response.thread));
       setSurfaceError("");
     } catch (cause) {
-      if (threadIdRef.current !== targetThreadId) return;
+      if (!mountedRef.current || threadIdRef.current !== targetThreadId) return;
       setSurfaceError(cause.message);
     } finally {
-      if (threadIdRef.current === targetThreadId) setLoading(false);
+      if (mountedRef.current && threadIdRef.current === targetThreadId) setLoading(false);
     }
   }, [api, onThreadViewed, projectId, seenResponseIds]);
 
@@ -3237,11 +3754,12 @@ function SideThreadSurface({
   const flushDeltas = useCallback(() => {
     deltaFrameRef.current = null;
     const pending = coalesceRuntimeDeltas(pendingDeltasRef.current.splice(0));
-    if (!pending.length) return;
+    if (!pending.length || !mountedRef.current) return;
     setSnapshot((current) => pending.reduce(applySideThreadRuntimePayload, current));
   }, []);
 
   const commitPayload = useCallback((payload) => {
+    if (!mountedRef.current) return;
     if (payload.method === "item/agentMessage/delta") {
       pendingDeltasRef.current.push(payload);
       if (deltaFrameRef.current !== null) return;
@@ -3262,6 +3780,7 @@ function SideThreadSurface({
   useEffect(() => {
     if (!api?.events?.subscribe) return undefined;
     return api.events.subscribe((event) => {
+      if (!mountedRef.current) return;
       const payload = event.payload ?? {};
       const targetThreadId = threadIdRef.current;
       if (event.type === "ApplicationResync" && targetThreadId) { void refresh(targetThreadId); return; }
@@ -3312,7 +3831,7 @@ function SideThreadSurface({
       effort: next.effort,
       fastMode: next.fastMode,
       permissionMode: next.permissionMode
-    });
+    }, storage);
   };
 
   const changeModel = (modelName) => {
@@ -3321,8 +3840,9 @@ function SideThreadSurface({
     persistConfiguration({ selectedModel: modelName, effort: nextEffort, fastMode: Boolean(fastMode && fastServiceTier(model)) });
   };
 
-  const submit = async (text, attachments = []) => {
-    if (!api || !projectId || !runtime?.connected || busy || !selectedModel) return false;
+  const submit = async (text, attachments = [], preparedAttachments = null, sourceAttachments = attachments, signal = null) => {
+    if (!api || !projectId || !runtime?.connected || busy || !selectedModel || !providerReady) return false;
+    assertSubmissionActive(signal);
     followLatestRef.current = true;
     setBusy(true);
     setSurfaceError("");
@@ -3334,6 +3854,28 @@ function SideThreadSurface({
     const availableFastTier = fastServiceTier(model);
     const serviceTier = availableFastTier ? (fastMode ? availableFastTier : null) : undefined;
     try {
+      const prepared = preparedAttachments ?? await prepareSubmissionAttachments({
+        api,
+        projectId,
+        hostId: api?.remote?.hostId ?? "local",
+        deviceId: api?.remote?.deviceId,
+        attachments,
+        signal
+      });
+      if (!mountedRef.current) return false;
+      assertSubmissionActive(signal);
+      if (!targetThreadId) {
+        const prospectivePayload = requestPayloadWithAttachments({
+          projectId,
+          threadId: PROSPECTIVE_THREAD_ID,
+          text,
+          model: selectedModel || undefined,
+          ...(serviceTier !== undefined ? { serviceTier } : {}),
+          effort,
+          permissionMode
+        }, prepared);
+        assertSubmissionRequestBudget({ api, operation: "turns.start", payload: prospectivePayload });
+      }
       if (!targetThreadId) {
         const created = await api.threads.create({
           projectId,
@@ -3341,10 +3883,11 @@ function SideThreadSurface({
           ...(serviceTier !== undefined ? { serviceTier } : {}),
           permissionMode
         });
+        assertSubmissionActive(signal);
         targetThreadId = created.thread.id;
         threadIdRef.current = targetThreadId;
         setSnapshot(created.thread);
-        saveThreadConfiguration(targetThreadId, { model: selectedModel, effort, fastMode, permissionMode });
+        saveThreadConfiguration(targetThreadId, { model: selectedModel, effort, fastMode, permissionMode }, storage);
         onThreadCreated(tab.id, created.thread, {
           ...tab.payload,
           projectId,
@@ -3363,7 +3906,10 @@ function SideThreadSurface({
           attachments,
           messageId: optimisticMessageId
         }));
-        await api.turns.steer({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, attachments });
+        const steerPayload = requestPayloadWithAttachments({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text }, prepared);
+        assertSubmissionRequestBudget({ api, operation: "turns.steer", payload: steerPayload });
+        await api.turns.steer(steerPayload);
+        assertSubmissionActive(signal);
         window.setTimeout(() => void refresh(targetThreadId), 250);
       } else {
         optimisticTurnId = `local-turn:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
@@ -3375,16 +3921,18 @@ function SideThreadSurface({
           attachments,
           messageId: optimisticMessageId
         }));
-        const response = await api.turns.start({
+        const startPayload = requestPayloadWithAttachments({
           projectId,
           threadId: targetThreadId,
           text,
-          attachments,
           model: selectedModel || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
           effort,
           permissionMode
-        });
+        }, prepared);
+        assertSubmissionRequestBudget({ api, operation: "turns.start", payload: startPayload });
+        const response = await api.turns.start(startPayload);
+        assertSubmissionActive(signal);
         const temporaryTurnId = optimisticTurnId;
         const localMessageId = optimisticMessageId;
         setSnapshot((current) => {
@@ -3432,18 +3980,20 @@ function SideThreadSurface({
       onThreadActivity(targetThreadId);
       return true;
     } catch (cause) {
-      if (optimisticTurnId && optimisticMessageId) {
+      if (mountedRef.current && optimisticTurnId && optimisticMessageId) {
         setSnapshot((current) => removeLocalUserMessage(current, {
           turnId: optimisticTurnId,
           messageId: optimisticMessageId,
           removeEmptyTurn
         }));
       }
-      setSurfaceError(cause.message);
-      onError(cause.message);
+      if (!signal?.aborted) {
+        setSurfaceError(cause.message);
+        onError(cause.message);
+      }
       return false;
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
@@ -3506,7 +4056,7 @@ function SideThreadSurface({
       </div>
       {surfaceError && <div className="side-thread-error" role="alert"><Warning size={13} />{surfaceError}</div>}
       <Composer
-        disabled={!runtime?.connected || !models.length}
+        disabled={!runtime?.connected || !models.length || !providerReady}
         busy={busy}
         draftKey={`${projectId}:side:${threadId ?? tab.payload?.draftId ?? tab.id}`}
         preserveDrafts={preferences.preserveDrafts}
@@ -3544,6 +4094,8 @@ function SideThreadSurface({
         placeholder="Ask a related question"
         runningPlaceholder="Steer the side thread"
         globalFileDrop={false}
+        storage={storage}
+        attachmentContext={{ api, hostId: api?.remote?.hostId ?? "local", deviceId: api?.remote?.deviceId, projectId }}
       />
     </section>
   );
@@ -3638,7 +4190,9 @@ function ProactiveSuggestionCard({ suggestion, onResolve }) {
   );
 }
 
-function ConversationWorkspace({
+export function ConversationWorkspace({
+  api = getPixiceApi(),
+  storage = localStorage,
   project,
   thread,
   threads,
@@ -3655,8 +4209,10 @@ function ConversationWorkspace({
   showMessageTimestamps,
   completedWorkDetails,
   previewOpen,
+  previewVisible = true,
   onPreviewToggle,
   previewWorkspaceId,
+  previewApiWorkspaceId = previewWorkspaceId,
   browserState,
   onBrowserState,
   onPreviewBrowserCreated,
@@ -3678,17 +4234,23 @@ function ConversationWorkspace({
   onPreviewInstrumentInvoke,
   onPreviewInstrumentPin,
   onOpenWorkspaceReference,
+  onOpenBoardWorkspace,
+  onOpenWorkflowWorkspace,
+  readOnly = false,
   proactiveSuggestions,
   onProactiveSuggestionResolve,
   sideThreadProps,
   taskMapProps,
   receipt,
   onReceiptCompare,
-  composerProps
+  composerProps,
+  executionTargetControl = null,
+  executionStatus = null,
+  executionAction = null
 }) {
   const [previewPresent, setPreviewPresent] = useState(previewOpen);
   const [previewChatWidth, setPreviewChatWidth] = useState(() => {
-    const saved = Number.parseInt(localStorage.getItem(PREVIEW_CHAT_WIDTH_KEY) ?? "", 10);
+    const saved = Number.parseInt(storage.getItem(PREVIEW_CHAT_WIDTH_KEY) ?? "", 10);
     return Number.isFinite(saved) ? clampPreviewChatWidth(saved) : null;
   });
   const conversationProjection = useMemo(() => projectConversation(thread), [thread]);
@@ -3766,7 +4328,7 @@ function ConversationWorkspace({
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
       document.body.classList.remove("preview-resizing");
-      localStorage.setItem(PREVIEW_CHAT_WIDTH_KEY, String(Math.round(nextWidth)));
+      storage.setItem(PREVIEW_CHAT_WIDTH_KEY, String(Math.round(nextWidth)));
       previewResizeCleanupRef.current = null;
     };
 
@@ -3790,12 +4352,12 @@ function ConversationWorkspace({
     event.preventDefault();
     const nextWidth = clampPreviewChatWidth(adjustments[event.key], previewWorkspaceWidth());
     setPreviewChatWidth(nextWidth);
-    localStorage.setItem(PREVIEW_CHAT_WIDTH_KEY, String(Math.round(nextWidth)));
+    storage.setItem(PREVIEW_CHAT_WIDTH_KEY, String(Math.round(nextWidth)));
   };
 
   const resetPreviewSplit = () => {
     setPreviewChatWidth(null);
-    localStorage.removeItem(PREVIEW_CHAT_WIDTH_KEY);
+    storage.removeItem(PREVIEW_CHAT_WIDTH_KEY);
   };
 
   const handleConversationScroll = () => {
@@ -3835,10 +4397,12 @@ function ConversationWorkspace({
           subtitle={thread ? project?.displayName : project?.canonicalPath}
           inspectorOpen={inspectorOpen}
           onInspectorToggle={onInspectorToggle}
-          showInspector={Boolean(thread) && !previewLayoutOpen}
+          showInspector={Boolean(thread) && !previewLayoutOpen && !readOnly}
           previewOpen={previewOpen}
           onPreviewToggle={onPreviewToggle}
-          showPreview={Boolean(project)}
+          showPreview={Boolean(project) && !readOnly}
+          executionStatus={executionStatus}
+          executionAction={executionAction}
         />
         {!previewLayoutOpen && thread && (
           <PromptPreviewRail
@@ -3864,9 +4428,9 @@ function ConversationWorkspace({
                     seenResponseIds={seenResponseIds}
                     showTimestamps={showMessageTimestamps}
                     completedWorkDetails={completedWorkDetails}
-                    onImageRevision={composerProps.onImageRevision}
+                    onImageRevision={readOnly ? undefined : composerProps.onImageRevision}
                     imageRevisionDisabled={composerProps.busy}
-                    onFork={composerProps.running ? null : composerProps.onForkResponse}
+                    onFork={readOnly || composerProps.running ? null : composerProps.onForkResponse}
                     receipt={turnIndex === thread.turns.length - 1 ? receipt : null}
                     onReceiptCompare={onReceiptCompare}
                     key={turn.renderId ?? turn.id}
@@ -3894,7 +4458,12 @@ function ConversationWorkspace({
             </div>
           )}
         </div>
-        {project && <Composer {...composerProps} />}
+        {project && !readOnly && (executionTargetControl ? (
+          <div className="composer-dock">
+            <div className="execution-preflight">{executionTargetControl}</div>
+            <Composer {...composerProps} />
+          </div>
+        ) : <Composer {...composerProps} />)}
       </main>
       {previewLayoutOpen && (
         <div
@@ -3913,10 +4482,11 @@ function ConversationWorkspace({
         />
       )}
       <AnimatePresence initial={false} onExitComplete={() => setPreviewPresent(false)}>
-        {previewOpen && (
+        {previewOpen && !readOnly && (
           <BrowserPanel
-            api={getPixiceApi()}
+            api={api}
             workspaceId={previewWorkspaceId}
+            apiWorkspaceId={previewApiWorkspaceId}
             state={browserState}
             onState={onBrowserState}
             onBrowserCreated={onPreviewBrowserCreated}
@@ -3941,8 +4511,11 @@ function ConversationWorkspace({
             onInstrumentInvoke={onPreviewInstrumentInvoke}
             onInstrumentPin={onPreviewInstrumentPin}
             onOpenResource={onOpenWorkspaceReference}
+            onOpenBoardWorkspace={onOpenBoardWorkspace}
+            onOpenWorkflowWorkspace={onOpenWorkflowWorkspace}
             sideThreadProps={sideThreadProps}
             taskMapProps={taskMapProps}
+            visible={previewVisible}
           />
         )}
       </AnimatePresence>
@@ -3973,7 +4546,7 @@ function coerceElicitationValue(field, value) {
   return value;
 }
 
-function ApprovalCard({ request, onResolve }) {
+export function ApprovalCard({ request, onResolve }) {
   const method = request.method ?? "Approval";
   const params = request.params ?? {};
   const isApproval = method.includes("requestApproval") || method === "applyPatchApproval" || method === "execCommandApproval";
@@ -4143,7 +4716,7 @@ function InspectorAgentRow({ agent, lead = false, parentTitle = "" }) {
   );
 }
 
-function Inspector({ open, thread, threads, plan, attention, onResolve }) {
+export function Inspector({ open, thread, threads, plan, attention, onResolve }) {
   const systemReducedMotion = useReducedMotion();
   if (!thread) return null;
   const agents = descendantsOf(threads, thread.id);
@@ -5540,7 +6113,7 @@ function AttentionWorkspace({ attention, projects, onResolve }) {
   </main>;
 }
 
-function BoardWorkspace({ project, threads, tasks, phases, attention, loading, onCreate, onCreatePhase, onUpdate, onMove, onDelete, onOpenThread, onOpenTask, onScheduleMove, onStartTask }) {
+function BoardWorkspace({ project, threads, tasks, phases, attention, loading, onCreate, onCreatePhase, onUpdate, onMove, onDelete, onOpenThread, onOpenTask, onScheduleMove, onStartTask, storage = localStorage }) {
   return (
     <main className="main-canvas workspace">
       <AppToolbar icon={BoardIcon} title="Board" subtitle={project?.displayName} />
@@ -5560,22 +6133,54 @@ function BoardWorkspace({ project, threads, tasks, phases, attention, loading, o
         onOpenTask={onOpenTask}
         onScheduleMove={onScheduleMove}
         onStartTask={onStartTask}
+        storage={storage}
       />
     </main>
   );
 }
 
-export function App() {
+function ExecutionTargetControl({ connect, value, projects, currentHostId, currentProjectId, onChange, onProjectChange, disabled = false }) {
+  if (!connect) return null;
+  const roleFor = (instance) => connect.clientStates[instance.id]?.role ?? connect.hostCatalogs[instance.id]?.role ?? instance.role ?? 'operator';
+  const hosts = [
+    ...(connect.local ? [{ id: "local", label: "This device", state: connect.localState?.state ?? "connected", projects: connect.hostCatalogs.local?.projects ?? (currentHostId === "local" ? projects : []) }] : []),
+    ...connect.instances.map((instance) => ({
+      id: instance.id,
+      label: instance.name,
+      state: connect.clientStates[instance.id]?.state ?? "saved",
+      role: roleFor(instance),
+      disabled: roleFor(instance) === "observer",
+      projects: connect.hostCatalogs[instance.id]?.projects ?? (currentHostId === instance.id ? projects : [])
+    }))
+  ];
+  const selectedHost = hosts.find((host) => host.id === value.hostId) ?? hosts[0];
+  const targetChanged = selectedHost && selectedHost.id !== currentHostId;
+  return <div className="execution-target-control" data-execution-target={selectedHost?.id ?? "local"}>
+    <label><span>Run on</span><select aria-label="Run on" value={value.hostId} disabled={disabled} onChange={(event) => onChange({ hostId: event.target.value, projectId: event.target.value === currentHostId ? currentProjectId ?? "" : "" })}>
+      {hosts.map((host) => <option key={host.id} value={host.id} disabled={host.disabled}>{host.label} · {host.disabled ? "view only" : host.state}</option>)}
+    </select></label>
+    {targetChanged && <label><span>Project</span><select aria-label="Target project" required value={value.projectId} disabled={disabled} onChange={(event) => onProjectChange(event.target.value)}>
+      <option value="">Choose target project</option>
+      {(selectedHost.projects ?? []).map((project) => <option key={project.id} value={project.id}>{project.displayName ?? project.name} · {project.canonicalPath ?? project.path}</option>)}
+    </select></label>}
+  </div>;
+}
+
+export function App({ readOnly = false } = {}) {
   const [serviceRevision, setServiceRevision] = useState(0);
   const bootstrapLoaded = useRef(false);
   const systemReducedMotion = useReducedMotion();
   const api = getPixiceApi();
+  const connect = useConnect();
+  const storage = connect?.storage ?? localStorage;
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [projects, setProjects] = useState([]);
   const [projectActivity, setProjectActivity] = useState({});
-  const [seenThreadCompletions, setSeenThreadCompletions] = useState(loadSeenThreadCompletions);
+  const [seenThreadCompletions, setSeenThreadCompletions] = useState(() => loadSeenThreadCompletions(storage));
   const [seenThreadCompletionsHydrated, setSeenThreadCompletionsHydrated] = useState(false);
-  const [threadMessageRecency, setThreadMessageRecency] = useState(loadThreadMessageRecency);
+  const [threadMessageRecency, setThreadMessageRecency] = useState(() => loadThreadMessageRecency(storage));
+  const [linkedThreads, setLinkedThreads] = useState(() => listRemoteThreadLinks(storage));
+  const [selectedLinkedThread, setSelectedLinkedThread] = useState(null);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectCreateBusy, setProjectCreateBusy] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
@@ -5601,6 +6206,8 @@ export function App() {
   const pendingRuntimeDeltasRef = useRef([]);
   const runtimeDeltaFrameRef = useRef(null);
   const runtimeDeltaUsesAnimationFrameRef = useRef(false);
+  const attentionRevisionRef = useRef(0);
+  const attentionSnapshotReadTokenRef = useRef(0);
   const [thread, setThread] = useState(null);
   const [plan, setPlan] = useState([]);
   const [attention, setAttention] = useState([]);
@@ -5636,11 +6243,11 @@ export function App() {
   const [threadNamingModel, setThreadNamingModel] = useState(THREAD_NAMING_AUTO);
   const [workflowGenerationModel, setWorkflowGenerationModel] = useState(WORKFLOW_GENERATION_AUTO);
   const [defaultPermissionMode, setDefaultPermissionMode] = useState(() => {
-    const saved = localStorage.getItem("pixice.permissionMode");
+    const saved = storage.getItem("pixice.permissionMode");
     return PERMISSION_OPTIONS.some((option) => option.value === saved) ? saved : "workspace-write";
   });
   const [permissionMode, setPermissionMode] = useState(defaultPermissionMode);
-  const [preferences, setPreferences] = useState(loadPreferences);
+  const [preferences, setPreferences] = useState(() => loadPreferences(storage));
   const preferencesRef = useRef(preferences);
   const [agentBehaviorCatalog, setAgentBehaviorCatalog] = useState(EMPTY_AGENT_BEHAVIORS);
   const [agentBehaviors, setAgentBehaviors] = useState({});
@@ -5658,32 +6265,84 @@ export function App() {
   const [providerUpdateChecksEnabled, setProviderUpdateChecksEnabled] = useState(true);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = Number.parseInt(localStorage.getItem("pixice.sidebarWidth") ?? "", 10);
+    const saved = Number.parseInt(storage.getItem("pixice.sidebarWidth") ?? "", 10);
     return Number.isFinite(saved) && saved !== 296 ? clampSidebarWidth(saved) : DEFAULT_SIDEBAR_WIDTH;
   });
+  const [executionTarget, setExecutionTarget] = useState(() => ({ hostId: connect?.active ?? "local", projectId: null }));
+  const [executionTargetConfig, setExecutionTargetConfig] = useState(null);
+  const executionTargetRequestRef = useRef(0);
 
   const markThreadMessaged = useCallback((threadId) => {
     if (!threadId) return;
     setThreadMessageRecency((current) => {
       const latestKnown = Object.values(current).reduce((latest, value) => Math.max(latest, value), 0);
       const next = { ...current, [threadId]: Math.max(Date.now(), latestKnown + 1) };
-      localStorage.setItem(THREAD_MESSAGE_RECENCY_KEY, JSON.stringify(next));
+      storage.setItem(THREAD_MESSAGE_RECENCY_KEY, JSON.stringify(next));
       return next;
     });
-  }, []);
+  }, [storage]);
   const [draftMode, setDraftMode] = useState(false);
   const draftModeRef = useRef(false);
   const [loading, setLoading] = useState({ app: true, threads: false, thread: false, review: false, reviewFile: null, board: false, tools: false, extensions: false, providers: false, git: false, github: false, usage: false, usageLimits: false });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
+  const refreshLinkedThreads = useCallback((projectId) => {
+    if (!projectId) {
+      setLinkedThreads([]);
+      return [];
+    }
+    const originHostId = connect?.active ?? "local";
+    const next = loadRemoteThreadLinks(originHostId, projectId, storage);
+    setLinkedThreads(next);
+    return next;
+  }, [connect?.active, storage]);
+
+  const rememberLinkedThread = useCallback((reference) => {
+    const originHostId = connect?.active ?? "local";
+    const originStorage = reference.originHostId === originHostId
+      ? storage
+      : createWorkspaceStorage(reference.originHostId);
+    const saved = upsertRemoteThreadLink(reference, originStorage) ?? reference;
+    if (saved.originHostId !== originHostId || saved.originProjectId !== selectedProjectIdRef.current) return;
+    setLinkedThreads((current) => [saved, ...current.filter((candidate) => !(
+      candidate.originHostId === saved.originHostId
+      && candidate.originProjectId === saved.originProjectId
+      && candidate.executionHostId === saved.executionHostId
+      && candidate.executionProjectId === saved.executionProjectId
+      && candidate.rawThreadId === saved.rawThreadId
+    ))]);
+  }, [connect?.active, storage]);
+
+  useEffect(() => {
+    refreshLinkedThreads(selectedProjectId);
+  }, [refreshLinkedThreads, selectedProjectId]);
+
+  const openLinkedThread = useCallback(async (reference) => {
+    if (!connect?.openExecution) return false;
+    setSelectedLinkedThread(`${reference.executionHostId}:${reference.executionProjectId}:${reference.rawThreadId}`);
+    try {
+      await connect.openExecution({
+        ...reference,
+        hostId: reference.executionHostId,
+        projectId: reference.executionProjectId,
+        threadId: reference.rawThreadId,
+        onThreadLinked: rememberLinkedThread
+      });
+      return true;
+    } catch (cause) {
+      setError(cause.message);
+      return false;
+    }
+  }, [connect, rememberLinkedThread]);
+
   const savePersistentDefaults = useCallback((patch) => {
-    if (patch.defaultModel !== undefined) localStorage.setItem("pixice.model", patch.defaultModel);
-    if (patch.defaultEffort !== undefined) localStorage.setItem("pixice.effort", patch.defaultEffort);
-    if (patch.defaultPermissionMode !== undefined) localStorage.setItem("pixice.permissionMode", patch.defaultPermissionMode);
+    if (patch.defaultModel !== undefined) storage.setItem("pixice.model", patch.defaultModel);
+    if (patch.defaultEffort !== undefined) storage.setItem("pixice.effort", patch.defaultEffort);
+    if (patch.defaultPermissionMode !== undefined) storage.setItem("pixice.permissionMode", patch.defaultPermissionMode);
     if (!api?.app?.saveSettings) return;
     void api.app.saveSettings(patch).catch((cause) => setError(cause.message));
-  }, [api]);
+  }, [api, storage]);
 
   useEffect(() => {
     if (!defaultsHydrated) return;
@@ -5763,8 +6422,10 @@ export function App() {
   }, [previewWorkspaceId, updatePreviewWorkspace]);
 
   useEffect(() => {
+    const currentHostId = api?.remote?.hostId ?? "local";
     const openPreview = (event) => {
       const detail = event.detail ?? {};
+      if (detail.hostId !== currentHostId) return;
       const activeWorkspaceId = selectedThreadIdRef.current ?? (selectedProjectIdRef.current ? `draft:${selectedProjectIdRef.current}` : null);
       if (!detail.workspaceId || detail.workspaceId !== activeWorkspaceId) return;
       if (detail.projectId && detail.projectId !== selectedProjectIdRef.current) return;
@@ -5774,13 +6435,15 @@ export function App() {
     };
     const openBoard = (event) => {
       const detail = event.detail ?? {};
+      if (detail.hostId !== currentHostId) return;
       if (detail.projectId && detail.projectId !== selectedProjectIdRef.current) return;
-      if (detail.taskId) localStorage.setItem(`pixice.boardSelection.${detail.projectId}`, detail.taskId);
+      if (detail.taskId) storage.setItem(`pixice.boardSelection.${detail.projectId}`, detail.taskId);
       setPreviewOpen(false);
       setActiveView("board");
     };
     const openTab = (event) => {
       const detail = event.detail ?? {};
+      if (detail.hostId !== currentHostId) return;
       const workspaceId = detail.workspaceId ?? detail.threadId;
       const tab = detail.tab;
       if (!workspaceId || !tab?.id || !tab.kind) return;
@@ -5809,7 +6472,7 @@ export function App() {
       window.removeEventListener("pixice:open-board-workspace", openBoard);
       window.removeEventListener("pixice:open-preview-tab", openTab);
     };
-  }, [setPreviewOpen, updatePreviewWorkspace]);
+  }, [api, setPreviewOpen, updatePreviewWorkspace]);
 
   useEffect(() => {
     const entries = Object.entries(previewWorkspaces);
@@ -5886,10 +6549,10 @@ export function App() {
 
   useEffect(() => {
     if (!seenThreadCompletionsHydrated) return;
-    localStorage.setItem(THREAD_COMPLETIONS_SEEN_KEY, JSON.stringify(seenThreadCompletions));
+    storage.setItem(THREAD_COMPLETIONS_SEEN_KEY, JSON.stringify(seenThreadCompletions));
     if (!api?.app?.saveSettings) return;
     void api.app.saveSettings({ threadCompletionsSeen: seenThreadCompletions }).catch((cause) => setError(cause.message));
-  }, [api, seenThreadCompletions, seenThreadCompletionsHydrated]);
+  }, [api, seenThreadCompletions, seenThreadCompletionsHydrated, storage]);
 
   const normalizePlan = useCallback((steps) => (steps ?? []).map((step) => ({
     ...step,
@@ -5953,8 +6616,8 @@ export function App() {
 
   useEffect(() => {
     preferencesRef.current = preferences;
-    localStorage.setItem("pixice.preferences", JSON.stringify(preferences));
-  }, [preferences]);
+    storage.setItem("pixice.preferences", JSON.stringify(preferences));
+  }, [preferences, storage]);
 
   const changePreference = useCallback((key, value) => {
     setPreferences((current) => ({ ...current, [key]: value }));
@@ -5972,9 +6635,10 @@ export function App() {
   }, [savePersistentDefaults]);
 
   const changeView = useCallback((nextView) => {
+    if (nextView !== "task") connect?.closeExecution?.();
     if (nextView !== "task") setPreviewOpen(false);
     setActiveView(nextView);
-  }, [setPreviewOpen]);
+  }, [connect, setPreviewOpen]);
 
   const loadModels = useCallback(async () => {
     if (!api) return;
@@ -5992,6 +6656,7 @@ export function App() {
       const next = response.data ?? [];
       next.filter(isBridgeThread).forEach((candidate) => bridgeThreadIdsRef.current.add(candidate.id));
       setThreads(next);
+      refreshLinkedThreads(projectId);
       setProjectActivity((current) => ({
         ...current,
         [projectId]: summarizeProjectThreads(null, next, { seen: true })
@@ -6011,7 +6676,7 @@ export function App() {
     } finally {
       if (requestId === threadsLoadRequestRef.current) setLoading((state) => ({ ...state, threads: false }));
     }
-  }, [api]);
+  }, [api, refreshLinkedThreads]);
 
   const loadThread = useCallback(async (projectId, threadId) => {
     if (!api || !projectId || !threadId) return;
@@ -6320,10 +6985,20 @@ export function App() {
   useEffect(() => {
     if (!api?.tasks?.interventions) return undefined;
     let cancelled = false;
+    const readToken = ++attentionSnapshotReadTokenRef.current;
+    const readRevision = attentionRevisionRef.current;
     api.tasks.interventions().then((result) => {
-      if (!cancelled) setAttention((current) => [...current, ...result.requests.filter((request) => !current.some((candidate) => candidate.id === request.id))]);
+      if (cancelled || readToken !== attentionSnapshotReadTokenRef.current || readRevision !== attentionRevisionRef.current) return;
+      const requests = Array.isArray(result?.requests) ? result.requests : [];
+      setAttention((current) => {
+        if (cancelled || readToken !== attentionSnapshotReadTokenRef.current || readRevision !== attentionRevisionRef.current) return current;
+        return requests;
+      });
     }).catch((cause) => { if (!cancelled) setError(`Could not refresh task requests or results: ${cause.message}`); });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (attentionSnapshotReadTokenRef.current === readToken) attentionSnapshotReadTokenRef.current += 1;
+    };
   }, [api]);
 
   const loadUsage = useCallback(async (days = usageRangeDays) => {
@@ -6391,9 +7066,9 @@ export function App() {
         return next;
       });
       setSeenThreadCompletionsHydrated(true);
-      const legacyModel = localStorage.getItem("pixice.model") || "";
-      const legacyEffort = localStorage.getItem("pixice.effort") || "";
-      const legacyPermission = localStorage.getItem("pixice.permissionMode") || "";
+      const legacyModel = storage.getItem("pixice.model") || "";
+      const legacyEffort = storage.getItem("pixice.effort") || "";
+      const legacyPermission = storage.getItem("pixice.permissionMode") || "";
       const requestedModel = persisted.defaultModel || legacyModel;
       const resolvedModel = nextModels.find((model) => model.model === requestedModel)
         ?? nextModels.find((model) => model.isDefault)
@@ -6438,14 +7113,14 @@ export function App() {
       if (Object.entries(resolvedDefaults).some(([key, value]) => persisted[key] !== value)) {
         savePersistentDefaults(resolvedDefaults);
       }
-      const saved = localStorage.getItem("pixice.activeProjectId");
+      const saved = storage.getItem("pixice.activeProjectId");
       const selected = result.projects?.find((project) => project.id === saved)?.id ?? result.projects?.[0]?.id ?? null;
       setSelectedProjectId(selected);
     }).catch((cause) => setError(cause.message)).finally(() => {
       if (!cancelled) setLoading((state) => ({ ...state, app: false }));
     });
     return () => { cancelled = true; };
-  }, [api, savePersistentDefaults, serviceRevision]);
+  }, [api, savePersistentDefaults, serviceRevision, storage]);
 
   useEffect(() => {
     if (!api?.threads?.list || !projectActivityKey) {
@@ -6535,18 +7210,18 @@ export function App() {
       savePersistentDefaults({ defaultModel: model.model, defaultEffort: nextDefaultEffort });
     }
     if (!models.some((candidate) => candidate.model === selectedModel)) {
-      const savedThread = loadThreadConfiguration(selectedThreadIdRef.current);
+      const savedThread = loadThreadConfiguration(selectedThreadIdRef.current, storage);
       const selectedThreadModel = models.find((candidate) => candidate.model === savedThread?.model) ?? model;
       setSelectedModel(selectedThreadModel.model);
       setEffort(resolveReasoningEffort(savedThread?.effort, selectedThreadModel, nextDefaultEffort));
       setFastMode(Boolean(savedThread?.fastMode));
       setPermissionMode(PERMISSION_OPTIONS.some((option) => option.value === savedThread?.permissionMode) ? savedThread.permissionMode : defaultPermissionMode);
     }
-  }, [defaultEffort, defaultModel, defaultPermissionMode, defaultsHydrated, models, savePersistentDefaults, selectedModel]);
+  }, [defaultEffort, defaultModel, defaultPermissionMode, defaultsHydrated, models, savePersistentDefaults, selectedModel, storage]);
 
   useEffect(() => {
     if (!models.length || !defaultModel || !defaultEffort || draftMode) return;
-    const savedThread = loadThreadConfiguration(selectedThreadId);
+    const savedThread = loadThreadConfiguration(selectedThreadId, storage);
     const model = models.find((candidate) => candidate.model === savedThread?.model)
       ?? models.find((candidate) => candidate.model === defaultModel)
       ?? models[0];
@@ -6556,7 +7231,7 @@ export function App() {
     setPermissionMode(PERMISSION_OPTIONS.some((option) => option.value === savedThread?.permissionMode)
       ? savedThread.permissionMode
       : defaultPermissionMode);
-  }, [defaultEffort, defaultModel, defaultPermissionMode, draftMode, models, selectedThreadId]);
+  }, [defaultEffort, defaultModel, defaultPermissionMode, draftMode, models, selectedThreadId, storage]);
 
   useEffect(() => {
     if (!selectedProjectId) return undefined;
@@ -6583,6 +7258,21 @@ export function App() {
   }, [api, selectedProjectId]);
 
   useEffect(() => {
+    if (!selectedProjectId) return;
+    setExecutionTarget((current) => current.hostId === "local" ? { ...current, projectId: selectedProjectId } : current);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    const targetStillExists = executionTarget.hostId === "local"
+      ? Boolean(connect?.local)
+      : Boolean(connect?.instances.some((instance) => instance.id === executionTarget.hostId));
+    if (targetStillExists) return;
+    const fallbackHostId = connect?.active ?? "local";
+    setExecutionTarget({ hostId: fallbackHostId, projectId: fallbackHostId === "local" ? selectedProjectId : null });
+    setExecutionTargetConfig(null);
+  }, [connect?.active, connect?.instances, connect?.local, executionTarget.hostId, selectedProjectId]);
+
+  useEffect(() => {
     if (!selectedProjectId) {
       setThreads([]);
       setBoardTasks([]);
@@ -6594,13 +7284,13 @@ export function App() {
       setReview({ projectId: null, repository: null, files: [], fileDiffs: {} });
       return;
     }
-    localStorage.setItem("pixice.activeProjectId", selectedProjectId);
+    storage.setItem("pixice.activeProjectId", selectedProjectId);
     window.dispatchEvent(new CustomEvent("pixice:active-project-changed", { detail: selectedProjectId }));
     loadThreads(selectedProjectId);
     loadReview(selectedProjectId);
     loadBoard(selectedProjectId);
     loadProjectTools(selectedProjectId);
-  }, [selectedProjectId, loadBoard, loadProjectTools, loadReview, loadThreads, runtime.connected]);
+  }, [selectedProjectId, loadBoard, loadProjectTools, loadReview, loadThreads, runtime.connected, storage]);
 
   useEffect(() => {
     setSelectedProjectToolId(null);
@@ -6761,7 +7451,8 @@ export function App() {
         return;
       }
       if (event.type === "AttentionRequired") {
-        setAttention((current) => current.some((request) => request.id === event.payload.id) ? current : [...current, event.payload]);
+        attentionRevisionRef.current += 1;
+        setAttention((current) => mergeAttentionRequests(current, [event.payload]));
         const questionForCurrentThread = isQuestionRequest(event.payload) && event.payload.params?.threadId === selectedThreadIdRef.current;
         const attentionForCurrentThread = event.payload.params?.threadId === selectedThreadIdRef.current;
         if (attentionForCurrentThread && !questionForCurrentThread) setInspectorOpen(true);
@@ -6769,10 +7460,12 @@ export function App() {
         return;
       }
       if (event.type === "AttentionResolved") {
-        setAttention((current) => current.filter((request) => request.id !== event.payload.requestId));
+        attentionRevisionRef.current += 1;
+        setAttention((current) => current.filter((request) => !attentionResolvedRequest(request, event.payload)));
         return;
       }
       if (event.type === "AttentionReset") {
+        attentionRevisionRef.current += 1;
         setAttention([]);
         return;
       }
@@ -6942,7 +7635,7 @@ export function App() {
       if (event.type === "TrayNavigate") {
         if (event.payload?.settingsPage) setSettingsPage(event.payload.settingsPage);
         if (event.payload?.projectId) {
-          localStorage.setItem("pixice.activeProjectId", event.payload.projectId);
+          storage.setItem("pixice.activeProjectId", event.payload.projectId);
           selectedProjectIdRef.current = event.payload.projectId;
           setSelectedProjectId(event.payload.projectId);
         }
@@ -7115,6 +7808,8 @@ export function App() {
   };
 
   const selectProject = (projectId) => {
+    connect?.closeExecution?.();
+    setSelectedLinkedThread(null);
     setDraftMode(false);
     selectedProjectIdRef.current = projectId;
     selectedThreadIdRef.current = null;
@@ -7152,20 +7847,67 @@ export function App() {
   };
 
   const selectThread = (threadId) => {
+    connect?.closeExecution?.();
+    setSelectedLinkedThread(null);
     setDraftMode(false);
+    setExecutionTarget({ hostId: connect?.active ?? "local", projectId: selectedProjectIdRef.current ?? selectedProjectId });
+    setExecutionTargetConfig(null);
     selectedThreadIdRef.current = threadId;
     setSelectedThreadId(threadId);
     setActiveView("task");
   };
 
+  const changeExecutionTarget = async (next) => {
+    const requestId = ++executionTargetRequestRef.current;
+    if (next.hostId !== executionTarget.hostId) setExecutionTargetConfig(null);
+    setExecutionTarget(next);
+    if (!connect) return;
+    const currentHostId = connect.active ?? "local";
+    if (next.hostId === currentHostId) {
+      if (requestId === executionTargetRequestRef.current) setExecutionTargetConfig(null);
+      return;
+    }
+    try {
+      const catalog = await connect.loadHostCatalog(next.hostId);
+      if (!catalog || requestId !== executionTargetRequestRef.current) return;
+      const targetStorage = createWorkspaceStorage(next.hostId);
+      const configKey = `pixice.executionConfiguration.${next.projectId || "new"}`;
+      let saved = null;
+      try { saved = JSON.parse(targetStorage.getItem(configKey) || "null"); } catch { /* A damaged target draft must not block choosing a host. */ }
+      const model = catalog.models?.find((candidate) => candidate.model === saved?.model)
+        ?? catalog.models?.find((candidate) => candidate.model === selectedModel)
+        ?? catalog.models?.find((candidate) => candidate.isDefault)
+        ?? catalog.models?.[0];
+      if (model) {
+        const nextConfig = {
+          model: model.model,
+          effort: resolveReasoningEffort(saved?.effort, model, effort),
+          fastMode: Boolean(saved?.fastMode ?? fastMode) && Boolean(fastServiceTier(model)),
+          permissionMode: PERMISSION_OPTIONS.some((option) => option.value === saved?.permissionMode)
+            ? saved.permissionMode
+            : permissionMode
+        };
+        if (requestId !== executionTargetRequestRef.current) return;
+        setExecutionTargetConfig(nextConfig);
+        targetStorage.setItem(configKey, JSON.stringify(nextConfig));
+      }
+    } catch (cause) {
+      setError(`Could not read ${next.hostId}: ${cause.message}`);
+    }
+  };
+
   const newTask = () => {
     if (!selectedProjectId) return;
+    connect?.closeExecution?.();
+    setSelectedLinkedThread(null);
     const model = models.find((candidate) => candidate.model === defaultModel);
     setDraftMode(true);
     setSelectedModel(defaultModel);
     setEffort(defaultEffort);
     setFastMode(Boolean(defaultFastMode && fastServiceTier(model)));
     setPermissionMode(defaultPermissionMode);
+    setExecutionTarget({ hostId: connect?.active ?? "local", projectId: selectedProjectId });
+    setExecutionTargetConfig(null);
     selectedThreadIdRef.current = null;
     setSelectedThreadId(null);
     setThread(null);
@@ -7204,7 +7946,7 @@ export function App() {
           // The conversation is already archived, so Preview teardown remains best effort.
         }
       }
-      localStorage.removeItem(threadConfigurationKey(threadId));
+      storage.removeItem(threadConfigurationKey(threadId));
       setSeenThreadCompletions((current) => {
         if (!(threadId in current)) return current;
         const next = { ...current };
@@ -7277,6 +8019,7 @@ export function App() {
     if (!task || !selectedProjectId || !previewWorkspaceId) return;
     window.dispatchEvent(new CustomEvent("pixice:task-preview-requested", {
       detail: {
+        hostId: api?.remote?.hostId ?? "local",
         projectId: selectedProjectId,
         taskId: task.id,
         threadId: selectedThreadId,
@@ -7300,6 +8043,7 @@ export function App() {
     }
     window.dispatchEvent(new CustomEvent("pixice:task-preview-requested", {
       detail: {
+        hostId: api?.remote?.hostId ?? "local",
         projectId: selectedProjectId,
         taskId: task.id,
         threadId: selectedThreadId,
@@ -7356,7 +8100,7 @@ export function App() {
       const threadId = created.thread.id;
       const model = models.find((candidate) => candidate.model === defaultModel);
       const defaultFastTier = defaultFastMode ? fastServiceTier(model) : null;
-      saveThreadConfiguration(threadId, { model: defaultModel, effort: defaultEffort, fastMode: Boolean(defaultFastTier), permissionMode: defaultPermissionMode });
+      saveThreadConfiguration(threadId, { model: defaultModel, effort: defaultEffort, fastMode: Boolean(defaultFastTier), permissionMode: defaultPermissionMode }, storage);
       await api.board.attach({ projectId, taskId: task.id, threadId });
       await api.board.move({ projectId, taskId: task.id, column: "active" });
       const prompt = task.description ? `${task.title}\n\n${task.description}` : task.title;
@@ -7400,7 +8144,7 @@ export function App() {
     const model = models.find((candidate) => candidate.model === modelName);
     const nextEffort = resolveReasoningEffort(effort, model, defaultEffort);
     setEffort(nextEffort);
-    saveThreadConfiguration(selectedThreadId, { model: modelName, effort: nextEffort, fastMode, permissionMode });
+    saveThreadConfiguration(selectedThreadId, { model: modelName, effort: nextEffort, fastMode, permissionMode }, storage);
   };
 
   const changeDefaultEffort = (nextEffort) => {
@@ -7425,12 +8169,12 @@ export function App() {
 
   const changeThreadEffort = (nextEffort) => {
     setEffort(nextEffort);
-    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort: nextEffort, fastMode, permissionMode });
+    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort: nextEffort, fastMode, permissionMode }, storage);
   };
 
   const changeThreadFastMode = (enabled) => {
     setFastMode(enabled);
-    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort, fastMode: enabled, permissionMode });
+    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort, fastMode: enabled, permissionMode }, storage);
   };
 
   const changeDefaultPermissionMode = (mode) => {
@@ -7440,7 +8184,7 @@ export function App() {
 
   const changeThreadPermissionMode = (mode) => {
     setPermissionMode(mode);
-    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort, fastMode, permissionMode: mode });
+    saveThreadConfiguration(selectedThreadId, { model: selectedModel, effort, fastMode, permissionMode: mode }, storage);
   };
 
   const changeAttentionNotifications = (enabled) => {
@@ -7540,7 +8284,7 @@ export function App() {
     const projectId = selectedProjectIdRef.current;
     if (!api?.threads?.fork || !projectId || !threadId || !turnId || !itemId) return false;
     const selectedThreadAtStart = selectedThreadIdRef.current;
-    const sourceConfiguration = loadThreadConfiguration(threadId)
+    const sourceConfiguration = loadThreadConfiguration(threadId, storage)
       ?? configuration
       ?? (threadId === selectedThreadAtStart
         ? { model: selectedModel, effort, fastMode, permissionMode }
@@ -7553,7 +8297,7 @@ export function App() {
         lastItemId: itemId
       });
       const forkedThread = response.thread;
-      if (sourceConfiguration) saveThreadConfiguration(forkedThread.id, sourceConfiguration);
+      if (sourceConfiguration) saveThreadConfiguration(forkedThread.id, sourceConfiguration, storage);
       if (selectedProjectIdRef.current !== projectId) return true;
       setThreads((current) => current.some((candidate) => candidate.id === forkedThread.id)
         ? current.map((candidate) => candidate.id === forkedThread.id ? { ...candidate, ...forkedThread } : candidate)
@@ -7700,7 +8444,7 @@ export function App() {
     }
     if (target?.kind === "thread" && !target.payload?.threadId) {
       const draftKey = `${target.payload?.projectId}:side:${target.payload?.draftId ?? target.id}`;
-      localStorage.removeItem(`pixice.draft.${draftKey}`);
+      storage.removeItem(`pixice.draft.${draftKey}`);
     }
     if (target?.kind === "simulator") {
       void api?.ios?.stop?.({ workspaceId: previewWorkspaceId }).catch(() => {});
@@ -7863,8 +8607,69 @@ export function App() {
     }
   }, [api]);
 
-  const submit = async (text, attachments = []) => {
-    if (!api || !selectedProjectId || !runtime.connected || submittingRef.current) return false;
+  const submit = async (text, attachments = [], preparedAttachments = null, sourceAttachments = attachments, signal = null) => {
+    if (!api || !selectedProjectId || submittingRef.current) return false;
+    assertSubmissionActive(signal);
+    const currentHostId = connect?.active ?? "local";
+    const targetIsOrigin = executionTarget.hostId === currentHostId;
+    const targetProjectId = targetIsOrigin ? selectedProjectId : executionTarget.projectId;
+    const targetApi = targetIsOrigin
+      ? api
+      : connect?.getApi?.(executionTarget.hostId) ?? connect?.ensureClient?.(executionTarget.hostId)?.api;
+    if (!targetIsOrigin && !targetProjectId) {
+      setError("Choose a project on the target environment before starting.");
+      return false;
+    }
+    let prepared = preparedAttachments;
+    try {
+      prepared ??= await prepareSubmissionAttachments({ api: targetApi, projectId: targetProjectId, hostId: targetApi?.remote?.hostId ?? executionTarget.hostId, deviceId: targetApi?.remote?.deviceId, attachments, signal });
+      assertSubmissionActive(signal);
+    } catch (cause) {
+      if (!signal?.aborted) setError(cause.message);
+      return false;
+    }
+    if (connect && executionTarget.hostId !== currentHostId) {
+      const initialPayload = requestPayloadWithAttachments({
+        projectId: executionTarget.projectId,
+        threadId: PROSPECTIVE_THREAD_ID,
+        text,
+        previewContext: currentPreviewContext,
+        model: targetModelName || undefined,
+        effort: targetEffort,
+        permissionMode: targetPermissionMode
+      }, prepared);
+      assertSubmissionRequestBudget({ api: targetApi, operation: "turns.start", payload: initialPayload });
+      submittingRef.current = true;
+      setSubmitting(true);
+      try {
+        assertSubmissionActive(signal);
+        const accepted = await connect.openExecution({
+          hostId: executionTarget.hostId,
+          projectId: executionTarget.projectId,
+          originHostId: currentHostId,
+          originHostLabel: currentHostId === "local" ? "This device" : connect.instances.find((instance) => instance.id === currentHostId)?.name ?? currentHostId,
+          originProjectId: selectedProjectId,
+          initialPrompt: text,
+          initialAttachments: attachments,
+          initialPreparedAttachments: { attachments: initialPayload.attachments, attachmentIds: initialPayload.attachmentIds ?? [] },
+          initialModel: targetModelName,
+          initialEffort: targetEffort,
+          initialPermissionMode: targetPermissionMode,
+          initialFastMode: targetFastMode,
+          submissionSignal: signal,
+          onThreadLinked: rememberLinkedThread
+        });
+        assertSubmissionActive(signal);
+        return accepted !== false;
+      } catch (cause) {
+        if (!signal?.aborted) setError(cause.message);
+        return false;
+      } finally {
+        submittingRef.current = false;
+        setSubmitting(false);
+      }
+    }
+    if (!runtime.connected) return false;
     const projectId = selectedProjectId;
     const startingThreadId = selectedThreadId;
     submittingRef.current = true;
@@ -7873,21 +8678,36 @@ export function App() {
     let optimisticTurnId = null;
     let optimisticMessageId = null;
     let removeOptimisticTurnOnFailure = false;
-    const selectedModelInfo = models.find((model) => model.model === selectedModel);
+    const selectedModelInfo = targetModels.find((model) => model.model === targetModelName);
     const selectedFastTier = fastServiceTier(selectedModelInfo);
-    const serviceTier = selectedFastTier ? (fastMode ? selectedFastTier : null) : undefined;
+    const serviceTier = selectedFastTier ? (targetFastMode ? selectedFastTier : null) : undefined;
     try {
       let targetThreadId = startingThreadId;
       if (!targetThreadId) {
+        const prospectivePayload = requestPayloadWithAttachments({
+          projectId,
+          threadId: PROSPECTIVE_THREAD_ID,
+          text,
+          previewContext: currentPreviewContext,
+          model: targetModelName || undefined,
+          ...(serviceTier !== undefined ? { serviceTier } : {}),
+          effort: targetEffort,
+          permissionMode: targetPermissionMode
+        }, prepared);
+        assertSubmissionRequestBudget({ api, operation: "turns.start", payload: prospectivePayload });
+      }
+      if (!targetThreadId) {
         const created = await api.threads.create({
           projectId,
-          model: selectedModel || undefined,
+          model: targetModelName || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
-          permissionMode
+          permissionMode: targetPermissionMode
         });
+        assertSubmissionActive(signal);
         targetThreadId = created.thread.id;
         const draftWorkspaceId = `draft:${projectId}`;
         await api.browser?.adopt({ fromWorkspaceId: draftWorkspaceId, toWorkspaceId: targetThreadId });
+        assertSubmissionActive(signal);
         setPreviewWorkspaces((current) => {
           const draftWorkspace = current[draftWorkspaceId];
           if (!draftWorkspace) return current;
@@ -7895,7 +8715,7 @@ export function App() {
           delete next[draftWorkspaceId];
           return next;
         });
-        saveThreadConfiguration(targetThreadId, { model: selectedModel, effort, fastMode, permissionMode });
+        saveThreadConfiguration(targetThreadId, { model: targetModelName, effort: targetEffort, fastMode: targetFastMode, permissionMode: targetPermissionMode }, storage);
         optimisticThreadId = targetThreadId;
         if (selectedProjectIdRef.current === projectId) {
           optimisticThreadsRef.current.set(targetThreadId, created.thread);
@@ -7919,7 +8739,10 @@ export function App() {
             messageId: optimisticMessageId
           }));
         }
-        await api.turns.steer({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, attachments, previewContext: currentPreviewContext });
+        const steerPayload = requestPayloadWithAttachments({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, previewContext: currentPreviewContext }, prepared);
+        assertSubmissionRequestBudget({ api, operation: "turns.steer", payload: steerPayload });
+        await api.turns.steer(steerPayload);
+        assertSubmissionActive(signal);
         if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
           window.setTimeout(() => refreshThread(projectId, targetThreadId), 250);
         }
@@ -7937,17 +8760,19 @@ export function App() {
             messageId: optimisticMessageId
           }));
         }
-        const response = await api.turns.start({
+        const startPayload = requestPayloadWithAttachments({
           projectId,
           threadId: targetThreadId,
           text,
-          attachments,
           previewContext: currentPreviewContext,
-          model: selectedModel || undefined,
+          model: targetModelName || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
-          effort,
-          permissionMode
-        });
+          effort: targetEffort,
+          permissionMode: targetPermissionMode
+        }, prepared);
+        assertSubmissionRequestBudget({ api, operation: "turns.start", payload: startPayload });
+        const response = await api.turns.start(startPayload);
+        assertSubmissionActive(signal);
         if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
           const temporaryTurnId = optimisticTurnId;
           const localMessageId = optimisticMessageId;
@@ -8002,6 +8827,7 @@ export function App() {
         optimisticMessageId = null;
       }
       markThreadMessaged(targetThreadId);
+      assertSubmissionActive(signal);
       setError(null);
       return true;
     } catch (cause) {
@@ -8013,7 +8839,7 @@ export function App() {
           removeEmptyTurn: removeOptimisticTurnOnFailure
         }));
       }
-      setError(cause.message);
+      if (!signal?.aborted) setError(cause.message);
       return false;
     } finally {
       submittingRef.current = false;
@@ -8032,11 +8858,13 @@ export function App() {
 
   const resolveAttention = async (request, decision) => {
     try {
-      if (request.method === "workflow/taskEvent/requestApproval") await api.workflows.resolveMissedTrigger({ projectId: request.projectId, requestId: request.id, decision: decision === "accept" ? "accept" : "decline" });
-      else if (request.method?.includes("requestUserInput")) await api.requests.respond({ requestId: request.id, answers: decision });
-      else if (request.method?.toLowerCase().includes("elicitation")) await api.elicitations.respond({ requestId: request.id, ...decision });
-      else await api.approvals.resolve({ requestId: request.id, decision });
-      setAttention((current) => current.filter((candidate) => candidate.id !== request.id));
+      const generation = requestGenerationPayload(request);
+      if (request.method === "workflow/taskEvent/requestApproval") await api.workflows.resolveMissedTrigger({ projectId: request.projectId, requestId: request.id, ...generation, decision: decision === "accept" ? "accept" : "decline" });
+      else if (request.method?.includes("requestUserInput")) await api.requests.respond({ requestId: request.id, ...generation, answers: decision });
+      else if (request.method?.toLowerCase().includes("elicitation")) await api.elicitations.respond({ requestId: request.id, ...generation, ...decision });
+      else await api.approvals.resolve({ requestId: request.id, ...generation, decision });
+      attentionRevisionRef.current += 1;
+      setAttention((current) => current.filter((candidate) => !sameAttentionRequest(candidate, request)));
     } catch (cause) {
       setError(cause.message);
     }
@@ -8044,8 +8872,9 @@ export function App() {
 
   const resolveQuestion = async (request, response) => {
     try {
-      await api.questions.respond({ requestId: request.id, ...response });
-      setAttention((current) => current.filter((candidate) => candidate.id !== request.id));
+      await api.questions.respond({ requestId: request.id, ...response, ...requestGenerationPayload(request) });
+      attentionRevisionRef.current += 1;
+      setAttention((current) => current.filter((candidate) => !sameAttentionRequest(candidate, request)));
       return true;
     } catch (cause) {
       setError(cause.message);
@@ -8109,8 +8938,55 @@ export function App() {
   const interventionCount = attention.filter(isApprovalRequest).length;
 
   const questionRequest = attention.find((request) => isQuestionRequest(request) && request.params?.threadId === selectedThreadId) ?? null;
+  const currentHostId = connect?.active ?? "local";
+  useEffect(() => {
+    connect?.registerOrigin?.({
+      hostId: currentHostId,
+      projectId: selectedProjectId,
+      hostLabel: currentHostId === "local" ? "This device" : connect.instances?.find((instance) => instance.id === currentHostId)?.name ?? currentHostId
+    });
+  }, [connect, currentHostId, selectedProjectId]);
+  const targetIsOrigin = executionTarget.hostId === currentHostId;
+  const targetCatalog = targetIsOrigin ? { models, providers } : (connect?.hostCatalogs?.[executionTarget.hostId] ?? {});
+  const targetModels = targetCatalog.models ?? [];
+  const targetModel = targetModels.find((candidate) => candidate.model === (targetIsOrigin ? selectedModel : executionTargetConfig?.model))
+    ?? targetModels.find((candidate) => candidate.isDefault)
+    ?? targetModels[0];
+  const targetModelName = targetModel?.model ?? (targetIsOrigin ? selectedModel : executionTargetConfig?.model ?? "");
+  const targetEffort = resolveReasoningEffort(targetIsOrigin ? effort : executionTargetConfig?.effort, targetModel, targetModel?.defaultReasoningEffort);
+  const targetFastMode = targetIsOrigin ? fastMode : Boolean(executionTargetConfig?.fastMode && fastServiceTier(targetModel));
+  const targetPermissionMode = targetIsOrigin ? permissionMode : executionTargetConfig?.permissionMode ?? defaultPermissionMode;
+  const targetProvider = targetModel?.provider
+    ? (targetCatalog.providers ?? []).find((provider) => provider.id === targetModel.provider)
+    : null;
+  const targetProviderReady = !targetProvider
+    || (targetProvider.connected !== false && !["error", "stopped", "unavailable"].includes(targetProvider.status?.state));
+  const targetHostState = targetIsOrigin
+    ? runtime
+    : connect?.clientStates?.[executionTarget.hostId] ?? targetCatalog.runtime ?? { state: "connecting", connected: false };
+  const targetConnected = targetIsOrigin
+    ? Boolean(runtime.connected)
+    : Boolean(targetHostState.connected || targetHostState.state === "connected");
+  const targetProjectReady = targetIsOrigin
+    ? Boolean(selectedProject)
+    : Boolean(executionTarget.projectId && (targetCatalog.projects ?? []).some((candidate) => candidate.id === executionTarget.projectId));
+  const targetAttachmentApi = targetIsOrigin ? api : connect?.getApi?.(executionTarget.hostId);
+  const targetAttachmentContext = {
+    api: targetAttachmentApi,
+    hostId: targetAttachmentApi?.remote?.hostId ?? executionTarget.hostId,
+    deviceId: targetAttachmentApi?.remote?.deviceId,
+    projectId: targetIsOrigin ? selectedProjectId : executionTarget.projectId
+  };
+  const updateExecutionTargetConfig = (patch) => {
+    if (targetIsOrigin) return;
+    setExecutionTargetConfig((current) => {
+      const next = { model: targetModelName, effort: targetEffort, fastMode: targetFastMode, permissionMode: targetPermissionMode, ...current, ...patch };
+      try { createWorkspaceStorage(executionTarget.hostId).setItem(`pixice.executionConfiguration.${executionTarget.projectId || "new"}`, JSON.stringify(next)); } catch { /* The target remains usable if storage is unavailable. */ }
+      return next;
+    });
+  };
   const composerProps = {
-    disabled: !runtime.connected || !selectedProject,
+    disabled: !targetConnected || !targetProjectReady || !targetProviderReady,
     busy: submitting,
     draftKey: `${selectedProjectId ?? "none"}:${selectedThreadId ?? "new"}`,
     preserveDrafts: preferences.preserveDrafts,
@@ -8121,16 +8997,22 @@ export function App() {
     running: Boolean(activeTurn),
     questionRequest,
     onQuestionResolve: resolveQuestion,
-    models,
-    selectedModel,
-    onModelChange: changeThreadModel,
-    effort,
-    onEffortChange: changeThreadEffort,
-    fastMode,
-    onFastModeChange: changeThreadFastMode,
-    permissionMode,
-    onPermissionModeChange: changeThreadPermissionMode,
-    providers,
+    models: targetModels,
+    selectedModel: targetModelName,
+    onModelChange: (modelName) => {
+      if (targetIsOrigin) { changeThreadModel(modelName); return; }
+      const model = targetModels.find((candidate) => candidate.model === modelName);
+      updateExecutionTargetConfig({ model: modelName, effort: resolveReasoningEffort(targetEffort, model, model?.defaultReasoningEffort), fastMode: Boolean(targetFastMode && fastServiceTier(model)) });
+    },
+    storage,
+    attachmentContext: targetAttachmentContext,
+    effort: targetEffort,
+    onEffortChange: (value) => targetIsOrigin ? changeThreadEffort(value) : updateExecutionTargetConfig({ effort: value }),
+    fastMode: targetFastMode,
+    onFastModeChange: (value) => targetIsOrigin ? changeThreadFastMode(value) : updateExecutionTargetConfig({ fastMode: value }),
+    permissionMode: targetPermissionMode,
+    onPermissionModeChange: (value) => targetIsOrigin ? changeThreadPermissionMode(value) : updateExecutionTargetConfig({ permissionMode: value }),
+    providers: targetCatalog.providers ?? [],
     onProviderLogin: loginProvider,
     onProvidersRefresh: refreshProviders,
     onSubmit: submit,
@@ -8144,7 +9026,17 @@ export function App() {
   const activeProjectToolId = projectTools.some((tool) => tool.id === selectedProjectToolId)
     ? selectedProjectToolId
     : projectTools[0]?.id ?? null;
+  const linkedHostStates = useMemo(() => {
+    const states = { ...(connect?.clientStates ?? {}), local: connect?.localState };
+    const known = new Set((connect?.instances ?? []).map((instance) => instance.id));
+    linkedThreads.forEach((link) => {
+      if (link.executionHostId !== "local" && !known.has(link.executionHostId) && !states[link.executionHostId]) states[link.executionHostId] = { state: "forgotten", connected: false };
+    });
+    return states;
+  }, [connect?.clientStates, connect?.instances, connect?.localState, linkedThreads]);
 
+  const executionActive = Boolean(connect?.execution);
+  const originPreviewOpen = previewOpen && !executionActive;
   let content;
   if (activeView === "board") {
     content = (
@@ -8162,6 +9054,7 @@ export function App() {
         onOpenTask={openBoardTaskPreview}
         onScheduleMove={rescheduleBoardTask}
         onStartTask={startBoardTask}
+        storage={storage}
       />
     );
   } else if (activeView === "tools") {
@@ -8256,75 +9149,109 @@ export function App() {
     content = <main className="main-canvas workspace"><AppToolbar icon={GitBranch} title="Compare models" subtitle={comparisonSource?.projectName} />{comparisonSource ? <ModelReplay key={comparisonSource.threadId} source={comparisonSource} comparisons={comparisonReceipts} models={models} onReplay={replayReceipt} onClose={() => openReceiptTask(comparisonSource)} Picker={ComposerPicker} renderDiff={renderCapturedChanges} onOpen={openReceiptTask} onLoadEvidence={loadReceiptEvidence} /> : <div className="empty-state compact"><h2>No task selected</h2><p>Open a completed task receipt to compare models.</p></div>}</main>;
   } else {
     content = (
-      <ConversationWorkspace
-        project={selectedProject}
-        thread={thread}
-        threads={threads}
-        loading={loading.app || loading.thread}
-        runtime={runtime}
-        plan={plan}
-        changedCount={changedCount}
-        seenResponseIds={seenResponseIdsRef.current}
-        inspectorOpen={inspectorOpen}
-        onInspectorToggle={() => setInspectorOpen((open) => !open)}
-        onOpenProject={openProject}
-        showTaskProgress={preferences.showTaskProgress}
-        expandTaskProgress={preferences.expandTaskProgress}
-        showMessageTimestamps={preferences.showMessageTimestamps}
-        completedWorkDetails={preferences.completedWorkDetails}
-        previewOpen={previewOpen}
-        onPreviewToggle={togglePreview}
-        previewWorkspaceId={previewWorkspaceId}
-        browserState={browserState}
-        onBrowserState={setBrowserState}
-        onPreviewBrowserCreated={replacePreviewChooserWithBrowser}
-        previewFileTabs={previewFileTabs}
-        previewInstrumentTabs={previewInstrumentTabs}
-        previewCustomTabs={previewCustomTabs}
-        previewActiveTabId={previewActiveTabId}
-        onPreviewActiveTabChange={setPreviewActiveTabId}
-        onPreviewBrowserClose={closePreviewBrowser}
-        onPreviewFileUpdate={updatePreviewFile}
-        onPreviewFileClose={closePreviewFile}
-        onPreviewInstrumentClose={closePreviewInstrument}
-        onPreviewCustomTabOpen={openPreviewCustomTab}
-        onPreviewCustomTabUpdate={updatePreviewCustomTab}
-        onPreviewCustomTabClose={closePreviewCustomTab}
-        onPreviewNewTab={openNewPreviewTab}
-        onPreviewInstrumentRefresh={refreshPreviewInstrument}
-        onPreviewInstrumentEvent={sendPreviewInstrumentEvent}
-        onPreviewInstrumentInvoke={invokePreviewInstrumentCapability}
-        onPreviewInstrumentPin={pinPreviewInstrument}
-        onOpenWorkspaceReference={openWorkspaceReference}
-        proactiveSuggestions={proactiveSuggestions}
-        onProactiveSuggestionResolve={resolveProactiveSuggestion}
-        sideThreadProps={{
-          runtime,
-          models,
-          defaultModel,
-          defaultEffort,
-          defaultFastMode,
-          defaultPermissionMode,
-          providers,
-          threads,
-          attention,
-          preferences,
-          seenResponseIds: seenResponseIdsRef.current,
-          onQuestionResolve: resolveQuestion,
-          onProviderLogin: loginProvider,
-          onProvidersRefresh: refreshProviders,
-          onThreadCreated: registerSideThread,
-          onThreadActivity: markThreadMessaged,
-          onThreadViewed: markThreadCompletionSeen,
-          onOpenMain: selectThread,
-          onForkResponse: forkConversation,
-          onError: setError
-        }}
-        taskMapProps={{ thread, threads, plan, attention, onResolve: resolveAttention }}
-        receipt={taskReceipts.find((receipt) => receipt.threadId === selectedThreadId)}
-        onReceiptCompare={compareReceipt}
-        composerProps={composerProps}
-      />
+      <>
+        <div
+          className="origin-task-workspace"
+          data-execution-active={executionActive}
+          aria-hidden={executionActive ? "true" : undefined}
+          inert={executionActive ? true : undefined}
+        >
+          <ConversationWorkspace
+            api={api}
+            storage={storage}
+            project={selectedProject}
+            thread={thread}
+            threads={threads}
+            loading={loading.app || loading.thread}
+            runtime={runtime}
+            plan={plan}
+            changedCount={changedCount}
+            seenResponseIds={seenResponseIdsRef.current}
+            inspectorOpen={inspectorOpen}
+            onInspectorToggle={() => setInspectorOpen((open) => !open)}
+            onOpenProject={openProject}
+            showTaskProgress={preferences.showTaskProgress}
+            expandTaskProgress={preferences.expandTaskProgress}
+            showMessageTimestamps={preferences.showMessageTimestamps}
+            completedWorkDetails={preferences.completedWorkDetails}
+            previewOpen={originPreviewOpen}
+            previewVisible={!executionActive}
+            onPreviewToggle={togglePreview}
+            previewWorkspaceId={previewWorkspaceId}
+            browserState={browserState}
+            onBrowserState={setBrowserState}
+            onPreviewBrowserCreated={replacePreviewChooserWithBrowser}
+            previewFileTabs={previewFileTabs}
+            previewInstrumentTabs={previewInstrumentTabs}
+            previewCustomTabs={previewCustomTabs}
+            previewActiveTabId={previewActiveTabId}
+            onPreviewActiveTabChange={setPreviewActiveTabId}
+            onPreviewBrowserClose={closePreviewBrowser}
+            onPreviewFileUpdate={updatePreviewFile}
+            onPreviewFileClose={closePreviewFile}
+            onPreviewInstrumentClose={closePreviewInstrument}
+            onPreviewCustomTabOpen={openPreviewCustomTab}
+            onPreviewCustomTabUpdate={updatePreviewCustomTab}
+            onPreviewCustomTabClose={closePreviewCustomTab}
+            onPreviewNewTab={openNewPreviewTab}
+            onPreviewInstrumentRefresh={refreshPreviewInstrument}
+            onPreviewInstrumentEvent={sendPreviewInstrumentEvent}
+            onPreviewInstrumentInvoke={invokePreviewInstrumentCapability}
+            onPreviewInstrumentPin={pinPreviewInstrument}
+            onOpenWorkspaceReference={openWorkspaceReference}
+            readOnly={readOnly}
+            proactiveSuggestions={proactiveSuggestions}
+            onProactiveSuggestionResolve={resolveProactiveSuggestion}
+            sideThreadProps={{
+              runtime,
+              storage,
+              models,
+              defaultModel,
+              defaultEffort,
+              defaultFastMode,
+              defaultPermissionMode,
+              providers,
+              threads,
+              attention,
+              preferences,
+              seenResponseIds: seenResponseIdsRef.current,
+              onQuestionResolve: resolveQuestion,
+              onProviderLogin: loginProvider,
+              onProvidersRefresh: refreshProviders,
+              onThreadCreated: registerSideThread,
+              onThreadActivity: markThreadMessaged,
+              onThreadViewed: markThreadCompletionSeen,
+              onOpenMain: selectThread,
+              onForkResponse: forkConversation,
+              onError: setError
+            }}
+            taskMapProps={{ thread, threads, plan, attention, onResolve: resolveAttention }}
+            receipt={taskReceipts.find((receipt) => receipt.threadId === selectedThreadId)}
+            onReceiptCompare={compareReceipt}
+            composerProps={{
+              ...composerProps,
+              disabled: executionActive || composerProps.disabled,
+              globalFileDrop: executionActive ? false : composerProps.globalFileDrop,
+              autoFocusComposer: executionActive ? false : composerProps.autoFocusComposer
+            }}
+            executionTargetControl={connect && !selectedThreadId ? <ExecutionTargetControl
+              connect={connect}
+              value={executionTarget}
+              projects={projects}
+              currentHostId={connect?.active ?? "local"}
+              currentProjectId={selectedProjectId}
+              onChange={changeExecutionTarget}
+              onProjectChange={(projectId) => {
+                const next = { ...executionTarget, projectId };
+                setExecutionTarget(next);
+                if (next.hostId !== (connect?.active ?? "local")) void changeExecutionTarget(next);
+              }}
+              disabled={Boolean(selectedThreadId) || submitting}
+            /> : null}
+          />
+        </div>
+        {executionActive && connect?.executionView}
+      </>
     );
   }
 
@@ -8336,7 +9263,7 @@ export function App() {
         className={`pixice-app view-${activeView}`}
         data-sidebar-expanded={sidebarExpanded}
         data-mobile-navigation={mobileNavigationOpen}
-        data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread) && !previewOpen}
+        data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread) && !originPreviewOpen && !executionActive}
         data-density={preferences.density}
         data-conversation-width={preferences.conversationWidth}
         data-conversation-text-size={preferences.conversationTextSize}
@@ -8344,7 +9271,7 @@ export function App() {
         data-reduce-transparency={preferences.reduceTransparency}
         data-reduce-motion={preferences.reduceMotion}
         data-show-shortcuts={preferences.showShortcutHints}
-        data-preview-open={activeView === "task" && previewOpen}
+        data-preview-open={activeView === "task" && originPreviewOpen}
         data-active-thread-id={selectedThreadId ?? ""}
         style={{ "--sidebar-width": `${sidebarWidth}px` }}
       >
@@ -8389,15 +9316,20 @@ export function App() {
             legacySidebar={preferences.legacySidebar}
             recentProjectLimit={preferences.showThirdProjectRow ? 9 : 6}
             reduceMotion={preferences.reduceMotion}
-            collapseForPreview={activeView === "task" && previewOpen}
+            collapseForPreview={activeView === "task" && originPreviewOpen}
             onExpandedChange={setSidebarExpanded}
             width={sidebarWidth}
             onWidthChange={setSidebarWidth}
+            storage={storage}
+            linkedThreads={linkedThreads}
+            linkedThreadHostStates={linkedHostStates}
+            onOpenLinkedThread={openLinkedThread}
+            selectedLinkedThread={selectedLinkedThread}
           />
         )}
         {content}
         <div className="workflow-workspace-slot" data-workflow-workspace-slot />
-        {activeView === "task" && !previewOpen && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
+        {activeView === "task" && !originPreviewOpen && !executionActive && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
       </div>
       <AnimatePresence initial={false}>
       {error && (

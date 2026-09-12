@@ -3611,7 +3611,14 @@ describe("Pixice app shell", () => {
     await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Keep this prompt on screen");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
-    const prompt = await screen.findByText("Keep this prompt on screen");
+    await waitFor(() => expect(liveApi.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      text: "Keep this prompt on screen"
+    })));
+    const prompt = await waitFor(() => {
+      const message = [...document.querySelectorAll(".user-message")].find((candidate) => candidate.textContent?.trim() === "Keep this prompt on screen");
+      expect(message).toBeDefined();
+      return message;
+    });
     expect(prompt.closest(".user-message")).toBeInTheDocument();
 
     await act(async () => resolveStart({ turn: { id: "turn-pending", status: "inProgress", items: [] } }));
@@ -3642,7 +3649,14 @@ describe("Pixice app shell", () => {
     await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Keep the steering message visible");
     fireEvent.click(screen.getByRole("button", { name: "Steer task" }));
 
-    const prompt = await screen.findByText("Keep the steering message visible");
+    await waitFor(() => expect(liveApi.turns.steer).toHaveBeenCalledWith(expect.objectContaining({
+      text: "Keep the steering message visible"
+    })));
+    const prompt = await waitFor(() => {
+      const message = [...document.querySelectorAll(".user-message")].find((candidate) => candidate.textContent?.trim() === "Keep the steering message visible");
+      expect(message).toBeDefined();
+      return message;
+    });
     expect(prompt.closest(".user-message")).toBeInTheDocument();
 
     await act(async () => resolveSteer({}));
@@ -3927,6 +3941,7 @@ describe("Pixice app shell", () => {
 
     api.browser.setViewport.mockClear();
     act(() => window.dispatchEvent(new CustomEvent("pixice:open-preview-tab", { detail: {
+      hostId: "local",
       workspaceId: "thread-1",
       tab: {
         id: "workflow:workflow-1",

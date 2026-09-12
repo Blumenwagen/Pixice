@@ -12,6 +12,11 @@ const REVIEW_FILTER_OVERRIDES = [
   "-c", "filter.lfs.required=false"
 ];
 
+function isWithin(root, target) {
+  const relative = path.relative(root, target);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 async function git(cwd, args, executablePath = "git") {
   const { stdout } = await execFileAsync(executablePath, args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   return stdout.trim();
@@ -149,11 +154,23 @@ export async function readFileDiff({ workingPath, baseCommit, scopePath = workin
     : ["diff", "--no-ext-diff", ...relativeArgs, "--", pathspec];
   const tracked = await git(workingPath, args, gitExecutablePath);
   if (tracked) return tracked;
+  let canonicalParentPath;
+  let canonicalTargetPath;
+  try {
+    canonicalParentPath = await realpath(path.dirname(absoluteFilePath));
+    canonicalTargetPath = await realpath(absoluteFilePath);
+  } catch {
+    return "";
+  }
+  if (!isWithin(canonicalScopePath, canonicalParentPath) || !isWithin(canonicalScopePath, canonicalTargetPath)) {
+    throw new Error("Diff file is outside the project scope");
+  }
   try {
     const metadata = await lstat(absoluteFilePath);
     if (!metadata.isFile()) return "";
   } catch {
     return "";
   }
-  return gitUntrackedDiff(canonicalScopePath, ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", filePath], gitExecutablePath);
+  const canonicalRelativePath = path.relative(canonicalScopePath, canonicalTargetPath);
+  return gitUntrackedDiff(canonicalScopePath, ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", canonicalRelativePath], gitExecutablePath);
 }

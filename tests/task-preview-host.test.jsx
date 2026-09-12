@@ -27,12 +27,14 @@ describe("TaskPreviewHost", () => {
     } })));
 
     expect(opened).toHaveBeenNthCalledWith(1, expect.objectContaining({ detail: {
+      hostId: "local",
       workspaceId: "thread-1",
-      tab: expect.objectContaining({ id: "task:task-1", kind: "task", title: "Work item" })
+      tab: expect.objectContaining({ id: "local:task:task-1", kind: "task", title: "Work item" })
     } }));
     expect(opened).toHaveBeenNthCalledWith(2, expect.objectContaining({ detail: {
+      hostId: "local",
       workspaceId: "thread-1",
-      tab: expect.objectContaining({ id: "plan:proposal-1", kind: "plan", title: "Plan proposal" })
+      tab: expect.objectContaining({ id: "local:plan:proposal-1", kind: "plan", title: "Plan proposal" })
     } }));
 
     window.removeEventListener("pixice:open-preview-tab", opened);

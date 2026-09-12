@@ -5,8 +5,11 @@ import { App } from "./App.jsx";
 import { WorkflowHost } from "./components/workflows/WorkflowHost.jsx";
 import { TaskPreviewHost } from "./components/TaskPreviewHost.jsx";
 import { RendererErrorBoundary } from "./components/RendererErrorBoundary.jsx";
+import { registerRootConnectServiceWorker } from "./connect/push-pwa.js";
 import "./styles.css";
 import "./components/workflows/WorkflowHost.css";
+
+if (import.meta.env.PROD) void registerRootConnectServiceWorker();
 
 const legacyStoragePrefix = ["lo", "om."].join("");
 for (let index = 0; index < localStorage.length; index += 1) {

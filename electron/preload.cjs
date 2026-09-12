@@ -8,8 +8,8 @@ const onEvent = (listener) => {
 };
 
 contextBridge.exposeInMainWorld("pixice", Object.freeze({
-  connect: Object.freeze({ status: invoke("connect:status"), configure: invoke("connect:configure"), pair: invoke("connect:pair"), revoke: invoke("connect:revoke"), startTunnel: invoke("connect:tunnel:start"), stopTunnel: invoke("connect:tunnel:stop") }),
-  app: Object.freeze({ bootstrap: invoke("app:bootstrap"), saveSettings: invoke("app:settings:update") }),
+  connect: Object.freeze({ status: invoke("connect:status"), configure: invoke("connect:configure"), pair: invoke("connect:pair"), renew: invoke("connect:renew"), revoke: invoke("connect:revoke"), startTunnel: invoke("connect:tunnel:start"), stopTunnel: invoke("connect:tunnel:stop") }),
+  app: Object.freeze({ bootstrap: invoke("app:bootstrap"), overview: invoke("app:overview"), saveSettings: invoke("app:settings:update") }),
   runtime: Object.freeze({ status: invoke("runtime:status") }),
   git: Object.freeze({ status: invoke("git:status"), installCommandLineTools: invoke("git:install-command-line-tools") }),
   providers: Object.freeze({

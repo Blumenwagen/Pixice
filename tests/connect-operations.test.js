@@ -29,7 +29,7 @@ describe('remote domain authorization', () => {
     await expect(invoke('turns.steer', { projectId: 'correct', threadId: 'thread', turnId: 'turn-old' })).rejects.toThrow('no longer active');
     expect(steer).not.toHaveBeenCalled();
   });
-  it('refreshes receipts and starts a remote turn without requesting unsupported turn history', async () => {
+  it('reads durable receipts without a provider thread lookup and validates turns separately', async () => {
     const request = vi.fn(async (_method, params) => {
       if (params.includeTurns) throw new Error('list_turns is not supported yet');
       return { thread: { id: params.threadId, cwd: '/project' } };
@@ -47,10 +47,24 @@ describe('remote domain authorization', () => {
     expect(receipt).toHaveBeenCalledOnce();
     expect(start).toHaveBeenCalledOnce();
     expect(fullRead).not.toHaveBeenCalled();
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledOnce();
     expect(request).toHaveBeenCalledWith('thread/read', { threadId: 'new', includeTurns: false });
     await expect(invoke('turns.start', { projectId: 'other', threadId: 'new' })).rejects.toThrow('outside');
     expect(start).toHaveBeenCalledOnce();
+  });
+  it('checks the durable receipt project without requiring a live provider thread', async () => {
+    const request = vi.fn(async () => { throw new Error('Provider unavailable'); });
+    const validateThread = createRemoteThreadValidator({ getProject: (id) => ({ id }), request, contains: () => true });
+    const { handlers, invoke } = setup({ validateThread });
+    const receipt = vi.fn(async (_event, payload) => {
+      if (payload.projectId !== 'p') throw new Error('This result belongs to another project.');
+      return { projectId: 'p', threadId: payload.threadId };
+    });
+    handlers.set('tasks:receipt', receipt);
+    await expect(invoke('tasks.receipt', { projectId: 'p', threadId: 'new' })).resolves.toEqual({ projectId: 'p', threadId: 'new' });
+    await expect(invoke('tasks.receipt', { projectId: 'other', threadId: 'new' })).rejects.toThrow('another project');
+    expect(receipt).toHaveBeenCalledTimes(2);
+    expect(request).not.toHaveBeenCalled();
   });
   it('fails closed when thread metadata is missing, mismatched, or unreadable', async () => {
     const request = vi.fn();

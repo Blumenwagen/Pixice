@@ -3,7 +3,7 @@ import { CAPABILITIES, READ_OPERATIONS } from './protocol.mjs';
 // existing restricted capability set; the OS user's local client can administer it.
 export const APPLICATION_CAPABILITIES = {
   ...CAPABILITIES,
-  connect: { status: 'connect:status', configure: 'connect:configure', pair: 'connect:pair', revoke: 'connect:revoke', startTunnel: 'connect:tunnel:start', stopTunnel: 'connect:tunnel:stop' },
+  connect: { status: 'connect:status', configure: 'connect:configure', pair: 'connect:pair', renew: 'connect:renew', revoke: 'connect:revoke', startTunnel: 'connect:tunnel:start', stopTunnel: 'connect:tunnel:stop' },
   app: { ...CAPABILITIES.app, saveSettings: 'app:settings:update' },
   git: { ...CAPABILITIES.git, installCommandLineTools: 'git:install-command-line-tools' },
   providers: { ...CAPABILITIES.providers, install: 'providers:install', locate: 'providers:locate', repair: 'providers:repair', checkUpdates: 'providers:check-updates', update: 'providers:update', login: 'providers:login', logout: 'providers:logout' },
