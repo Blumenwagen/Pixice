@@ -24,9 +24,12 @@ if (import.meta.env.DEV && previewParameters.has("task-results-preview")) {
   const { createTaskResultsPreviewApi } = await import("./task-results-preview.js");
   window.pixice = await createTaskResultsPreviewApi();
 }
-if (import.meta.env.DEV && (previewParameters.has("task-progress-preview") || previewParameters.has("git-setup-preview"))) {
+if (import.meta.env.DEV && (previewParameters.has("task-progress-preview") || previewParameters.has("git-setup-preview") || previewParameters.has("operation-capsule-preview"))) {
   const { createTaskProgressPreviewApi } = await import("./task-progress-preview.js");
-  window.pixice = createTaskProgressPreviewApi({ gitUnavailable: previewParameters.has("git-setup-preview") });
+  window.pixice = createTaskProgressPreviewApi({
+    gitUnavailable: previewParameters.has("git-setup-preview"),
+    updatePreview: previewParameters.has("operation-capsule-preview")
+  });
 }
 
 createRoot(document.getElementById("root")).render(

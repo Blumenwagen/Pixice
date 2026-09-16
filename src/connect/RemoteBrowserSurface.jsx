@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { MorphText } from '../components/MorphText.jsx';
 import './remote-browser.css';
 import {
   browserFrameLayout,
@@ -580,7 +581,7 @@ export function RemoteBrowserSurface({ api, workspaceId, tabId }) {
       </div>
     </div>
     <div className="connect-browser-controls">
-      <div className="connect-browser-status" data-status={status} aria-label={`Preview status: ${statusLabel}`}><i aria-hidden="true" /><span>{statusLabel}</span><small>Frame age {formatFrameAge(frameAge)}</small></div>
+      <div className="connect-browser-status" data-status={status} aria-label={`Preview status: ${statusLabel}`}><i aria-hidden="true" /><span><MorphText value={statusLabel} duration={280} /></span><small>Frame age <MorphText value={formatFrameAge(frameAge)} duration={240} /></small></div>
       <div className="connect-browser-control-group" role="group" aria-label="Preview zoom"><span>Zoom</span>{ZOOM_LEVELS.map((option) => <button key={option} type="button" aria-pressed={zoom === option} onClick={() => chooseZoom(option)}>{Math.round(option * 100)}%</button>)}</div>
       <div className="connect-browser-control-group connect-browser-quality" role="group" aria-label="Preview quality" aria-describedby={!qualitySupported ? 'connect-browser-quality-note' : undefined}><span>Quality</span>{Object.entries(QUALITY_MODES).map(([mode, option]) => <button key={mode} type="button" aria-pressed={qualityMode === mode} disabled={!qualitySupported} title={!qualitySupported ? 'The host does not advertise quality controls.' : undefined} onClick={() => chooseQuality(mode)}>{option.label}</button>)}{!qualitySupported && <small id="connect-browser-quality-note" className="connect-browser-control-note">Host controls quality automatically.</small>}</div>
       <button type="button" onClick={refresh}>Refresh</button>

@@ -28,6 +28,7 @@ import {
   X
 } from "../icons/index.jsx";
 import { WorkflowNodeIcon } from "./workflow-icons.jsx";
+import { MorphText } from "../MorphText.jsx";
 import { WorkflowNodeInspector } from "./WorkflowNodeInspector.jsx";
 import { WorkflowSkillInspector } from "./WorkflowSkillInspector.jsx";
 import workspaceStyles from "./WorkflowWorkspace.module.css";
@@ -653,12 +654,14 @@ export function WorkflowCanvas({
         </div>
         <div className={styles.canvasToolbarCenter}>
           <span className={styles.saveState} data-state={savingState}>
-            <AnimatePresence initial={false} mode="wait">
-              <motion.span className={styles.stateContent} key={savingState} initial={systemReducedMotion ? false : { opacity: 0, y: 2, scale: 0.88, filter: "blur(2px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -2, scale: 0.9, filter: "blur(2px)" }} transition={{ duration: systemReducedMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}>
-                {savingState === "saving" ? <SpinnerGap className={styles.spin} size={13} /> : savingState === "error" ? <Warning size={13} /> : <Check size={13} />}
-                {savingState === "saving" ? "Saving" : savingState === "error" ? "Save failed" : "Saved"}
-              </motion.span>
-            </AnimatePresence>
+            <span className={styles.stateContent}>
+              <AnimatePresence initial={false} mode="wait">
+                <motion.span key={savingState} initial={systemReducedMotion ? false : { opacity: 0, scale: 0.82 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.88 }} transition={{ duration: systemReducedMotion ? 0 : 0.14 }}>
+                  {savingState === "saving" ? <SpinnerGap className={styles.spin} size={13} /> : savingState === "error" ? <Warning size={13} /> : <Check size={13} />}
+                </motion.span>
+              </AnimatePresence>
+              <MorphText value={savingState === "saving" ? "Saving" : savingState === "error" ? "Save failed" : "Saved"} duration={260} />
+            </span>
           </span>
           {workflow.enabled && <span className={styles.runBadge} data-status="completed"><Circle size={11} />Automatic</span>}
           <AnimatePresence initial={false} mode="wait">

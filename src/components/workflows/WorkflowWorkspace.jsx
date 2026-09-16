@@ -14,6 +14,7 @@ import {
 } from "../icons/index.jsx";
 import { WorkflowCanvas } from "./WorkflowCanvas.jsx";
 import { cloneWorkflow, workflowStatusLabel } from "./workflow-utils.js";
+import { publishOperation } from "../../state/operation-events.js";
 import styles from "./WorkflowWorkspace.module.css";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -315,6 +316,34 @@ function useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted })
 function WorkflowEditor({ api, projectId, workflowId, workflows = EMPTY_WORKFLOW_LIST, models, compact = false, hostId = "local", previewWorkspaceId = null, onSaved, onDeleted, onDelete }) {
   const editor = useWorkflowDocument({ api, projectId, workflowId, onSaved, onDeleted });
   const [loadedWorkflows, setLoadedWorkflows] = useState(workflows);
+
+  useEffect(() => {
+    const generation = editor.generation;
+    const workflow = editor.workflow;
+    if (!workflow || generation.state === "idle") return;
+    const states = {
+      saving: { status: "Preparing brief", progress: 12, tone: "working" },
+      generating: { status: "Generating workflow", progress: 58, tone: "working" },
+      applying: { status: "Applying graph", progress: 88, tone: "working" },
+      complete: { status: "Workflow ready", progress: 100, tone: "success", autoDismiss: 4500 },
+      error: { status: "Generation failed", progress: null, tone: "error" }
+    };
+    const state = states[generation.state];
+    if (!state) return;
+    const label = generation.state === "complete"
+      ? `${workflow.name || "Workflow"} ready`
+      : generation.state === "error"
+        ? undefined
+        : `${state.status} · ${state.progress}%`;
+    publishOperation({
+      id: `workflow-generation:${workflow.id}`,
+      kind: "workflow",
+      title: workflow.name || "Untitled workflow",
+      label,
+      detail: generation.message,
+      ...state
+    });
+  }, [editor.generation, editor.workflow]);
 
   useEffect(() => {
     setLoadedWorkflows(workflows);

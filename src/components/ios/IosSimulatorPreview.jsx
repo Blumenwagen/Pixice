@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { MorphText } from "../MorphText.jsx";
 import styles from "./IosSimulatorPreview.module.css";
 
 function firstRunnable(containers) {
@@ -209,7 +210,7 @@ export function IosSimulatorPreview({
           <>
             <div className={styles.sessionName}>
               <strong>{session.deviceName || "iOS Simulator"}</strong>
-              <span>{session.scheme} · {session.status}</span>
+              <span>{session.scheme} · <MorphText value={session.status} duration={280} /></span>
             </div>
             <button type="button" onClick={() => void action("button", { name: "home" })}>Home</button>
             <button type="button" onClick={() => void action("rotate", { orientation: "landscape_left" })}>Rotate</button>
@@ -252,7 +253,7 @@ export function IosSimulatorPreview({
           />
         ) : (
           <div className={styles.empty}>
-            <strong>{session ? `Simulator is ${session.status}` : "Choose a project, scheme, and device"}</strong>
+            <strong><MorphText value={session ? `Simulator is ${session.status}` : "Choose a project, scheme, and device"} duration={320} /></strong>
             <span>{session?.phaseDetail || "Pixice will build, launch, and stream the app here."}</span>
           </div>
         )}

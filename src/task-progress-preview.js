@@ -226,7 +226,7 @@ const releaseTool = {
   lastOpenedAt: "2026-08-23T09:30:00.000Z"
 };
 
-export function createTaskProgressPreviewApi({ gitUnavailable = false } = {}) {
+export function createTaskProgressPreviewApi({ gitUnavailable = false, updatePreview = false } = {}) {
   const gitStatus = gitUnavailable
     ? { state: "command-line-tools-missing", available: false, installSupported: true, executablePath: null, version: null, message: "Apple Command Line Tools are not installed. Pixice can still work with folders, but Git features are unavailable." }
     : { state: "ready", available: true, installSupported: false, executablePath: "/usr/bin/git", version: "git version 2.50.1", message: "git version 2.50.1 is ready." };
@@ -267,7 +267,9 @@ export function createTaskProgressPreviewApi({ gitUnavailable = false } = {}) {
       }
     },
     updates: {
-      status: async () => ({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." }),
+      status: async () => updatePreview
+        ? { supported: true, state: "downloading", currentVersion: "0.9.0", availableVersion: "0.10.0", percent: 64, message: "Downloading the signed Pixice update." }
+        : { supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." },
       check: async () => ({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." }),
       download: async () => ({}),
       install: async () => ({ ok: true })

@@ -44,6 +44,8 @@ import { WorkflowPreview } from "./components/workflows/WorkflowWorkspace.jsx";
 import { DitherAreaChart, DitherBarChart } from "./components/dither-kit/DitherChart.jsx";
 import { UsageHeatMap } from "./components/dither-kit/UsageHeatMap.jsx";
 import { NumberTicker } from "./components/NumberTicker.jsx";
+import { MorphText } from "./components/MorphText.jsx";
+import { OperationCapsuleStack } from "./components/OperationCapsule.jsx";
 import { ImageGeneration } from "./components/ImageGeneration.jsx";
 import { InspectablePicture } from "./components/PictureInspector.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
@@ -68,6 +70,7 @@ import {
   threadStatus,
   threadTitle
 } from "./state/runtime.js";
+import { publishOperation } from "./state/operation-events.js";
 
 const EMPTY_EXTENSIONS = { skills: [], apps: [], mcp: [], errors: [] };
 const EMPTY_BROWSER_STATE = { native: false, activeTabId: null, tabs: [] };
@@ -681,7 +684,7 @@ function SidebarNavItem({ icon: Icon, label, active, badge, badgeVisible = true,
               exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.82, filter: "blur(2px)" }}
               transition={{ duration: systemReducedMotion ? 0 : 0.18, ease: MOTION_EASE }}
             >
-              {badge > 99 ? "99+" : badge}
+              <MorphText value={badge > 99 ? "99+" : badge} duration={240} scale />
             </motion.span>
           )}
         </AnimatePresence>
@@ -1734,7 +1737,7 @@ function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, run
       <button className="progress-head" type="button" aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} task progress`} onClick={() => setExpanded((open) => !open)}>
         <span className="progress-glyph"><TaskProgressIcon size={17} weight="fill" /></span>
         <span className="progress-title"><strong>Task progress</strong><small>{thread ? threadTitle(thread) : "Codex plan"}</small></span>
-        {total > 0 && <span className="progress-count" aria-label={`${complete} of ${total} complete`}><strong><NumberTicker value={complete} blur /> / {total}</strong><small>complete</small></span>}
+        {total > 0 && <span className="progress-count" aria-label={`${complete} of ${total} complete`}><strong><MorphText value={complete} duration={280} scale /> / {total}</strong><small>complete</small></span>}
         <CaretDown className="progress-caret" size={15} />
       </button>
       {total > 0 && (
@@ -1746,19 +1749,10 @@ function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, run
         <div className="task-progress-disclosure-inner">
           {plan?.length ? (
             <div className="progress-content">
-              <AnimatePresence initial={false} mode="wait">
-                <motion.div
-                  className="progress-phase"
-                  key={phase}
-                  initial={systemReducedMotion ? false : { opacity: 0, y: 3, filter: "blur(2px)" }}
-                  animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                  exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -2, filter: "blur(2px)" }}
-                  transition={{ duration: systemReducedMotion ? 0 : 0.16, ease: MOTION_EASE }}
-                >
-                  <span><Circle size={10} weight="fill" /><strong>{phase}</strong></span>
-                  <small>{workingCopy}</small>
-                </motion.div>
-              </AnimatePresence>
+              <div className="progress-phase">
+                <span><Circle size={10} weight="fill" /><strong><MorphText value={phase} /></strong></span>
+                <small><MorphText value={workingCopy} duration={360} /></small>
+              </div>
               <div className="progress-steps">
                 {plan.map((step, index) => (
                   <motion.div layout="position" className={`progress-step ${step.status}${step.status === "inProgress" && !running ? " inactive" : ""}`} transition={{ duration: systemReducedMotion ? 0 : 0.2, ease: MOTION_EASE }} key={step.step}>
@@ -2576,9 +2570,6 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
   const latestAction = latestTraceItem && latestTraceItem.type !== "agentMessage" && latestTraceItem.type !== "reasoning"
     ? latestTraceItem
     : null;
-  const latestActionKey = latestAction
-    ? `${latestAction.renderId ?? latestAction.id ?? `${latestAction.type}-${latestTraceIndex}`}-${latestAction.status ?? "idle"}`
-    : "pending";
   const latestActivity = (() => {
     if (!latestAction) return { label: "Thinking", detail: latestTraceItem ? "" : "Getting started" };
     if (latestAction.type === "commandExecution") {
@@ -2636,19 +2627,10 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
           <div className="trace-toggle trace-live-toggle" role="status" aria-live="polite" aria-label={`${latestActivity.label}${latestActivity.detail ? `: ${latestActivity.detail}` : ""}`}>
             <ReasoningOrb className="trace-status-orb" label={latestActivity.label} decorative />
             <span className="trace-live-viewport">
-              <AnimatePresence initial={false} mode="popLayout">
-                <motion.span
-                  className="trace-live-item"
-                  key={latestActionKey}
-                  initial={systemReducedMotion ? false : { opacity: 0, y: 5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: -5 }}
-                  transition={{ duration: systemReducedMotion ? 0 : 0.28, ease: MOTION_EASE }}
-                >
-                  <ThinkingState>{latestActivity.label}</ThinkingState>
-                  {latestActivity.detail && <span>{latestActivity.detail}</span>}
-                </motion.span>
-              </AnimatePresence>
+              <span className="trace-live-item">
+                <ThinkingState><MorphText value={latestActivity.label} duration={360} /></ThinkingState>
+                {latestActivity.detail && <span>{latestActivity.detail}</span>}
+              </span>
             </span>
             {elapsed && <span className="elapsed-time">Working for {elapsed}</span>}
           </div>
@@ -7437,6 +7419,21 @@ export function App({ readOnly = false } = {}) {
       if (event.type === "ProviderLifecycleState") {
         const providerId = event.payload?.provider ?? event.payload?.id;
         if (!providerId) return;
+        const providerUpdate = event.payload?.updateState;
+        if (providerUpdate?.state === "succeeded") {
+          const providerLabel = event.payload?.runtimeLabel || event.payload?.label || providerId;
+          publishOperation({
+            id: `provider-update:${providerId}`,
+            kind: "update",
+            tone: "success",
+            status: "Provider updated",
+            title: providerLabel,
+            label: `${providerLabel} updated`,
+            detail: providerUpdate.message,
+            progress: 100,
+            autoDismiss: 4500
+          });
+        }
         setProviders((current) => {
           const lifecycle = { ...event.payload, id: providerId };
           const existing = current.find((provider) => provider.id === providerId);
@@ -7627,6 +7624,24 @@ export function App({ readOnly = false } = {}) {
       }
       if (event.type === "WorkflowRunUpdated" || event.type === "WorkflowUpdated") {
         refreshEventInstrumentSources(["workflows.list", "workflow.output"], event.payload?.projectId);
+        const workflow = event.payload?.workflow;
+        if (event.type === "WorkflowUpdated" && event.payload?.action === "created" && workflow?.createdByThreadId) {
+          publishOperation({
+            id: `workflow-created:${workflow.id}`,
+            kind: "workflow",
+            tone: "success",
+            status: "Workflow created",
+            title: workflow.name || "Untitled workflow",
+            label: `${workflow.name || "Workflow"} created`,
+            detail: "A thread added a new Workflow to this project.",
+            progress: 100,
+            actionLabel: "Open",
+            autoDismiss: 8000,
+            onAction: () => window.dispatchEvent(new CustomEvent("pixice:open-workflow-workspace", {
+              detail: { workflowId: workflow.id, projectId: workflow.projectId, hostId: api?.remote?.hostId ?? "local" }
+            }))
+          });
+        }
       }
       if (event.type === "UpdateState") {
         setUpdateStatus(event.payload);
@@ -8901,6 +8916,53 @@ export function App({ readOnly = false } = {}) {
     return result;
   };
 
+  const operationItems = [];
+  const updateVersion = updateStatus.availableVersion ? ` ${updateStatus.availableVersion}` : "";
+  if (["checking", "downloading", "protecting-data", "available", "downloaded", "install-error", "error"].includes(updateStatus.state)) {
+    const appUpdateOperation = {
+      id: "pixice-update",
+      kind: "update",
+      title: updateStatus.state === "downloading" ? `Downloading Pixice${updateVersion}` : `Pixice${updateVersion}`,
+      detail: updateStatus.message,
+      dismissible: !["checking", "downloading", "protecting-data"].includes(updateStatus.state)
+    };
+    if (updateStatus.state === "checking") Object.assign(appUpdateOperation, { tone: "working", status: "Checking for updates", label: "Checking Pixice updates", indeterminate: true });
+    if (updateStatus.state === "downloading") Object.assign(appUpdateOperation, { tone: "working", status: `${Math.round(updateStatus.percent)}% downloaded`, label: `Downloading Pixice · ${Math.round(updateStatus.percent)}%`, progress: updateStatus.percent });
+    if (updateStatus.state === "protecting-data") Object.assign(appUpdateOperation, { tone: "working", status: "Protecting your data", label: "Preparing Pixice update", indeterminate: true });
+    if (updateStatus.state === "available") Object.assign(appUpdateOperation, { tone: "working", status: "Update available", label: `Pixice${updateVersion} available`, actionLabel: "Download", onAction: () => runUpdateAction("download") });
+    if (updateStatus.state === "downloaded") Object.assign(appUpdateOperation, { tone: "success", status: "Ready to install", label: `Pixice${updateVersion} downloaded`, progress: 100, actionLabel: "Restart", onAction: () => runUpdateAction("install") });
+    if (updateStatus.state === "install-error") Object.assign(appUpdateOperation, { tone: "error", status: "Install failed", actionLabel: "Retry", onAction: () => runUpdateAction("install") });
+    if (updateStatus.state === "error") Object.assign(appUpdateOperation, { tone: "error", status: "Update failed", actionLabel: "Try again", onAction: () => runUpdateAction("check") });
+    operationItems.push(appUpdateOperation);
+  }
+  providers.forEach((provider) => {
+    const state = provider.updateState?.state;
+    if (!["checking", "updating", "available", "failed", "error"].includes(state)) return;
+    const label = provider.runtimeLabel || provider.label || provider.id;
+    const providerOperation = {
+      id: `provider-update:${provider.id}`,
+      kind: "update",
+      title: label,
+      detail: provider.updateState?.error || provider.updateState?.message,
+      dismissible: !["checking", "updating"].includes(state)
+    };
+    if (state === "checking") Object.assign(providerOperation, { tone: "working", status: "Checking for updates", label: `Checking ${label} updates`, indeterminate: true });
+    if (state === "updating") Object.assign(providerOperation, { tone: "working", status: "Updating provider", label: `Updating ${label}`, indeterminate: true });
+    if (state === "available") Object.assign(providerOperation, { tone: "working", status: `Version ${provider.updateState.availableVersion} available`, label: `${label} update available`, actionLabel: "Update", onAction: () => runProviderAction(provider.id, "update") });
+    if (state === "failed" || state === "error") Object.assign(providerOperation, { tone: "error", status: "Provider update failed", actionLabel: "Retry", onAction: () => runProviderAction(provider.id, "update") });
+    operationItems.push(providerOperation);
+  });
+  if (error) {
+    operationItems.push({
+      id: "runtime-error",
+      tone: "error",
+      status: "Needs attention",
+      title: "Pixice",
+      detail: error,
+      onDismiss: () => setError(null)
+    });
+  }
+
   const openExternal = async (kind, path) => {
     if (!api || !selectedProjectId) return;
     try {
@@ -9331,22 +9393,7 @@ export function App({ readOnly = false } = {}) {
         <div className="workflow-workspace-slot" data-workflow-workspace-slot />
         {activeView === "task" && !originPreviewOpen && !executionActive && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
       </div>
-      <AnimatePresence initial={false}>
-      {error && (
-        <motion.div
-          className="runtime-toast"
-          role="alert"
-          initial={systemReducedMotion ? false : { opacity: 0, y: 12, scale: 0.98, filter: "blur(2px)" }}
-          animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-          exit={systemReducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.99, filter: "blur(2px)" }}
-          transition={{ duration: systemReducedMotion ? 0 : 0.22, ease: MOTION_EASE }}
-        >
-          <Warning size={17} />
-          <span><strong>Pixice needs attention</strong><small>{error}</small></span>
-          <IconButton label="Dismiss error" onClick={() => setError(null)}><X size={15} /></IconButton>
-        </motion.div>
-      )}
-      </AnimatePresence>
+      <OperationCapsuleStack operations={operationItems} taskOffset={activeView === "task"} />
       <ProjectCreationDialog
         open={projectDialogOpen}
         busy={projectCreateBusy}

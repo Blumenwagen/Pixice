@@ -2750,7 +2750,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   min-width: 100%;
   display: grid;
   grid-template-columns: 32px 32px 18px minmax(max-content, 1fr);
-  align-items: stretch;
+  align-items: flex-end;
 }
 .file-diff-row .line-number,
 .file-diff-row .diff-sign { color: #a1a1a1; font-size: 11px; user-select: none; }
@@ -3344,26 +3344,71 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 
 .attention-column .approval-card { margin-bottom: 10px; background: var(--surface); border: 0; border-radius: var(--radius-md); box-shadow: 0 10px 24px rgba(0, 0, 0, .16); }
 
-.runtime-toast {
+.operation-capsule-stack {
   position: fixed;
-  right: 24px;
-  bottom: 22px;
+  right: 22px;
+  bottom: 20px;
   z-index: 40;
-  width: min(360px, calc(100vw - 48px));
-  min-height: 64px;
-  padding: 10px 11px;
+  width: min(330px, calc(100vw - 44px));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  pointer-events: none;
+}
+.operation-capsule-stack[data-task-offset="true"] { bottom: 178px; }
+.operation-capsule {
+  position: relative;
+  max-width: 100%;
+  color: var(--thread-bright);
+  pointer-events: auto;
+}
+.operation-capsule[data-tone="error"] { width: 330px; }
+.operation-capsule-main {
+  min-height: 40px;
+  padding: 7px 8px 7px 14px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  color: var(--thread-bright);
-  background: color-mix(in oklab, var(--primary) 12%, rgba(24, 18, 19, .92));
-  border: 1px solid color-mix(in oklab, var(--primary) 28%, transparent);
-  border-radius: 15px;
-  box-shadow: 0 20px 48px rgba(0, 0, 0, .38);
+  gap: 9px;
+  background: color-mix(in oklab, var(--panel) 82%, transparent);
+  border: 1px solid color-mix(in oklab, var(--border) 64%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .32), inset 0 1px 0 rgba(255, 255, 255, .035);
+  -webkit-backdrop-filter: blur(22px) saturate(140%) brightness(.72);
+  backdrop-filter: blur(22px) saturate(140%) brightness(.72);
 }
-.runtime-toast > span { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 3px; }
-.runtime-toast strong { color: var(--foreground); font-size: 11px; }
-.runtime-toast small { color: color-mix(in oklab, var(--primary) 36%, var(--foreground)); font-size: 10px; line-height: 1.4; }
+.pixice-stage:has(.pixice-app[data-reduce-transparency="true"]) .operation-capsule-main {
+  background: color-mix(in oklab, var(--panel) 96%, #111);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.operation-capsule[data-tone="error"] .operation-capsule-main { min-height: 56px; padding-left: 13px; border-radius: 16px; border-color: color-mix(in oklab, var(--primary) 34%, var(--border)); }
+.operation-capsule-warning { flex: none; color: var(--primary); }
+.operation-capsule-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.operation-capsule-copy strong { max-width: 100%; overflow: hidden; color: var(--foreground); font-size: 11px; font-weight: 590; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.operation-capsule[data-tone="success"] .operation-capsule-copy strong { color: color-mix(in oklab, var(--success) 64%, var(--foreground)); }
+.operation-capsule-copy small { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.operation-capsule-actions { flex: none; display: flex; align-items: center; gap: 3px; }
+.operation-capsule-action,
+.operation-capsule-dismiss { border: 0; color: var(--muted); background: transparent; cursor: pointer; }
+.operation-capsule-action { min-height: 26px; padding: 0 9px; color: var(--foreground); background: color-mix(in oklab, var(--foreground) 8%, transparent); border-radius: 999px; font: inherit; font-size: 9px; font-weight: 650; }
+.operation-capsule-dismiss { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 999px; }
+.operation-capsule-action:hover,
+.operation-capsule-dismiss:hover { color: var(--foreground); background: var(--hover); }
+.operation-capsule-track { height: 2px; margin: 8px 14px 0; display: block; overflow: hidden; background: color-mix(in oklab, var(--foreground) 13%, transparent); border-radius: 999px; }
+.operation-capsule-track > i { height: 100%; display: block; background: color-mix(in oklab, var(--foreground) 82%, var(--primary)); border-radius: 999px; }
+.operation-capsule[data-tone="success"] .operation-capsule-track > i { background: color-mix(in oklab, var(--success) 64%, var(--foreground)); }
+.operation-capsule-track[data-indeterminate="true"] > i { width: 42%; animation: operation-capsule-progress 1.35s cubic-bezier(.4, 0, .2, 1) infinite; }
+@keyframes operation-capsule-progress {
+  0% { transform: translateX(-115%); }
+  55% { transform: translateX(145%); }
+  100% { transform: translateX(260%); }
+}
+
+@media (max-width: 720px) {
+  .operation-capsule-stack { right: 12px; bottom: 12px; width: calc(100vw - 24px); }
+  .operation-capsule-stack[data-task-offset="true"] { bottom: 166px; }
+}
 
 @media (max-width: 1180px) {
   .pixice-app[data-inspector-open="true"] { --inspector-chat-left: 24px; --inspector-chat-width: calc(100% - 340px); }

@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ChartLineUp, Check, CheckCircle, Circle, Eye, Gauge, List, MagnifyingGlass, PencilSimple, Plus, SpinnerGap } from "./icons/index.jsx";
 import { APP_ICONS } from "./icons/app-iconography.jsx";
 import { threadStatus } from "../state/runtime.js";
+import { MorphText } from "./MorphText.jsx";
 import styles from "./KanbanBoard.module.css";
 
 const StartTaskIcon = APP_ICONS.startTask;
@@ -88,7 +89,7 @@ function TaskCard({ task, phase, thread, columnId, waitingForInput, draggingId, 
       const movedTaskId = event.dataTransfer.getData(TASK_MIME);
       if (movedTaskId && movedTaskId !== task.id) onMove(movedTaskId, columnId, task.id);
     }}>
-      <div className={styles.cardTopline}><span className={`${styles.runtime} ${toneClass}`}><i />{state.label}</span>{updated && <time>{updated}</time>}</div>
+      <div className={styles.cardTopline}><span className={`${styles.runtime} ${toneClass}`}><i /><MorphText value={state.label} duration={280} /></span>{updated && <time>{updated}</time>}</div>
       <button className={styles.cardTitle} onClick={() => onEdit(task)} onKeyDown={(event) => {
         if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
           event.preventDefault();
@@ -119,7 +120,7 @@ function BoardColumn({ column, tasks, phasesByTaskId, threadsById, draggingId, w
       const taskId = event.dataTransfer.getData(TASK_MIME);
       if (taskId) onMove(taskId, column.id);
     }}>
-      <header><span className={styles.columnIcon}><Icon size={15} className={column.id === "active" ? "spin-icon" : ""} /></span><span><strong id={`board-column-${column.id}`}>{column.label}</strong><small>{column.help}</small></span><b>{tasks.length}</b><button className={styles.columnAdd} onClick={() => onBeginAdd(column.id)} aria-label={`Add task to ${column.label}`}><Plus size={14} /></button></header>
+      <header><span className={styles.columnIcon}><Icon size={15} className={column.id === "active" ? "spin-icon" : ""} /></span><span><strong id={`board-column-${column.id}`}>{column.label}</strong><small>{column.help}</small></span><b><MorphText value={tasks.length} duration={260} scale /></b><button className={styles.columnAdd} onClick={() => onBeginAdd(column.id)} aria-label={`Add task to ${column.label}`}><Plus size={14} /></button></header>
       <div className={styles.cardList}>
         {adding && <QuickAdd column={column.id} busy={creating} onCreate={onCreate} onCancel={onCancelAdd} />}
         {tasks.length === 0 && !adding && <button className={styles.columnEmpty} onClick={() => onBeginAdd(column.id)}><Plus size={14} />Add a task</button>}
@@ -572,7 +573,7 @@ export function KanbanBoard({ project, tasks = [], phases = [], threads = [], at
   return (
     <div className={styles.boardWorkspace}>
       <div className={styles.boardHeader}><div><span>Scheduled work</span><h1>{view === "board" ? "Plan work before it runs" : "Delivery timeline"}</h1><p>Board status, dates, dependencies, agents, and Workflows all stay attached to the same work item.</p></div><div className={styles.boardActions}><label className={styles.search}><MagnifyingGlass size={15} /><input value={query} onChange={(event) => { setQuery(event.target.value); storage.setItem(`pixice.boardFilter.${project.id}`, event.target.value); }} placeholder="Filter work" aria-label="Filter work items" /></label><button className={styles.newTask} aria-label="Add task" onClick={() => setAddingColumn("backlog")}><Plus size={15} />Add work</button></div></div>
-      <div className={styles.viewToolbar}><div className={styles.viewSwitch} role="tablist" aria-label="Board view"><button role="tab" aria-selected={view === "board"} onClick={() => changeView("board")}><List size={14} />Board</button><button role="tab" aria-selected={view === "timeline"} onClick={() => changeView("timeline")}><ChartLineUp size={14} />Timeline</button></div><span className={styles.viewSummary}>{visibleTasks.filter((task) => task.schedule).length} scheduled · {visibleTasks.length} total</span></div>
+      <div className={styles.viewToolbar}><div className={styles.viewSwitch} role="tablist" aria-label="Board view"><button role="tab" aria-selected={view === "board"} onClick={() => changeView("board")}><List size={14} />Board</button><button role="tab" aria-selected={view === "timeline"} onClick={() => changeView("timeline")}><ChartLineUp size={14} />Timeline</button></div><span className={styles.viewSummary}><MorphText value={`${visibleTasks.filter((task) => task.schedule).length} scheduled · ${visibleTasks.length} total`} duration={320} /></span></div>
       {addingColumn && view !== "board" && <div className={styles.floatingQuickAdd}><QuickAdd column={addingColumn} busy={creating} onCreate={create} onCancel={() => setAddingColumn(null)} /></div>}
       {loading ? <div className={styles.loading}><SpinnerGap size={22} className="spin-icon" />Loading work</div> : view === "board" ? <div className={styles.columns} role="region" aria-label={`${project.displayName} task board`}>{KANBAN_COLUMNS.map((column) => <BoardColumn key={column.id} column={column} tasks={columns.get(column.id) ?? []} phasesByTaskId={phasesByTaskId} threadsById={threadsById} draggingId={draggingId} waitingThreadIds={waitingThreadIds} adding={addingColumn === column.id} creating={creating} startingId={startingId} selectedTaskId={selectedTaskId} onBeginAdd={setAddingColumn} onCancelAdd={() => setAddingColumn(null)} onCreate={create} onOpen={onOpenThread} onEdit={openTask} onStart={start} onMove={onMove} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} />)}</div> : <TimelineView projectId={project.id} tasks={visibleTasks} phases={phases} onOpenTask={openTask} onScheduleMove={onScheduleMove} onCreatePhase={onCreatePhase} storage={storage} />}
     </div>
