@@ -19,6 +19,31 @@ Pixice includes the JavaScript files from `@anthropic-ai/claude-agent-sdk` 0.3.2
 - Commercial terms: https://www.anthropic.com/legal/commercial-terms
 - Privacy policy: https://www.anthropic.com/legal/privacy
 
+## sherpa-onnx speech recognition
+
+Pixice includes `sherpa-onnx-node` 1.13.8 and the prebuilt native library for the packaged platform. sherpa-onnx is Copyright the next-gen Kaldi team and is available under the Apache License 2.0. The bundled library embeds ONNX Runtime, Copyright Microsoft Corporation, available under the MIT License.
+
+- Source and license: https://github.com/k2-fsa/sherpa-onnx
+- ONNX Runtime license: https://github.com/microsoft/onnxruntime/blob/main/LICENSE
+
+## Speech recognition models
+
+Pixice ships no speech model. A user downloads one on request in Settings → Voice, from the sherpa-onnx `asr-models` release. Archive URLs, byte sizes, and SHA-256 digests are pinned in `electron/transcription/catalog.mjs`. Each model keeps its own license, and Pixice shows the required attribution in Settings → Voice for every installed model.
+
+| Model | Copyright | License |
+| --- | --- | --- |
+| Parakeet TDT 0.6B v2 and v3 | NVIDIA | CC-BY-4.0 |
+| Whisper Turbo, Whisper Tiny | OpenAI | MIT |
+| Moonshine Base | Useful Sensors | MIT |
+| SenseVoice | Alibaba | Apache-2.0 |
+
+- Parakeet: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+- Whisper: https://github.com/openai/whisper
+- Moonshine: https://github.com/usefulsensors/moonshine
+- SenseVoice: https://github.com/FunAudioLLM/SenseVoice
+
+CC-BY-4.0 requires attribution to be carried with the work. Do not remove the attribution rows from the Voice settings page.
+
 ## Electron and JavaScript dependencies
 
 Pixice includes Electron and the production dependencies listed in `package.json` and `pnpm-lock.yaml`. Those packages retain their own copyright notices and license terms. Electron is distributed under the MIT License. Package metadata inside the application identifies the installed versions.

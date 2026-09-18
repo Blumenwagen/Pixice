@@ -1091,7 +1091,8 @@ describe("Pixice app shell", () => {
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).not.toBeInTheDocument();
     const settingsSidebar = screen.getByRole("complementary", { name: "Settings navigation" });
     expect(settingsSidebar).toBeInTheDocument();
-    expect(within(settingsSidebar).getByRole("navigation").querySelectorAll("button")).toHaveLength(8);
+    expect(within(settingsSidebar).getByRole("navigation").querySelectorAll("button")).toHaveLength(9);
+    expect(within(settingsSidebar).getByRole("button", { name: /^Voice/ })).toBeInTheDocument();
     expect(within(settingsSidebar).queryByRole("button", { name: /^Runtime/ })).not.toBeInTheDocument();
     expect(within(settingsSidebar).queryByRole("button", { name: /^Notifications/ })).not.toBeInTheDocument();
     expect(within(settingsSidebar).getByRole("button", { name: /^About Pixice/ })).toBeInTheDocument();

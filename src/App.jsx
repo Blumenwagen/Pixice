@@ -25,12 +25,15 @@ import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/
 import {
   ArrowClockwise, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
   Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
-  Globe, Info, LockKey, MagnifyingGlass, PaperPlaneTilt, Pause,
+  Globe, Info, LockKey, MagnifyingGlass, Microphone, PaperPlaneTilt, Pause,
   PencilSimple, PlugsConnected, Plus, ShieldCheck, Sparkle, SpinnerGap, Stack,
   TerminalWindow, Trash, TreeStructure, Warning, X
 } from "./components/icons/index.jsx";
 import { APP_ICONS } from "./components/icons/app-iconography.jsx";
 import pixiceIcon from "./assets/pixice-icon.png";
+import { DictationButton } from "./components/DictationButton.jsx";
+import { useTranscription, formatModelBytes } from "./lib/use-transcription.js";
+import { listAudioInputs, dictationUnsupportedReason } from "./lib/dictation.js";
 import { ReasoningOrb } from "./components/ReasoningOrb.jsx";
 import { ThinkingState } from "./components/ThinkingState.jsx";
 import { ModelBrandIcon, modelBrand } from "./components/ModelBrandIcon.jsx";
@@ -121,7 +124,10 @@ const DEFAULT_PREFERENCES = {
   conversationTextSize: "standard",
   accentColor: "coral",
   reduceTransparency: false,
-  reduceMotion: false
+  reduceMotion: false,
+  // The microphone belongs to the device in front of the person, so it stays a
+  // local preference even though the model selection is host state.
+  micDeviceId: ""
 };
 
 const APPEARANCE_PREFERENCE_OPTIONS = {
@@ -2960,7 +2966,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null }) {
+export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null }) {
   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
@@ -3197,6 +3203,32 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
       textareaRef.current?.setSelectionRange(value.length, value.length);
     }, 0);
   };
+  // Dictated text lands at the cursor and is never submitted on its own, so a
+  // misheard word can be fixed before the turn starts.
+  const insertTranscript = (transcript) => {
+    const addition = String(transcript ?? "").trim();
+    if (!addition || disabled) return;
+    const field = textareaRef.current;
+    const current = textRef.current ?? "";
+    const start = field?.selectionStart ?? current.length;
+    const end = field?.selectionEnd ?? current.length;
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const spacer = before && !/\s$/.test(before) ? " " : "";
+    const value = `${before}${spacer}${addition}${after}`;
+    const caret = before.length + spacer.length + addition.length;
+    draftInteractionRef.current = true;
+    setText(value);
+    if (preserveDrafts) storage.setItem(storageKey, value);
+    window.setTimeout(() => {
+      const target = textareaRef.current;
+      if (!target) return;
+      target.focus();
+      target.setSelectionRange(caret, caret);
+      resizeComposerTextarea(target);
+    }, 0);
+  };
+
   const updateAttachment = useCallback((updated) => {
     setAttachments((current) => current.map((attachment) => attachment.id === updated.id ? { ...attachment, ...updated } : attachment));
   }, []);
@@ -3613,6 +3645,14 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
             onChange={onEffortChange}
             kind="reasoning"
             disabled={disabled || running}
+          />
+          <DictationButton
+            api={dictationApi}
+            state={transcription}
+            deviceId={micDeviceId}
+            disabled={disabled}
+            onTranscript={insertTranscript}
+            onError={(error) => setAttachmentNotice(error.message)}
           />
           {running && <IconButton label="Interrupt task" className="turn-button" onClick={onInterrupt}><Pause size={16} weight="fill" /></IconButton>}
           <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || submissionBusy || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || (!text.trim() && attachments.length === 0)}>
@@ -5659,6 +5699,7 @@ function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsE
 const SETTINGS_PAGES = [
   { id: "general", label: "General", description: "Defaults, safety, and alerts", icon: Gear, keywords: "permissions model reasoning thread names workflow generation title luna terra claude automatic delete drafts cleanup age days custom awake sleep system notifications alerts sound shortcuts keyboard" },
   { id: "conversation", label: "Conversation", description: "Writing, reading, and live output", icon: PencilSimple, keywords: "composer enter send shortcut drafts autofocus spellcheck slash commands timestamps work details expanded collapsed" },
+  { id: "voice", label: "Voice", description: "Dictation and transcription models", icon: Microphone, keywords: "voice dictation speech transcription microphone mic parakeet whisper moonshine sensevoice model download offline on-device audio input language threads" },
   { id: "agents", label: "Agents", description: "Behavior and orchestration", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration tools instruments interactive progress task map approvals" },
   { id: "providers", label: "Providers", description: "Accounts, runtimes, and models", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions runtime health status connected update install locate repair" },
   { id: "connections", label: "Connections", description: "Remote instances and paired devices", icon: Globe, keywords: "connect remote network tunnel web https pairing devices host instance tailscale" },
@@ -5702,6 +5743,196 @@ function SettingsSidebar({ page, onPageChange, onBack }) {
   );
 }
 
+// Speech models are large enough that a download deserves the same background
+// capsule a provider update gets, rather than progress that is only visible
+// while the Voice settings page happens to be open.
+export function transcriptionDownloadOperation(progress, api) {
+  const id = `transcription-model:${progress.id}`;
+  const title = progress.label ?? "Speech model";
+  const percent = progress.totalBytes
+    ? Math.max(0, Math.min(100, Math.round((progress.receivedBytes / progress.totalBytes) * 100)))
+    : null;
+
+  if (progress.phase === "installed") {
+    return { id, kind: "update", tone: "success", status: "Model ready", title, label: `${title} ready`, detail: "Dictation is available in the composer.", progress: 100, autoDismiss: 4500 };
+  }
+  if (progress.phase === "cancelled") return { id, dismiss: true };
+  if (progress.phase === "failed") {
+    return { id, kind: "update", tone: "error", status: "Download failed", title, label: `${title} download failed`, detail: progress.error ?? "The download did not finish.", autoDismiss: 9000 };
+  }
+  if (progress.phase === "extracting") {
+    return { id, kind: "update", tone: "working", status: "Unpacking", title, label: `Unpacking ${title}`, indeterminate: true, dismissible: false };
+  }
+  return {
+    id,
+    kind: "update",
+    tone: "working",
+    status: "Downloading",
+    title,
+    label: `Downloading ${title}`,
+    detail: progress.totalBytes ? `${formatModelBytes(progress.receivedBytes)} of ${formatModelBytes(progress.totalBytes)}` : undefined,
+    progress: percent,
+    indeterminate: percent === null,
+    dismissible: false,
+    actionLabel: "Cancel",
+    onAction: () => { void api?.transcription?.cancelInstall({ modelId: progress.id }).catch(() => {}); }
+  };
+}
+
+function VoiceModelRow({ model, selected, progress, onInstall, onCancel, onRemove, onSelect }) {
+  const active = progress && !["installed", "failed", "cancelled"].includes(progress.phase);
+  const percent = active && progress.totalBytes
+    ? Math.min(100, Math.round((progress.receivedBytes / progress.totalBytes) * 100))
+    : 0;
+  const detail = [
+    model.languages,
+    model.installed ? `${formatModelBytes(model.installedBytes)} on disk` : `${formatModelBytes(model.downloadBytes)} download`,
+    model.license.name
+  ].join(" · ");
+
+  return (
+    <SettingsRow title={`${model.label}${model.recommended ? " · Recommended" : ""}`} description={`${model.summary} ${detail}`}>
+      <div className="settings-controls voice-model-actions">
+        {active && (
+          <span className="settings-status ready" role="status">
+            <i />
+            {progress.phase === "extracting" ? "Unpacking…" : `${percent}%`}
+          </span>
+        )}
+        {progress?.phase === "failed" && <span className="settings-status offline" role="status"><i />{progress.error ?? "Download failed"}</span>}
+        {active && <button type="button" className="settings-action" onClick={() => onCancel(model.id)}>Cancel</button>}
+        {!active && !model.installed && (
+          <button type="button" className="settings-action primary" onClick={() => onInstall(model.id)}>
+            Download {formatModelBytes(model.downloadBytes)}
+          </button>
+        )}
+        {!active && model.installed && !selected && (
+          <button type="button" className="settings-action primary" onClick={() => onSelect(model.id)}>Use this model</button>
+        )}
+        {!active && model.installed && selected && <span className="settings-status ready"><i />In use</span>}
+        {!active && model.installed && <button type="button" className="settings-action" onClick={() => onRemove(model.id)}>Remove</button>}
+      </div>
+    </SettingsRow>
+  );
+}
+
+function VoiceSettings({ transcription, micDeviceId, onMicDeviceChange }) {
+  const { state, progress, install, cancelInstall, remove, select, configure } = transcription ?? {};
+  const [devices, setDevices] = useState([]);
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    listAudioInputs().then((found) => { if (!cancelled) setDevices(found); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const guard = (action) => async (...args) => {
+    setNotice("");
+    try { await action(...args); }
+    catch (error) { setNotice(error.message); }
+  };
+
+  if (!state) {
+    return (
+      <SettingsGroup title="Dictation" description="Speak into the composer and have Pixice transcribe it.">
+        <SettingsRow title="Unavailable" description="This Pixice host does not offer transcription. Update the host, or open Pixice on the machine running the backend." />
+      </SettingsGroup>
+    );
+  }
+
+  const selectedModel = state.models.find((model) => model.id === state.selectedModelId) ?? null;
+  const installedCount = state.models.filter((model) => model.installed).length;
+  const unsupportedHere = dictationUnsupportedReason();
+
+  return (
+    <>
+      {notice && <p className="settings-footnote" role="alert">{notice}</p>}
+      <SettingsGroup
+        title="Dictation"
+        description="Audio is recorded on this device and transcribed by the Pixice host. Nothing is sent to a speech service."
+      >
+        <SettingsRow title="Status" description={state.available
+          ? selectedModel
+            ? `Ready with ${selectedModel.label}. The microphone button sits next to Send.`
+            : "Download a model below to turn on the microphone button."
+          : "Speech recognition could not start on the host."}>
+          <span className={`settings-status ${state.ready ? "ready" : "offline"}`}><i />{state.ready ? "Ready" : "Not ready"}</span>
+        </SettingsRow>
+        {!state.available && state.reason && (
+          <SettingsRow title="Why" description={state.reason} />
+        )}
+        {unsupportedHere && <SettingsRow title="This device" description={unsupportedHere} />}
+        <SettingsRow title="Microphone" description="Chosen per device. Labels appear after you allow microphone access once.">
+          <select className="settings-select" aria-label="Microphone" value={micDeviceId ?? ""} onChange={(event) => onMicDeviceChange(event.target.value)}>
+            <option value="">System default</option>
+            {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}
+          </select>
+        </SettingsRow>
+        <SettingsRow title="Recording limit" description="A single dictation is capped so an abandoned recording cannot fill host memory.">
+          <span className="settings-value">{Math.round(state.maxSeconds / 60)} minutes</span>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="Models"
+        description="Pixice ships without a speech model. Download one here and it is stored on the host, where every paired device can use it."
+      >
+        {state.models.map((model) => (
+          <VoiceModelRow
+            key={model.id}
+            model={model}
+            selected={model.id === state.selectedModelId}
+            progress={progress?.[model.id] ?? model.install}
+            onInstall={guard(install)}
+            onCancel={guard(cancelInstall)}
+            onRemove={guard(remove)}
+            onSelect={guard(select)}
+          />
+        ))}
+        <SettingsRow title="Disk used" description={`${installedCount} of ${state.models.length} models installed on the host.`}>
+          <span className="settings-value">{formatModelBytes(state.diskBytes)}</span>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Performance" description="Applies to the host machine that runs the model.">
+        <SettingsRow title="Threads" description="More threads transcribe faster and use more CPU while decoding.">
+          <select className="settings-select" aria-label="Decoding threads" value={state.settings.numThreads} onChange={(event) => void guard(configure)({ numThreads: Number(event.target.value) })}>
+            {[1, 2, 4, 6, 8].map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </SettingsRow>
+        <SettingsRow title="Compute" description="CoreML runs the model on the Apple Neural Engine. It is ignored on other platforms.">
+          <select className="settings-select" aria-label="Compute provider" value={state.settings.provider} onChange={(event) => void guard(configure)({ provider: event.target.value })}>
+            <option value="cpu">CPU</option>
+            <option value="coreml">CoreML (Apple Silicon)</option>
+          </select>
+        </SettingsRow>
+        {selectedModel?.supportsLanguageHint && (
+          <SettingsRow title="Language hint" description="A two-letter code such as en or de. Leave empty to let the model detect the language.">
+            <input
+              className="settings-select"
+              aria-label="Language hint"
+              value={state.settings.language}
+              placeholder="auto"
+              maxLength={16}
+              onChange={(event) => void guard(configure)({ language: event.target.value })}
+            />
+          </SettingsRow>
+        )}
+      </SettingsGroup>
+
+      <SettingsGroup title="Attribution" description="Model licences require these credits.">
+        {state.models.filter((model) => model.installed).map((model) => (
+          <SettingsRow key={model.id} title={model.label} description={model.license.attribution}>
+            <span className="settings-value">{model.license.name}</span>
+          </SettingsRow>
+        ))}
+        {installedCount === 0 && <SettingsRow title="No models installed" description="Credits appear here once you download a model." />}
+      </SettingsGroup>
+    </>
+  );
+}
+
 function SettingsWorkspace({
   page,
   models,
@@ -5719,6 +5950,7 @@ function SettingsWorkspace({
   onWorkflowGenerationModelChange,
   preferences,
   onPreferenceChange,
+  transcription,
   attentionNotifications,
   onAttentionNotificationsChange,
   completionNotifications,
@@ -6039,6 +6271,8 @@ function SettingsWorkspace({
         <p className="settings-footnote">Provider runtime updates live with their separate installation and account controls under Providers.</p>
       </>
     );
+  } else if (page === "voice") {
+    pageContent = <VoiceSettings transcription={transcription} micDeviceId={preferences.micDeviceId} onMicDeviceChange={(value) => onPreferenceChange("micDeviceId", value)} />;
   } else if (page === "providers") {
     pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} updateChecksEnabled={providerUpdateChecksEnabled} onUpdateChecksEnabledChange={onProviderUpdateChecksEnabledChange} />;
   } else if (page === "connections") {
@@ -6155,6 +6389,7 @@ export function App({ readOnly = false } = {}) {
   const api = getPixiceApi();
   const connect = useConnect();
   const storage = connect?.storage ?? localStorage;
+  const transcription = useTranscription(api);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [projects, setProjects] = useState([]);
   const [projectActivity, setProjectActivity] = useState({});
@@ -7440,6 +7675,10 @@ export function App({ readOnly = false } = {}) {
           if (!existing) return [...current, lifecycle];
           return current.map((provider) => provider.id === providerId ? { ...provider, ...lifecycle } : provider);
         });
+        return;
+      }
+      if (event.type === "TranscriptionModelProgress") {
+        publishOperation(transcriptionDownloadOperation(event.payload, api));
         return;
       }
       if (event.type === "GitHubAuthProgress") {
@@ -9083,7 +9322,10 @@ export function App({ readOnly = false } = {}) {
       return submit(generatedImageRevisionPrompt(comment, prompt, attachments.length > 0), attachments);
     },
     onForkResponse: forkConversation,
-    onInterrupt: interrupt
+    onInterrupt: interrupt,
+    dictationApi: api,
+    transcription: transcription.state,
+    micDeviceId: preferences.micDeviceId || null
   };
   const activeProjectToolId = projectTools.some((tool) => tool.id === selectedProjectToolId)
     ? selectedProjectToolId
@@ -9144,6 +9386,7 @@ export function App({ readOnly = false } = {}) {
     content = (
       <SettingsWorkspace
         page={settingsPage}
+        transcription={transcription}
         models={models}
         selectedModel={defaultModel}
         onModelChange={changeDefaultModel}

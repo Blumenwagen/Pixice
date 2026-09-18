@@ -58,6 +58,8 @@ import { inspectRepository, readDiff, readDiffManifest, readFileDiff } from "../
 import { detectGitRuntime, requestCommandLineToolsInstall } from "../git/git-runtime.mjs";
 import { projectRendererThread, projectRuntimePayloadForRenderer } from "../runtime/renderer-thread-projection.mjs";
 import { projectFolderDialogProperties } from "../projects/project-folder-dialog.mjs";
+import { TranscriptionService } from "../transcription/service.mjs";
+import { TRANSCRIPTION_MODEL_IDS } from "../transcription/catalog.mjs";
 import { GitHubCli, prependGitHubCliToPath } from "../github/github-cli.mjs";
 import { calculateUsageCost, listPricingCatalog, PRICING_VERIFIED_AT } from "../usage/pricing.mjs";
 import { readProviderRateLimits } from "../usage/provider-limits.mjs";
@@ -106,6 +108,7 @@ let pixiceBoard;
 let pixiceInstruments;
 let iosRuntimeService;
 let iosTools;
+let transcriptionService;
 let proactiveStewardship;
 let database;
 let taskResults;
@@ -215,7 +218,13 @@ const appDefaultsSchema = z.object({
   reduceTransparency: z.boolean().optional(),
   providerExecutablePaths: providerExecutablePathsSchema.optional(),
   threadCompletionsSeen: threadCompletionsSeenSchema.optional(),
-  agentBehaviors: agentBehaviorsSchema.optional()
+  agentBehaviors: agentBehaviorsSchema.optional(),
+  transcriptionModel: z.string().trim().max(128).nullable().optional(),
+  transcriptionSettings: z.object({
+    numThreads: z.number().int().min(1).max(16),
+    provider: z.enum(["cpu", "coreml"]),
+    language: z.string().max(16)
+  }).strict().optional()
 }).strict().refine((value) => Object.keys(value).length > 0, "At least one default must be provided");
 const imageDataUrlSchema = z.string().max(30 * 1024 * 1024).refine(
   (value) => /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[a-z0-9+/=]+$/i.test(value),
@@ -1419,6 +1428,55 @@ function registerHandlers() {
     return previewContextRegistry.set(value.threadId, value.context);
   });
 
+  const transcriptionModelPayload = z.object({ modelId: z.enum(TRANSCRIPTION_MODEL_IDS) }).strict();
+  const transcriptionSessionPayload = z.object({ sessionId: z.string().uuid() }).strict();
+  handlers.handle("transcription:state", () => transcriptionService.state());
+  handlers.handle("transcription:install", (_event, payload) => {
+    return transcriptionService.install(transcriptionModelPayload.parse(payload).modelId);
+  });
+  handlers.handle("transcription:install-cancel", (_event, payload) => {
+    return transcriptionService.cancelInstall(transcriptionModelPayload.parse(payload).modelId);
+  });
+  handlers.handle("transcription:remove", (_event, payload) => {
+    return transcriptionService.remove(transcriptionModelPayload.parse(payload).modelId);
+  });
+  handlers.handle("transcription:select", async (_event, payload) => {
+    const value = z.object({ modelId: z.enum(TRANSCRIPTION_MODEL_IDS).nullable() }).strict().parse(payload);
+    database.saveAppSettings({ transcriptionModel: value.modelId });
+    return transcriptionService.select(value.modelId);
+  });
+  handlers.handle("transcription:configure", async (_event, payload) => {
+    const value = z.object({
+      numThreads: z.number().int().min(1).max(16).optional(),
+      provider: z.enum(["cpu", "coreml"]).optional(),
+      language: z.string().trim().max(16).optional()
+    }).strict().parse(payload);
+    const state = await transcriptionService.configure(value);
+    database.saveAppSettings({ transcriptionSettings: state.settings });
+    return state;
+  });
+  handlers.handle("transcription:start", (_event, payload) => {
+    const value = z.object({
+      modelId: z.enum(TRANSCRIPTION_MODEL_IDS).nullish(),
+      deviceId: z.string().trim().max(200).nullish()
+    }).strict().parse(payload ?? {});
+    return transcriptionService.startSession({ modelId: value.modelId ?? null, deviceId: value.deviceId ?? null });
+  });
+  handlers.handle("transcription:chunk", (_event, payload) => {
+    // Audio arrives base64-encoded so it survives the JSON transport that both
+    // the local IPC bridge and Pixice Connect already use.
+    const value = transcriptionSessionPayload.extend({
+      pcm: z.string().max(4 * 1024 * 1024)
+    }).strict().parse(payload);
+    return transcriptionService.appendChunk(value.sessionId, Buffer.from(value.pcm, "base64"));
+  });
+  handlers.handle("transcription:finish", (_event, payload) => {
+    return transcriptionService.finishSession(transcriptionSessionPayload.parse(payload).sessionId);
+  });
+  handlers.handle("transcription:abort", (_event, payload) => {
+    return transcriptionService.abortSession(transcriptionSessionPayload.parse(payload).sessionId);
+  });
+
   const iosWorkspaceScope = z.object({ workspaceId: z.string().trim().min(1).max(200) }).strict();
   const iosProjectContext = (projectId) => {
     const project = getProject(projectId);
@@ -2229,6 +2287,14 @@ function registerHandlers() {
   iosRuntimeService.on("updated", (session) => {
     send("IosSessionUpdated", { workspaceId: session.workspaceId, projectId: session.projectId, session });
   });
+  {
+    const saved = database.getAppSettings();
+    transcriptionService = new TranscriptionService({ userDataPath, send });
+    await transcriptionService.start({
+      selectedModelId: saved.transcriptionModel ?? undefined,
+      ...(saved.transcriptionSettings ?? {})
+    });
+  }
   iosTools = new IosTools({
     service: iosRuntimeService,
     threadContext: previewThreadContext,
@@ -2655,6 +2721,7 @@ function registerHandlers() {
     await runtime?.stop();
     await Promise.allSettled([...(taskResults?.finishing.values() ?? [])]);
     pixiceInstruments?.close();
+    await transcriptionService?.close().catch(() => {});
     database?.db.close();
     events.removeAllListeners();
   }

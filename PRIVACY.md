@@ -26,6 +26,14 @@ Pixice also makes network requests when it:
 
 Those destinations receive the normal request data, including an IP address and any headers or credentials the user configured.
 
+## Dictation
+
+Dictation is off until a user downloads a speech model in Settings → Voice. Pixice ships without one. Downloading a model fetches a checksum-verified archive from the sherpa-onnx release on GitHub and stores it in the application-data directory, where Settings → Voice can remove it again.
+
+Recording starts only while the microphone button is active and stops when the user stops or discards it. Audio is transcribed on the Pixice host by a local model. It is not sent to a speech service, a provider, or any Pixice-operated service, and the recording is discarded once the transcript is produced. The transcript is placed in the composer for editing and is submitted only if the user sends it.
+
+One distinction matters for paired devices: when a phone or browser dictates through Pixice Connect, the audio is captured on that device and travels over the Connect link to the host that runs the model. That link is the user's own tunnel or endpoint, but the audio does leave the recording device. Dictating on the host machine itself keeps the audio on that machine.
+
 ## Optional remote access
 
 Pixice Connect is off by default. When enabled, paired devices receive project and task data and can perform authorized agent, workflow, board, project-file, and native preview-browser actions. Paired devices can view signed-in pages in the host browser and interact with them. Page frames are transmitted on demand and are not saved in the connection audit; the audit records action names and results, never screenshot pixels or typed text. The host keeps device credential hashes and a bounded connection audit log; clients keep their device token, saved instance addresses, and separate workspace caches in browser/renderer local storage. Pairing links expire after five minutes, device access after 30 days, and the host can revoke either.

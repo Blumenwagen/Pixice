@@ -37,6 +37,37 @@ type PixiceEvent = {
 };
 
 type ProjectScope = { projectId: string };
+
+type PixiceTranscriptionModel = {
+  id: string;
+  label: string;
+  vendor: string;
+  family: "transducer" | "whisper" | "moonshine" | "sense-voice";
+  summary: string;
+  languages: string;
+  recommended: boolean;
+  license: { name: string; url: string; attribution: string };
+  downloadBytes: number;
+  verified: boolean;
+  supportsLanguageHint: boolean;
+  installed: boolean;
+  installedBytes: number;
+  installedAt: string | null;
+  install: { id: string; phase: string; receivedBytes: number; totalBytes: number; error: string | null } | null;
+};
+
+type PixiceTranscriptionState = {
+  available: boolean;
+  reason: string | null;
+  sampleRate: number;
+  maxSeconds: number;
+  selectedModelId: string | null;
+  preferredModelId: string | null;
+  ready: boolean;
+  models: PixiceTranscriptionModel[];
+  diskBytes: number;
+  settings: { numThreads: number; provider: "cpu" | "coreml"; language: string };
+};
 type ThreadScope = ProjectScope & { threadId: string };
 type PixiceTaskReceipt = ThreadScope & {
   groupId: string;
@@ -512,6 +543,18 @@ declare global {
         file(payload: ProjectScope & { path: string }): Promise<{ path: string; diff: string; baseCommit: string | null }>;
       };
       models: { list(): Promise<any[]> };
+      transcription: {
+        state(): Promise<PixiceTranscriptionState>;
+        install(payload: { modelId: string }): Promise<{ id: string; started: boolean }>;
+        cancelInstall(payload: { modelId: string }): Promise<{ id: string; cancelled: boolean }>;
+        remove(payload: { modelId: string }): Promise<{ id: string; installed: boolean }>;
+        select(payload: { modelId: string | null }): Promise<PixiceTranscriptionState>;
+        configure(payload: { numThreads?: number; provider?: "cpu" | "coreml"; language?: string }): Promise<PixiceTranscriptionState>;
+        start(payload?: { modelId?: string | null; deviceId?: string | null }): Promise<{ sessionId: string; modelId: string; sampleRate: number; maxSamples: number }>;
+        chunk(payload: { sessionId: string; pcm: string }): Promise<{ sessionId: string; samples: number; seconds: number }>;
+        finish(payload: { sessionId: string }): Promise<{ sessionId: string; modelId: string; text: string; durationSeconds: number; elapsedMs: number | null }>;
+        abort(payload: { sessionId: string }): Promise<{ sessionId: string; aborted: boolean }>;
+      };
       extensions: { list(payload?: { projectId?: string; threadId?: string }): Promise<any> };
       external: {
         openEditor(payload: ProjectScope & { path?: string }): Promise<unknown>;

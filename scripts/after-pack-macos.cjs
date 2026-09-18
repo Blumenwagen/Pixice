@@ -3,11 +3,14 @@ const { readdirSync, statSync } = require("node:fs");
 const path = require("node:path");
 const { listPackage } = require("@electron/asar");
 
+// Pixice records audio for composer dictation, so NSMicrophoneUsageDescription
+// is a real permission string and is set in electron-builder's mac.extendInfo.
+// Everything listed here is genuinely unused and is stripped so macOS never
+// offers a prompt Pixice cannot justify.
 const unusedPrivacyDescriptions = [
   "NSBluetoothAlwaysUsageDescription",
   "NSBluetoothPeripheralUsageDescription",
-  "NSCameraUsageDescription",
-  "NSMicrophoneUsageDescription"
+  "NSCameraUsageDescription"
 ];
 
 const forbiddenAsarPaths = [

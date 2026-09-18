@@ -24,6 +24,13 @@ module.exports = {
     "package.json",
     "!node_modules/@anthropic-ai/claude-agent-sdk-*/**/*"
   ],
+  // The speech addon resolves its sibling dylibs through an @loader_path
+  // rpath, so the .node file and the libraries beside it must stay together
+  // on a real filesystem rather than inside the asar.
+  asarUnpack: [
+    "**/node_modules/sherpa-onnx-node/**",
+    "**/node_modules/sherpa-onnx-{darwin,linux,win}-*/**"
+  ],
   extraResources: [
     { from: "build/icon.png", to: "app-icon.png" },
     { from: "resources/app-update.yml", to: "app-update.yml" },
@@ -39,6 +46,9 @@ module.exports = {
   mac: {
     target: ["dmg", "zip"],
     category: "public.app-category.developer-tools",
+    extendInfo: {
+      NSMicrophoneUsageDescription: "Pixice records audio only while you are dictating a message, and transcribes it on this Mac."
+    },
     entitlements: "build/entitlements.mac.plist",
     entitlementsInherit: "build/entitlements.mac.plist",
     hardenedRuntime: true,
