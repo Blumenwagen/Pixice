@@ -24,6 +24,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - run: node scripts/sync-github-cli.mjs --target=linux-x64
+      - run: node scripts/verify-github-cli.mjs --target=linux-x64
       - run: pnpm check
 
   prepare-release:
