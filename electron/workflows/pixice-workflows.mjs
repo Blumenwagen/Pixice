@@ -433,8 +433,11 @@ export class PixiceWorkflows {
     await Promise.allSettled([
       ...[...state.threads].map((threadId) => {
         const pending = this.pendingAgents.get(threadId);
-        return pending?.turnId
-          ? this.runtime.request("turn/interrupt", { threadId, turnId: pending.turnId })
+        if (!pending) return Promise.resolve();
+        this.pendingAgents.delete(threadId);
+        pending.resolve({ threadId, status: "cancelled", answer: "", error: "Workflow run was cancelled" });
+        return pending.turnId
+          ? timeoutResult(this.runtime.request("turn/interrupt", { threadId, turnId: pending.turnId }), 5_000)
           : Promise.resolve();
       }),
       ...[...state.childRuns].map((childRunId) => this.cancelRun(projectId, childRunId))

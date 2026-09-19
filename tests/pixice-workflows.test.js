@@ -163,6 +163,38 @@ describe("Pixice workflow capability", () => {
     store.close();
   });
 
+  it("finishes cancellation when a workflow agent thread has disappeared", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-orphaned-agent-"));
+    temporaryDirectories.push(directory);
+    const store = new WorkflowStore(directory);
+    const runtime = new FakeRuntime();
+    runtime.request = vi.fn(async (method, payload) => {
+      runtime.requests.push({ method, payload });
+      if (method === "model/list") {
+        return { data: [{ id: "codex:gpt-test", model: "gpt-test", provider: "codex", displayName: "GPT Test", isDefault: true }] };
+      }
+      if (method === "thread/start") return { thread: { id: "orphaned-thread", cwd: payload.cwd } };
+      if (method === "turn/start") return { turn: { id: "orphaned-turn" } };
+      if (method === "turn/interrupt") throw new Error("thread not found: orphaned-thread");
+      throw new Error(`Unexpected runtime request: ${method}`);
+    });
+    const capability = createCapability({ runtime, store });
+    const workflow = capability.workflows.create({ projectId: "project-1", name: "Orphaned agent" });
+    const run = capability.workflows.startRun({ projectId: "project-1", workflowId: workflow.id, input: {} });
+
+    await vi.waitFor(() => expect(runtime.requests.some((request) => request.method === "turn/start")).toBe(true));
+    await capability.workflows.cancelRun("project-1", run.id);
+    const completed = await capability.workflows.waitForRun(run.id);
+
+    expect(completed).toMatchObject({ status: "cancelled", error: "Workflow run was cancelled" });
+    expect(completed.nodeRuns).toEqual(expect.objectContaining({
+      [workflow.graph.nodes.find((node) => node.type === "pixiceAgent").id]: expect.objectContaining({ status: "cancelled" })
+    }));
+    expect(capability.workflows.activeRuns.size).toBe(0);
+    expect(capability.workflows.pendingAgents.size).toBe(0);
+    store.close();
+  });
+
   it("attaches multiple installed and Markdown Skills to one Agent without turning them into workflow data", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-workflow-skills-"));
     temporaryDirectories.push(directory);
