@@ -22,6 +22,7 @@ import {
 } from "./connect/transfer-client.js";
 import { Children, cloneElement, createContext, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useContext } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
+import { VoiceBeam } from "voice-glow";
 import {
   ArrowClockwise, Brain, CaretDown, CaretLeft, CaretRight, ChartLineUp, Check, CheckCircle,
   Circle, Code, Desktop, Eye, File, Files, Folder, FolderOpen, Gauge, Gear, GitBranch,
@@ -134,6 +135,41 @@ const APPEARANCE_PREFERENCE_OPTIONS = {
   conversationWidth: new Set(["focused", "balanced", "wide"]),
   conversationTextSize: new Set(["small", "standard", "large"]),
   accentColor: new Set(["coral", "rose", "amber", "green", "teal", "blue", "violet", "graphite"])
+};
+
+const VOICE_GLOW_ACCENT_PALETTES = {
+  coral: {
+    colors: ["#ff5364", "#4ed6e5", "#9a7cf6", "#ffb44f", "#e56f9d", "#6f95ff", "#55d097"],
+    bandColors: { core: "#fff4f5", above: "#ff5364", mid: "#55d097", below: "#6f95ff" }
+  },
+  rose: {
+    colors: ["#e56f9d", "#6fcbff", "#b47cff", "#58d6a3", "#ffb45c", "#6f95ff", "#4ed5c2"],
+    bandColors: { core: "#fff0f6", above: "#e56f9d", mid: "#4ed5c2", below: "#6f95ff" }
+  },
+  amber: {
+    colors: ["#dca650", "#67b8ff", "#e56f9d", "#62cc7c", "#ff704f", "#9a7cf6", "#4ecfc1"],
+    bandColors: { core: "#fff6dc", above: "#dca650", mid: "#e56f9d", below: "#6f95ff" }
+  },
+  green: {
+    colors: ["#55b96f", "#ff6b72", "#6f95ff", "#f5bd57", "#9a7cf6", "#4eb9aa", "#e56f9d"],
+    bandColors: { core: "#effff3", above: "#f5bd57", mid: "#55b96f", below: "#6f95ff" }
+  },
+  teal: {
+    colors: ["#4eb9aa", "#ff6b72", "#748fff", "#d8c153", "#b57bf5", "#55ca7c", "#e56f9d"],
+    bandColors: { core: "#edfffc", above: "#ff6b72", mid: "#4eb9aa", below: "#748fff" }
+  },
+  blue: {
+    colors: ["#6f95ff", "#ff6674", "#aa76f4", "#4eb9aa", "#e0ad53", "#e56f9d", "#55c985"],
+    bandColors: { core: "#f1f5ff", above: "#e56f9d", mid: "#6f95ff", below: "#4eb9aa" }
+  },
+  violet: {
+    colors: ["#9a7cf6", "#50c8ba", "#e56f9d", "#6f95ff", "#e0ad53", "#55c985", "#ff6b72"],
+    bandColors: { core: "#f7f2ff", above: "#e56f9d", mid: "#9a7cf6", below: "#4eb9aa" }
+  },
+  graphite: {
+    colors: ["#c0c0c5", "#6f95ff", "#e56f9d", "#55c985", "#e0ad53", "#9a7cf6", "#4eb9aa"],
+    bandColors: { core: "#ffffff", above: "#e56f9d", mid: "#a4a4aa", below: "#6f95ff" }
+  }
 };
 
 const BEHAVIOR_PREFERENCE_OPTIONS = {
@@ -2966,7 +3002,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null }) {
+export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
@@ -2977,6 +3013,8 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   const [draftHydratedKey, setDraftHydratedKey] = useState(null);
   const [uploadState, setUploadState] = useState(null);
   const [submissionBusy, setSubmissionBusy] = useState(false);
+  const [dictationPhase, setDictationPhase] = useState("idle");
+  const [showDictationBeam, setShowDictationBeam] = useState(false);
   const storageKey = `pixice.draft.${draftKey}`;
   const attachmentStorageKey = `${storageKey}.attachments`;
   const currentAttachmentScope = useMemo(() => attachmentContext?.scope ?? createAttachmentScope(attachmentContext ?? {}), [
@@ -3007,6 +3045,9 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   const reselectAttemptsRef = useRef(new Map());
   const storageKeyRef = useRef(storageKey);
   const attachmentScopeKeyRef = useRef(currentAttachmentScopeKey);
+  const dictationLevelRef = useRef(0);
+  const dictationBeamTimerRef = useRef(null);
+  const voiceGlowPalette = VOICE_GLOW_ACCENT_PALETTES[accentColor] ?? VOICE_GLOW_ACCENT_PALETTES.coral;
   attachmentsRef.current = attachments;
   textRef.current = text;
   storageKeyRef.current = storageKey;
@@ -3028,6 +3069,11 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     const identityChanged = hydratedDraftIdentityRef.current !== storageKey;
     if (identityChanged) reselectAttemptsRef.current.clear();
     if (identityChanged && (submissionRef.current || uploadAbortRef.current)) {
+      if (submissionRef.current?.adoptedStorageKeys?.has(storageKey)) {
+        hydratedDraftIdentityRef.current = storageKey;
+        setDraftHydratedKey(storageKey);
+        return;
+      }
       if (uploadAttemptRef.current) uploadAttemptRef.current.cancelled = true;
       uploadAttemptRef.current = null;
       uploadAbortRef.current?.abort(new DOMException("The draft changed.", "AbortError"));
@@ -3190,6 +3236,30 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   const commandMenuOpen = !disabled && !commandsDismissed && matchingCommands.length > 0;
   const activeCommandIndex = Math.min(commandSelection, Math.max(0, matchingCommands.length - 1));
   const activeCommand = matchingCommands[activeCommandIndex];
+  const readDictationLevel = useCallback(() => dictationLevelRef.current, []);
+  const handleDictationLevel = useCallback((level) => {
+    dictationLevelRef.current = level;
+  }, []);
+  const handleDictationPhase = useCallback((phase) => {
+    if (!mountedRef.current) return;
+    if (phase !== "recording") dictationLevelRef.current = 0;
+    if (dictationBeamTimerRef.current) {
+      window.clearTimeout(dictationBeamTimerRef.current);
+      dictationBeamTimerRef.current = null;
+    }
+    if (phase === "idle") {
+      dictationBeamTimerRef.current = window.setTimeout(() => {
+        setShowDictationBeam(false);
+        dictationBeamTimerRef.current = null;
+      }, 520);
+    } else {
+      setShowDictationBeam(true);
+    }
+    setDictationPhase(phase);
+  }, []);
+  useEffect(() => () => {
+    if (dictationBeamTimerRef.current) window.clearTimeout(dictationBeamTimerRef.current);
+  }, []);
 
   const completeCommand = (command) => {
     if (!command || disabled) return;
@@ -3393,7 +3463,15 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
       dataUrl: attachment.dataUrl ?? attachment.url
     }));
     const controller = new AbortController();
-    const attempt = { controller, kind: "submit", attachmentIds: submittedAttachmentIds, cancelled: false, storageKey, scopeKey: currentAttachmentScopeKey };
+    const attempt = {
+      controller,
+      kind: "submit",
+      attachmentIds: submittedAttachmentIds,
+      cancelled: false,
+      storageKey,
+      scopeKey: currentAttachmentScopeKey,
+      adoptedStorageKeys: new Set([storageKey])
+    };
     submissionRef.current = attempt;
     uploadAttemptRef.current = attempt;
     setSubmissionBusy(true);
@@ -3404,22 +3482,25 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     try {
       const prepared = await prepareAttachments(submittedAttachments, controller.signal, false, attempt);
       if (!mountedRef.current || uploadAttemptRef.current !== attempt || controller.signal.aborted || submissionRef.current?.cancelled) return;
-      const accepted = await onSubmit(value, displayAttachments, prepared, submittedAttachments, controller.signal);
+      const accepted = await onSubmit(value, displayAttachments, prepared, submittedAttachments, controller.signal, {
+        adoptDraftKey: (nextDraftKey) => {
+          if (submissionRef.current === attempt && nextDraftKey) attempt.adoptedStorageKeys.add(`pixice.draft.${nextDraftKey}`);
+        }
+      });
       if (!mountedRef.current || uploadAttemptRef.current !== attempt || controller.signal.aborted || submissionRef.current?.cancelled) return;
       if (accepted === false) {
         uploadStateRef.current = null;
         setUploadState(null);
       } else {
-        const submittedStorageKey = submissionRef.current?.storageKey;
-        if (textRef.current === submittedText) {
+        const textUnchanged = textRef.current === submittedText;
+        if (textUnchanged) {
           setText("");
-          storage.removeItem(storageKey);
         }
         setAttachments((current) => current.filter((attachment) => !submittedAttachmentIds.has(attachment.id)));
-        if (textRef.current === submittedText) storage.removeItem(storageKey);
-        if (submittedStorageKey && submittedStorageKey !== storageKey) {
-          storage.removeItem(submittedStorageKey);
-          storage.removeItem(`${submittedStorageKey}.attachments`);
+        for (const adoptedStorageKey of attempt.adoptedStorageKeys) {
+          if (!textUnchanged && adoptedStorageKey === storageKeyRef.current) continue;
+          storage.removeItem(adoptedStorageKey);
+          storage.removeItem(`${adoptedStorageKey}.attachments`);
         }
       }
     } catch (cause) {
@@ -3454,6 +3535,30 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   }
   return (
     <div className="composer" data-question-present={Boolean(questionRequest)} data-dragging-files={draggingFiles} data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
+      {showDictationBeam && (
+        <VoiceBeam
+          className="composer-voice-beam"
+          aria-hidden="true"
+          level={readDictationLevel}
+          active={dictationPhase !== "idle"}
+          processing={dictationPhase === "transcribing"}
+          theme="dark"
+          colors={voiceGlowPalette.colors}
+          bandColors={voiceGlowPalette.bandColors}
+          hueRange={10}
+          hueDuration={16}
+          idle={0.12}
+          attack={0.12}
+          release={0.46}
+          strength={0.82}
+          distortion={0}
+          borderRadius={18}
+          data-accent-color={accentColor}
+          style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
+        >
+          <span className="composer-voice-beam-host" />
+        </VoiceBeam>
+      )}
       {questionRequest && <ComposerQuestion key={questionRequestKey(questionRequest)} request={questionRequest} onResolve={onQuestionResolve} />}
       {draggingFiles && (
         <div className="composer-drop-target" role="status">
@@ -3653,6 +3758,8 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
             disabled={disabled}
             onTranscript={insertTranscript}
             onError={(error) => setAttachmentNotice(error.message)}
+            onPhaseChange={handleDictationPhase}
+            onLevelChange={handleDictationLevel}
           />
           {running && <IconButton label="Interrupt task" className="turn-button" onClick={onInterrupt}><Pause size={16} weight="fill" /></IconButton>}
           <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || submissionBusy || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || (!text.trim() && attachments.length === 0)}>
@@ -3862,7 +3969,7 @@ function SideThreadSurface({
     persistConfiguration({ selectedModel: modelName, effort: nextEffort, fastMode: Boolean(fastMode && fastServiceTier(model)) });
   };
 
-  const submit = async (text, attachments = [], preparedAttachments = null, sourceAttachments = attachments, signal = null) => {
+  const submit = async (text, attachments = [], preparedAttachments = null, sourceAttachments = attachments, signal = null, draftLifecycle = null) => {
     if (!api || !projectId || !runtime?.connected || busy || !selectedModel || !providerReady) return false;
     assertSubmissionActive(signal);
     followLatestRef.current = true;
@@ -3907,6 +4014,7 @@ function SideThreadSurface({
         });
         assertSubmissionActive(signal);
         targetThreadId = created.thread.id;
+        draftLifecycle?.adoptDraftKey(`${projectId}:side:${targetThreadId}`);
         threadIdRef.current = targetThreadId;
         setSnapshot(created.thread);
         saveThreadConfiguration(targetThreadId, { model: selectedModel, effort, fastMode, permissionMode }, storage);
@@ -4117,6 +4225,7 @@ function SideThreadSurface({
         runningPlaceholder="Steer the side thread"
         globalFileDrop={false}
         storage={storage}
+        accentColor={preferences.accentColor}
         attachmentContext={{ api, hostId: api?.remote?.hostId ?? "local", deviceId: api?.remote?.deviceId, projectId }}
       />
     </section>
@@ -8517,6 +8626,7 @@ export function App({ readOnly = false } = {}) {
 
   const registerSideThread = useCallback((tabId, createdThread, payload) => {
     const workspaceId = payload?.hostThreadId ?? (payload?.projectId ? `draft:${payload.projectId}` : null);
+    markThreadMessaged(createdThread.id);
     openPreviewCustomTabInWorkspace(workspaceId, {
       id: tabId,
       kind: "thread",
@@ -8532,7 +8642,7 @@ export function App({ readOnly = false } = {}) {
     setThreads((current) => current.some((candidate) => candidate.id === createdThread.id)
       ? current.map((candidate) => candidate.id === createdThread.id ? { ...candidate, ...createdThread } : candidate)
       : [createdThread, ...current]);
-  }, [openPreviewCustomTabInWorkspace]);
+  }, [markThreadMessaged, openPreviewCustomTabInWorkspace]);
 
   const forkConversation = useCallback(async ({ threadId, turnId, itemId, configuration }) => {
     const projectId = selectedProjectIdRef.current;
@@ -8861,7 +8971,7 @@ export function App({ readOnly = false } = {}) {
     }
   }, [api]);
 
-  const submit = async (text, attachments = [], preparedAttachments = null, sourceAttachments = attachments, signal = null) => {
+  const submit = async (text, attachments = [], preparedAttachments = null, sourceAttachments = attachments, signal = null, draftLifecycle = null) => {
     if (!api || !selectedProjectId || submittingRef.current) return false;
     assertSubmissionActive(signal);
     const currentHostId = connect?.active ?? "local";
@@ -8959,6 +9069,8 @@ export function App({ readOnly = false } = {}) {
         });
         assertSubmissionActive(signal);
         targetThreadId = created.thread.id;
+        markThreadMessaged(targetThreadId);
+        draftLifecycle?.adoptDraftKey(`${projectId}:${targetThreadId}`);
         const draftWorkspaceId = `draft:${projectId}`;
         await api.browser?.adopt({ fromWorkspaceId: draftWorkspaceId, toWorkspaceId: targetThreadId });
         assertSubmissionActive(signal);
@@ -9325,7 +9437,8 @@ export function App({ readOnly = false } = {}) {
     onInterrupt: interrupt,
     dictationApi: api,
     transcription: transcription.state,
-    micDeviceId: preferences.micDeviceId || null
+    micDeviceId: preferences.micDeviceId || null,
+    accentColor: preferences.accentColor
   };
   const activeProjectToolId = projectTools.some((tool) => tool.id === selectedProjectToolId)
     ? selectedProjectToolId

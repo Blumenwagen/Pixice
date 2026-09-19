@@ -187,6 +187,57 @@ describe("composer dictation integration", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("lights the composer while listening and switches to processing while transcribing", async () => {
+    installFakeAudio();
+    let completeTranscription;
+    const transcription = {
+      start: vi.fn(async () => ({ sessionId: "s-glow", modelId: "m", sampleRate: 16000, maxSamples: 9_600_000 })),
+      chunk: vi.fn(async () => ({})),
+      finish: vi.fn(() => new Promise((resolve) => { completeTranscription = resolve; })),
+      abort: vi.fn(async () => ({ sessionId: "s-glow", aborted: true }))
+    };
+    const { container } = render(<Composer {...composerProps({ dictationApi: { transcription } })} />);
+
+    expect(container.querySelector("[data-voice-beam]")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Dictate a message" }));
+    const beam = await waitFor(() => {
+      const element = container.querySelector("[data-voice-beam]");
+      expect(element).not.toBeNull();
+      return element;
+    });
+    await waitFor(() => expect(beam).toHaveAttribute("data-active"));
+    expect(beam).not.toHaveAttribute("data-processing");
+
+    await userEvent.click(screen.getByRole("button", { name: /stop recording and transcribe/i }));
+    await waitFor(() => expect(beam).toHaveAttribute("data-processing"));
+
+    completeTranscription({ sessionId: "s-glow", modelId: "m", text: "captured", durationSeconds: 1 });
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("captured"));
+  });
+
+  it("uses the selected Pixice accent palette for the voice glow", async () => {
+    installFakeAudio();
+    const transcription = {
+      start: vi.fn(async () => ({ sessionId: "s-palette", modelId: "m", sampleRate: 16000, maxSamples: 9_600_000 })),
+      chunk: vi.fn(async () => ({})),
+      finish: vi.fn(async () => ({ sessionId: "s-palette", modelId: "m", text: "", durationSeconds: 0 })),
+      abort: vi.fn(async () => ({ sessionId: "s-palette", aborted: true }))
+    };
+    const { container } = render(<Composer {...composerProps({ accentColor: "teal", dictationApi: { transcription } })} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Dictate a message" }));
+    const beam = await waitFor(() => {
+      const element = container.querySelector("[data-voice-beam]");
+      expect(element).not.toBeNull();
+      return element;
+    });
+
+    expect(beam).toHaveAttribute("data-accent-color", "teal");
+    expect(beam.previousElementSibling).toHaveTextContent("rgb(78, 185, 170)");
+    expect(beam.previousElementSibling).toHaveTextContent("rgb(255, 107, 114)");
+  });
+
   it("discards the audio when a recording is cancelled", async () => {
     const audio = installFakeAudio();
     const transcription = {

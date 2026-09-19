@@ -7,6 +7,19 @@ import { afterEach } from "vitest";
 // lightweight drawing-context spy.
 HTMLCanvasElement.prototype.getContext = () => null;
 
+if (typeof window.matchMedia !== "function") {
+  window.matchMedia = (query) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent() { return false; }
+  });
+}
+
 if (typeof globalThis.ResizeObserver === "undefined") {
   globalThis.ResizeObserver = class ResizeObserver {
     constructor(callback) { this.callback = callback; }

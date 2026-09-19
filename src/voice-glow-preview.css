@@ -1,0 +1,103 @@
+.voice-palette-preview {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  color: var(--foreground);
+  background: var(--canvas);
+}
+
+.voice-palette-study {
+  width: min(1420px, calc(100% - 56px));
+  margin: 0 auto;
+  padding: 42px 0 56px;
+}
+
+.voice-palette-heading {
+  margin-bottom: 24px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.voice-palette-heading h1 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -.025em;
+}
+
+.voice-palette-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.palette-mode-toggle {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+}
+
+.voice-palette-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px 20px;
+}
+
+.palette-sample {
+  min-width: 0;
+  padding-top: 11px;
+  border-top: 1px solid color-mix(in oklab, var(--sample-accent) 42%, var(--border));
+}
+
+.palette-sample-header {
+  min-height: 26px;
+  margin: 0 4px 9px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.palette-sample-header > span {
+  color: color-mix(in oklab, var(--sample-accent) 72%, white);
+  font-size: 11px;
+  font-weight: 660;
+}
+
+.palette-swatches {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.palette-swatches i {
+  width: 8px;
+  height: 8px;
+  display: block;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 50%;
+}
+
+.palette-composer {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  --primary: var(--sample-accent);
+}
+
+@media (max-width: 1120px) {
+  .voice-palette-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .voice-palette-study { width: min(600px, calc(100% - 32px)); padding-top: 28px; }
+  .voice-palette-heading { align-items: flex-start; }
+  .voice-palette-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 520px) {
+  .voice-palette-heading { flex-direction: column; gap: 14px; }
+  .palette-sample-header { align-items: flex-start; }
+  .palette-swatches { gap: 3px; }
+}

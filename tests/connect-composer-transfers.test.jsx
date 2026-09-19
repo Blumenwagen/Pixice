@@ -135,7 +135,7 @@ describe("Composer transfer UI", () => {
 
     fireEvent.change(prompt, { target: { value: "First message" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("First message", [], expect.anything(), [], expect.anything()));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("First message", [], expect.anything(), [], expect.anything(), expect.objectContaining({ adoptDraftKey: expect.any(Function) })));
 
     fireEvent.change(prompt, { target: { value: "Later edit" } });
     const file = new File(["new"], "later.txt", { type: "text/plain" });

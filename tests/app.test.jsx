@@ -3242,6 +3242,52 @@ describe("Pixice app shell", () => {
     });
   });
 
+  it("puts a new main task first while its initial turn is still starting", async () => {
+    let finishTurnStart;
+    localStorage.setItem("pixice.threadMessageRecency", JSON.stringify({ [thread.id]: 20 }));
+    window.pixice.turns.start = vi.fn(() => new Promise((resolve) => { finishTurnStart = resolve; }));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    const threadOrder = () => Array.from(document.querySelectorAll(".task-tree .task-select"), (button) => button.textContent);
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Start the new task");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-new",
+      text: "Start the new task"
+    })));
+    await waitFor(() => expect(threadOrder()[0]).toBe("Untitled task"));
+
+    await act(async () => finishTurnStart({ turn: { id: "turn-new", status: "inProgress", items: [] } }));
+  });
+
+  it("starts the next new task with an empty composer after the previous prompt is accepted", async () => {
+    let finishTurnStart;
+    window.pixice.turns.start = vi.fn(() => new Promise((resolve) => { finishTurnStart = resolve; }));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
+    await user.type(composer, "Do not copy this into the next task");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      threadId: "thread-new",
+      text: "Do not copy this into the next task"
+    })));
+    await act(async () => finishTurnStart({ turn: { id: "turn-new", status: "inProgress", items: [] } }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue(""));
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("");
+    expect(localStorage.getItem("pixice.draft.project-1:new")).toBeNull();
+  });
+
   it("expands multiline prompts upward and caps the textarea height", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -4629,6 +4675,35 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("");
     expect(await screen.findByRole("button", { name: "Open as main task" })).toBeEnabled();
     expect(await screen.findByText("Live from the new side thread")).toBeInTheDocument();
+  });
+
+  it("puts a new side thread first while its initial turn is still starting", async () => {
+    let finishTurnStart;
+    const api = createApi();
+    localStorage.setItem("pixice.threadMessageRecency", JSON.stringify({ [thread.id]: 20 }));
+    api.turns.start = vi.fn(() => new Promise((resolve) => { finishTurnStart = resolve; }));
+    window.pixice = api;
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
+    await screen.findByRole("region", { name: "Preview workspace" });
+    await user.click(screen.getByRole("button", { name: "New preview tab" }));
+    await user.click(screen.getByRole("button", { name: /Side threadChat beside this task/ }));
+    await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "New side thread" }));
+
+    const sideThread = await screen.findByRole("region", { name: "Side thread: New side thread" });
+    fireEvent.change(within(sideThread).getByRole("textbox", { name: "Side thread prompt" }), { target: { value: "Start the side thread" } });
+    await user.click(within(sideThread).getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-new",
+      text: "Start the side thread"
+    })));
+    await waitFor(() => expect(Array.from(document.querySelectorAll(".task-tree .task-select"), (button) => button.textContent)[0]).toBe("Untitled task"));
+
+    await act(async () => finishTurnStart({ turn: { id: "turn-new", status: "inProgress", items: [] } }));
   });
 
   it("closes a Side Thread tab without interrupting or archiving its thread", async () => {

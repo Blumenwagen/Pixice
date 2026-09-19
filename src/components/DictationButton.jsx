@@ -11,12 +11,26 @@ function formatElapsed(seconds) {
 // Sits next to Send. Recording happens on this device, decoding happens on the
 // Pixice host, and the transcript is handed back to the composer for editing
 // rather than being submitted.
-export function DictationButton({ api, state, deviceId = null, disabled = false, onTranscript, onError }) {
+export function DictationButton({ api, state, deviceId = null, disabled = false, onTranscript, onError, onPhaseChange, onLevelChange }) {
   const [phase, setPhase] = useState("idle");
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const recorderRef = useRef(null);
   const timerRef = useRef(null);
+
+  useEffect(() => {
+    onPhaseChange?.(phase);
+  }, [onPhaseChange, phase]);
+
+  useEffect(() => () => {
+    onPhaseChange?.("idle");
+    onLevelChange?.(0);
+  }, [onLevelChange, onPhaseChange]);
+
+  const updateLevel = useCallback((nextLevel) => {
+    setLevel(nextLevel);
+    onLevelChange?.(nextLevel);
+  }, [onLevelChange]);
 
   const stopTimer = useCallback(() => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
@@ -33,7 +47,7 @@ export function DictationButton({ api, state, deviceId = null, disabled = false,
     recorderRef.current = null;
     stopTimer();
     setPhase("transcribing");
-    setLevel(0);
+    updateLevel(0);
     try {
       const result = await recorder.stop();
       if (result.text) onTranscript(result.text);
@@ -44,7 +58,7 @@ export function DictationButton({ api, state, deviceId = null, disabled = false,
       setPhase("idle");
       setElapsed(0);
     }
-  }, [onError, onTranscript, stopTimer]);
+  }, [onError, onTranscript, stopTimer, updateLevel]);
 
   const cancel = useCallback(async () => {
     const recorder = recorderRef.current;
@@ -52,9 +66,9 @@ export function DictationButton({ api, state, deviceId = null, disabled = false,
     stopTimer();
     setPhase("idle");
     setElapsed(0);
-    setLevel(0);
+    updateLevel(0);
     await recorder?.cancel().catch(() => {});
-  }, [stopTimer]);
+  }, [stopTimer, updateLevel]);
 
   const begin = useCallback(async () => {
     if (!state?.ready) return;
@@ -64,7 +78,7 @@ export function DictationButton({ api, state, deviceId = null, disabled = false,
         api,
         modelId: state.selectedModelId,
         deviceId,
-        onLevel: setLevel,
+        onLevel: updateLevel,
         onError: (error) => { onError?.(error); void cancel(); }
       });
       recorderRef.current = recorder;
@@ -75,7 +89,7 @@ export function DictationButton({ api, state, deviceId = null, disabled = false,
       setPhase("idle");
       onError?.(error);
     }
-  }, [api, cancel, deviceId, onError, state]);
+  }, [api, cancel, deviceId, onError, state, updateLevel]);
 
   useEffect(() => {
     if (phase !== "recording") return undefined;

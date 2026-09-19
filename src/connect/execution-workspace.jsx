@@ -624,7 +624,7 @@ export function ExecutionThreadWorkspace({
     if (thread?.id) linkTargetThread(thread);
   }, [linkTargetThread, thread?.id, thread?.name, thread?.preview]);
 
-  const submit = useCallback(async (text, attachments = [], preparedAttachments = null, sourceAttachments = attachments, signal = null) => {
+  const submit = useCallback(async (text, attachments = [], preparedAttachments = null, sourceAttachments = attachments, signal = null, draftLifecycle = null) => {
     if (!api || !projectIdRef.current || !canSubmit || submittingRef.current) return false;
     if (signal?.aborted) return false;
     submittingRef.current = true;
@@ -663,6 +663,7 @@ export function ExecutionThreadWorkspace({
         const created = await api.threads.create({ projectId: fixedProjectId, model: selectedModel || undefined, ...(serviceTier ? { serviceTier } : {}), permissionMode });
         if (signal?.aborted) return false;
         targetThreadId = created.thread.id;
+        draftLifecycle?.adoptDraftKey(`${hostId}:${fixedProjectId}:${targetThreadId}`);
         threadIdRef.current = targetThreadId;
         setThread(created.thread);
         setThreads((current) => [created.thread, ...current.filter((item) => item.id !== targetThreadId)]);
