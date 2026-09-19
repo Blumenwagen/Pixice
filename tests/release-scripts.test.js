@@ -102,4 +102,12 @@ describe("release scripts", () => {
       ? /Verified generated SwiftUI starter/
       : /Skipped generated SwiftUI starter verification/);
   });
+
+  it.skipIf(process.platform !== "darwin")("accepts pnpm's argument separator before the Gatekeeper flag", async () => {
+    await expect(run(process.execPath, [
+      path.resolve("scripts/verify-packaged-macos.mjs"),
+      "--",
+      "--require-gatekeeper"
+    ])).rejects.not.toMatchObject({ stderr: expect.stringContaining("scandir") });
+  });
 });

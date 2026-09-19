@@ -23,12 +23,14 @@ async function findPixiceApps(directory, remainingDepth = 3) {
 
 async function main() {
   if (process.platform !== "darwin") throw new Error("macOS package verification must run on macOS");
-  const releaseDirectory = path.resolve(process.argv[2] || path.join(repositoryRoot, "release"));
+  const argumentsAfterSeparator = process.argv.slice(2).filter((argument) => argument !== "--");
+  const releaseDirectoryArgument = argumentsAfterSeparator.find((argument) => !argument.startsWith("--"));
+  const releaseDirectory = path.resolve(releaseDirectoryArgument || path.join(repositoryRoot, "release"));
   const matches = await findPixiceApps(releaseDirectory);
   if (matches.length !== 1) {
     throw new Error(`Expected exactly one packaged Pixice.app under ${releaseDirectory}; found ${matches.length}`);
   }
-  const result = await verifyMacAppSignature(matches[0], { requireGatekeeper: process.argv.includes("--require-gatekeeper") });
+  const result = await verifyMacAppSignature(matches[0], { requireGatekeeper: argumentsAfterSeparator.includes("--require-gatekeeper") });
   console.log(`Verified ${result.identifier}, team ${result.teamIdentifier}, at ${result.path}`);
 }
 
