@@ -212,7 +212,10 @@ export class PixiceBridge {
     if (input.effort && effortValues.length && !effortValues.includes(input.effort)) {
       throw new Error(`${input.effort} is not supported by ${selected.displayName}`);
     }
-    const permissionMode = input.permissionMode ?? context.permissionMode ?? "workspace-write";
+    const permissionMode = context.enforcedPermissionMode
+      ?? input.permissionMode
+      ?? context.permissionMode
+      ?? "workspace-write";
     const permissions = context.permissionSettings(permissionMode);
     const runtimeWorkspaceRoots = context.runtimeWorkspaceRoots?.length ? context.runtimeWorkspaceRoots : [context.cwd];
     const started = await this.runtime.request("thread/start", {

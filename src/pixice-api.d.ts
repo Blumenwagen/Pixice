@@ -13,6 +13,7 @@ type PixiceEvent = {
     | "ProviderLifecycleState"
     | "BrowserState"
     | "BrowserOpenRequested"
+    | "PreviewWorkspacePresentRequested"
     | "BoardUpdated"
     | "InstrumentUpdated"
     | "InstrumentOpenRequested"
@@ -25,6 +26,7 @@ type PixiceEvent = {
     | "WorkflowCredentialsUpdated"
     | "IosSessionUpdated"
     | "IosPreviewOpenRequested"
+    | "FilePreviewOpenRequested"
     | "UpdateState"
     | "TrayNavigate"
     | "TraySettingsUpdated"
@@ -443,6 +445,14 @@ declare global {
         delete(payload: ProjectScope): Promise<PixiceProject>;
         open(): Promise<PixiceProject | null>;
       };
+      focus: {
+        ensure(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{
+          created: boolean;
+          session: { projectId: string; threadId: string; userTurnCount: number; lastMemoryReviewTurn: number; createdAt: string; updatedAt: string };
+          memory: { projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null };
+          thread: any;
+        }>;
+      };
       board: {
         list(payload: ProjectScope): Promise<{ data: Array<any>; phases: Array<any> }>;
         read(payload: ProjectScope & { taskId: string }): Promise<{ task: any; activity: Array<any> }>;
@@ -517,7 +527,7 @@ declare global {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
         read(payload: ThreadScope): Promise<{ thread: any; plan?: any[] | null }>;
         children(payload: ThreadScope): Promise<{ data: any[]; nextCursor: string | null }>;
-        create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ thread: any }>;
+        create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; parentThreadId?: string }): Promise<{ thread: any }>;
         fork(payload: ThreadScope & ({ lastTurnId: string } | { turnId: string }) & ({ lastItemId: string } | { itemId: string })): Promise<{ thread: any }>;
         archive(payload: ThreadScope): Promise<unknown>;
       };

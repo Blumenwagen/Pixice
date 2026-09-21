@@ -230,6 +230,50 @@ describe("Pixice bridge", () => {
     await resultPromise;
   });
 
+  it("enforces the Focus permission mode even when a worker requests less access", async () => {
+    const { bridge, runtime, onThreadCreated } = createBridge(undefined, {
+      permissionMode: "workspace-write",
+      enforcedPermissionMode: "full-access",
+      permissionSettings: () => ({
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: "danger-full-access",
+        sandboxPolicy: { type: "dangerFullAccess" }
+      })
+    });
+    const resultPromise = bridge.handleToolCall({
+      threadId: "parent-1",
+      tool: "spawn_thread",
+      arguments: {
+        prompt: "Use computer control to inspect the interface",
+        model: "codex:gpt-5.6-luna",
+        permissionMode: "workspace-write"
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(runtime.calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: "thread/start",
+        params: expect.objectContaining({ permissionMode: "full-access", approvalPolicy: "never", sandbox: "danger-full-access" })
+      }),
+      expect.objectContaining({
+        method: "turn/start",
+        params: expect.objectContaining({ permissionMode: "full-access", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } })
+      })
+    ]));
+    expect(onThreadCreated).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "full-access" }));
+
+    runtime.emit("event", {
+      payload: {
+        method: "turn/completed",
+        threadId: "child-1",
+        turn: { id: "turn-1", status: "completed", items: [{ type: "agentMessage", text: "Done." }] }
+      }
+    });
+    await resultPromise;
+  });
+
   it("falls back to workspace access when no permission mode is available", async () => {
     const { bridge, runtime } = createBridge();
     const resultPromise = bridge.handleToolCall({

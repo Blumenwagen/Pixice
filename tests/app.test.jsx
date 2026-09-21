@@ -313,6 +313,14 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
         return { suggestion: { ...suggestion, status: decision === "accept" ? "accepted" : "dismissed" } };
       })
     },
+    focus: {
+      ensure: vi.fn(async () => ({
+        created: false,
+        session: { projectId: project.id, threadId: "focus-thread", userTurnCount: 2, lastMemoryReviewTurn: 0 },
+        memory: { projectId: project.id, projectMemory: "Uses calm project coordination.", userMemory: "", revision: 1, updatedAt: new Date().toISOString() },
+        thread: { ...thread, id: "focus-thread", name: "Aurora Focus", preview: "", parentThreadId: null, turns: [] }
+      }))
+    },
     threads: {
       list: vi.fn().mockResolvedValue({ data: threadValues, nextCursor: null }),
       read: vi.fn(async ({ threadId }) => ({ thread: threadValues.find((candidate) => candidate.id === threadId) ?? threadValues[0] })),
@@ -382,6 +390,116 @@ describe("Pixice app shell", () => {
     expect(formatElapsedDuration(8_000)).toBe("8s");
     expect(formatElapsedDuration(68_000)).toBe("1m 8s");
     expect(formatElapsedDuration(6_480_000)).toBe("1h 48m");
+  });
+
+  it("opens the project's single Focus coordinator without replacing Workspace", async () => {
+    const activeTask = { ...thread, status: { type: "active" }, planProgress: { completed: 2, total: 5 } };
+    const pausedTask = {
+      ...thread,
+      id: "thread-paused",
+      name: "Document the handoff",
+      preview: "Document the handoff",
+      status: { type: "idle" },
+      planProgress: { completed: 1, total: 4 },
+      updatedAt: thread.updatedAt - 1,
+      turns: [{ id: "turn-paused", status: "completed", items: [] }]
+    };
+    window.pixice = createApi([activeTask, pausedTask]);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+
+    expect(await screen.findByRole("heading", { name: "Talk to Aurora" })).toBeInTheDocument();
+    expect(window.pixice.focus.ensure).toHaveBeenCalledWith(expect.objectContaining({ projectId: project.id, permissionMode: "full-access" }));
+    const focusPrompt = screen.getByRole("textbox", { name: "Project Focus prompt" });
+    expect(focusPrompt).toBeInTheDocument();
+    expect(within(focusPrompt.closest(".composer")).queryByRole("button", { name: /^Permissions:/ })).not.toBeInTheDocument();
+    const projectPicker = screen.getByRole("button", { name: "Switch project, current project Aurora" });
+    fireEvent.click(projectPicker);
+    expect(screen.getByRole("menu", { name: "Choose project" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: "Aurora" })).toHaveAttribute("aria-checked", "true");
+    expect(document.querySelector(".focus-project-tile")).toHaveStyle({ "--project-color": "#c3a7ee" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    const taskProgress = screen.getByRole("complementary", { name: "Task progress overview" });
+    expect(within(taskProgress).getByRole("progressbar", { name: "Refactor authentication progress" })).toHaveAttribute("aria-valuenow", "2");
+    expect(within(taskProgress).getByRole("progressbar", { name: "Document the handoff progress" })).toHaveAttribute("aria-valuenow", "1");
+
+    act(() => window.pixice.emit({
+      type: "FilePreviewOpenRequested",
+      payload: {
+        threadId: "thread-1",
+        workspaceId: "thread-1",
+        projectId: project.id,
+        source: "codex",
+        file: {
+          path: "/work/aurora/prototype.html",
+          relativePath: "prototype.html",
+          folderPath: "/work/aurora",
+          name: "prototype.html",
+          extension: ".html",
+          kind: "html",
+          content: "<main><h1>Worker prototype</h1></main>",
+          external: false,
+          editable: true,
+          size: 45,
+          mtimeMs: 1
+        }
+      }
+    }));
+    act(() => window.pixice.emit({
+      type: "PreviewWorkspacePresentRequested",
+      payload: {
+        workspaceId: "focus-thread",
+        threadId: "focus-thread",
+        sourceWorkspaceId: "thread-1",
+        sourceThreadId: "thread-1",
+        projectId: project.id,
+        title: "Prototype worker"
+      }
+    }));
+
+    expect(await screen.findByRole("region", { name: "Preview workspace" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Task progress overview" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "prototype.html" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toBeInTheDocument();
+
+    act(() => window.pixice.emit({
+      type: "AttentionRequired",
+      payload: {
+        id: "worker-approval",
+        method: "item/tool/requestApproval",
+        params: { threadId: "thread-1", toolName: "computer" }
+      }
+    }));
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-surface-mode", "focus");
+    expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument();
+
+    act(() => window.pixice.emit({
+      type: "AttentionRequired",
+      payload: {
+        id: "focus-question",
+        method: "pixice/requestUserInput",
+        focusManaged: true,
+        focusCoordinatorQuestion: true,
+        params: {
+          threadId: "focus-thread",
+          questions: [{
+            id: "launch_scope",
+            header: "Project decision",
+            question: "Should this launch for every project?",
+            options: [
+              { label: "Current project", description: "Keep the rollout contained.", recommended: true },
+              { label: "Every project", description: "Apply the behavior everywhere.", recommended: false }
+            ]
+          }]
+        }
+      }
+    }));
+    expect(await screen.findByRole("heading", { name: "Should this launch for every project?" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Workspace" }));
+    expect(await screen.findByRole("button", { name: "New task" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Talk to Aurora" })).not.toBeInTheDocument();
   });
 
   it("surfaces repeated work as a reviewable workflow draft suggestion", async () => {
@@ -2569,14 +2687,14 @@ describe("Pixice app shell", () => {
 
     const firstLaunch = render(<App />);
     await screen.findByText("I traced the current flow.");
-    await user.click(screen.getByRole("button", { name: "Reasoning: Medium" }));
-    await user.click(screen.getByRole("option", { name: /High/ }));
+    await user.click(screen.getByRole("button", { name: "Run profile: GPT-5.6, Medium reasoning" }));
+    await user.click(within(screen.getByRole("group", { name: "Reasoning" })).getByRole("button", { name: "High" }));
     expect(JSON.parse(localStorage.getItem("pixice.threadConfiguration.thread-1"))).toMatchObject({ effort: "high" });
 
     await user.click(screen.getByRole("button", { name: "Prepare release notes" }));
-    expect(await screen.findByRole("button", { name: "Reasoning: Medium" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Run profile: GPT-5.6, Medium reasoning" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refactor authentication" }));
-    expect(await screen.findByRole("button", { name: "Reasoning: High" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Run profile: GPT-5.6, High reasoning" })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: ",", metaKey: true });
     expect(await screen.findByRole("combobox", { name: "Default reasoning effort" })).toHaveValue("medium");
@@ -2589,9 +2707,9 @@ describe("Pixice app shell", () => {
     window.pixice = restartedApi;
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: "Reasoning: High" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Run profile: GPT-5.6, High reasoning" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Prepare release notes" }));
-    expect(await screen.findByRole("button", { name: "Reasoning: Medium" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Run profile: GPT-5.6, Medium reasoning" })).toBeInTheDocument();
   });
 
   it("filters the model picker by Codex and Claude provider", async () => {
@@ -2614,7 +2732,7 @@ describe("Pixice app shell", () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
-    await user.click(screen.getByRole("button", { name: "Model: GPT-5.6" }));
+    await user.click(screen.getByRole("button", { name: /Run profile: GPT-5\.6/ }));
     expect(screen.getByRole("tab", { name: "Codex" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("option", { name: /GPT-5.6/ })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Claude Opus/ })).not.toBeInTheDocument();
@@ -2637,7 +2755,7 @@ describe("Pixice app shell", () => {
     await screen.findByText("I traced the current flow.");
     await waitFor(() => expect(api.providers.list).toHaveBeenCalled());
 
-    await user.click(screen.getByRole("button", { name: "Model: GPT-5.6" }));
+    await user.click(screen.getByRole("button", { name: /Run profile: GPT-5\.6/ }));
     await user.click(screen.getByRole("tab", { name: "Claude" }));
 
     expect(screen.getByText("Claude isn't authenticated")).toBeInTheDocument();
@@ -2662,7 +2780,7 @@ describe("Pixice app shell", () => {
     await screen.findByText("I traced the current flow.");
     await waitFor(() => expect(api.providers.list).toHaveBeenCalled());
 
-    const picker = screen.getByRole("button", { name: "Model: Choose model" });
+    const picker = screen.getByRole("button", { name: "Run profile: Choose model" });
     expect(picker).toBeEnabled();
     await user.click(picker);
     await user.click(screen.getByRole("tab", { name: "Claude" }));
@@ -3304,9 +3422,10 @@ describe("Pixice app shell", () => {
     expect(composer).toHaveStyle({ height: "240px", overflowY: "auto" });
   });
 
-  it("uses icon-only permission and fast controls when preview is open", () => {
-    expect(appCss).toMatch(/\.preview-mode \.composer-fast-toggle,\s*\.preview-mode \.composer-picker\.permission \.picker-trigger\s*\{[^}]*width:\s*30px;[^}]*padding:\s*0;/);
-    expect(appCss).toMatch(/\.preview-mode \.composer-fast-toggle span,\s*\.preview-mode \.composer-picker\.permission \.picker-trigger-label,\s*\.preview-mode \.composer-picker\.permission \.picker-chevron\s*\{\s*display:\s*none;/);
+  it("uses an icon-only permission control and a bounded run profile when preview is open", () => {
+    expect(appCss).toMatch(/\.preview-mode \.composer-picker\.permission \.picker-trigger\s*\{[^}]*width:\s*30px;[^}]*padding:\s*0;/);
+    expect(appCss).toMatch(/\.preview-mode \.composer-picker\.permission \.picker-trigger-label,\s*\.preview-mode \.composer-picker\.permission \.picker-chevron\s*\{\s*display:\s*none;/);
+    expect(appCss).toMatch(/\.preview-mode \.composer-picker\.run-profile \.picker-trigger\s*\{[^}]*max-width:\s*142px;/);
   });
 
   it("shares the transcript geometry with the composer while the task inspector is open", () => {
@@ -3506,7 +3625,7 @@ describe("Pixice app shell", () => {
     })));
   });
 
-  it("uses accessible model, reasoning, and permission pickers", async () => {
+  it("uses accessible run profile and permission pickers", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -3516,12 +3635,10 @@ describe("Pixice app shell", () => {
     await user.click(screen.getByRole("option", { name: /Read only/ }));
     expect(screen.getByRole("button", { name: "Permissions: Read only" })).toHaveAttribute("aria-expanded", "false");
 
-    await user.click(screen.getByRole("button", { name: "Model: GPT-5.6" }));
+    await user.click(screen.getByRole("button", { name: /Run profile: GPT-5\.6/ }));
     expect(screen.getByRole("listbox", { name: "Model" })).toBeInTheDocument();
-    await user.keyboard("{Escape}");
-
-    await user.click(screen.getByRole("button", { name: "Reasoning: High" }));
-    expect(screen.getByRole("listbox", { name: "Reasoning" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Reasoning" })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Reasoning" })).getByRole("button", { name: "High" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it.each(["gpt-5.6", "gpt-6-astra"])("enables fast mode for %s and sends the priority service tier", async (model) => {
@@ -3548,6 +3665,7 @@ describe("Pixice app shell", () => {
     await screen.findByText("I traced the current flow.");
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
 
+    await user.click(screen.getByRole("button", { name: /Run profile:/ }));
     const fastToggle = screen.getByRole("button", { name: "Fast mode" });
     expect(fastToggle).toHaveAttribute("aria-pressed", "false");
     await user.click(fastToggle);
@@ -3559,8 +3677,10 @@ describe("Pixice app shell", () => {
     await waitFor(() => expect(api.threads.create).toHaveBeenCalledWith(expect.objectContaining({ model, serviceTier: "priority" })));
     expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ model, serviceTier: "priority" }));
 
-    await waitFor(() => expect(fastToggle).toBeEnabled());
-    await user.click(fastToggle);
+    const profile = await screen.findByRole("button", { name: /Run profile:/ });
+    await waitFor(() => expect(profile).toBeEnabled());
+    await user.click(profile);
+    await user.click(screen.getByRole("button", { name: "Fast mode" }));
     await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Return to standard speed");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -3568,6 +3688,7 @@ describe("Pixice app shell", () => {
   });
 
   it("does not show fast mode for Claude models", async () => {
+    const user = userEvent.setup();
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({
       projects: [project],
@@ -3587,6 +3708,7 @@ describe("Pixice app shell", () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
+    await user.click(screen.getByRole("button", { name: /Run profile: Claude Sonnet 4\.6/ }));
     expect(screen.queryByRole("button", { name: "Fast mode" })).not.toBeInTheDocument();
   });
 

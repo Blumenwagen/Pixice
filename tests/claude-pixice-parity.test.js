@@ -4,6 +4,7 @@ import { instrumentDynamicTools } from "../electron/instruments/instrument-servi
 import { iosDynamicTools } from "../electron/ios/ios-tools.mjs";
 import { claudePermissionSettings } from "../electron/providers/claude-provider.mjs";
 import { pixiceBoardDynamicTools } from "../electron/runtime/pixice-board.mjs";
+import { pixiceFocusDynamicTools } from "../electron/runtime/pixice-focus.mjs";
 import { pixiceBridgeDynamicTools } from "../electron/runtime/pixice-bridge.mjs";
 import { questionDynamicTools } from "../electron/runtime/question-tool.mjs";
 
@@ -13,6 +14,7 @@ describe("Claude Pixice feature parity", () => {
       questionDynamicTools[0],
       pixiceBridgeDynamicTools[0],
       pixiceBoardDynamicTools[0],
+      pixiceFocusDynamicTools[0],
       instrumentDynamicTools[0],
       browserDynamicTools[0],
       iosDynamicTools[0]

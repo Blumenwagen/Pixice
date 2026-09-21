@@ -7,6 +7,7 @@ import { iosDynamicTools } from "../electron/ios/ios-tools.mjs";
 import { AsyncPromptQueue, ClaudeProvider, claudeAccountIsAuthenticated, claudeExternallyManagedAuth, claudePermissionSettings, claudeQueryOptions } from "../electron/providers/claude-provider.mjs";
 import { PixiceDatabase } from "../electron/persistence/database.mjs";
 import { pixiceBoardTools } from "../electron/runtime/pixice-board.mjs";
+import { pixiceBridgeDynamicTools } from "../electron/runtime/pixice-bridge.mjs";
 import { previewContextDynamicTools } from "../electron/runtime/preview-context.mjs";
 
 const temporaryDirectories = [];
@@ -452,6 +453,53 @@ describe("Claude provider", () => {
         }),
         expect.objectContaining({ type: "agentMessage", text: "Done", phase: "final_answer" })
       ]));
+
+    await provider.stop();
+    database.db.close();
+  });
+
+  it("limits a coordinator query to its explicit Pixice capabilities and omits skills", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-claude-coordinator-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const output = new AsyncPromptQueue();
+    let queryArguments;
+    const provider = new ClaudeProvider({
+      database,
+      pixiceBridge: { handleToolCall: vi.fn() },
+      pixicePreview: { handleToolCall: vi.fn() },
+      queryFactory: (args) => {
+        queryArguments = args;
+        return {
+          [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
+          close: vi.fn()
+        };
+      }
+    });
+    await provider.start();
+
+    const bridgeTools = [{
+      ...pixiceBridgeDynamicTools[0],
+      tools: pixiceBridgeDynamicTools[0].tools.filter((tool) => ["list_models", "spawn_thread"].includes(tool.name))
+    }];
+    const { thread } = await provider.request("thread/start", {
+      cwd: directory,
+      model: "sonnet",
+      permissionMode: "workspace-write",
+      dynamicTools: [...bridgeTools, ...previewContextDynamicTools]
+    });
+    await provider.request("turn/start", {
+      threadId: thread.id,
+      input: [{ type: "text", text: "Show the worker prototype" }],
+      model: "sonnet",
+      permissionMode: "workspace-write"
+    });
+
+    expect(queryArguments.options.skills).toEqual([]);
+    expect(Object.keys(queryArguments.options.mcpServers).sort()).toEqual(["pixice_bridge", "pixice_preview"]);
+    expect(Object.keys(queryArguments.options.mcpServers.pixice_bridge.instance._registeredTools)).toEqual(["list_models", "spawn_thread"]);
+    await expect(queryArguments.options.canUseTool("mcp__pixice_preview__present_thread", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    await expect(queryArguments.options.canUseTool("mcp__pixice_board__create_task", {}, {})).resolves.toMatchObject({ behavior: "deny" });
 
     await provider.stop();
     database.db.close();

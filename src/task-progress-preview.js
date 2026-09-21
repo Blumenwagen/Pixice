@@ -58,6 +58,24 @@ const rootThread = {
   }]
 };
 
+const focusThread = {
+  id: "preview-focus",
+  name: "Pixice Focus",
+  preview: "",
+  cwd: "/work/pixice",
+  parentThreadId: null,
+  status: { type: "idle" },
+  updatedAt: Math.floor(Date.now() / 1000),
+  turns: [{
+    id: "preview-focus-turn",
+    status: "completed",
+    items: [
+      { id: "preview-focus-user", type: "userMessage", content: [{ type: "text", text: "Show me the interface direction the design worker made." }] },
+      { id: "preview-focus-agent", type: "agentMessage", text: "I pulled the worker's prototype into Preview. We can review it here without leaving the project conversation.", phase: "final_answer" }
+    ]
+  }]
+};
+
 const secondaryThread = {
   id: "preview-harness-task",
   name: "Build Pixice Codex harness",
@@ -68,6 +86,18 @@ const secondaryThread = {
   planProgress: { completed: 5, total: 5 },
   updatedAt: Math.floor(Date.now() / 1000) - 180,
   turns: [{ id: "preview-harness-turn", status: "completed", items: [] }]
+};
+
+const documentationThread = {
+  id: "preview-documentation-task",
+  name: "Document coordinator handoff",
+  preview: "Document coordinator handoff",
+  cwd: "/work/pixice",
+  parentThreadId: null,
+  status: { type: "idle" },
+  planProgress: { completed: 1, total: 4 },
+  updatedAt: Math.floor(Date.now() / 1000) - 90,
+  turns: [{ id: "preview-documentation-turn", status: "completed", items: [] }]
 };
 
 const agents = [
@@ -226,7 +256,7 @@ const releaseTool = {
   lastOpenedAt: "2026-08-23T09:30:00.000Z"
 };
 
-export function createTaskProgressPreviewApi({ gitUnavailable = false, updatePreview = false } = {}) {
+export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavailable = false, updatePreview = false } = {}) {
   const gitStatus = gitUnavailable
     ? { state: "command-line-tools-missing", available: false, installSupported: true, executablePath: null, version: null, message: "Apple Command Line Tools are not installed. Pixice can still work with folders, but Git features are unavailable." }
     : { state: "ready", available: true, installSupported: false, executablePath: "/usr/bin/git", version: "git version 2.50.1", message: "git version 2.50.1 is ready." };
@@ -249,7 +279,7 @@ export function createTaskProgressPreviewApi({ gitUnavailable = false, updatePre
     emit("BoardUpdated", { action: "updated", projectId: project.id, task: next });
     return next;
   };
-  const threads = [rootThread, secondaryThread, ...agents];
+  const threads = [rootThread, documentationThread, secondaryThread, ...agents];
   let browserTabSequence = 1;
   let browserState = {
     native: false,
@@ -295,6 +325,47 @@ export function createTaskProgressPreviewApi({ gitUnavailable = false, updatePre
       setViewport: async () => browserState
     },
     preview: { setContext: async ({ context }) => context },
+    focus: {
+      ensure: async () => {
+        if (focusPreview) {
+          window.setTimeout(() => {
+            emit("FilePreviewOpenRequested", {
+              workspaceId: rootThread.id,
+              threadId: rootThread.id,
+              projectId: project.id,
+              source: "preview-fixture",
+              file: {
+                path: "/work/pixice/prototype.html",
+                relativePath: "prototype.html",
+                folderPath: "/work/pixice",
+                name: "prototype.html",
+                extension: ".html",
+                kind: "html",
+                content: "<!doctype html><style>body{margin:0;font:15px system-ui;color:#20252b;background:#f4f0e8}.shell{min-height:100vh;padding:52px}.eyebrow{color:#736b60;font-size:12px}.card{max-width:720px;margin-top:80px;padding:36px;background:white;border-radius:20px;box-shadow:0 24px 70px #6f625624}h1{font-size:42px;letter-spacing:-.04em;margin:8px 0 14px}p{max-width:54ch;line-height:1.6;color:#655f58}</style><main class='shell'><span class='eyebrow'>Worker prototype</span><section class='card'><h1>A quieter project home.</h1><p>The coordinator stays beside the work while Preview holds the artifact under discussion.</p></section></main>",
+                external: false,
+                editable: true,
+                size: 620,
+                mtimeMs: 1
+              }
+            });
+            emit("PreviewWorkspacePresentRequested", {
+              workspaceId: focusThread.id,
+              threadId: focusThread.id,
+              sourceWorkspaceId: rootThread.id,
+              sourceThreadId: rootThread.id,
+              projectId: project.id,
+              title: "Design worker"
+            });
+          }, 120);
+        }
+        return {
+          created: false,
+          session: { projectId: project.id, threadId: focusThread.id, userTurnCount: 1, lastMemoryReviewTurn: 0 },
+          memory: { projectId: project.id, projectMemory: "Focus keeps project decisions concise.", userMemory: "", revision: 1 },
+          thread: focusThread
+        };
+      }
+    },
     files: {
       read: async ({ path }) => ({ path: `/work/pixice/${path}`, relativePath: path, name: path.split("/").at(-1), extension: `.${path.split(".").at(-1)}`, kind: path.endsWith(".md") ? "markdown" : "text", content: "# Pixice\n", editable: true, size: 7, mtimeMs: 1 }),
       write: async ({ path, content }) => ({ path, relativePath: path.replace("/work/pixice/", ""), name: path.split("/").at(-1), extension: `.${path.split(".").at(-1)}`, kind: path.endsWith(".md") ? "markdown" : "text", content, editable: true, size: content.length, mtimeMs: 2 })
@@ -337,7 +408,11 @@ export function createTaskProgressPreviewApi({ gitUnavailable = false, updatePre
     projects: { list: async () => [previewProject], open: async () => previewProject },
     threads: {
       list: async () => ({ data: threads, nextCursor: null }),
-      read: async ({ threadId }) => threadId === secondaryThread.id ? { thread: secondaryThread, plan: [] } : { thread: rootThread, plan },
+      read: async ({ threadId }) => threadId === focusThread.id
+        ? { thread: focusThread, plan: [] }
+        : threadId === secondaryThread.id ? { thread: secondaryThread, plan: [] }
+          : threadId === documentationThread.id ? { thread: documentationThread, plan: [] }
+            : { thread: rootThread, plan },
       children: async ({ threadId }) => ({ data: threadId === rootThread.id ? agents : [], nextCursor: null }),
       create: async () => ({ thread: rootThread }),
       archive: async () => ({})

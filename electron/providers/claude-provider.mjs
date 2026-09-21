@@ -26,10 +26,12 @@ import {
   tool
 } from "@anthropic-ai/claude-agent-sdk";
 import { normalizePixiceQuestions, pixiceQuestionToolShape } from "../runtime/question-tool.mjs";
-import { PIXICE_BRIDGE_MCP_TOOLS, pixiceBridgeDynamicTools, pixiceBridgeToolShapes } from "../runtime/pixice-bridge.mjs";
-import { PIXICE_BOARD_MCP_TOOLS, pixiceBoardToolShapes, pixiceBoardTools } from "../runtime/pixice-board.mjs";
+import { PIXICE_BRIDGE_MCP_TOOLS, PIXICE_BRIDGE_NAMESPACE, pixiceBridgeDynamicTools, pixiceBridgeToolShapes } from "../runtime/pixice-bridge.mjs";
+import { PIXICE_BOARD_MCP_TOOLS, PIXICE_BOARD_NAMESPACE, pixiceBoardToolShapes, pixiceBoardTools } from "../runtime/pixice-board.mjs";
+import { PIXICE_FOCUS_MCP_TOOLS, PIXICE_FOCUS_NAMESPACE, pixiceFocusToolShapes, pixiceFocusTools } from "../runtime/pixice-focus.mjs";
 import {
   PIXICE_INSTRUMENTS_MCP_TOOLS,
+  PIXICE_INSTRUMENTS_NAMESPACE,
   instrumentToolShapes,
   instrumentTools
 } from "../instruments/instrument-service.mjs";
@@ -93,6 +95,26 @@ export function claudeExternallyManagedAuth(account, environment = process.env) 
 
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "WebSearch", "WebFetch"]);
 const PIXICE_QUESTION_MCP_TOOL = "mcp__pixice__request_user_input";
+const PIXICE_QUESTION_NAMESPACE = "pixice";
+
+function dynamicToolProfile(dynamicTools) {
+  if (!Array.isArray(dynamicTools)) return null;
+  return Object.fromEntries(dynamicTools
+    .filter((namespace) => namespace?.type === "namespace" && typeof namespace.name === "string")
+    .map((namespace) => [namespace.name, (namespace.tools ?? []).map((definition) => definition.name).filter(Boolean)]));
+}
+
+function profileAllowsNamespace(profile, namespace) {
+  return profile === null || Object.hasOwn(profile, namespace);
+}
+
+function profileAllowsTool(profile, namespace, toolName) {
+  return profile === null || (profile[namespace] ?? []).includes(toolName);
+}
+
+function allowedToolDefinitions(context, namespace, definitions) {
+  return definitions.filter((definition) => profileAllowsTool(context.dynamicToolProfile, namespace, definition.name));
+}
 
 export class AsyncPromptQueue {
   constructor() {
@@ -145,6 +167,7 @@ export function claudePermissionSettings(mode) {
       PIXICE_QUESTION_MCP_TOOL,
       ...PIXICE_BRIDGE_MCP_TOOLS,
       ...PIXICE_BOARD_MCP_TOOLS,
+      ...PIXICE_FOCUS_MCP_TOOLS,
       ...PIXICE_INSTRUMENTS_MCP_TOOLS,
       ...PIXICE_BROWSER_MCP_TOOLS,
       ...PIXICE_PREVIEW_MCP_TOOLS,
@@ -165,6 +188,7 @@ export function claudeQueryOptions({
   clientVersion,
   canUseTool,
   mcpServers,
+  skills,
   pathToClaudeCodeExecutable,
   environment = process.env
 }) {
@@ -195,6 +219,7 @@ export function claudeQueryOptions({
     appendSubagentSystemPrompt: developerInstructions || undefined,
     canUseTool,
     mcpServers,
+    ...(Array.isArray(skills) ? { skills } : {}),
     env: {
       ...childEnvironment,
       CLAUDE_AGENT_SDK_CLIENT_APP: `pixice/${clientVersion}`
@@ -445,6 +470,7 @@ export class ClaudeProvider extends EventEmitter {
     sessionDelete = deleteClaudeSession,
     pixiceBridge = null,
     pixiceBoard = null,
+    pixiceFocus = null,
     pixiceInstruments = null,
     pixiceBrowser = null,
     pixicePreview = null,
@@ -467,6 +493,7 @@ export class ClaudeProvider extends EventEmitter {
     this.sessionDelete = sessionDelete;
     this.pixiceBridge = pixiceBridge;
     this.pixiceBoard = pixiceBoard;
+    this.pixiceFocus = pixiceFocus;
     this.pixiceInstruments = pixiceInstruments;
     this.pixiceBrowser = pixiceBrowser;
     this.pixicePreview = pixicePreview;
@@ -680,7 +707,8 @@ export class ClaudeProvider extends EventEmitter {
     if (method === "thread/list") return this.#listThreads(params);
     if (method === "thread/start") return this.#startThread(params);
     if (method === "thread/fork") return this.#forkThread(params);
-    if (method === "thread/read" || method === "thread/resume") return { thread: this.#context(params.threadId).thread };
+    if (method === "thread/read") return { thread: this.#context(params.threadId).thread };
+    if (method === "thread/resume") return this.#resumeThread(params);
     if (method === "thread/archive") return this.#archiveThread(params.threadId);
     if (method === "thread/name/set") return this.#nameThread(params.threadId, params.name);
     if (method === "turn/start") return this.#startTurn(params);
@@ -863,6 +891,32 @@ export class ClaudeProvider extends EventEmitter {
     return { data, nextCursor: null };
   }
 
+  #resumeThread(params) {
+    const context = this.#context(params.threadId);
+    let changed = false;
+    if (typeof params.developerInstructions === "string") {
+      const usesGlobal = params.developerInstructions === this.#developerInstructions();
+      const instructions = usesGlobal ? null : params.developerInstructions;
+      if (instructions !== context.developerInstructions || usesGlobal !== context.usesGlobalDeveloperInstructions) {
+        context.developerInstructions = instructions;
+        context.usesGlobalDeveloperInstructions = usesGlobal;
+        changed = true;
+      }
+    }
+    if (Array.isArray(params.dynamicTools)) {
+      const profile = dynamicToolProfile(params.dynamicTools);
+      if (JSON.stringify(profile) !== JSON.stringify(context.dynamicToolProfile)) {
+        context.dynamicToolProfile = profile;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.#disposeQuery(context);
+      this.#persist(context);
+    }
+    return { thread: context.thread };
+  }
+
   #startThread(params) {
     const createdAt = now();
     const threadId = randomUUID();
@@ -892,6 +946,7 @@ export class ClaudeProvider extends EventEmitter {
       permissionMode: params.permissionMode || "workspace-write",
       internalNoTools: params.internalNoTools === true,
       runtimeWorkspaceRoots: params.runtimeWorkspaceRoots || [params.cwd],
+      dynamicToolProfile: dynamicToolProfile(params.dynamicTools),
       developerInstructions: usesGlobalDeveloperInstructions ? null : params.developerInstructions,
       usesGlobalDeveloperInstructions,
       refreshInstructionsAfterTurn: false,
@@ -982,6 +1037,7 @@ export class ClaudeProvider extends EventEmitter {
       permissionMode: source.permissionMode,
       internalNoTools: source.internalNoTools,
       runtimeWorkspaceRoots: [...source.runtimeWorkspaceRoots],
+      dynamicToolProfile: source.dynamicToolProfile === null ? null : structuredClone(source.dynamicToolProfile),
       developerInstructions: source.developerInstructions,
       usesGlobalDeveloperInstructions: source.usesGlobalDeveloperInstructions,
       refreshInstructionsAfterTurn: false,
@@ -1102,14 +1158,16 @@ export class ClaudeProvider extends EventEmitter {
       clientVersion: this.clientVersion,
       canUseTool: (toolName, input, details) => this.#canUseTool(context, toolName, input, details),
       mcpServers: {
-        pixice: this.#pixiceQuestionServer(context),
-        ...(this.pixiceBridge ? { pixice_bridge: this.#pixiceBridgeServer(context) } : {}),
-        ...(this.pixiceBoard ? { pixice_board: this.#pixiceBoardServer(context) } : {}),
-        ...(this.pixiceInstruments ? { pixice_instruments: this.#pixiceInstrumentsServer(context) } : {}),
-        ...(this.pixiceBrowser ? { [PIXICE_BROWSER_NAMESPACE]: this.#pixiceBrowserServer(context) } : {}),
-        ...(this.pixicePreview ? { [PIXICE_PREVIEW_NAMESPACE]: this.#pixicePreviewServer(context) } : {}),
-        ...(this.pixiceIos ? { [PIXICE_IOS_NAMESPACE]: this.#pixiceIosServer(context) } : {})
+        ...(profileAllowsNamespace(context.dynamicToolProfile, PIXICE_QUESTION_NAMESPACE) ? { pixice: this.#pixiceQuestionServer(context) } : {}),
+        ...(this.pixiceBridge && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_BRIDGE_NAMESPACE) ? { pixice_bridge: this.#pixiceBridgeServer(context) } : {}),
+        ...(this.pixiceBoard && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_BOARD_NAMESPACE) ? { pixice_board: this.#pixiceBoardServer(context) } : {}),
+        ...(this.pixiceFocus && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_FOCUS_NAMESPACE) ? { pixice_focus: this.#pixiceFocusServer(context) } : {}),
+        ...(this.pixiceInstruments && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_INSTRUMENTS_NAMESPACE) ? { pixice_instruments: this.#pixiceInstrumentsServer(context) } : {}),
+        ...(this.pixiceBrowser && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_BROWSER_NAMESPACE) ? { [PIXICE_BROWSER_NAMESPACE]: this.#pixiceBrowserServer(context) } : {}),
+        ...(this.pixicePreview && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_PREVIEW_NAMESPACE) ? { [PIXICE_PREVIEW_NAMESPACE]: this.#pixicePreviewServer(context) } : {}),
+        ...(this.pixiceIos && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_IOS_NAMESPACE) ? { [PIXICE_IOS_NAMESPACE]: this.#pixiceIosServer(context) } : {})
       },
+      skills: context.dynamicToolProfile !== null && !profileAllowsNamespace(context.dynamicToolProfile, PIXICE_INSTRUMENTS_NAMESPACE) ? [] : undefined,
       pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable,
       environment: this.environment
     });
@@ -1601,15 +1659,21 @@ export class ClaudeProvider extends EventEmitter {
 
   #canUseTool(context, toolName, input, details) {
     if (context.internalNoTools) return Promise.resolve({ behavior: "deny", message: "This internal helper cannot use tools" });
-    if (
+    const isPixiceTool = (
       toolName === PIXICE_QUESTION_MCP_TOOL
       || PIXICE_BRIDGE_MCP_TOOLS.has(toolName)
       || PIXICE_BOARD_MCP_TOOLS.has(toolName)
+      || PIXICE_FOCUS_MCP_TOOLS.has(toolName)
       || PIXICE_INSTRUMENTS_MCP_TOOLS.has(toolName)
       || PIXICE_BROWSER_MCP_TOOLS.has(toolName)
       || PIXICE_PREVIEW_MCP_TOOLS.has(toolName)
       || PIXICE_IOS_MCP_TOOLS.has(toolName)
-    ) {
+    );
+    if (isPixiceTool) {
+      const match = /^mcp__(.+)__(.+)$/.exec(toolName);
+      if (match && !profileAllowsTool(context.dynamicToolProfile, match[1], match[2])) {
+        return Promise.resolve({ behavior: "deny", message: "This Pixice tool is outside the thread's capability profile" });
+      }
       return Promise.resolve({ behavior: "allow", updatedInput: input });
     }
     if (context.permissionMode === "read-only" && READ_TOOLS.has(toolName)) {
@@ -1679,7 +1743,7 @@ export class ClaudeProvider extends EventEmitter {
       name: "pixice_bridge",
       version: this.clientVersion || "1.0.0",
       alwaysLoad: true,
-      tools: pixiceBridgeDynamicTools[0].tools.map((definition) => tool(
+      tools: allowedToolDefinitions(context, PIXICE_BRIDGE_NAMESPACE, pixiceBridgeDynamicTools[0].tools).map((definition) => tool(
         definition.name,
         definition.description,
         pixiceBridgeToolShapes[definition.name],
@@ -1703,10 +1767,34 @@ export class ClaudeProvider extends EventEmitter {
       name: "pixice_board",
       version: this.clientVersion || "1.0.0",
       alwaysLoad: true,
-      tools: pixiceBoardTools.map((definition) => tool(
+      tools: allowedToolDefinitions(context, PIXICE_BOARD_NAMESPACE, pixiceBoardTools).map((definition) => tool(
         definition.name,
         definition.description,
         pixiceBoardToolShapes[definition.name],
+        run(definition.name)
+      ))
+    });
+  }
+
+  #pixiceFocusServer(context) {
+    const run = (name) => async (input) => {
+      const result = await this.pixiceFocus.handleToolCall({
+        namespace: "pixice_focus",
+        tool: name,
+        threadId: context.thread.id,
+        turnId: context.currentTurn?.id,
+        arguments: input
+      });
+      return claudeMcpResult(result);
+    };
+    return createSdkMcpServer({
+      name: "pixice_focus",
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: allowedToolDefinitions(context, PIXICE_FOCUS_NAMESPACE, pixiceFocusTools).map((definition) => tool(
+        definition.name,
+        definition.description,
+        pixiceFocusToolShapes[definition.name],
         run(definition.name)
       ))
     });
@@ -1727,7 +1815,7 @@ export class ClaudeProvider extends EventEmitter {
       name: "pixice_instruments",
       version: this.clientVersion || "1.0.0",
       alwaysLoad: true,
-      tools: instrumentTools.map((definition) => tool(
+      tools: allowedToolDefinitions(context, PIXICE_INSTRUMENTS_NAMESPACE, instrumentTools).map((definition) => tool(
         definition.name,
         definition.description,
         instrumentToolShapes[definition.name],
@@ -1752,7 +1840,7 @@ export class ClaudeProvider extends EventEmitter {
       name: PIXICE_BROWSER_NAMESPACE,
       version: this.clientVersion || "1.0.0",
       alwaysLoad: true,
-      tools: browserDynamicTools[0].tools.map((definition) => tool(
+      tools: allowedToolDefinitions(context, PIXICE_BROWSER_NAMESPACE, browserDynamicTools[0].tools).map((definition) => tool(
         definition.name,
         definition.description,
         browserToolShapes[definition.name],
@@ -1777,7 +1865,7 @@ export class ClaudeProvider extends EventEmitter {
       name: PIXICE_PREVIEW_NAMESPACE,
       version: this.clientVersion || "1.0.0",
       alwaysLoad: true,
-      tools: previewContextDynamicTools[0].tools.map((definition) => tool(
+      tools: allowedToolDefinitions(context, PIXICE_PREVIEW_NAMESPACE, previewContextDynamicTools[0].tools).map((definition) => tool(
         definition.name,
         definition.description,
         previewContextToolShapes[definition.name],
@@ -1802,7 +1890,7 @@ export class ClaudeProvider extends EventEmitter {
       name: PIXICE_IOS_NAMESPACE,
       version: this.clientVersion || "1.0.0",
       alwaysLoad: true,
-      tools: iosDynamicTools[0].tools.map((definition) => tool(
+      tools: allowedToolDefinitions(context, PIXICE_IOS_NAMESPACE, iosDynamicTools[0].tools).map((definition) => tool(
         definition.name,
         definition.description,
         zodShapeFromDynamicTool(definition),
@@ -1855,6 +1943,9 @@ export class ClaudeProvider extends EventEmitter {
       permissionMode: providerContext.permissionMode ?? "workspace-write",
       internalNoTools: providerContext.internalNoTools === true,
       runtimeWorkspaceRoots: Array.isArray(providerContext.runtimeWorkspaceRoots) ? providerContext.runtimeWorkspaceRoots : [thread.cwd],
+      dynamicToolProfile: providerContext.dynamicToolProfile && typeof providerContext.dynamicToolProfile === "object"
+        ? providerContext.dynamicToolProfile
+        : null,
       developerInstructions: providerContext.developerInstructions ?? null,
       usesGlobalDeveloperInstructions: providerContext.usesGlobalDeveloperInstructions !== false,
       refreshInstructionsAfterTurn: false,
@@ -1922,6 +2013,7 @@ export class ClaudeProvider extends EventEmitter {
         permissionMode: context.permissionMode,
         internalNoTools: context.internalNoTools,
         runtimeWorkspaceRoots: context.runtimeWorkspaceRoots,
+        dynamicToolProfile: context.dynamicToolProfile,
         developerInstructions: context.developerInstructions,
         usesGlobalDeveloperInstructions: context.usesGlobalDeveloperInstructions
       }

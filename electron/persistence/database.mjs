@@ -131,6 +131,35 @@ function providerThreadIsActive(snapshot) {
   return snapshot?.status === "active" || snapshot?.status?.type === "active";
 }
 
+function focusHistoryItems(snapshot) {
+  const entries = [];
+  for (const [turnIndex, turn] of (snapshot?.turns ?? []).entries()) {
+    for (const [itemIndex, item] of (turn.items ?? []).entries()) {
+      let role = null;
+      let content = "";
+      if (item.type === "userMessage") {
+        role = "user";
+        content = (item.content ?? [])
+          .filter((part) => part?.type === "text" || part?.type === "inputText")
+          .map((part) => part.text ?? "")
+          .join("\n");
+      } else if (item.type === "agentMessage") {
+        role = "assistant";
+        content = item.text ?? "";
+      }
+      content = String(content).trim();
+      if (!role || !content) continue;
+      entries.push({
+        itemId: item.id ?? `${turn.id ?? turnIndex}:${itemIndex}`,
+        role,
+        content,
+        createdAt: item.createdAt ?? turn.completedAt ?? turn.startedAt ?? turn.createdAt ?? snapshot.updatedAt ?? null
+      });
+    }
+  }
+  return entries;
+}
+
 function mapProactiveSuggestion(row) {
   if (!row) return null;
   return {
@@ -169,6 +198,27 @@ export class PixiceDatabase {
         FOREIGN KEY(project_id) REFERENCES projects(id)
       );
       CREATE INDEX IF NOT EXISTS project_folders_project ON project_folders(project_id, position);
+      CREATE TABLE IF NOT EXISTS project_focus_sessions (
+        project_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE,
+        user_turn_count INTEGER NOT NULL DEFAULT 0,
+        last_memory_review_turn INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS project_focus_memory (
+        project_id TEXT PRIMARY KEY, project_memory TEXT NOT NULL DEFAULT '',
+        user_memory TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS project_focus_history (
+        project_id TEXT NOT NULL, thread_id TEXT NOT NULL, item_id TEXT NOT NULL,
+        role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT,
+        PRIMARY KEY(project_id, thread_id, item_id),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS project_focus_history_project
+        ON project_focus_history(project_id, created_at);
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_thread_id TEXT,
         execution_mode TEXT NOT NULL, working_path TEXT NOT NULL, base_commit TEXT,
@@ -332,6 +382,18 @@ export class PixiceDatabase {
       CREATE INDEX IF NOT EXISTS task_results_project ON task_results(project_id);
     `);
 
+      this.focusHistoryFts = true;
+      try {
+        this.db.exec(`
+          CREATE VIRTUAL TABLE IF NOT EXISTS project_focus_history_fts USING fts5(
+            project_id UNINDEXED, thread_id UNINDEXED, item_id UNINDEXED,
+            role UNINDEXED, content, created_at UNINDEXED, tokenize='unicode61'
+          )
+        `);
+      } catch {
+        this.focusHistoryFts = false;
+      }
+
       const projectColumns = new Set(this.db.prepare("PRAGMA table_info(projects)").all().map((column) => column.name));
       if (!projectColumns.has("icon")) this.db.exec("ALTER TABLE projects ADD COLUMN icon TEXT NOT NULL DEFAULT 'folder'");
       if (!projectColumns.has("color")) this.db.exec("ALTER TABLE projects ADD COLUMN color TEXT NOT NULL DEFAULT 'blue'");
@@ -493,6 +555,10 @@ export class PixiceDatabase {
       this.db.prepare("DELETE FROM thread_board_state WHERE project_id = ?").run(projectId);
       this.db.prepare("DELETE FROM task_view_state WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").run(projectId);
       this.db.prepare("DELETE FROM tasks WHERE project_id = ?").run(projectId);
+      if (this.focusHistoryFts) this.db.prepare("DELETE FROM project_focus_history_fts WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM project_focus_history WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM project_focus_memory WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM project_focus_sessions WHERE project_id = ?").run(projectId);
       this.db.prepare("DELETE FROM project_folders WHERE project_id = ?").run(projectId);
       this.db.prepare("DELETE FROM task_results WHERE project_id = ?").run(projectId);
       this.db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
@@ -548,6 +614,131 @@ export class PixiceDatabase {
 
   #mapProject(row) {
     return mapProject(row, row ? this.listProjectFolders(row.id) : []);
+  }
+
+  getProjectFocusSession(projectId) {
+    const row = this.db.prepare("SELECT * FROM project_focus_sessions WHERE project_id = ?").get(projectId);
+    return row ? {
+      projectId: row.project_id,
+      threadId: row.thread_id,
+      userTurnCount: row.user_turn_count,
+      lastMemoryReviewTurn: row.last_memory_review_turn,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    } : null;
+  }
+
+  getProjectFocusSessionByThread(threadId) {
+    const row = this.db.prepare("SELECT project_id FROM project_focus_sessions WHERE thread_id = ?").get(threadId);
+    return row ? this.getProjectFocusSession(row.project_id) : null;
+  }
+
+  saveProjectFocusSession({ projectId, threadId }) {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO project_focus_sessions (project_id, thread_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET thread_id=excluded.thread_id, updated_at=excluded.updated_at
+    `).run(projectId, threadId, now, now);
+    this.db.prepare(`
+      INSERT OR IGNORE INTO project_focus_memory (project_id, created_at, updated_at)
+      VALUES (?, ?, ?)
+    `).run(projectId, now, now);
+    const snapshot = this.getProviderThreadSnapshot(threadId);
+    if (snapshot) this.#indexFocusSnapshot(projectId, threadId, snapshot);
+    return this.getProjectFocusSession(projectId);
+  }
+
+  incrementProjectFocusTurn(projectId, threadId) {
+    const updatedAt = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE project_focus_sessions
+      SET user_turn_count = user_turn_count + 1, updated_at = ?
+      WHERE project_id = ? AND thread_id = ?
+    `).run(updatedAt, projectId, threadId);
+    return this.getProjectFocusSession(projectId);
+  }
+
+  markProjectFocusMemoryReviewed(projectId, turnCount) {
+    this.db.prepare(`
+      UPDATE project_focus_sessions
+      SET last_memory_review_turn = MAX(last_memory_review_turn, ?), updated_at = ?
+      WHERE project_id = ?
+    `).run(turnCount, new Date().toISOString(), projectId);
+    return this.getProjectFocusSession(projectId);
+  }
+
+  getProjectFocusMemory(projectId) {
+    const row = this.db.prepare("SELECT * FROM project_focus_memory WHERE project_id = ?").get(projectId);
+    if (!row) return {
+      projectId,
+      projectMemory: "",
+      userMemory: "",
+      revision: 0,
+      updatedAt: null
+    };
+    return {
+      projectId: row.project_id,
+      projectMemory: row.project_memory,
+      userMemory: row.user_memory,
+      revision: row.revision,
+      updatedAt: row.updated_at
+    };
+  }
+
+  replaceProjectFocusMemory(projectId, { projectMemory, userMemory }, expectedRevision = null) {
+    const current = this.getProjectFocusMemory(projectId);
+    if (expectedRevision !== null && current.revision !== expectedRevision) {
+      throw new Error("Focus memory changed. Read it again before editing.");
+    }
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO project_focus_memory (
+        project_id, project_memory, user_memory, revision, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET
+        project_memory=excluded.project_memory,
+        user_memory=excluded.user_memory,
+        revision=project_focus_memory.revision + 1,
+        updated_at=excluded.updated_at
+    `).run(projectId, projectMemory, userMemory, now, now);
+    return this.getProjectFocusMemory(projectId);
+  }
+
+  searchProjectFocusHistory(projectId, query, limit = 8) {
+    const boundedLimit = Math.min(20, Math.max(1, Math.floor(limit)));
+    const tokens = String(query ?? "").trim().split(/\s+/).filter(Boolean).slice(0, 12);
+    if (!tokens.length) return [];
+    if (this.focusHistoryFts) {
+      const expression = tokens.map((token) => `"${token.replaceAll('"', '""')}"`).join(" AND ");
+      return this.db.prepare(`
+        SELECT thread_id, item_id, role,
+          snippet(project_focus_history_fts, 4, '', '', ' … ', 24) AS content,
+          created_at
+        FROM project_focus_history_fts
+        WHERE project_id = ? AND project_focus_history_fts MATCH ?
+        ORDER BY rank LIMIT ?
+      `).all(projectId, expression, boundedLimit).map((row) => ({
+        threadId: row.thread_id,
+        itemId: row.item_id,
+        role: row.role,
+        content: row.content,
+        createdAt: row.created_at
+      }));
+    }
+    const pattern = `%${tokens.join("%")}%`;
+    return this.db.prepare(`
+      SELECT thread_id, item_id, role, content, created_at
+      FROM project_focus_history
+      WHERE project_id = ? AND content LIKE ?
+      ORDER BY created_at DESC LIMIT ?
+    `).all(projectId, pattern, boundedLimit).map((row) => ({
+      threadId: row.thread_id,
+      itemId: row.item_id,
+      role: row.role,
+      content: row.content,
+      createdAt: row.created_at
+    }));
   }
 
   saveViewState(taskId, state) {
@@ -1316,6 +1507,36 @@ export class PixiceDatabase {
         snapshot=excluded.snapshot, summary=excluded.summary, updated_at=excluded.updated_at
     `).run(threadId, JSON.stringify(snapshot), JSON.stringify(providerThreadSummary(snapshot)), updatedAt);
     this.db.prepare("DELETE FROM provider_thread_active_turns WHERE thread_id = ? AND updated_at <= ?").run(threadId, updatedAt);
+    const focus = this.getProjectFocusSessionByThread(threadId);
+    if (focus) this.#indexFocusSnapshot(focus.projectId, threadId, snapshot);
+  }
+
+  #indexFocusSnapshot(projectId, threadId, snapshot) {
+    const entries = focusHistoryItems(snapshot);
+    const insert = this.db.prepare(`
+      INSERT INTO project_focus_history (project_id, thread_id, item_id, role, content, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const insertFts = this.focusHistoryFts ? this.db.prepare(`
+      INSERT INTO project_focus_history_fts (project_id, thread_id, item_id, role, content, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `) : null;
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM project_focus_history WHERE project_id = ? AND thread_id = ?").run(projectId, threadId);
+      if (this.focusHistoryFts) {
+        this.db.prepare("DELETE FROM project_focus_history_fts WHERE project_id = ? AND thread_id = ?").run(projectId, threadId);
+      }
+      for (const entry of entries) {
+        const values = [projectId, threadId, entry.itemId, entry.role, entry.content, entry.createdAt];
+        insert.run(...values);
+        insertFts?.run(...values);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   saveProviderActiveTurn(threadId, turn) {

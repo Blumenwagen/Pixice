@@ -32,6 +32,7 @@ import {
 } from "./components/icons/index.jsx";
 import { APP_ICONS } from "./components/icons/app-iconography.jsx";
 import pixiceIcon from "./assets/pixice-icon.png";
+import focusBackgroundDark from "./assets/focus-background-dark.png";
 import { DictationButton } from "./components/DictationButton.jsx";
 import { useTranscription, formatModelBytes } from "./lib/use-transcription.js";
 import { listAudioInputs, dictationUnsupportedReason } from "./lib/dictation.js";
@@ -54,7 +55,7 @@ import { ImageGeneration } from "./components/ImageGeneration.jsx";
 import { InspectablePicture } from "./components/PictureInspector.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
 import { KanbanBoard } from "./components/KanbanBoard.jsx";
-import { ProjectCreationDialog, ProjectSwitcher } from "./components/sidebar/ProjectSwitcher.jsx";
+import { ProjectCreationDialog, ProjectGlyph, ProjectSwitcher, projectTileStyle } from "./components/sidebar/ProjectSwitcher.jsx";
 import { ThreadCleanupPopover } from "./components/sidebar/ThreadCleanupPopover.jsx";
 import { normalizeThreadCleanupAgeDays, THREAD_CLEANUP_MAX_DAYS, THREAD_CLEANUP_MIN_DAYS } from "./components/sidebar/thread-cleanup.js";
 import { resolveThreadNamingModel, threadNamingModels, THREAD_NAMING_AUTO, THREAD_NAMING_OFF } from "../electron/runtime/thread-naming-models.mjs";
@@ -907,6 +908,7 @@ export function Sidebar({
   protectedThreadIds,
   threadCleanupAgeDays,
   onNewTask,
+  onEnterFocus,
   onOpenProject,
   activeView,
   onView,
@@ -1073,6 +1075,7 @@ export function Sidebar({
               </IconButton>
             )}
           </div>
+          {onEnterFocus && <SidebarNavItem icon={Sparkle} label="Focus" onClick={onEnterFocus} disabled={!selectedProjectId} />}
           <SidebarNavItem icon={NewTaskIcon} label="New task" tone="new-task" shortcut={newTaskShortcut} active={Boolean(selectedProjectId) && activeView === "task" && !selectedThreadId} disabled={!selectedProjectId} onClick={onNewTask} />
           <SidebarNavItem icon={BoardIcon} label="Board" active={activeView === "board"} disabled={!selectedProjectId} onClick={() => onView("board")} />
           <SidebarNavItem icon={AttentionIcon} label="Attention" active={activeView === "attention"} badge={attentionCount} badgeVisible={expanded} badgeTone="attention" onClick={() => onView("attention")} />
@@ -2378,7 +2381,7 @@ function PickerGlyph({ option, kind }) {
   return <span className={`picker-glyph${option.danger ? " danger" : ""}`}><Glyph size={15} weight="regular" /></span>;
 }
 
-export function ComposerPicker({ label, hint, value, options, onChange, kind, align = "right", disabled = false, providers = [], onProviderLogin, onProvidersRefresh }) {
+export function ComposerPicker({ label, hint, value, options, onChange, kind, align = "right", disabled = false, providers = [], onProviderLogin, onProvidersRefresh, className = "", triggerLabel = null, triggerAriaLabel = null, footer = null }) {
   const [open, setOpen] = useState(false);
   const systemReducedMotion = useReducedMotion();
   const [activeProvider, setActiveProvider] = useState("codex");
@@ -2403,6 +2406,8 @@ export function ComposerPicker({ label, hint, value, options, onChange, kind, al
   const authenticationRequired = Boolean(activeProviderState?.requiresAuth && !providerIsAuthenticated(activeProviderState));
   const providerUnavailable = activeProviderState?.status?.state === "unavailable" || activeProviderState?.connected === false;
   const visibleSelectedIndex = Math.max(0, visibleOptions.findIndex((option) => option.value === value));
+  const triggerText = triggerLabel ?? selected?.label ?? "Choose model";
+  const accessibleTriggerLabel = triggerAriaLabel ?? `${label}: ${selected?.label ?? "Choose model"}`;
 
   useEffect(() => {
     if (pendingProvider && providerIsAuthenticated(providers.find((provider) => provider.id === pendingProvider))) {
@@ -2494,12 +2499,12 @@ export function ComposerPicker({ label, hint, value, options, onChange, kind, al
   };
 
   return (
-    <div className={`composer-picker ${kind}`} data-open={open} ref={rootRef}>
+    <div className={`composer-picker ${kind}${className ? ` ${className}` : ""}`} data-open={open} ref={rootRef}>
       <button
         type="button"
         className="picker-trigger"
-        aria-label={`${label}: ${selected?.label ?? "Choose model"}`}
-        title={`${label}: ${selected?.label ?? "Choose model"}`}
+        aria-label={accessibleTriggerLabel}
+        title={accessibleTriggerLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
@@ -2518,7 +2523,7 @@ export function ComposerPicker({ label, hint, value, options, onChange, kind, al
         }}
       >
         {selected && <PickerGlyph option={selected} kind={kind} />}
-        <span className="picker-trigger-label">{selected?.label ?? "Choose model"}</span>
+        <span className="picker-trigger-label">{triggerText}</span>
         <CaretDown className="picker-chevron" size={12} weight="bold" />
       </button>
       {open && (
@@ -2593,6 +2598,7 @@ export function ComposerPicker({ label, hint, value, options, onChange, kind, al
               </button>
             ))}
           </div>
+          {footer}
         </div>
       )}
     </div>
@@ -3002,7 +3008,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
+export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
@@ -3065,6 +3071,25 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     const value = option.reasoningEffort ?? option.effort ?? option;
     return { value, ...(EFFORT_META[value] ?? { label: String(value).replace(/^./, (letter) => letter.toUpperCase()), description: "Adjust how deeply Codex reasons.", icon: Brain }) };
   });
+  const selectedEffort = effortOptions.find((option) => option.value === effort) ?? effortOptions[0];
+  const fullModelLabel = selected?.displayName ?? selected?.model ?? "Choose model";
+  const compactModelLabel = (() => {
+    const compact = fullModelLabel
+      .replace(/^GPT(?:[- ]?\d+(?:\.\d+)?)(?:[- ]+)?/i, "")
+      .replace(/^Claude\s+/i, "")
+      .trim();
+    return compact || fullModelLabel;
+  })();
+  const runProfileLabel = selected ? `${compactModelLabel} · ${selectedEffort?.label ?? effort}` : "Choose model";
+  const runProfileAriaLabel = selected
+    ? `Run profile: ${fullModelLabel}, ${selectedEffort?.label ?? effort} reasoning${fastTier ? `, Fast ${fastMode ? "on" : "off"}` : ""}`
+    : "Run profile: Choose model";
+  const hasSteeringDraft = Boolean(text.trim() || attachments.length > 0);
+  const runActionState = running && !hasSteeringDraft ? "stop" : "send";
+  const runActionLabel = runActionState === "stop" ? "Stop task" : running ? "Steer task" : "Send message";
+  const runActionDisabled = runActionState === "stop"
+    ? disabled
+    : disabled || busy || submissionBusy || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || !hasSteeringDraft;
   useEffect(() => {
     const identityChanged = hydratedDraftIdentityRef.current !== storageKey;
     if (identityChanged) reselectAttemptsRef.current.clear();
@@ -3704,7 +3729,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
           <IconButton label="Attach files" className="composer-attach" onClick={() => fileInputRef.current?.click()} disabled={disabled || attachments.length >= MAX_COMPOSER_ATTACHMENTS}>
             <Plus size={18} />
           </IconButton>
-          <ComposerPicker
+          {showPermissionPicker && <ComposerPicker
             label="Permissions"
             hint="Applied to this task"
             value={permissionMode}
@@ -3713,43 +3738,56 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
             kind="permission"
             align="left"
             disabled={disabled || running}
-          />
+          />}
         </div>
         <div className="composer-actions">
-          {fastTier && (
-            <button
-              type="button"
-              className="composer-fast-toggle"
-              aria-label="Fast mode"
-              aria-pressed={fastMode}
-              title="Use faster inference with increased usage"
-              disabled={disabled || running}
-              onClick={() => onFastModeChange(!fastMode)}
-            >
-              <FastModeIcon size={14} weight={fastMode ? "fill" : "regular"} />
-              <span>Fast</span>
-            </button>
-          )}
           <ComposerPicker
             label="Model"
-            hint="Choose the right engine"
+            hint={null}
             value={selectedModel}
             options={modelOptions}
             onChange={onModelChange}
             kind="model"
+            className="run-profile"
+            triggerLabel={runProfileLabel}
+            triggerAriaLabel={runProfileAriaLabel}
             disabled={disabled || running}
             providers={providers}
             onProviderLogin={onProviderLogin}
             onProvidersRefresh={onProvidersRefresh}
-          />
-          <ComposerPicker
-            label="Reasoning"
-            hint="Control depth and speed"
-            value={effort}
-            options={effortOptions}
-            onChange={onEffortChange}
-            kind="reasoning"
-            disabled={disabled || running}
+            footer={(
+              <div className="run-profile-footer">
+                <div className="run-profile-setting">
+                  <span>Reasoning</span>
+                  <div className="run-profile-efforts" role="group" aria-label="Reasoning">
+                    {effortOptions.map((option) => (
+                      <button
+                        type="button"
+                        className={option.value === effort ? "selected" : ""}
+                        aria-pressed={option.value === effort}
+                        onClick={() => onEffortChange(option.value)}
+                        key={option.value}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {fastTier && (
+                  <button
+                    type="button"
+                    className="run-profile-fast"
+                    aria-label="Fast mode"
+                    aria-pressed={fastMode}
+                    title="Use faster inference with increased usage"
+                    onClick={() => onFastModeChange(!fastMode)}
+                  >
+                    <span><FastModeIcon size={14} weight={fastMode ? "fill" : "regular"} /> Fast</span>
+                    <i aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+            )}
           />
           <DictationButton
             api={dictationApi}
@@ -3761,10 +3799,18 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
             onPhaseChange={handleDictationPhase}
             onLevelChange={handleDictationLevel}
           />
-          {running && <IconButton label="Interrupt task" className="turn-button" onClick={onInterrupt}><Pause size={16} weight="fill" /></IconButton>}
-          <IconButton label={running ? "Steer task" : "Send message"} className="send" onClick={submit} disabled={disabled || busy || submissionBusy || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || (!text.trim() && attachments.length === 0)}>
-            <PaperPlaneTilt size={17} weight="fill" />
-          </IconButton>
+          <button
+            type="button"
+            className="icon-button send composer-run-action"
+            data-state={runActionState}
+            aria-label={runActionLabel}
+            title={runActionLabel}
+            onClick={runActionState === "stop" ? onInterrupt : submit}
+            disabled={runActionDisabled}
+          >
+            <span className="composer-run-icon composer-run-icon-send"><PaperPlaneTilt size={17} weight="fill" /></span>
+            <span className="composer-run-icon composer-run-icon-stop" aria-hidden="true"><i /></span>
+          </button>
         </div>
       </div>
     </div>
@@ -3787,6 +3833,7 @@ function SideThreadSurface({
   defaultEffort,
   defaultFastMode,
   defaultPermissionMode,
+  enforcedPermissionMode = null,
   providers,
   threads,
   attention,
@@ -3815,7 +3862,7 @@ function SideThreadSurface({
   const [selectedModel, setSelectedModel] = useState(defaultModel || models?.[0]?.model || "");
   const [effort, setEffort] = useState(defaultEffort || "high");
   const [fastMode, setFastMode] = useState(Boolean(defaultFastMode));
-  const [permissionMode, setPermissionMode] = useState(defaultPermissionMode || "workspace-write");
+  const [permissionMode, setPermissionMode] = useState(enforcedPermissionMode || defaultPermissionMode || "workspace-write");
   const scrollRef = useRef(null);
   const followLatestRef = useRef(true);
   const followedThreadRef = useRef(threadId);
@@ -3847,10 +3894,10 @@ function SideThreadSurface({
     setSelectedModel(model.model);
     setEffort(resolveReasoningEffort(saved?.effort, model, defaultEffort));
     setFastMode(Boolean(saved?.fastMode ?? defaultFastMode) && Boolean(fastServiceTier(model)));
-    setPermissionMode(PERMISSION_OPTIONS.some((option) => option.value === saved?.permissionMode)
+    setPermissionMode(enforcedPermissionMode || (PERMISSION_OPTIONS.some((option) => option.value === saved?.permissionMode)
       ? saved.permissionMode
-      : defaultPermissionMode);
-  }, [defaultEffort, defaultFastMode, defaultModel, defaultPermissionMode, models, storage, threadId]);
+      : defaultPermissionMode));
+  }, [defaultEffort, defaultFastMode, defaultModel, defaultPermissionMode, enforcedPermissionMode, models, storage, threadId]);
 
   const refresh = useCallback(async (targetThreadId = threadIdRef.current) => {
     if (!api?.threads?.read || !projectId || !targetThreadId) return;
@@ -4010,6 +4057,7 @@ function SideThreadSurface({
           projectId,
           model: selectedModel || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
+          ...(enforcedPermissionMode && tab.payload?.hostThreadId ? { parentThreadId: tab.payload.hostThreadId } : {}),
           permissionMode
         });
         assertSubmissionActive(signal);
@@ -4194,6 +4242,7 @@ function SideThreadSurface({
         spellCheckComposer={preferences.spellCheckComposer}
         autoFocusComposer={false}
         showSlashCommands={preferences.showSlashCommands}
+        showPermissionPicker={!enforcedPermissionMode}
         running={Boolean(activeTurn)}
         questionRequest={questionRequest}
         onQuestionResolve={onQuestionResolve}
@@ -4280,6 +4329,385 @@ function EmptyConversation({ project, runtime, onOpenProject }) {
       <h1>What are we working on?</h1>
       <p>{runtime.connected ? `Pixice is ready in ${project.displayName}. Start a task to see its conversation, plan, agents, and changes here.` : "The project is ready, but the local agent runtime is not connected yet."}</p>
     </div>
+  );
+}
+
+function FocusProjectPicker({ project, projects, onSelectProject }) {
+  const menuId = useId();
+  const rootRef = useRef(null);
+  const reduceMotion = useReducedMotion();
+  const [open, setOpen] = useState(false);
+  const projectLabel = project?.displayName || "Untitled project";
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const dismiss = (event) => {
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      if (event.type === "pointerdown" && rootRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    window.addEventListener("pointerdown", dismiss);
+    window.addEventListener("keydown", dismiss);
+    return () => {
+      window.removeEventListener("pointerdown", dismiss);
+      window.removeEventListener("keydown", dismiss);
+    };
+  }, [open]);
+
+  const selectProject = (projectId) => {
+    setOpen(false);
+    onSelectProject(projectId);
+  };
+
+  return (
+    <div className="focus-project-picker" ref={rootRef}>
+      <button
+        type="button"
+        className="focus-project-trigger"
+        aria-label={`Switch project, current project ${projectLabel}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="focus-project-trigger-tile" style={projectTileStyle(project)} aria-hidden="true">
+          <ProjectGlyph icon={project?.icon} size={13} />
+        </span>
+        <span className="focus-project-trigger-label">{projectLabel}</span>
+        <CaretDown className="focus-project-trigger-caret" size={11} />
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            className="focus-project-menu"
+            id={menuId}
+            role="menu"
+            aria-label="Choose project"
+            initial={reduceMotion ? false : { opacity: 0, y: -5, scale: .975 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: .98 }}
+            transition={{ duration: reduceMotion ? 0 : .15, ease: [0.2, 0.8, 0.2, 1] }}
+          >
+            <div className="focus-project-grid">
+              {projects.map((candidate) => {
+                const selected = candidate.id === project?.id;
+                const label = candidate.displayName || "Untitled project";
+                return (
+                  <button
+                    type="button"
+                    className={`focus-project-option${selected ? " active" : ""}`}
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    aria-label={label}
+                    title={label}
+                    key={candidate.id}
+                    onClick={() => selectProject(candidate.id)}
+                  >
+                    <span className="focus-project-tile" style={projectTileStyle(candidate)} aria-hidden="true">
+                      <ProjectGlyph icon={candidate.icon} size={20} />
+                    </span>
+                    <span className="focus-project-option-label">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function focusTaskProgressEntries(threads, focusThreadId) {
+  return (threads ?? [])
+    .filter((candidate) => candidate.id !== focusThreadId && isSidebarThread(candidate))
+    .map((candidate) => {
+      const status = threadStatus(candidate);
+      const progress = normalizePlanProgress(candidate.planProgress);
+      const running = ["running", "inProgress", "active"].includes(status);
+      const attention = status === "attention";
+      const incomplete = Boolean(progress && progress.completed < progress.total);
+      if (!running && !attention && !incomplete) return null;
+      return {
+        id: candidate.id,
+        title: threadTitle(candidate),
+        progress,
+        state: attention ? "attention" : running ? "running" : "paused",
+        updatedAt: candidate.updatedAt ?? 0
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      const priority = { attention: 0, running: 1, paused: 2 };
+      return priority[left.state] - priority[right.state] || Number(right.updatedAt) - Number(left.updatedAt);
+    });
+}
+
+function FocusTaskProgressRail({ tasks }) {
+  const reduceMotion = useReducedMotion();
+  if (!tasks.length) return null;
+  return (
+    <motion.aside
+      className="focus-task-rail"
+      aria-label="Task progress overview"
+      initial={reduceMotion ? false : { opacity: 0, x: 10, filter: "blur(4px)" }}
+      animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
+      transition={{ duration: reduceMotion ? 0 : .28, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <header className="focus-task-rail-header">
+        <span><TaskProgressIcon size={14} weight="fill" />Work in flight</span>
+        <strong>{tasks.length}</strong>
+      </header>
+      <div className="focus-task-list">
+        {tasks.map((task) => {
+          const complete = task.progress?.completed ?? 0;
+          const total = task.progress?.total ?? 0;
+          const percent = total ? (complete / total) * 100 : 0;
+          const stateLabel = task.state === "attention" ? "Needs input" : task.state === "running" ? "Working" : "Paused";
+          return (
+            <article className="focus-task-item" data-state={task.state} key={task.id}>
+              <div className="focus-task-copy">
+                <span className="focus-task-state" aria-hidden="true">
+                  {task.state === "attention" ? <Warning size={11} weight="fill" /> : task.state === "paused" ? <Pause size={10} weight="fill" /> : <i />}
+                </span>
+                <span>
+                  <strong>{task.title}</strong>
+                  <small>{stateLabel}{total ? ` · ${complete} of ${total}` : " · Plan forming"}</small>
+                </span>
+              </div>
+              <div
+                className={`focus-task-track${total ? "" : " indeterminate"}`}
+                role="progressbar"
+                aria-label={`${task.title} progress`}
+                aria-valuemin={total ? 0 : undefined}
+                aria-valuemax={total || undefined}
+                aria-valuenow={total ? complete : undefined}
+                aria-valuetext={total ? `${complete} of ${total} complete` : `${stateLabel}, plan forming`}
+              >
+                <span style={total ? { width: `${percent}%` } : undefined} />
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </motion.aside>
+  );
+}
+
+function FocusWorkspace({
+  api,
+  storage,
+  project,
+  projects,
+  thread,
+  threads,
+  loading,
+  runtime,
+  models,
+  defaultModel,
+  defaultEffort,
+  defaultFastMode,
+  providers,
+  attention,
+  preferences,
+  plan,
+  seenResponseIds,
+  showMessageTimestamps,
+  completedWorkDetails,
+  composerProps,
+  onExit,
+  onSelectProject,
+  previewOpen,
+  onPreviewToggle,
+  previewWorkspaceId,
+  previewApiWorkspaceId,
+  browserState,
+  onBrowserState,
+  onPreviewBrowserCreated,
+  previewFileTabs,
+  previewInstrumentTabs,
+  previewCustomTabs,
+  previewActiveTabId,
+  onPreviewActiveTabChange,
+  onPreviewBrowserClose,
+  onPreviewFileUpdate,
+  onPreviewFileClose,
+  onPreviewInstrumentClose,
+  onPreviewCustomTabOpen,
+  onPreviewCustomTabUpdate,
+  onPreviewCustomTabClose,
+  onPreviewNewTab,
+  onPreviewInstrumentRefresh,
+  onPreviewInstrumentEvent,
+  onPreviewInstrumentInvoke,
+  onPreviewInstrumentPin,
+  onOpenWorkspaceReference,
+  onQuestionResolve,
+  onProviderLogin,
+  onProvidersRefresh,
+  onThreadCreated,
+  onThreadActivity,
+  onThreadViewed,
+  onOpenMain,
+  onForkResponse,
+  onError,
+  onResolveAttention
+}) {
+  const scrollRef = useRef(null);
+  const followLatestRef = useRef(true);
+  const projection = useMemo(() => projectConversation(thread), [thread]);
+  const hasConversation = projection.itemCount > 0;
+  const progressTasks = useMemo(() => focusTaskProgressEntries(threads, thread?.id), [thread?.id, threads]);
+  const taskRailVisible = !previewOpen && progressTasks.length > 0;
+
+  useLayoutEffect(() => {
+    const node = scrollRef.current;
+    if (node && followLatestRef.current) node.scrollTop = node.scrollHeight;
+  }, [thread?.id, thread?.turns, composerProps.questionRequest?.id]);
+
+  const previewAvailable = Boolean(
+    browserState?.tabs?.length
+    || previewFileTabs?.length
+    || previewInstrumentTabs?.length
+    || previewCustomTabs?.length
+  );
+
+  return (
+    <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
+    <div className={`focus-layout${previewOpen ? " preview-open" : ""}`}>
+    <main
+      className="focus-workspace"
+      data-has-conversation={hasConversation}
+      data-task-rail={taskRailVisible}
+      style={{ "--focus-background-image": `url(${focusBackgroundDark})` }}
+    >
+      <div className="focus-atmosphere" aria-hidden="true" />
+      <header className="focus-chrome">
+        <button type="button" className="focus-workspace-button" onClick={onExit}>
+          <CaretLeft size={14} />
+          <span>Workspace</span>
+        </button>
+        <FocusProjectPicker project={project} projects={projects} onSelectProject={onSelectProject} />
+        {previewAvailable && (
+          <IconButton
+            className={`focus-preview-button${previewOpen ? " active" : ""}`}
+            label={previewOpen ? "Close preview workspace" : "Open preview workspace"}
+            onClick={onPreviewToggle}
+          >
+            <PreviewIcon size={16} />
+          </IconButton>
+        )}
+      </header>
+
+      <div
+        className="focus-conversation-scroll"
+        ref={scrollRef}
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          followLatestRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+        }}
+      >
+        {loading ? (
+          <div className="focus-loading"><SpinnerGap className="spin-icon" size={17} />Opening {project?.displayName ?? "project"}…</div>
+        ) : hasConversation ? (
+          <div className="focus-conversation-column">
+            {(thread.turns ?? []).map((turn, turnIndex) => (
+              <TurnConversation
+                thread={thread}
+                turn={turn}
+                turnIndex={turnIndex}
+                seenResponseIds={seenResponseIds}
+                showTimestamps={showMessageTimestamps}
+                completedWorkDetails={completedWorkDetails}
+                key={turn.renderId ?? turn.id}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="focus-intro" aria-live="polite">
+            <span className="focus-intro-mark"><Sparkle size={17} weight="fill" /></span>
+            <p>One conversation for the whole project</p>
+            <h1>Talk to {project?.displayName ?? "your project"}</h1>
+          </div>
+        )}
+      </div>
+
+      {taskRailVisible && <FocusTaskProgressRail tasks={progressTasks} />}
+
+      {project && (
+        <div className="focus-composer-wrap">
+          <Composer
+            {...composerProps}
+            disabled={composerProps.disabled || loading || !thread}
+            draftKey={`${project.id}:focus`}
+            ariaLabel="Project Focus prompt"
+            placeholder="Ask, decide, or start something"
+            runningPlaceholder="Add direction while Focus is working"
+          />
+        </div>
+      )}
+      {!runtime?.connected && <div className="focus-offline">The agent runtime is offline. Your Focus session is still saved.</div>}
+    </main>
+    <AnimatePresence initial={false}>
+      {previewOpen && (
+        <BrowserPanel
+          api={api}
+          workspaceId={previewWorkspaceId}
+          apiWorkspaceId={previewApiWorkspaceId}
+          state={browserState}
+          onState={onBrowserState}
+          onBrowserCreated={onPreviewBrowserCreated}
+          onClose={onPreviewToggle}
+          projectId={project?.id}
+          hostThreadId={thread?.id ?? null}
+          fileTabs={previewFileTabs}
+          instrumentTabs={previewInstrumentTabs}
+          customTabs={previewCustomTabs}
+          activeTabId={previewActiveTabId}
+          onActiveTabChange={onPreviewActiveTabChange}
+          onBrowserClose={onPreviewBrowserClose}
+          onFileUpdate={onPreviewFileUpdate}
+          onFileClose={onPreviewFileClose}
+          onInstrumentClose={onPreviewInstrumentClose}
+          onCustomTabOpen={onPreviewCustomTabOpen}
+          onCustomTabUpdate={onPreviewCustomTabUpdate}
+          onCustomTabClose={onPreviewCustomTabClose}
+          onNewTab={onPreviewNewTab}
+          onInstrumentRefresh={onPreviewInstrumentRefresh}
+          onInstrumentEvent={onPreviewInstrumentEvent}
+          onInstrumentInvoke={onPreviewInstrumentInvoke}
+          onInstrumentPin={onPreviewInstrumentPin}
+          onOpenResource={onOpenWorkspaceReference}
+          sideThreadProps={{
+            runtime,
+            storage,
+            models,
+            defaultModel,
+            defaultEffort,
+            defaultFastMode,
+            defaultPermissionMode: "full-access",
+            enforcedPermissionMode: "full-access",
+            providers,
+            threads,
+            attention,
+            preferences,
+            seenResponseIds,
+            onQuestionResolve,
+            onProviderLogin,
+            onProvidersRefresh,
+            onThreadCreated,
+            onThreadActivity,
+            onThreadViewed,
+            onOpenMain,
+            onForkResponse,
+            onError
+          }}
+          taskMapProps={{ thread, threads, plan, attention, onResolve: onResolveAttention }}
+        />
+      )}
+    </AnimatePresence>
+    </div>
+    </WorkspaceOpenContext.Provider>
   );
 }
 
@@ -6511,6 +6939,13 @@ export function App({ readOnly = false } = {}) {
   const [projectCreateBusy, setProjectCreateBusy] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const selectedProjectIdRef = useRef(null);
+  const [surfaceMode, setSurfaceMode] = useState(() => api?.focus && storage.getItem("pixice.surfaceMode") === "focus" ? "focus" : "workspace");
+  const surfaceModeRef = useRef(surfaceMode);
+  const [focusThreadId, setFocusThreadId] = useState(null);
+  const focusThreadIdRef = useRef(null);
+  const [focusLoading, setFocusLoading] = useState(false);
+  const focusEnsureRequestRef = useRef(0);
+  const workspaceThreadByProjectRef = useRef(new Map());
   const [threads, setThreads] = useState([]);
   const [selectedThreadId, setSelectedThreadId] = useState(null);
   const selectedThreadIdRef = useRef(null);
@@ -6680,6 +7115,7 @@ export function App({ readOnly = false } = {}) {
 
   const previewWorkspaceId = selectedThreadId ?? (selectedProjectId ? `draft:${selectedProjectId}` : null);
   const previewWorkspace = previewWorkspaces[previewWorkspaceId] ?? EMPTY_PREVIEW_WORKSPACE;
+  const previewApiWorkspaceId = previewWorkspace.presentedFromWorkspaceId ?? previewWorkspaceId;
   const previewOpen = previewWorkspace.open;
   const browserState = previewWorkspace.browserState;
   const previewFileTabs = previewWorkspace.fileTabs;
@@ -6708,6 +7144,25 @@ export function App({ readOnly = false } = {}) {
       const updated = typeof updater === "function" ? updater(workspace) : updater;
       previewWorkspaceSequenceRef.current += 1;
       return { ...current, [workspaceId]: { ...updated, lastUsed: previewWorkspaceSequenceRef.current } };
+    });
+  }, []);
+  const mirrorPreviewPresentations = useCallback((sourceWorkspaceId) => {
+    if (!sourceWorkspaceId) return;
+    setPreviewWorkspaces((current) => {
+      const source = current[sourceWorkspaceId];
+      if (!source) return current;
+      let changed = false;
+      const next = Object.fromEntries(Object.entries(current).map(([workspaceId, workspace]) => {
+        if (workspace.presentedFromWorkspaceId !== sourceWorkspaceId) return [workspaceId, workspace];
+        changed = true;
+        return [workspaceId, {
+          ...source,
+          presentedFromWorkspaceId: sourceWorkspaceId,
+          presentationTitle: workspace.presentationTitle ?? null,
+          lastUsed: workspace.lastUsed
+        }];
+      }));
+      return changed ? next : current;
     });
   }, []);
   const setPreviewOpen = useCallback((value) => {
@@ -6828,6 +7283,7 @@ export function App({ readOnly = false } = {}) {
   const projectActivityKey = projects.map((project) => project.id).sort().join("|");
   const activeTurn = useMemo(() => [...(thread?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status)), [thread]);
   const sidebarThreads = useMemo(() => threads
+    .filter((candidate) => candidate.id !== focusThreadId)
     .filter(isSidebarThread)
     .map((candidate) => {
       const selected = candidate.id === thread?.id;
@@ -6854,7 +7310,7 @@ export function App({ readOnly = false } = {}) {
       if (leftWasAgentSpawned !== rightWasAgentSpawned) return leftWasAgentSpawned ? 1 : -1;
       return left.originalIndex - right.originalIndex;
     })
-    .map(({ candidate }) => candidate), [activeTurn, thread?.id, threadMessageRecency, threads]);
+    .map(({ candidate }) => candidate), [activeTurn, focusThreadId, thread?.id, threadMessageRecency, threads]);
   const selectedThreadCompletionRevision = threadCompletionRevision(sidebarThreads.find((candidate) => candidate.id === selectedThreadId));
   const changedCount = review.projectId === selectedProjectId ? review.repository?.dirtyPaths?.length ?? 0 : 0;
 
@@ -6941,6 +7397,11 @@ export function App({ readOnly = false } = {}) {
   }, [selectedProjectId]);
 
   useEffect(() => {
+    surfaceModeRef.current = surfaceMode;
+    storage.setItem("pixice.surfaceMode", surfaceMode);
+  }, [storage, surfaceMode]);
+
+  useEffect(() => {
     preferencesRef.current = preferences;
     storage.setItem("pixice.preferences", JSON.stringify(preferences));
   }, [preferences, storage]);
@@ -6989,7 +7450,9 @@ export function App({ readOnly = false } = {}) {
       }));
       const sidebarCandidates = next.filter(isSidebarThread);
       setSelectedThreadId((current) => {
-        const selected = current && sidebarCandidates.some((candidate) => candidate.id === current)
+        const selected = surfaceModeRef.current === "focus" && focusThreadIdRef.current
+          ? focusThreadIdRef.current
+          : current && sidebarCandidates.some((candidate) => candidate.id === current)
           ? current
           : draftModeRef.current ? null : sidebarCandidates[0]?.id ?? null;
         selectedThreadIdRef.current = selected;
@@ -7033,6 +7496,50 @@ export function App({ readOnly = false } = {}) {
       }
     }
   }, [api, normalizePlan]);
+
+  const loadFocusSession = useCallback(async (projectId) => {
+    if (!api?.focus?.ensure || !projectId) return;
+    const requestId = ++focusEnsureRequestRef.current;
+    setFocusLoading(true);
+    try {
+      const model = models.find((candidate) => candidate.model === defaultModel);
+      const serviceTier = defaultFastMode ? fastServiceTier(model) : undefined;
+      const response = await api.focus.ensure({
+        projectId,
+        model: defaultModel || undefined,
+        ...(serviceTier !== undefined ? { serviceTier } : {}),
+        permissionMode: "full-access"
+      });
+      if (requestId !== focusEnsureRequestRef.current || selectedProjectIdRef.current !== projectId || surfaceModeRef.current !== "focus") return;
+      const focusThread = response.thread;
+      focusThreadIdRef.current = focusThread.id;
+      setFocusThreadId(focusThread.id);
+      markResponsesSeen(focusThread, seenResponseIdsRef.current);
+      selectedThreadIdRef.current = focusThread.id;
+      setSelectedThreadId(focusThread.id);
+      setThread(focusThread);
+      setPlan([]);
+      setDraftMode(false);
+      if (!loadThreadConfiguration(focusThread.id, storage)) {
+        saveThreadConfiguration(focusThread.id, {
+          model: defaultModel,
+          effort: defaultEffort,
+          fastMode: Boolean(serviceTier),
+          permissionMode: "full-access"
+        }, storage);
+      }
+      setError(null);
+    } catch (cause) {
+      if (requestId === focusEnsureRequestRef.current && selectedProjectIdRef.current === projectId) {
+        setError(cause.message);
+        focusThreadIdRef.current = null;
+        setFocusThreadId(null);
+        setThread(null);
+      }
+    } finally {
+      if (requestId === focusEnsureRequestRef.current) setFocusLoading(false);
+    }
+  }, [api, defaultEffort, defaultFastMode, defaultModel, models, storage]);
 
   const refreshThread = useCallback(async (projectId, threadId) => {
     if (!api || !projectId || !threadId) return;
@@ -7601,6 +8108,8 @@ export function App({ readOnly = false } = {}) {
   useEffect(() => {
     if (!selectedProjectId) {
       setThreads([]);
+      focusThreadIdRef.current = null;
+      setFocusThreadId(null);
       setBoardTasks([]);
       setBoardPhases([]);
       setProactiveSuggestions([]);
@@ -7617,6 +8126,15 @@ export function App({ readOnly = false } = {}) {
     loadBoard(selectedProjectId);
     loadProjectTools(selectedProjectId);
   }, [selectedProjectId, loadBoard, loadProjectTools, loadReview, loadThreads, runtime.connected, storage]);
+
+  useEffect(() => {
+    if (surfaceMode !== "focus" || !selectedProjectId || !api?.focus?.ensure) {
+      focusEnsureRequestRef.current += 1;
+      setFocusLoading(false);
+      return;
+    }
+    void loadFocusSession(selectedProjectId);
+  }, [api, loadFocusSession, selectedProjectId, serviceRevision, surfaceMode]);
 
   useEffect(() => {
     setSelectedProjectToolId(null);
@@ -7699,7 +8217,7 @@ export function App({ readOnly = false } = {}) {
   }, [activeView, loadExtensions, loadGitHubStatus, loadGitStatus, loadProjectTools, loadProviders, loadReview, loadUsage, loadUsageLimits, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey, usageLimitsRefreshKey, serviceRevision]);
 
   const refreshEventInstrumentSources = useCallback((capabilities, eventProjectId) => {
-    if (!api?.instruments || !selectedProjectId || !selectedThreadId || eventProjectId && eventProjectId !== selectedProjectId) return;
+    if (!api?.instruments || !selectedProjectId || !previewApiWorkspaceId || eventProjectId && eventProjectId !== selectedProjectId) return;
     const requested = new Set(capabilities);
     const refreshes = previewInstrumentTabs.flatMap((instrument) => Object.entries(instrument.document.sources ?? {})
       .filter(([, source]) => source.refresh === "event" && requested.has(source.capability))
@@ -7708,14 +8226,14 @@ export function App({ readOnly = false } = {}) {
     void (async () => {
       for (const refresh of refreshes) {
         try {
-          const instrument = await api.instruments.refresh({ projectId: selectedProjectId, threadId: selectedThreadId, ...refresh });
+          const instrument = await api.instruments.refresh({ projectId: selectedProjectId, threadId: previewApiWorkspaceId, ...refresh });
           setPreviewInstrumentTabs((current) => current.map((candidate) => candidate.id === instrument.id ? { ...instrument, launchValues: candidate.launchValues } : candidate));
         } catch {
           // The Instrument keeps its last good snapshot and exposes the source error.
         }
       }
     })();
-  }, [api, previewInstrumentTabs, selectedProjectId, selectedThreadId, setPreviewInstrumentTabs]);
+  }, [api, previewApiWorkspaceId, previewInstrumentTabs, selectedProjectId, setPreviewInstrumentTabs]);
 
   useEffect(() => {
     if (!api) return;
@@ -7790,6 +8308,30 @@ export function App({ readOnly = false } = {}) {
         publishOperation(transcriptionDownloadOperation(event.payload, api));
         return;
       }
+      if (event.type === "PreviewWorkspacePresentRequested") {
+        const workspaceId = event.payload?.workspaceId ?? event.payload?.threadId;
+        const sourceWorkspaceId = event.payload?.sourceWorkspaceId ?? event.payload?.sourceThreadId;
+        if (!workspaceId || !sourceWorkspaceId || event.payload?.projectId !== selectedProjectIdRef.current) return;
+        setPreviewWorkspaces((current) => {
+          const source = current[sourceWorkspaceId] ?? EMPTY_PREVIEW_WORKSPACE;
+          previewWorkspaceSequenceRef.current += 1;
+          return {
+            ...current,
+            [workspaceId]: {
+              ...source,
+              open: true,
+              presentedFromWorkspaceId: sourceWorkspaceId,
+              presentationTitle: event.payload?.title ?? null,
+              lastUsed: previewWorkspaceSequenceRef.current
+            }
+          };
+        });
+        if (workspaceId === selectedThreadIdRef.current) {
+          setInspectorOpen(false);
+          setActiveView("task");
+        }
+        return;
+      }
       if (event.type === "GitHubAuthProgress") {
         setGithubProgress(event.payload);
         if (event.payload.state === "complete") loadGitHubStatus();
@@ -7800,8 +8342,9 @@ export function App({ readOnly = false } = {}) {
         setAttention((current) => mergeAttentionRequests(current, [event.payload]));
         const questionForCurrentThread = isQuestionRequest(event.payload) && event.payload.params?.threadId === selectedThreadIdRef.current;
         const attentionForCurrentThread = event.payload.params?.threadId === selectedThreadIdRef.current;
-        if (attentionForCurrentThread && !questionForCurrentThread) setInspectorOpen(true);
-        if (preferencesRef.current.bringApprovalsForward && isApprovalRequest(event.payload) && !questionForCurrentThread) setActiveView("attention");
+        const focusOpen = surfaceModeRef.current === "focus";
+        if (!focusOpen && attentionForCurrentThread && !questionForCurrentThread) setInspectorOpen(true);
+        if (!focusOpen && preferencesRef.current.bringApprovalsForward && isApprovalRequest(event.payload) && !questionForCurrentThread) setActiveView("attention");
         return;
       }
       if (event.type === "AttentionResolved") {
@@ -7836,14 +8379,24 @@ export function App({ readOnly = false } = {}) {
             ...workspace,
             browserState: event.payload,
             activeTabId,
-            open: availableIds.size ? workspace.open : false
+            open: availableIds.size ? workspace.open : false,
+            presentedFromWorkspaceId: null,
+            presentationTitle: null
           };
         });
+        mirrorPreviewPresentations(workspaceId);
         return;
       }
       if (event.type === "BrowserOpenRequested") {
         const workspaceId = event.payload.workspaceId ?? event.payload.threadId;
-        updatePreviewWorkspace(workspaceId, (workspace) => ({ ...workspace, open: true, activeTabId: null }));
+        updatePreviewWorkspace(workspaceId, (workspace) => ({
+          ...workspace,
+          open: true,
+          activeTabId: null,
+          presentedFromWorkspaceId: null,
+          presentationTitle: null
+        }));
+        mirrorPreviewPresentations(workspaceId);
         if (workspaceId === selectedThreadIdRef.current && document.querySelector(".pixice-app.view-task")) {
           setInspectorOpen(false);
         }
@@ -7858,10 +8411,13 @@ export function App({ readOnly = false } = {}) {
           ...workspace,
           open: true,
           activeTabId: tab.id,
+          presentedFromWorkspaceId: null,
+          presentationTitle: null,
           fileTabs: (workspace.fileTabs ?? []).some((candidate) => candidate.id === tab.id)
             ? (workspace.fileTabs ?? []).map((candidate) => candidate.id === tab.id ? tab : candidate)
             : [...(workspace.fileTabs ?? []), tab]
         }));
+        mirrorPreviewPresentations(workspaceId);
         if (workspaceId === selectedThreadIdRef.current && document.querySelector(".pixice-app.view-task")) setInspectorOpen(false);
         return;
       }
@@ -7896,6 +8452,7 @@ export function App({ readOnly = false } = {}) {
               : [...current, instrument]
           };
         });
+        mirrorPreviewPresentations(workspaceId);
         return;
       }
       if (event.type === "InstrumentOpenRequested") {
@@ -7914,6 +8471,7 @@ export function App({ readOnly = false } = {}) {
               : [...current, instrument]
           };
         });
+        mirrorPreviewPresentations(workspaceId);
         if (workspaceId === selectedThreadIdRef.current && document.querySelector(".pixice-app.view-task")) setInspectorOpen(false);
         return;
       }
@@ -7938,6 +8496,7 @@ export function App({ readOnly = false } = {}) {
               : [...current, tab]
           };
         });
+        mirrorPreviewPresentations(workspaceId);
         if (workspaceId === selectedThreadIdRef.current && document.querySelector(".pixice-app.view-task")) setInspectorOpen(false);
         return;
       }
@@ -7956,6 +8515,7 @@ export function App({ readOnly = false } = {}) {
             }
             : candidate)
         }));
+        mirrorPreviewPresentations(workspaceId);
         return;
       }
       if (event.type === "BoardUpdated") {
@@ -7996,6 +8556,10 @@ export function App({ readOnly = false } = {}) {
         return;
       }
       if (event.type === "TrayNavigate") {
+        surfaceModeRef.current = "workspace";
+        setSurfaceMode("workspace");
+        focusEnsureRequestRef.current += 1;
+        setFocusLoading(false);
         if (event.payload?.settingsPage) setSettingsPage(event.payload.settingsPage);
         if (event.payload?.projectId) {
           storage.setItem("pixice.activeProjectId", event.payload.projectId);
@@ -8129,7 +8693,7 @@ export function App({ readOnly = false } = {}) {
         }
       }
     });
-  }, [api, commitRuntimePayload, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadProactivity, loadReview, loadThreads, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, updatePreviewWorkspace]);
+  }, [api, commitRuntimePayload, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadProactivity, loadReview, loadThreads, mirrorPreviewPresentations, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, updatePreviewWorkspace]);
 
   const openProject = () => {
     if (!api?.projects) return;
@@ -8173,11 +8737,70 @@ export function App({ readOnly = false } = {}) {
   const selectProject = (projectId) => {
     connect?.closeExecution?.();
     setSelectedLinkedThread(null);
+    setExecutionTarget({ hostId: connect?.active ?? "local", projectId });
+    setExecutionTargetConfig(null);
+    surfaceModeRef.current = "workspace";
+    setSurfaceMode("workspace");
     setDraftMode(false);
     selectedProjectIdRef.current = projectId;
     selectedThreadIdRef.current = null;
     setSelectedThreadId(null);
     setSelectedProjectId(projectId);
+    setActiveView("task");
+  };
+
+  const enterFocus = () => {
+    if (!api?.focus?.ensure || !selectedProjectId) return;
+    connect?.closeExecution?.();
+    setSelectedLinkedThread(null);
+    setExecutionTarget({ hostId: connect?.active ?? "local", projectId: selectedProjectId });
+    setExecutionTargetConfig(null);
+    if (selectedThreadIdRef.current && selectedThreadIdRef.current !== focusThreadIdRef.current) {
+      workspaceThreadByProjectRef.current.set(selectedProjectId, selectedThreadIdRef.current);
+    }
+    surfaceModeRef.current = "focus";
+    setSurfaceMode("focus");
+    focusThreadIdRef.current = null;
+    setFocusThreadId(null);
+    setFocusLoading(true);
+    selectedThreadIdRef.current = null;
+    setSelectedThreadId(null);
+    setThread(null);
+    setPlan([]);
+    setInspectorOpen(false);
+    setPreviewOpen(false);
+    setActiveView("task");
+  };
+
+  const exitFocus = () => {
+    focusEnsureRequestRef.current += 1;
+    surfaceModeRef.current = "workspace";
+    setSurfaceMode("workspace");
+    setFocusLoading(false);
+    const preferredId = workspaceThreadByProjectRef.current.get(selectedProjectId);
+    const candidates = threads.filter((candidate) => candidate.id !== focusThreadIdRef.current && isSidebarThread(candidate));
+    const nextId = candidates.some((candidate) => candidate.id === preferredId) ? preferredId : candidates[0]?.id ?? null;
+    selectedThreadIdRef.current = nextId;
+    setSelectedThreadId(nextId);
+    setThread(null);
+    setPlan([]);
+    setDraftMode(!nextId);
+    setActiveView("task");
+  };
+
+  const selectFocusProject = (projectId) => {
+    if (!projectId || projectId === selectedProjectIdRef.current) return;
+    focusEnsureRequestRef.current += 1;
+    focusThreadIdRef.current = null;
+    setFocusThreadId(null);
+    setFocusLoading(true);
+    selectedProjectIdRef.current = projectId;
+    selectedThreadIdRef.current = null;
+    setSelectedProjectId(projectId);
+    setSelectedThreadId(null);
+    setThread(null);
+    setPlan([]);
+    setDraftMode(false);
     setActiveView("task");
   };
 
@@ -8263,6 +8886,8 @@ export function App({ readOnly = false } = {}) {
     if (!selectedProjectId) return;
     connect?.closeExecution?.();
     setSelectedLinkedThread(null);
+    surfaceModeRef.current = "workspace";
+    setSurfaceMode("workspace");
     const model = models.find((candidate) => candidate.model === defaultModel);
     setDraftMode(true);
     setSelectedModel(defaultModel);
@@ -8711,9 +9336,9 @@ export function App({ readOnly = false } = {}) {
   }, [setPreviewFileTabs]);
 
   const closePreviewBrowser = useCallback(async (tabId) => {
-    if (!api?.browser || !previewWorkspaceId) return;
+    if (!api?.browser || !previewWorkspaceId || !previewApiWorkspaceId) return;
     try {
-      const nextBrowserState = await api.browser.close({ workspaceId: previewWorkspaceId, tabId });
+      const nextBrowserState = await api.browser.close({ workspaceId: previewApiWorkspaceId, tabId });
       updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
         const fileTabs = workspace.fileTabs ?? [];
         const instrumentTabs = workspace.instrumentTabs ?? [];
@@ -8742,7 +9367,7 @@ export function App({ readOnly = false } = {}) {
     } catch (cause) {
       setError(cause.message);
     }
-  }, [api, previewWorkspaceId, updatePreviewWorkspace]);
+  }, [api, previewApiWorkspaceId, previewWorkspaceId, updatePreviewWorkspace]);
 
   const closePreviewFile = useCallback((tabId) => {
     const target = previewFileTabs.find((tab) => tab.id === tabId);
@@ -8811,7 +9436,7 @@ export function App({ readOnly = false } = {}) {
       storage.removeItem(`pixice.draft.${draftKey}`);
     }
     if (target?.kind === "simulator") {
-      void api?.ios?.stop?.({ workspaceId: previewWorkspaceId }).catch(() => {});
+      void api?.ios?.stop?.({ workspaceId: previewApiWorkspaceId }).catch(() => {});
     }
     updatePreviewWorkspace(previewWorkspaceId, (workspace) => {
       let customTabs = (workspace.customTabs ?? []).filter((tab) => tab.id !== tabId);
@@ -8836,21 +9461,21 @@ export function App({ readOnly = false } = {}) {
         open: workspace.open
       };
     });
-  }, [api, preferences.preserveDrafts, previewCustomTabs, previewWorkspaceId, updatePreviewWorkspace]);
+  }, [api, preferences.preserveDrafts, previewApiWorkspaceId, previewCustomTabs, previewWorkspaceId, updatePreviewWorkspace]);
 
   const refreshPreviewInstrument = useCallback(async (instrumentId, source) => {
-    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Instrument data refresh is unavailable");
-    const instrument = await api.instruments.refresh({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, source });
+    if (!api?.instruments || !selectedProjectId || !previewApiWorkspaceId) throw new Error("Instrument data refresh is unavailable");
+    const instrument = await api.instruments.refresh({ projectId: selectedProjectId, threadId: previewApiWorkspaceId, instrumentId, source });
     setPreviewInstrumentTabs((current) => current.map((candidate) => candidate.id === instrument.id ? { ...instrument, launchValues: candidate.launchValues } : candidate));
     return instrument;
-  }, [api, selectedProjectId, selectedThreadId, setPreviewInstrumentTabs]);
+  }, [api, previewApiWorkspaceId, selectedProjectId, setPreviewInstrumentTabs]);
 
   const sendPreviewInstrumentEvent = useCallback(async (instrumentId, actionId, payload) => {
-    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Instrument agent events are unavailable");
+    if (!api?.instruments || !selectedProjectId || !previewApiWorkspaceId) throw new Error("Instrument agent events are unavailable");
     const model = models.find((candidate) => candidate.model === selectedModel);
     return api.instruments.event({
       projectId: selectedProjectId,
-      threadId: selectedThreadId,
+      threadId: previewApiWorkspaceId,
       instrumentId,
       actionId,
       payload,
@@ -8859,19 +9484,19 @@ export function App({ readOnly = false } = {}) {
       effort: effort || undefined,
       permissionMode
     });
-  }, [api, effort, fastMode, models, permissionMode, selectedModel, selectedProjectId, selectedThreadId]);
+  }, [api, effort, fastMode, models, permissionMode, previewApiWorkspaceId, selectedModel, selectedProjectId]);
 
   const invokePreviewInstrumentCapability = useCallback(async (instrumentId, actionId, argumentsValue) => {
-    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Trusted Instrument actions are unavailable");
-    return api.instruments.invoke({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, actionId, arguments: argumentsValue, requestId: window.crypto.randomUUID() });
-  }, [api, selectedProjectId, selectedThreadId]);
+    if (!api?.instruments || !selectedProjectId || !previewApiWorkspaceId) throw new Error("Trusted Instrument actions are unavailable");
+    return api.instruments.invoke({ projectId: selectedProjectId, threadId: previewApiWorkspaceId, instrumentId, actionId, arguments: argumentsValue, requestId: window.crypto.randomUUID() });
+  }, [api, previewApiWorkspaceId, selectedProjectId]);
 
   const pinPreviewInstrument = useCallback(async (instrumentId, pinned) => {
-    if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Instrument pinning is unavailable");
-    const instrument = await api.instruments.pin({ projectId: selectedProjectId, threadId: selectedThreadId, instrumentId, pinned });
+    if (!api?.instruments || !selectedProjectId || !previewApiWorkspaceId) throw new Error("Instrument pinning is unavailable");
+    const instrument = await api.instruments.pin({ projectId: selectedProjectId, threadId: previewApiWorkspaceId, instrumentId, pinned });
     setPreviewInstrumentTabs((current) => current.map((candidate) => candidate.id === instrument.id ? { ...instrument, launchValues: candidate.launchValues } : candidate));
     return instrument;
-  }, [api, selectedProjectId, selectedThreadId, setPreviewInstrumentTabs]);
+  }, [api, previewApiWorkspaceId, selectedProjectId, setPreviewInstrumentTabs]);
 
   const launchProjectTool = useCallback(async (instrumentId, values) => {
     if (!api?.instruments || !selectedProjectId || !selectedThreadId) throw new Error("Select or create a task before launching a project tool");
@@ -8945,6 +9570,11 @@ export function App({ readOnly = false } = {}) {
     setInspectorOpen(false);
     setActiveView("task");
     setPreviewOpen(true);
+    updatePreviewWorkspace(previewWorkspaceId, (workspace) => ({
+      ...workspace,
+      presentedFromWorkspaceId: null,
+      presentationTitle: null
+    }));
     try {
       if (/^https?:\/\//i.test(target)) {
         const next = await api.browser.create({ workspaceId: previewWorkspaceId, url: target });
@@ -8959,7 +9589,7 @@ export function App({ readOnly = false } = {}) {
     } catch (cause) {
       setError(cause.message);
     }
-  }, [api, previewWorkspaceId, selectedProjectId, setBrowserState, setPreviewActiveTabId, setPreviewFileTabs, setPreviewOpen]);
+  }, [api, previewWorkspaceId, selectedProjectId, setBrowserState, setPreviewActiveTabId, setPreviewFileTabs, setPreviewOpen, updatePreviewWorkspace]);
 
   const runUpdateAction = useCallback(async (action) => {
     if (!api?.updates) return;
@@ -9348,6 +9978,7 @@ export function App({ readOnly = false } = {}) {
   };
   const comparisonSource = taskReceipts.find((receipt) => receipt.threadId === comparisonThreadId);
   const comparisonReceipts = comparisonSource ? taskReceipts.filter((receipt) => receipt.groupId === comparisonSource.groupId).sort((left, right) => left.startedAt.localeCompare(right.startedAt)) : [];
+  const focusActive = surfaceMode === "focus" && Boolean(selectedProject) && !readOnly && Boolean(api?.focus?.ensure);
   const interventionCount = attention.filter(isApprovalRequest).length;
 
   const questionRequest = attention.find((request) => isQuestionRequest(request) && request.params?.threadId === selectedThreadId) ?? null;
@@ -9368,7 +9999,9 @@ export function App({ readOnly = false } = {}) {
   const targetModelName = targetModel?.model ?? (targetIsOrigin ? selectedModel : executionTargetConfig?.model ?? "");
   const targetEffort = resolveReasoningEffort(targetIsOrigin ? effort : executionTargetConfig?.effort, targetModel, targetModel?.defaultReasoningEffort);
   const targetFastMode = targetIsOrigin ? fastMode : Boolean(executionTargetConfig?.fastMode && fastServiceTier(targetModel));
-  const targetPermissionMode = targetIsOrigin ? permissionMode : executionTargetConfig?.permissionMode ?? defaultPermissionMode;
+  const targetPermissionMode = focusActive
+    ? "full-access"
+    : targetIsOrigin ? permissionMode : executionTargetConfig?.permissionMode ?? defaultPermissionMode;
   const targetProvider = targetModel?.provider
     ? (targetCatalog.providers ?? []).find((provider) => provider.id === targetModel.provider)
     : null;
@@ -9407,6 +10040,7 @@ export function App({ readOnly = false } = {}) {
     spellCheckComposer: preferences.spellCheckComposer,
     autoFocusComposer: preferences.autoFocusComposer,
     showSlashCommands: preferences.showSlashCommands,
+    showPermissionPicker: !focusActive,
     running: Boolean(activeTurn),
     questionRequest,
     onQuestionResolve: resolveQuestion,
@@ -9453,7 +10087,7 @@ export function App({ readOnly = false } = {}) {
   }, [connect?.clientStates, connect?.instances, connect?.localState, linkedThreads]);
 
   const executionActive = Boolean(connect?.execution);
-  const originPreviewOpen = previewOpen && !executionActive;
+  const originPreviewOpen = !focusActive && previewOpen && !executionActive;
   let content;
   if (activeView === "board") {
     content = (
@@ -9596,6 +10230,7 @@ export function App({ readOnly = false } = {}) {
             previewVisible={!executionActive}
             onPreviewToggle={togglePreview}
             previewWorkspaceId={previewWorkspaceId}
+            previewApiWorkspaceId={previewApiWorkspaceId}
             browserState={browserState}
             onBrowserState={setBrowserState}
             onPreviewBrowserCreated={replacePreviewChooserWithBrowser}
@@ -9678,10 +10313,11 @@ export function App({ readOnly = false } = {}) {
   return (
     <div className="pixice-stage">
       <div
-        className={`pixice-app view-${activeView}`}
+        className={`pixice-app ${focusActive ? "view-focus" : `view-${activeView}`}`}
+        data-surface-mode={focusActive ? "focus" : "workspace"}
         data-sidebar-expanded={sidebarExpanded}
         data-mobile-navigation={mobileNavigationOpen}
-        data-inspector-open={activeView === "task" && inspectorOpen && Boolean(thread) && !originPreviewOpen && !executionActive}
+        data-inspector-open={!focusActive && activeView === "task" && inspectorOpen && Boolean(thread) && !originPreviewOpen && !executionActive}
         data-density={preferences.density}
         data-conversation-width={preferences.conversationWidth}
         data-conversation-text-size={preferences.conversationTextSize}
@@ -9694,6 +10330,67 @@ export function App({ readOnly = false } = {}) {
         style={{ "--sidebar-width": `${sidebarWidth}px` }}
       >
         <div className="window-drag-region" aria-hidden="true" />
+        {focusActive ? (
+          <FocusWorkspace
+            api={api}
+            storage={storage}
+            project={selectedProject}
+            projects={projects}
+            thread={thread?.id === focusThreadId ? thread : null}
+            threads={threads}
+            loading={focusLoading || loading.app || (Boolean(focusThreadId) && loading.thread)}
+            runtime={runtime}
+            models={models}
+            defaultModel={defaultModel}
+            defaultEffort={defaultEffort}
+            defaultFastMode={defaultFastMode}
+            providers={providers}
+            attention={[]}
+            preferences={preferences}
+            plan={plan}
+            seenResponseIds={seenResponseIdsRef.current}
+            showMessageTimestamps={preferences.showMessageTimestamps}
+            completedWorkDetails={preferences.completedWorkDetails}
+            composerProps={{ ...composerProps, globalFileDrop: true }}
+            onExit={exitFocus}
+            onSelectProject={selectFocusProject}
+            previewOpen={previewOpen}
+            onPreviewToggle={togglePreview}
+            previewWorkspaceId={previewWorkspaceId}
+            previewApiWorkspaceId={previewApiWorkspaceId}
+            browserState={browserState}
+            onBrowserState={setBrowserState}
+            onPreviewBrowserCreated={replacePreviewChooserWithBrowser}
+            previewFileTabs={previewFileTabs}
+            previewInstrumentTabs={previewInstrumentTabs}
+            previewCustomTabs={previewCustomTabs}
+            previewActiveTabId={previewActiveTabId}
+            onPreviewActiveTabChange={setPreviewActiveTabId}
+            onPreviewBrowserClose={closePreviewBrowser}
+            onPreviewFileUpdate={updatePreviewFile}
+            onPreviewFileClose={closePreviewFile}
+            onPreviewInstrumentClose={closePreviewInstrument}
+            onPreviewCustomTabOpen={openPreviewCustomTab}
+            onPreviewCustomTabUpdate={updatePreviewCustomTab}
+            onPreviewCustomTabClose={closePreviewCustomTab}
+            onPreviewNewTab={openNewPreviewTab}
+            onPreviewInstrumentRefresh={refreshPreviewInstrument}
+            onPreviewInstrumentEvent={sendPreviewInstrumentEvent}
+            onPreviewInstrumentInvoke={invokePreviewInstrumentCapability}
+            onPreviewInstrumentPin={pinPreviewInstrument}
+            onOpenWorkspaceReference={openWorkspaceReference}
+            onQuestionResolve={resolveQuestion}
+            onProviderLogin={loginProvider}
+            onProvidersRefresh={refreshProviders}
+            onThreadCreated={registerSideThread}
+            onThreadActivity={markThreadMessaged}
+            onThreadViewed={markThreadCompletionSeen}
+            onOpenMain={selectThread}
+            onForkResponse={forkConversation}
+            onError={setError}
+            onResolveAttention={resolveAttention}
+          />
+        ) : <>
         {api?.remote && <>
           <button className="connect-mobile-menu" aria-label={mobileNavigationOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileNavigationOpen} onClick={() => { setMobileNavigationOpen((value) => !value); setSidebarExpanded(true); }}><Stack size={18} /></button>
           {mobileNavigationOpen && <button className="connect-mobile-scrim" aria-label="Close navigation drawer" onClick={() => setMobileNavigationOpen(false)} />}
@@ -9724,6 +10421,7 @@ export function App({ readOnly = false } = {}) {
             protectedThreadIds={boardTasks.map((task) => task.threadId).filter(Boolean)}
             threadCleanupAgeDays={preferences.threadCleanupAgeDays}
             onNewTask={newTask}
+            onEnterFocus={!readOnly && api?.focus?.ensure ? enterFocus : null}
             onOpenProject={openProject}
             activeView={activeView}
             onView={changeView}
@@ -9748,8 +10446,9 @@ export function App({ readOnly = false } = {}) {
         {content}
         <div className="workflow-workspace-slot" data-workflow-workspace-slot />
         {activeView === "task" && !originPreviewOpen && !executionActive && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
+        </>}
       </div>
-      <OperationCapsuleStack operations={operationItems} taskOffset={activeView === "task"} />
+      <OperationCapsuleStack operations={operationItems} taskOffset={!focusActive && activeView === "task"} />
       <ProjectCreationDialog
         open={projectDialogOpen}
         busy={projectCreateBusy}

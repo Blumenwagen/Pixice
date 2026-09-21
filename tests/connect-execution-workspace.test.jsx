@@ -91,12 +91,13 @@ describe('ExecutionThreadWorkspace', () => {
     fireEvent.change(prompt, { target: { value: 'Start' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(api.turns.start).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Steer task' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop task' })).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Steer the active turn' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Steer task' })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Steer task' }));
     await waitFor(() => expect(api.turns.steer).toHaveBeenCalledWith(expect.objectContaining({ turnId: 'turn-b', text: 'Steer the active turn' })));
     expect(api.turns.steer).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Interrupt task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop task' }));
     await waitFor(() => expect(api.turns.interrupt).toHaveBeenCalledWith({ projectId: project.id, threadId: 'thread-b', turnId: 'turn-b' }));
     act(() => emit(normalizeCodexEvent({ method: 'turn/completed', params: { threadId: 'thread-b', turn: { id: 'turn-b', status: 'completed', items: [] } } })));
   });

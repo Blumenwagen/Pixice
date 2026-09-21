@@ -6,7 +6,8 @@ export const PREVIEW_CONTEXT_END = "</pixice-preview-context>";
 
 export const previewContextToolShapes = {
   current: z.object({}).strict(),
-  open_file: z.object({ path: z.string().trim().min(1).max(10_000) }).strict()
+  open_file: z.object({ path: z.string().trim().min(1).max(10_000) }).strict(),
+  present_thread: z.object({ threadId: z.string().trim().min(1).max(500) }).strict()
 };
 
 function functionTool(name, description, properties = {}, required = []) {
@@ -26,11 +27,18 @@ export const previewContextDynamicTools = [{
     functionTool("current", "Return metadata for the selected Preview tab without reading its page or file contents. Use the resource-specific tool named in the result when deeper inspection is relevant."),
     functionTool("open_file", "Open a local file in this thread's Preview. Use this when the user explicitly asks to open or show a file. Absolute paths outside the project are allowed.", {
       path: { type: "string", description: "Project-relative path, absolute local path, or file URL requested by the user." }
-    }, ["path"])
+    }, ["path"]),
+    functionTool("present_thread", "Present another thread's Preview workspace in this conversation without navigating away from the current thread. Use this to show the user UI prototypes or artifacts produced by a delegated worker.", {
+      threadId: { type: "string", description: "Worker or project thread whose Preview workspace should be shown." }
+    }, ["threadId"])
   ]
 }];
 
-export const PIXICE_PREVIEW_MCP_TOOLS = new Set(["mcp__pixice_preview__current", "mcp__pixice_preview__open_file"]);
+export const PIXICE_PREVIEW_MCP_TOOLS = new Set([
+  "mcp__pixice_preview__current",
+  "mcp__pixice_preview__open_file",
+  "mcp__pixice_preview__present_thread"
+]);
 
 function textResult(value, success = true) {
   return {
@@ -110,9 +118,11 @@ export function stripPreviewContextHint(text) {
 export class PreviewContextRegistry {
   #contexts = new Map();
   #openFile;
+  #presentThread;
 
-  constructor({ openFile = null } = {}) {
+  constructor({ openFile = null, presentThread = null } = {}) {
     this.#openFile = openFile;
+    this.#presentThread = presentThread;
   }
 
   set(threadId, context) {
@@ -158,6 +168,16 @@ export class PreviewContextRegistry {
         turnId: params.turnId,
         source: params.source,
         path: value.path
+      }));
+    }
+    if (params.tool === "present_thread") {
+      if (!this.#presentThread) return textResult("Presenting another thread's Preview is unavailable.", false);
+      const value = previewContextToolShapes.present_thread.parse(params.arguments ?? {});
+      return textResult(await this.#presentThread({
+        threadId: params.threadId,
+        turnId: params.turnId,
+        source: params.source,
+        sourceThreadId: value.threadId
       }));
     }
     return textResult(`Unknown Pixice Preview tool: ${params.tool}`, false);

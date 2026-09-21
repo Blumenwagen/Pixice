@@ -103,6 +103,54 @@ describe("thread runtime persistence", () => {
     database.db.close();
   });
 
+  it("keeps one persistent Focus session with bounded memory and searchable history", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const now = "2026-09-19T10:00:00.000Z";
+    database.createProject({
+      id: "project-focus",
+      canonicalPath: "/workspace/focus",
+      displayName: "Focus",
+      folders: ["/workspace/focus"],
+      createdAt: now,
+      updatedAt: now
+    });
+    database.saveThreadProviderBinding({ threadId: "focus-thread", provider: "codex", cwd: "/workspace/focus" });
+    database.saveProjectFocusSession({ projectId: "project-focus", threadId: "focus-thread" });
+    database.incrementProjectFocusTurn("project-focus", "focus-thread");
+    database.replaceProjectFocusMemory("project-focus", {
+      projectMemory: "The interface should remain calm.",
+      userMemory: "Prefers quiet coordination."
+    }, 1);
+    database.saveProviderThreadSnapshot("focus-thread", {
+      id: "focus-thread",
+      cwd: "/workspace/focus",
+      updatedAt: now,
+      status: { type: "idle" },
+      turns: [{
+        id: "turn-focus",
+        status: "completed",
+        items: [
+          { id: "focus-user", type: "userMessage", content: [{ type: "text", text: "Keep the Focus UI calm and silent." }] },
+          { id: "focus-agent", type: "agentMessage", phase: "final_answer", text: "I will preserve that direction." }
+        ]
+      }]
+    });
+
+    expect(database.getProjectFocusSession("project-focus")).toMatchObject({ threadId: "focus-thread", userTurnCount: 1 });
+    expect(database.getProjectFocusSessionByThread("focus-thread")).toMatchObject({ projectId: "project-focus" });
+    expect(database.getProjectFocusMemory("project-focus")).toMatchObject({
+      projectMemory: "The interface should remain calm.",
+      userMemory: "Prefers quiet coordination.",
+      revision: 2
+    });
+    expect(database.searchProjectFocusHistory("project-focus", "calm", 5)).toEqual([
+      expect.objectContaining({ itemId: "focus-user", role: "user" })
+    ]);
+    database.db.close();
+  });
+
   it("deletes a project and its Pixice metadata without affecting other projects", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);

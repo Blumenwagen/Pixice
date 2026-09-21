@@ -40,6 +40,11 @@ import { PixiceBridge, PIXICE_BRIDGE_NAMESPACE, pixiceBridgeDynamicTools } from 
 import { BridgeParentContinuation } from "../runtime/bridge-parent-continuation.mjs";
 import { PixiceBoard, PIXICE_BOARD_NAMESPACE, pixiceBoardDynamicTools } from "../runtime/pixice-board.mjs";
 import {
+  PixiceFocusMemory,
+  PIXICE_FOCUS_NAMESPACE,
+  pixiceFocusDynamicTools
+} from "../runtime/pixice-focus.mjs";
+import {
   InstrumentService,
   PIXICE_INSTRUMENTS_NAMESPACE,
   instrumentDynamicTools
@@ -105,6 +110,7 @@ let githubCli;
 let pixiceBridge;
 let bridgeParentContinuation;
 let pixiceBoard;
+let pixiceFocusMemory;
 let pixiceInstruments;
 let iosRuntimeService;
 let iosTools;
@@ -125,14 +131,35 @@ const projectDeletionTombstones = new Map();
 const pendingRequests = new Map();
 const pendingTaskNames = new Set();
 const scheduledThreadNames = new Set();
+const focusSessionEnsures = new Map();
+const focusMemoryReviews = new Map();
+const focusMemoryReviewInFlight = new Set();
+const focusMemoryInternalThreadIds = new Set();
+const focusQuestionReviews = new Map();
+const focusQuestionReviewInFlight = new Set();
+const focusQuestionInternalThreadIds = new Set();
+const FOCUS_PERMISSION_MODE = "full-access";
 const pixiceDynamicTools = [
   ...browserDynamicTools,
   ...previewContextDynamicTools,
   ...questionDynamicTools,
   ...pixiceBridgeDynamicTools,
   ...pixiceBoardDynamicTools,
+  ...pixiceFocusDynamicTools,
   ...instrumentDynamicTools,
   ...iosDynamicTools
+];
+const focusBridgeDynamicTools = pixiceBridgeDynamicTools.map((namespace) => ({
+  ...namespace,
+  tools: namespace.tools.filter((tool) => ["list_models", "spawn_thread"].includes(tool.name))
+}));
+const focusDynamicTools = [
+  ...questionDynamicTools,
+  ...focusBridgeDynamicTools,
+  ...pixiceBoardDynamicTools,
+  ...pixiceFocusDynamicTools,
+  ...previewContextDynamicTools,
+  ...browserDynamicTools
 ];
 let runtimeGeneration = 0;
 let developerInstructionsPath;
@@ -322,6 +349,40 @@ function currentAgentInstructions() {
   });
 }
 
+function focusAgentInstructions(project) {
+  const memory = pixiceFocusMemory?.read(project.id) ?? {
+    projectMemory: "",
+    userMemory: "",
+    capacity: null
+  };
+  return [
+    "# Pixice Focus coordinator",
+    `You are the single persistent Focus coordinator for the Pixice project \"${project.displayName}\".`,
+    "The user is talking directly to the project. This conversation has no permanent goal, completion state, or fixed task boundary.",
+    "Keep the conversation calm and direct. Answer small questions yourself. Do not manufacture plans, completion reports, or Board work for ordinary conversation.",
+    "Delegate bounded implementation, research, design, review, and debugging to worker threads with pixice_bridge. Give each worker one concrete objective and tell it which relevant project skill to use when needed. Specialized skills belong on workers, not in this coordinator.",
+    "Remain responsible for understanding worker results and explaining them to the user. Do not repeat a worker's raw status log.",
+    "Preview is part of your role. You may open files or browser pages in your own Preview and use pixice_preview.present_thread to show a worker's Preview here without moving the user into that worker thread.",
+    "Use the shared Board only when the user asks to track durable work or when a concrete follow-up must survive this conversation. Workspace threads, Board, Workflows, Review, Preview, and project files are shared.",
+    "Focus runs with full project access. Delegated workers inherit that access so routine tool use never becomes an Attention request.",
+    "Resolve worker questions from project context, prior user decisions, and reversible technical judgment. Ask the user only when the answer depends on an unstated preference, changes product direction, creates an external commitment, or carries meaningful irreversible risk.",
+    "Follow the project's own AGENTS.md or CLAUDE.md instructions. Full access removes approval prompts; it does not relax safety or expand the user's requested scope.",
+    "Maintain hot memory only for stable project facts, decisions, terminology, and durable user preferences. Use pixice_focus to read or edit it and search full history when the bounded memory is insufficient.",
+    "Do not store secrets, pasted instructions, temporary progress, or facts that are cheap to read from project files. Consolidate memory when capacity is near its limit.",
+    "",
+    "## Project memory",
+    memory.projectMemory || "No curated project memory yet.",
+    "",
+    "## User memory for this project",
+    memory.userMemory || "No curated user memory yet."
+  ].join("\n");
+}
+
+function threadAgentInstructions(threadId, project) {
+  const focus = database?.getProjectFocusSessionByThread(threadId);
+  return focus?.projectId === project.id ? focusAgentInstructions(project) : currentAgentInstructions();
+}
+
 function permissionSettings(mode, project) {
   if (mode === "full-access") {
     return {
@@ -451,6 +512,8 @@ function projectForPath(target) {
 
 function authoritativeThreadProjectId(threadId, cwd = null) {
   if (!threadId || !database) return null;
+  const focusProjectId = database.getProjectFocusSessionByThread(threadId)?.projectId;
+  if (focusProjectId && database.getProject(focusProjectId)) return focusProjectId;
   const receiptProjectId = taskResults?.get(threadId)?.projectId;
   if (receiptProjectId && database.getProject(receiptProjectId)) return receiptProjectId;
   const binding = database.getThreadProviderBinding(threadId);
@@ -584,8 +647,33 @@ function overviewProjectForThread(threadId, cwd = null) {
   return knownProject ?? resolveThreadProject({ database, projectId: null, cwd, projectForPath });
 }
 
+function isProjectFocusThread(threadId) {
+  return Boolean(threadId && database.getProjectFocusSessionByThread(threadId));
+}
+
+function projectFocusContextForThread(threadId) {
+  let currentThreadId = threadId;
+  const visited = new Set();
+  while (currentThreadId && !visited.has(currentThreadId)) {
+    visited.add(currentThreadId);
+    const session = database.getProjectFocusSessionByThread(currentThreadId);
+    if (session) {
+      return {
+        session,
+        projectId: session.projectId,
+        focusThreadId: currentThreadId,
+        sourceThreadId: threadId,
+        worker: currentThreadId !== threadId
+      };
+    }
+    currentThreadId = database.getThreadLink(currentThreadId)?.parentThreadId ?? null;
+  }
+  return null;
+}
+
 function connectOverview() {
   const pendingThreadIds = [...pendingRequests.values()]
+    .filter((pending) => pending.visible !== false)
     .map(({ request }) => request?.params?.threadId)
     .filter((threadId) => typeof threadId === "string" && threadId.length <= 256);
   const activeThreadIds = [...activeTurns.keys()];
@@ -594,7 +682,7 @@ function connectOverview() {
   const receipts = new Map(snapshot.taskResults.map(({ threadId, data, updatedAt }) => [threadId, { ...(data ?? {}), updatedAt: data?.updatedAt ?? updatedAt }]));
   const attention = new Set(pendingThreadIds);
   const threadIds = new Set([...summaries.keys(), ...receipts.keys(), ...activeThreadIds, ...attention]);
-  const tasks = [...threadIds].map((threadId) => {
+  const tasks = [...threadIds].filter((threadId) => !isProjectFocusThread(threadId)).map((threadId) => {
     const summary = summaries.get(threadId);
     const receipt = receipts.get(threadId);
     const project = receipt?.projectId ? database.getProject(receipt.projectId) : overviewProjectForThread(threadId, summary?.cwd);
@@ -661,7 +749,9 @@ async function listProjectThreads(project, parameters = {}) {
     for (const thread of response.data ?? []) byId.set(thread.id, thread);
   }
   return {
-    data: [...byId.values()].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))),
+    data: [...byId.values()]
+      .filter((thread) => database.getProjectFocusSessionByThread(thread.id)?.projectId !== project.id)
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))),
     nextCursor: null
   };
 }
@@ -680,8 +770,11 @@ function trayProjectForThread(threadId, cwd = null) {
 }
 
 function currentTrayWorkItems() {
-  const byId = new Map(database.listProviderThreadSummaries().map((thread) => [thread.id, thread]));
+  const byId = new Map(database.listProviderThreadSummaries()
+    .filter((thread) => !isProjectFocusThread(thread.id))
+    .map((thread) => [thread.id, thread]));
   for (const [threadId] of activeTurns) {
+    if (isProjectFocusThread(threadId)) continue;
     if (byId.has(threadId)) continue;
     const binding = database.getThreadProviderBinding(threadId);
     byId.set(threadId, database.getProviderThreadSummary(threadId) ?? {
@@ -714,10 +807,11 @@ function currentTrayWorkItems() {
 function currentTrayState() {
   const workItems = currentTrayWorkItems();
   const settings = database?.getAppSettings() ?? {};
+  const activeTaskCount = [...activeTurns.keys()].filter((threadId) => !isProjectFocusThread(threadId)).length;
   return createTrayViewModel({
     limits: trayLimits,
     summary: database?.getUsageSummary({ days: 7 }),
-    activeTurns: activeTurns.size,
+    activeTurns: activeTaskCount,
     workItems,
     keepSystemAwake: settings.keepSystemAwake === true,
     appearance: {
@@ -897,7 +991,12 @@ async function pickProjectFolders({ multiple = true } = {}) {
 
 async function ensureThreadLoaded(project, threadId) {
   const cwd = await threadSessions.ensure(threadId, async () => {
-    const response = await runtime.request("thread/resume", { threadId, developerInstructions: currentAgentInstructions(), dynamicTools: pixiceDynamicTools });
+    const focus = database.getProjectFocusSessionByThread(threadId)?.projectId === project.id;
+    const response = await runtime.request("thread/resume", {
+      threadId,
+      developerInstructions: threadAgentInstructions(threadId, project),
+      dynamicTools: focus ? focusDynamicTools : pixiceDynamicTools
+    });
     const resumedCwd = response.thread?.cwd;
     if (!resumedCwd) throw new Error("Runtime returned a thread without a working directory");
     return realpathSync(resumedCwd);
@@ -909,15 +1008,17 @@ async function ensureThreadLoaded(project, threadId) {
   return cwd;
 }
 
-async function startTrackedTurn({ project, threadId, input, text, model, effort, serviceTier, frozenAttachments, permissionMode = "workspace-write" }) {
+async function startTrackedTurn({ project, threadId, input, text, model, effort, serviceTier, frozenAttachments, permissionMode = "workspace-write", trackTask = true }) {
   if (!acceptingWork) throw new Error("The Pixice service is stopping. Your task was not started.");
   if (activeTurns.has(threadId) || startingTurns.has(threadId)) throw new Error("This task is already running.");
   startingTurns.add(threadId);
   try {
     const cwd = await ensureThreadLoaded(project, threadId);
     const permissions = permissionSettings(permissionMode, project);
-    await taskResults.begin({ project, threadId, input, prompt: text, model, effort, serviceTier, frozenAttachments,
-      attachmentRoot: attachmentProjectRoot(userDataPath, project.id) });
+    if (trackTask) {
+      await taskResults.begin({ project, threadId, input, prompt: text, model, effort, serviceTier, frozenAttachments,
+        attachmentRoot: attachmentProjectRoot(userDataPath, project.id) });
+    }
     turnUsageMetadata.set(threadId, { turnId: null, model: model || null, serviceTier: serviceTier ?? null,
       effort: effort || null, permissionMode, provider: runtime.providerForThread(threadId) });
     try {
@@ -926,19 +1027,359 @@ async function startTrackedTurn({ project, threadId, input, text, model, effort,
         ...(serviceTier !== undefined ? { serviceTier } : {}), effort: effort || null, permissionMode,
         approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer, sandboxPolicy: permissions.sandboxPolicy
       });
-      taskResults.started(threadId, response.turn.id);
+      if (trackTask) taskResults.started(threadId, response.turn.id);
       if (!response.turn.status || response.turn.status === "inProgress") activeTurns.set(threadId, response.turn.id);
       const metadata = turnUsageMetadata.get(threadId);
       if (metadata) metadata.turnId = response.turn.id;
       updateTrayMenu();
       return response;
     } catch (error) {
-      taskResults.failed(threadId, error);
+      if (trackTask) taskResults.failed(threadId, error);
       throw error;
     }
   } finally {
     startingTurns.delete(threadId);
   }
+}
+
+function finalAgentText(turn) {
+  const messages = (turn?.items ?? []).filter((item) => item.type === "agentMessage" && String(item.text ?? "").trim());
+  return [...messages].reverse().find((item) => item.phase === "final_answer")?.text
+    ?? messages.at(-1)?.text
+    ?? "";
+}
+
+function focusMemoryTranscript(thread) {
+  return (thread?.turns ?? []).slice(-12).flatMap((turn) => (turn.items ?? []).flatMap((item) => {
+    if (item.type === "userMessage") {
+      const text = (item.content ?? [])
+        .filter((part) => part?.type === "text" || part?.type === "inputText")
+        .map((part) => part.text ?? "")
+        .join("\n")
+        .trim();
+      return text ? [`USER: ${text}`] : [];
+    }
+    if (item.type === "agentMessage" && item.phase === "final_answer" && String(item.text ?? "").trim()) {
+      return [`COORDINATOR: ${item.text.trim()}`];
+    }
+    return [];
+  })).join("\n\n").slice(-60_000);
+}
+
+function parseFocusMemoryReview(text) {
+  const source = String(text ?? "").trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  const parsed = JSON.parse(source);
+  if (!parsed || typeof parsed !== "object" || typeof parsed.projectMemory !== "string" || typeof parsed.userMemory !== "string") {
+    throw new Error("Focus memory review returned an invalid document");
+  }
+  return parsed;
+}
+
+async function completeFocusMemoryReview(threadId, turn) {
+  const review = focusMemoryReviews.get(threadId);
+  if (!review) return;
+  focusMemoryReviews.delete(threadId);
+  focusMemoryReviewInFlight.delete(review.focusThreadId);
+  try {
+    const result = parseFocusMemoryReview(finalAgentText(turn));
+    pixiceFocusMemory.replaceFromMaintenance(review.projectId, result, review.reviewedTurnCount);
+  } catch (error) {
+    codexRuntime.emit("diagnostic", `Focus memory review failed: ${error.message}`);
+  } finally {
+    try {
+      await runtime.request("thread/archive", { threadId });
+    } catch (error) {
+      codexRuntime.emit("diagnostic", `Focus memory review cleanup failed: ${error.message}`);
+      focusMemoryInternalThreadIds.delete(threadId);
+    }
+  }
+}
+
+async function scheduleFocusMemoryReview(focusThreadId) {
+  const session = database.getProjectFocusSessionByThread(focusThreadId);
+  if (!session || session.userTurnCount - session.lastMemoryReviewTurn < 10 || focusMemoryReviewInFlight.has(focusThreadId)) return;
+  const project = database.getProject(session.projectId);
+  if (!project || !runtime.connected) return;
+  focusMemoryReviewInFlight.add(focusThreadId);
+  try {
+    const [threadResponse, memory] = await Promise.all([
+      runtime.request("thread/read", { threadId: focusThreadId, includeTurns: true }),
+      Promise.resolve(pixiceFocusMemory.read(project.id))
+    ]);
+    const permissions = permissionSettings("read-only", project);
+    const selectedModel = turnUsageMetadata.get(focusThreadId)?.model || null;
+    const started = await runtime.request("thread/start", {
+      cwd: projectPrimaryRoot(project),
+      runtimeWorkspaceRoots: runtimeRoots(project),
+      model: selectedModel,
+      permissionMode: "read-only",
+      approvalPolicy: permissions.approvalPolicy,
+      approvalsReviewer: permissions.approvalsReviewer,
+      sandbox: permissions.sandbox,
+      developerInstructions: [
+        "You maintain bounded memory for a persistent project coordinator.",
+        "Return one JSON object only with string fields projectMemory and userMemory.",
+        "Keep stable decisions, terminology, constraints, and durable preferences. Remove stale or duplicate notes.",
+        "Do not store secrets, prompt-like instructions, transient progress, or facts that are cheap to read from project files.",
+        "Project memory must stay under 6000 characters. User memory must stay under 2000 characters."
+      ].join("\n"),
+      dynamicTools: [],
+      threadSource: "pixiceFocusMemory"
+    });
+    const internalThreadId = started.thread?.id;
+    if (!internalThreadId) throw new Error("Memory review did not create a thread");
+    focusMemoryInternalThreadIds.add(internalThreadId);
+    focusMemoryReviews.set(internalThreadId, {
+      projectId: project.id,
+      focusThreadId,
+      reviewedTurnCount: session.userTurnCount,
+      turnId: null
+    });
+    const prompt = [
+      "CURRENT PROJECT MEMORY:",
+      memory.projectMemory || "(empty)",
+      "",
+      "CURRENT USER MEMORY:",
+      memory.userMemory || "(empty)",
+      "",
+      "RECENT FOCUS CONVERSATION:",
+      focusMemoryTranscript(threadResponse.thread) || "(empty)",
+      "",
+      "Rewrite both memories now. Return JSON only."
+    ].join("\n");
+    const response = await runtime.request("turn/start", {
+      threadId: internalThreadId,
+      input: buildCodexUserInput(prompt, []),
+      cwd: projectPrimaryRoot(project),
+      runtimeWorkspaceRoots: runtimeRoots(project),
+      model: selectedModel,
+      effort: null,
+      permissionMode: "read-only",
+      approvalPolicy: permissions.approvalPolicy,
+      approvalsReviewer: permissions.approvalsReviewer,
+      sandboxPolicy: permissions.sandboxPolicy
+    });
+    const review = focusMemoryReviews.get(internalThreadId);
+    if (review) review.turnId = response.turn?.id ?? null;
+  } catch (error) {
+    focusMemoryReviewInFlight.delete(focusThreadId);
+    codexRuntime.emit("diagnostic", `Focus memory review could not start: ${error.message}`);
+  }
+}
+
+function questionIds(request) {
+  return (request?.params?.questions ?? []).map((question, index) => question.id ?? `question-${index + 1}`);
+}
+
+function parseFocusQuestionReview(text, request) {
+  const source = String(text ?? "").trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  const parsed = JSON.parse(source);
+  if (!parsed || typeof parsed !== "object" || !["answer", "escalate"].includes(parsed.action)) {
+    throw new Error("Focus question review returned an invalid decision");
+  }
+  if (parsed.action === "escalate") return { action: "escalate", reason: String(parsed.reason ?? "").trim() };
+  const answers = parsed.answers && typeof parsed.answers === "object" ? parsed.answers : {};
+  const normalized = Object.fromEntries(Object.entries(answers).map(([id, answer]) => [id, String(answer ?? "").trim()]));
+  if (questionIds(request).some((id) => !normalized[id])) {
+    throw new Error("Focus question review did not answer every question");
+  }
+  return { action: "answer", answers: normalized };
+}
+
+function respondToPendingQuestion(pending, { action = "answer", answers = {} } = {}) {
+  if (pending.kind === "pixice-question-tool") {
+    runtime.respond(pending.request.id, pixiceQuestionToolResult({ action, answers }));
+    return;
+  }
+  if (pending.kind === "pixice-question") {
+    runtime.respond(pending.request.id, { action, answers });
+    return;
+  }
+  if (pending.request.method?.includes("requestUserInput")) {
+    const nativeAnswers = Object.fromEntries(Object.entries(answers).map(([id, answer]) => [id, { answers: [answer] }]));
+    runtime.respond(pending.request.id, { answers: nativeAnswers });
+    return;
+  }
+  throw new Error("Pending request is not a question");
+}
+
+function showFocusCoordinatorQuestion(pending, focusContext, reason = "") {
+  const taskTitle = focusContext.worker ? database.getThreadName(focusContext.sourceThreadId) : null;
+  const displayRequest = {
+    ...pending.displayRequest,
+    focusManaged: true,
+    focusCoordinatorQuestion: true,
+    taskTitle,
+    projectId: focusContext.projectId,
+    params: {
+      ...pending.displayRequest.params,
+      threadId: focusContext.focusThreadId,
+      sourceThreadId: focusContext.sourceThreadId,
+      ...(reason ? { coordinatorReason: reason } : {})
+    }
+  };
+  pending.displayRequest = displayRequest;
+  pending.visible = true;
+  send("AttentionRequired", displayRequest);
+}
+
+async function completeFocusQuestionReview(threadId, turn) {
+  const review = focusQuestionReviews.get(threadId);
+  if (!review) return;
+  focusQuestionReviews.delete(threadId);
+  focusQuestionReviewInFlight.delete(review.requestKey);
+  const pending = pendingRequests.get(review.requestKey);
+  try {
+    if (!pending || pending.generation !== runtimeGeneration) return;
+    const result = parseFocusQuestionReview(finalAgentText(turn), pending.displayRequest);
+    if (result.action === "answer") {
+      respondToPendingQuestion(pending, result);
+      pendingRequests.delete(review.requestKey);
+    } else {
+      showFocusCoordinatorQuestion(pending, review.focusContext, result.reason);
+    }
+  } catch (error) {
+    if (pending && pending.generation === runtimeGeneration) {
+      showFocusCoordinatorQuestion(pending, review.focusContext, "The coordinator could not resolve this safely from project context.");
+    }
+    codexRuntime.emit("diagnostic", `Focus question review failed: ${error.message}`);
+  } finally {
+    try {
+      await runtime.request("thread/archive", { threadId });
+    } catch (error) {
+      codexRuntime.emit("diagnostic", `Focus question review cleanup failed: ${error.message}`);
+      focusQuestionInternalThreadIds.delete(threadId);
+    }
+  }
+}
+
+async function scheduleFocusQuestionReview(requestKeyValue, focusContext) {
+  if (focusQuestionReviewInFlight.has(requestKeyValue)) return;
+  const pending = pendingRequests.get(requestKeyValue);
+  const project = database.getProject(focusContext.projectId);
+  if (!pending || !project || !runtime.connected) {
+    if (pending) showFocusCoordinatorQuestion(pending, focusContext);
+    return;
+  }
+  focusQuestionReviewInFlight.add(requestKeyValue);
+  try {
+    const [focusResponse, workerResponse] = await Promise.all([
+      runtime.request("thread/read", { threadId: focusContext.focusThreadId, includeTurns: true }),
+      runtime.request("thread/read", { threadId: focusContext.sourceThreadId, includeTurns: true })
+    ]);
+    const permissions = permissionSettings("read-only", project);
+    const selectedModel = turnUsageMetadata.get(focusContext.focusThreadId)?.model || null;
+    const started = await runtime.request("thread/start", {
+      cwd: projectPrimaryRoot(project),
+      runtimeWorkspaceRoots: runtimeRoots(project),
+      model: selectedModel,
+      ephemeral: true,
+      permissionMode: "read-only",
+      approvalPolicy: permissions.approvalPolicy,
+      approvalsReviewer: permissions.approvalsReviewer,
+      sandbox: permissions.sandbox,
+      developerInstructions: [
+        focusAgentInstructions(project),
+        "",
+        "# Worker question review",
+        "Decide whether the Focus coordinator can answer this worker without interrupting the user.",
+        "Answer routine implementation choices using explicit project context, prior user decisions, and the safest reversible option.",
+        "Escalate only for an unstated personal preference, a change in product direction, an external commitment, credentials, or meaningful irreversible risk.",
+        "Return JSON only. Use {\"action\":\"answer\",\"answers\":{\"question_id\":\"answer\"}} or {\"action\":\"escalate\",\"reason\":\"short reason\"}."
+      ].join("\n"),
+      dynamicTools: [],
+      internalNoTools: true,
+      threadSource: "pixiceFocusQuestionReview"
+    });
+    const internalThreadId = started.thread?.id;
+    if (!internalThreadId) throw new Error("Question review did not create a thread");
+    focusQuestionInternalThreadIds.add(internalThreadId);
+    focusQuestionReviews.set(internalThreadId, {
+      requestKey: requestKeyValue,
+      focusContext,
+      turnId: null
+    });
+    const prompt = [
+      "RECENT FOCUS CONVERSATION:",
+      focusMemoryTranscript(focusResponse.thread) || "(empty)",
+      "",
+      `WORKER: ${database.getThreadName(focusContext.sourceThreadId) || focusContext.sourceThreadId}`,
+      focusMemoryTranscript(workerResponse.thread) || "(no worker transcript)",
+      "",
+      "WORKER QUESTIONS:",
+      JSON.stringify(pending.displayRequest.params?.questions ?? [], null, 2),
+      "",
+      "Return the coordinator decision as JSON only."
+    ].join("\n").slice(-90_000);
+    const response = await runtime.request("turn/start", {
+      threadId: internalThreadId,
+      input: buildCodexUserInput(prompt, []),
+      cwd: projectPrimaryRoot(project),
+      runtimeWorkspaceRoots: runtimeRoots(project),
+      model: selectedModel,
+      effort: null,
+      permissionMode: "read-only",
+      approvalPolicy: permissions.approvalPolicy,
+      approvalsReviewer: permissions.approvalsReviewer,
+      sandboxPolicy: permissions.sandboxPolicy
+    });
+    const review = focusQuestionReviews.get(internalThreadId);
+    if (review) review.turnId = response.turn?.id ?? null;
+  } catch (error) {
+    focusQuestionReviewInFlight.delete(requestKeyValue);
+    const latest = pendingRequests.get(requestKeyValue);
+    if (latest && latest.generation === runtimeGeneration) showFocusCoordinatorQuestion(latest, focusContext);
+    codexRuntime.emit("diagnostic", `Focus question review could not start: ${error.message}`);
+  }
+}
+
+async function ensureProjectFocusSession({ project, model, serviceTier }) {
+  const existing = database.getProjectFocusSession(project.id);
+  if (existing) {
+    await ensureThreadLoaded(project, existing.threadId);
+    const response = await runtime.request("thread/read", { threadId: existing.threadId, includeTurns: true });
+    rememberThread(project, response.thread, { loaded: true });
+    return {
+      created: false,
+      session: existing,
+      memory: pixiceFocusMemory.read(project.id),
+      thread: projectRendererThread(withPersistedThreadName(response.thread))
+    };
+  }
+  const focusPermissionMode = FOCUS_PERMISSION_MODE;
+  const permissions = permissionSettings(focusPermissionMode, project);
+  const response = await runtime.request("thread/start", {
+    cwd: projectPrimaryRoot(project),
+    runtimeWorkspaceRoots: runtimeRoots(project),
+    model: model || null,
+    ...(serviceTier !== undefined ? { serviceTier } : {}),
+    permissionMode: focusPermissionMode,
+    approvalPolicy: permissions.approvalPolicy,
+    approvalsReviewer: permissions.approvalsReviewer,
+    sandbox: permissions.sandbox,
+    developerInstructions: focusAgentInstructions(project),
+    dynamicTools: focusDynamicTools,
+    threadSource: "pixice"
+  });
+  rememberThread(project, response.thread, { loaded: true });
+  const session = database.saveProjectFocusSession({ projectId: project.id, threadId: response.thread.id });
+  const name = `${project.displayName} Focus`;
+  database.saveThreadName(response.thread.id, name);
+  try {
+    await runtime.request("thread/name/set", { threadId: response.thread.id, name });
+  } catch (error) {
+    codexRuntime.emit("diagnostic", `Focus thread name could not be saved to the provider: ${error.message}`);
+  }
+  return {
+    created: true,
+    session,
+    memory: pixiceFocusMemory.read(project.id),
+    thread: projectRendererThread(withPersistedThreadName({ ...response.thread, name }))
+  };
 }
 
 function boundedTextResult(value, maximumBytes) {
@@ -1326,7 +1767,7 @@ function registerHandlers() {
     return taskResults.replay({ ...value, model: selected.id ?? selected.model });
   });
   handlers.handle("tasks:interventions", () => ({
-    requests: [...pendingRequests.values()].map(({ request, displayRequest, generation }) => {
+    requests: [...pendingRequests.values()].filter((pending) => pending.visible !== false).map(({ request, displayRequest, generation }) => {
       const threadId = request.params?.threadId;
       const projectId = connectProjectIdForEvent({ type: "AttentionRequired", payload: { ...(displayRequest ?? request), threadId } });
       return { ...(displayRequest ?? request), requestGeneration: generation, taskTitle: threadId ? database.getThreadName(threadId) : null, projectId };
@@ -1875,6 +2316,21 @@ function registerHandlers() {
     return pixiceInstruments.delete(value.projectId, value.instrumentId);
   });
 
+  handlers.handle("focus:ensure", async (_event, payload) => {
+    const value = idPayload.extend({
+      model: z.string().optional(),
+      serviceTier: z.string().nullable().optional(),
+      permissionMode: permissionModeSchema.default(FOCUS_PERMISSION_MODE)
+    }).strict().parse(payload);
+    const project = getProject(value.projectId);
+    const pending = focusSessionEnsures.get(project.id);
+    if (pending) return pending;
+    const promise = ensureProjectFocusSession({ project, ...value })
+      .finally(() => focusSessionEnsures.delete(project.id));
+    focusSessionEnsures.set(project.id, promise);
+    return promise;
+  });
+
   handlers.handle("threads:list", async (context = {}, payload) => {
     const { projectId } = idPayload.parse(payload);
     const project = getProject(projectId);
@@ -1944,10 +2400,14 @@ function registerHandlers() {
     const value = idPayload.extend({
       model: z.string().optional(),
       serviceTier: z.string().nullable().optional(),
-      permissionMode: permissionModeSchema.default("workspace-write")
+      permissionMode: permissionModeSchema.default("workspace-write"),
+      parentThreadId: z.string().min(1).optional()
     }).parse(payload);
     const project = getProject(value.projectId);
-    const permissions = permissionSettings(value.permissionMode, project);
+    const focusContext = value.parentThreadId ? projectFocusContextForThread(value.parentThreadId) : null;
+    if (focusContext && focusContext.projectId !== project.id) throw new Error("Focus parent belongs to another project");
+    const permissionMode = focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode;
+    const permissions = permissionSettings(permissionMode, project);
     const roots = runtimeRoots(project);
     const cwd = projectPrimaryRoot(project);
     const response = await runtime.request("thread/start", {
@@ -1955,7 +2415,8 @@ function registerHandlers() {
       runtimeWorkspaceRoots: roots,
       model: value.model || null,
       ...(value.serviceTier !== undefined ? { serviceTier: value.serviceTier } : {}),
-      permissionMode: value.permissionMode,
+      ...(focusContext ? { parentThreadId: value.parentThreadId } : {}),
+      permissionMode,
       approvalPolicy: permissions.approvalPolicy,
       approvalsReviewer: permissions.approvalsReviewer,
       sandbox: permissions.sandbox,
@@ -1964,6 +2425,14 @@ function registerHandlers() {
       threadSource: "pixice"
     });
     rememberThread(project, response.thread, { loaded: true });
+    if (focusContext) {
+      database.saveThreadLink({
+        childThreadId: response.thread.id,
+        parentThreadId: value.parentThreadId,
+        kind: "focusSideThread",
+        model: value.model || null
+      });
+    }
     pendingTaskNames.add(response.thread.id);
     return response;
   });
@@ -2012,6 +2481,9 @@ function registerHandlers() {
   handlers.handle("threads:archive", async (_event, payload) => {
     const { projectId, threadId } = threadPayload.parse(payload);
     const project = getProject(projectId);
+    if (database.getProjectFocusSession(projectId)?.threadId === threadId) {
+      throw new Error("The project Focus coordinator cannot be deleted. Switch back to Workspace to manage worker threads.");
+    }
     await ensureThreadLoaded(project, threadId);
     const response = await runtime.request("thread/archive", { threadId });
     threadSessions.delete(threadId);
@@ -2035,16 +2507,21 @@ function registerHandlers() {
       permissionMode: permissionModeSchema.default("workspace-write")
     }).superRefine(requirePromptInput).parse(payload);
     const project = getProject(value.projectId);
+    const focusSession = database.getProjectFocusSessionByThread(value.threadId);
+    const isFocus = focusSession?.projectId === project.id;
+    const focusContext = projectFocusContextForThread(value.threadId);
     const prompt = await preparePromptInput(value, project, value.threadId, context);
     const response = await startTrackedTurn({
       project, threadId: value.threadId, input: buildCodexUserInput(prompt.text, prompt.images),
-      text: value.text, model: value.model, effort: value.effort, serviceTier: value.serviceTier, permissionMode: value.permissionMode
+      text: value.text, model: value.model, effort: value.effort, serviceTier: value.serviceTier,
+      permissionMode: focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode, trackTask: !isFocus
     });
+    if (isFocus) database.incrementProjectFocusTurn(project.id, value.threadId);
     if (pendingTaskNames.delete(value.threadId)) {
       const attachmentCount = value.images.length + value.attachments.length + value.attachmentIds.length;
       scheduleThreadName({ project, threadId: value.threadId, source: value.text || `${attachmentCount} attached file${attachmentCount === 1 ? "" : "s"}`, kind: "task" });
     }
-    try {
+    if (!isFocus) try {
       proactiveStewardship.startTurn({
         projectId: value.projectId,
         threadId: value.threadId,
@@ -2066,11 +2543,15 @@ function registerHandlers() {
     await ensureThreadLoaded(project, value.threadId);
     const prompt = await preparePromptInput(value, project, value.threadId, context);
     taskResults.stopReplay(value.threadId, true);
-    return runtime.request("turn/steer", {
+    const response = await runtime.request("turn/steer", {
       threadId: value.threadId,
       expectedTurnId: value.turnId,
       input: buildCodexUserInput(prompt.text, prompt.images)
     });
+    if (database.getProjectFocusSessionByThread(value.threadId)?.projectId === project.id) {
+      database.incrementProjectFocusTurn(project.id, value.threadId);
+    }
+    return response;
   });
   handlers.handle("turns:interrupt", async (_event, payload) => {
     const value = threadPayload.extend({ turnId: z.string().min(1) }).parse(payload);
@@ -2118,16 +2599,7 @@ function registerHandlers() {
     const key = requestKey(value.requestId);
     const pending = pendingRequests.get(key);
     if (!pending || pending.generation !== runtimeGeneration) throw new Error("Question is no longer pending");
-    if (pending.kind === "pixice-question-tool") {
-      runtime.respond(value.requestId, pixiceQuestionToolResult(value));
-    } else if (pending.kind === "pixice-question") {
-      runtime.respond(value.requestId, value);
-    } else if (pending.request.method?.includes("requestUserInput")) {
-      const answers = Object.fromEntries(Object.entries(value.answers).map(([id, answer]) => [id, { answers: [answer] }]));
-      runtime.respond(value.requestId, { answers });
-    } else {
-      throw new Error("Pending request is not a question");
-    }
+    respondToPendingQuestion(pending, value);
     pendingRequests.delete(key);
     return { ok: true };
   });
@@ -2243,6 +2715,13 @@ function registerHandlers() {
   if (recordedDataVersion && recordedDataVersion !== version) recoverUpdateDataFromBackup({ userDataPath });
   await ensureVersionUpdateDataBackup({ userDataPath, currentVersion: version });
   database = new PixiceDatabase(userDataPath);
+  pixiceFocusMemory = new PixiceFocusMemory({
+    database,
+    onChange: ({ projectId }) => {
+      const session = database.getProjectFocusSession(projectId);
+      if (session?.threadId) threadSessions.delete(session.threadId);
+    }
+  });
   taskResults = new TaskResults({
     database, directory: path.join(userDataPath, "task-results"),
     onChange: (payload) => { send("TaskReceiptUpdated", payload); send("UsageUpdated", payload); },
@@ -2281,6 +2760,31 @@ function registerHandlers() {
       const file = readLocalPreviewFile(context.projectId, filePath);
       send("FilePreviewOpenRequested", { workspaceId: threadId, threadId, projectId: context.projectId, source, file });
       return { opened: true, path: file.path, name: file.name, external: file.external, editable: file.editable };
+    },
+    presentThread: ({ threadId, sourceThreadId, source }) => {
+      if (threadId === sourceThreadId) throw new Error("That Preview is already attached to this conversation");
+      const target = previewThreadContext(threadId);
+      const origin = previewThreadContext(sourceThreadId);
+      if (!target || !origin || target.projectId !== origin.projectId) {
+        throw new Error("The Preview source must be another thread in this Pixice project");
+      }
+      const context = previewContextRegistry.current(sourceThreadId);
+      send("PreviewWorkspacePresentRequested", {
+        workspaceId: threadId,
+        threadId,
+        sourceWorkspaceId: sourceThreadId,
+        sourceThreadId,
+        projectId: target.projectId,
+        source,
+        context,
+        title: database.getThreadName(sourceThreadId) ?? "Worker Preview"
+      });
+      return {
+        presented: true,
+        sourceThreadId,
+        title: database.getThreadName(sourceThreadId) ?? null,
+        context
+      };
     }
   });
   iosRuntimeService = new IosRuntimeService({ scratchRoot: path.join(userDataPath, "ios-sessions") });
@@ -2311,8 +2815,7 @@ function registerHandlers() {
   const codexRuntimeLifecycle = new ProviderRuntimeLifecycle({ provider: "codex", database });
   codexRuntime = new CodexRuntime({
     executablePath: null,
-    clientVersion: version,
-    developerInstructionsPath
+    clientVersion: version
   });
   runtime = new ProviderRegistry({ database });
   codexProvider = runtime.register(providerFactories.codex?.({ database, codexRuntime }) ?? new CodexProvider(codexRuntime, { runtimeLifecycle: codexRuntimeLifecycle }));
@@ -2364,11 +2867,13 @@ function registerHandlers() {
         projectForPath
       });
       if (!project) return null;
+      const focusContext = projectFocusContextForThread(threadId);
       return {
         projectId: project.id,
         cwd: binding?.cwd || projectPrimaryRoot(project),
         runtimeWorkspaceRoots: projectRoots(project),
         developerInstructions: currentAgentInstructions(),
+        enforcedPermissionMode: focusContext ? FOCUS_PERMISSION_MODE : null,
         permissionMode: turnUsageMetadata.get(threadId)?.permissionMode
           ?? database.getAppSettings().defaultPermissionMode
           ?? "workspace-write",
@@ -2440,6 +2945,7 @@ function registerHandlers() {
     developerInstructions: currentAgentInstructions,
     pixiceBridge,
     pixiceBoard,
+    pixiceFocus: pixiceFocusMemory,
     pixiceInstruments,
     pixiceBrowser: {
       handleToolCall: (params) => {
@@ -2476,6 +2982,13 @@ function registerHandlers() {
       activeTurns.clear();
       pendingTaskNames.clear();
       scheduledThreadNames.clear();
+      focusSessionEnsures.clear();
+      focusMemoryReviews.clear();
+      focusMemoryReviewInFlight.clear();
+      focusMemoryInternalThreadIds.clear();
+      focusQuestionReviews.clear();
+      focusQuestionReviewInFlight.clear();
+      focusQuestionInternalThreadIds.clear();
       turnUsageMetadata.clear();
       runtimeGeneration += 1;
       updateTrayMenu();
@@ -2488,6 +3001,33 @@ function registerHandlers() {
     const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
     event.payload = { ...event.payload, receivedAt };
     const { method, threadId, turn } = event.payload ?? {};
+    if (event.payload?.thread?.source === "pixiceFocusMemory") {
+      if (event.payload.thread.id) focusMemoryInternalThreadIds.add(event.payload.thread.id);
+      return;
+    }
+    if (event.payload?.thread?.source === "pixiceFocusQuestionReview") {
+      if (event.payload.thread.id) focusQuestionInternalThreadIds.add(event.payload.thread.id);
+      return;
+    }
+    if (threadId && focusMemoryInternalThreadIds.has(threadId)) {
+      if (method === "turn/completed") void completeFocusMemoryReview(threadId, turn);
+      if (method === "thread/archived" || method === "thread/deleted") {
+        focusMemoryInternalThreadIds.delete(threadId);
+        focusMemoryReviews.delete(threadId);
+      }
+      return;
+    }
+    if (threadId && focusQuestionInternalThreadIds.has(threadId)) {
+      if (method === "turn/completed") void completeFocusQuestionReview(threadId, turn);
+      if (method === "thread/archived" || method === "thread/deleted") {
+        focusQuestionInternalThreadIds.delete(threadId);
+        const review = focusQuestionReviews.get(threadId);
+        if (review) focusQuestionReviewInFlight.delete(review.requestKey);
+        focusQuestionReviews.delete(threadId);
+      }
+      return;
+    }
+    const focusSession = threadId ? database.getProjectFocusSessionByThread(threadId) : null;
     if (method === "serverRequest/resolved") {
       pendingRequests.delete(requestKey(event.payload.requestId));
       send("AttentionResolved", { requestId: event.payload.requestId, threadId });
@@ -2498,17 +3038,28 @@ function registerHandlers() {
       sendTrayState();
     }
     if (threadNamer.rememberInternalThread(event.payload?.thread) || threadNamer.isInternalThread(threadId)) return;
-    proactiveStewardship.observeActivity(event.payload ?? {});
+    if (!focusSession) proactiveStewardship.observeActivity(event.payload ?? {});
     const collabItem = event.payload?.item;
     if ((collabItem?.type === "collabAgentToolCall" || collabItem?.type === "collabToolCall") && collabItem.receiverThreadIds?.length) {
-      const parentUsage = turnUsageMetadata.get(collabItem.senderThreadId ?? threadId) ?? {};
+      const parentThreadId = collabItem.senderThreadId ?? threadId;
+      const parentUsage = turnUsageMetadata.get(parentThreadId) ?? {};
+      const parentFocusContext = projectFocusContextForThread(parentThreadId);
       for (const receiverThreadId of collabItem.receiverThreadIds) {
+        if (parentFocusContext && !database.getThreadLink(receiverThreadId)) {
+          database.saveThreadLink({
+            childThreadId: receiverThreadId,
+            parentThreadId,
+            kind: "focusCollaboration",
+            model: collabItem.model ?? parentUsage.model ?? null,
+            effort: collabItem.effort ?? parentUsage.effort ?? null
+          });
+        }
         turnUsageMetadata.set(receiverThreadId, {
           turnId: null,
           model: collabItem.model ?? parentUsage.model ?? null,
           serviceTier: parentUsage.serviceTier ?? null,
           effort: collabItem.effort ?? parentUsage.effort ?? null,
-          permissionMode: parentUsage.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write",
+          permissionMode: parentFocusContext ? FOCUS_PERMISSION_MODE : parentUsage.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write",
           provider: event.payload?.provider ?? parentUsage.provider ?? "codex"
         });
       }
@@ -2525,7 +3076,7 @@ function registerHandlers() {
       database.saveThreadName(threadId, event.payload.name);
     }
     if (method === "turn/started" && threadId) {
-      taskResults.observeStart(threadId, turn?.id);
+      if (!focusSession) taskResults.observeStart(threadId, turn?.id);
       threadPlans.set(threadId, []);
       database.saveThreadPlan(threadId, []);
     }
@@ -2538,7 +3089,7 @@ function registerHandlers() {
       database.saveThreadTurnTiming({ threadId, turnId: turn.id, startedAt, completedAt });
       event.payload.turn = { ...turn, startedAt, ...(completedAt ? { completedAt } : {}) };
     }
-    if (method === "turn/started" && threadId) {
+    if (method === "turn/started" && threadId && !focusSession) {
       const projectId = threadProjects.get(threadId) ?? boardThreadContext(threadId)?.projectId;
       if (projectId) {
         try {
@@ -2548,7 +3099,7 @@ function registerHandlers() {
         }
       }
     }
-    if (method === "turn/completed" && threadId && event.payload.turn) {
+    if (method === "turn/completed" && threadId && event.payload.turn && !focusSession) {
       const completed = taskResults.get(threadId)
         ? taskResults.complete(threadId, event.payload.turn, threadPlans.get(threadId) ?? [])
         : Promise.resolve().then(async () => {
@@ -2562,7 +3113,7 @@ function registerHandlers() {
       void completed
         .catch((error) => { taskResults.failed(threadId, error); codexRuntime.emit("diagnostic", `Task receipt failed: ${error.message}`); });
     }
-    if (method === "turn/completed" && threadId && event.payload.turn && !database.getThreadLink(threadId)) {
+    if (method === "turn/completed" && threadId && event.payload.turn && !database.getThreadLink(threadId) && !focusSession) {
       const projectId = threadProjects.get(threadId) ?? boardThreadContext(threadId)?.projectId;
       if (projectId) {
         try {
@@ -2620,6 +3171,7 @@ function registerHandlers() {
         completionRevision: `turn:${turn?.id ?? event.payload?.turnId ?? receivedAt}`,
         updatedAt: turn?.completedAt ?? receivedAt
       });
+      if (focusSession) void scheduleFocusMemoryReview(threadId);
     }
     if (method === "turn/started" || method === "turn/completed") updateTrayMenu();
     scheduleDelegatedThreadNames(event);
@@ -2632,6 +3184,12 @@ function registerHandlers() {
     codexRuntime.emit("diagnostic", `Runtime event ${method} failed: ${error.message}`);
   }));
   runtime.on("server-request", (request) => {
+    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_FOCUS_NAMESPACE) {
+      void pixiceFocusMemory.handleToolCall(request.params)
+        .then((response) => runtime.respond(request.id, response))
+        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
+      return;
+    }
     if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_BOARD_NAMESPACE) {
       void pixiceBoard.handleToolCall(request.params)
         .then((response) => runtime.respond(request.id, response))
@@ -2668,6 +3226,12 @@ function registerHandlers() {
         .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
       return;
     }
+    const threadId = request.params?.threadId;
+    const focusContext = threadId ? projectFocusContextForThread(threadId) : null;
+    if (focusContext && request.method?.toLowerCase().includes("approval")) {
+      runtime.respond(request.id, { decision: "accept" });
+      return;
+    }
     let displayRequest = request;
     let kind = "runtime-request";
     if (isPixiceQuestionToolCall(request)) {
@@ -2682,11 +3246,18 @@ function registerHandlers() {
         return;
       }
     } else if (request.method === PIXICE_QUESTION_METHOD) kind = "pixice-question";
-    pendingRequests.set(requestKey(request.id), { request, displayRequest, kind, generation: runtimeGeneration });
-    const threadId = request.params?.threadId;
+    const key = requestKey(request.id);
+    const question = displayRequest.method?.includes("requestUserInput") && Array.isArray(displayRequest.params?.questions);
+    const pending = { request, displayRequest, kind, generation: runtimeGeneration, visible: !(focusContext?.worker && question) };
+    pendingRequests.set(key, pending);
+    if (focusContext && question) {
+      if (focusContext.worker) void scheduleFocusQuestionReview(key, focusContext);
+      else showFocusCoordinatorQuestion(pending, focusContext);
+      return;
+    }
     send("AttentionRequired", { ...displayRequest, taskTitle: threadId ? database.getThreadName(threadId) : null, projectId: threadId ? authoritativeThreadProjectId(threadId) : null });
     const settings = database.getAppSettings();
-    if (settings.attentionNotifications !== false) {
+    if (!focusContext && settings.attentionNotifications !== false) {
       void platform.notify({
         title: displayRequest.method?.includes("requestUserInput") ? "A task has a question" : "Pixice needs your attention",
         body: displayRequest.method,
@@ -2730,7 +3301,7 @@ function registerHandlers() {
     backup: ({ currentVersion, targetVersion }) => createUpdateDataBackup({ userDataPath, currentVersion, targetVersion, reason: "app-update" }),
     freeze: (value) => { acceptingWork = !value; if (pixiceBridge?.workflowIntegration) pixiceBridge.workflowIntegration.workflows.acceptingRuns = !value; },
     state: () => ({ activeTurns: activeTurns.size, startingTurns: startingTurns.size, activeWorkflows: pixiceBridge?.workflowIntegration?.workflows.activeRuns.size ?? 0, runtime: { ...runtimeStatus, connected: Boolean(runtime?.connected) }, workflowError: pixiceBridge?.workflowError?.message ?? null }),
-    attention: () => [...pendingRequests.values()].map(({ request, displayRequest, generation }) => {
+    attention: () => [...pendingRequests.values()].filter((pending) => pending.visible !== false).map(({ request, displayRequest, generation }) => {
       const threadId = request.params?.threadId;
       return { ...(displayRequest ?? request), requestGeneration: generation, projectId: threadId ? authoritativeThreadProjectId(threadId) : null };
     }),

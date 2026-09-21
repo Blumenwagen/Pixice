@@ -110,7 +110,7 @@ function mergeFolders(current, incoming) {
   return [...byPath.values()];
 }
 
-function projectStyle(project) {
+export function projectTileStyle(project) {
   const option = colorOption(project?.color);
   return { "--project-color": option.value, "--project-surface": option.surface };
 }
@@ -220,7 +220,7 @@ export function ProjectSwitcher({
               <button
                 type="button"
                 className={`${styles.tile} ${selected ? styles.activeTile : ""} ${deleteArmed ? styles.deleteTile : ""}`.trim()}
-                style={projectStyle(project)}
+                style={projectTileStyle(project)}
                 aria-label={deleteArmed ? `Delete ${label}` : label}
                 aria-current={selected ? "true" : undefined}
                 aria-pressed={selected}
@@ -281,7 +281,7 @@ export function ProjectSwitcher({
                   <button
                     type="button"
                     className={`${styles.overflowProject} ${selected ? styles.activeOverflowProject : ""}`.trim()}
-                    style={projectStyle(project)}
+                    style={projectTileStyle(project)}
                     aria-current={selected ? "true" : undefined}
                     title={activityDescription ? `${label} · ${activityDescription}` : label}
                     onClick={() => selectProject(project.id)}

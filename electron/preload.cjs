@@ -60,6 +60,9 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     delete: invoke("projects:delete"),
     open: invoke("projects:open")
   }),
+  focus: Object.freeze({
+    ensure: invoke("focus:ensure")
+  }),
   board: Object.freeze({
     list: invoke("board:list"),
     read: invoke("board:read"),

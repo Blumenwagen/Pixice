@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pixice composer layout comparison</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Manrope, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --stage: #1b1b1b;
+        --canvas: #171717;
+        --surface: #222222;
+        --raised: #2b2b2b;
+        --foreground: #f0f0f0;
+        --muted: #a2a2a2;
+        --quiet: #858585;
+        --border: rgba(255, 255, 255, 0.085);
+        --primary: #ff5364;
+        --thread: #ff7a86;
+        --amber: #ffc45d;
+        --ease: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      * { box-sizing: border-box; }
+      html, body { min-width: 100%; min-height: 100%; margin: 0; }
+      body {
+        min-height: 100vh;
+        overflow: auto;
+        color: var(--foreground);
+        background: var(--stage);
+        -webkit-font-smoothing: antialiased;
+      }
+      button { border: 0; font: inherit; }
+      button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+      .page {
+        min-width: min-content;
+        padding: 30px 32px 38px;
+      }
+      .intro {
+        width: min(100%, 1172px);
+        margin: 0 auto 24px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      .intro h1 {
+        margin: 0 0 6px;
+        font-size: 20px;
+        line-height: 1.25;
+        letter-spacing: -0.025em;
+      }
+      .intro p {
+        max-width: 660px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .constraint {
+        flex: none;
+        color: var(--quiet);
+        font-size: 10px;
+        font-weight: 650;
+      }
+
+      .comparison {
+        width: max-content;
+        min-width: 100%;
+        display: flex;
+        justify-content: center;
+        gap: 16px;
+      }
+      .variant {
+        width: 380px;
+        flex: 0 0 380px;
+      }
+      .variant-head {
+        min-height: 50px;
+        padding: 0 4px 10px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 14px;
+      }
+      .variant-copy { min-width: 0; }
+      .variant h2 {
+        margin: 0 0 4px;
+        font-size: 13px;
+        line-height: 1.2;
+        letter-spacing: -0.015em;
+      }
+      .variant-head p {
+        margin: 0;
+        color: var(--quiet);
+        font-size: 10px;
+        line-height: 1.4;
+      }
+      .variant-number {
+        width: 22px;
+        height: 22px;
+        display: grid;
+        place-items: center;
+        flex: none;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 7px;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .frame {
+        width: 380px;
+        height: 352px;
+        padding: 0 10px 12px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        overflow: hidden;
+        background:
+          linear-gradient(to bottom, rgba(255,255,255,0.022), transparent 38%),
+          var(--canvas);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+      }
+      .frame-toolbar {
+        height: 44px;
+        margin: 0 -10px auto;
+        padding: 0 14px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--quiet);
+        border-bottom: 1px solid rgba(255,255,255,0.045);
+        font-size: 10px;
+      }
+      .frame-toolbar .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #57c77d;
+        box-shadow: 0 0 0 3px rgba(87,199,125,0.1);
+      }
+      .message-line {
+        width: 68%;
+        height: 6px;
+        margin: 0 10px 12px auto;
+        background: rgba(255,255,255,0.055);
+        border-radius: 3px;
+      }
+      .message-line.short { width: 44%; margin-bottom: 20px; }
+
+      .composer {
+        width: 360px;
+        padding: 13px 12px 9px;
+        background: var(--raised);
+        border-radius: 18px;
+        box-shadow: 0 18px 44px rgba(0,0,0,0.32);
+      }
+      .prompt {
+        width: 100%;
+        height: 27px;
+        padding: 0 2px;
+        overflow: hidden;
+        resize: none;
+        color: var(--foreground);
+        background: transparent;
+        border: 0;
+        outline: 0;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .prompt::placeholder { color: #8f8f8f; opacity: 1; }
+      .controls,
+      .control-group,
+      .profile,
+      .config-strip {
+        display: flex;
+        align-items: center;
+      }
+      .controls { min-width: 0; }
+      .control-group { gap: 2px; }
+      .spacer { flex: 1; min-width: 4px; }
+
+      .control {
+        height: 30px;
+        padding: 0 7px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        flex: none;
+        color: var(--muted);
+        background: transparent;
+        border-radius: 9px;
+        cursor: pointer;
+        font-size: 10.5px;
+        font-weight: 580;
+        transition: color 140ms ease, background-color 140ms ease, transform 140ms var(--ease);
+      }
+      .control:hover { color: var(--foreground); background: rgba(255,255,255,0.06); }
+      .control:active { transform: scale(0.96); }
+      .control.icon { width: 30px; padding: 0; }
+      .control.permission { color: var(--thread); }
+      .control.fast { color: var(--amber); }
+      .control svg { width: 15px; height: 15px; display: block; }
+      .control .chevron { width: 11px; height: 11px; color: var(--quiet); }
+      .run-action {
+        position: relative;
+        width: 30px;
+        height: 30px;
+        margin-left: 3px;
+        flex: none;
+        border-radius: 50%;
+        cursor: pointer;
+        transition: color 180ms ease, background-color 180ms ease, box-shadow 180ms ease, transform 140ms var(--ease);
+      }
+      .run-action:hover { transform: translateY(-1px); }
+      .run-action:active { transform: scale(0.95); }
+      .run-action[data-state="stop"] {
+        color: var(--thread);
+        background: rgba(255, 83, 100, 0.12);
+        box-shadow: 0 0 0 1px rgba(255, 83, 100, 0.1) inset;
+      }
+      .run-action[data-state="stop"]:hover { background: rgba(255, 83, 100, 0.18); }
+      .run-action[data-state="send"] { color: #222; background: var(--foreground); }
+      .run-action[data-state="send"]:hover { background: #fff; }
+      .run-icon {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        transition: opacity 120ms ease, transform 190ms var(--ease), filter 160ms ease;
+      }
+      .run-icon svg { width: 15px; height: 15px; }
+      .run-action[data-state="stop"] .send-icon,
+      .run-action[data-state="send"] .stop-icon {
+        opacity: 0;
+        transform: rotate(-18deg) scale(0.58);
+        filter: blur(1.5px);
+      }
+      .run-action[data-state="send"] .stop-icon { transform: rotate(18deg) scale(0.58); }
+      .run-action[data-state="stop"] .stop-icon,
+      .run-action[data-state="send"] .send-icon {
+        opacity: 1;
+        transform: rotate(0) scale(1);
+        filter: blur(0);
+      }
+
+      .v1 .composer { padding-bottom: 8px; }
+      .v1 .prompt { height: 25px; }
+      .config-strip {
+        min-width: 0;
+        height: 31px;
+        margin: 0 -3px 4px;
+        padding: 0 3px 4px;
+        gap: 2px;
+        border-bottom: 1px solid rgba(255,255,255,0.055);
+      }
+      .config-strip .control.model { min-width: 0; max-width: 126px; }
+      .config-strip .control.reasoning { padding-right: 6px; }
+      .model-mark {
+        width: 15px;
+        height: 15px;
+        display: grid;
+        place-items: center;
+        flex: none;
+        color: #83c7b0;
+        background: rgba(90, 177, 148, 0.16);
+        border-radius: 4px;
+        font-size: 8px;
+        font-weight: 800;
+      }
+
+      .v2 .controls { gap: 1px; }
+      .profile {
+        min-width: 0;
+        height: 30px;
+        padding: 0 7px;
+        gap: 6px;
+        color: var(--muted);
+        background: rgba(255,255,255,0.035);
+        border-radius: 9px;
+        cursor: pointer;
+        font-size: 10.5px;
+        font-weight: 590;
+      }
+      .profile:hover { color: var(--foreground); background: rgba(255,255,255,0.065); }
+      .profile span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .profile i {
+        width: 4px;
+        height: 4px;
+        flex: none;
+        background: var(--quiet);
+        border-radius: 50%;
+      }
+      .profile .fast-indicator { color: var(--amber); }
+
+      .v3 .controls { gap: 1px; }
+      .v3 .profile { flex: 1; max-width: 119px; background: transparent; }
+      .more {
+        position: relative;
+      }
+      .more::after {
+        content: "2";
+        position: absolute;
+        top: 1px;
+        right: 0;
+        width: 12px;
+        height: 12px;
+        display: grid;
+        place-items: center;
+        color: #241a0c;
+        background: var(--amber);
+        border: 2px solid var(--raised);
+        border-radius: 50%;
+        font-size: 7px;
+        font-weight: 800;
+      }
+      .overflow-key {
+        margin: 7px 2px 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--quiet);
+        font-size: 9px;
+        line-height: 1.35;
+      }
+      .overflow-key strong { color: var(--muted); font-weight: 630; }
+      .overflow-key i {
+        width: 3px;
+        height: 3px;
+        flex: none;
+        background: #666;
+        border-radius: 50%;
+      }
+
+      .tradeoff {
+        min-height: 42px;
+        margin: 10px 4px 0;
+        color: var(--quiet);
+        font-size: 10px;
+        line-height: 1.5;
+      }
+      .tradeoff strong { color: var(--muted); font-weight: 650; }
+
+      @media (max-width: 1180px) {
+        .page { padding-right: 22px; padding-left: 22px; }
+        .comparison { justify-content: flex-start; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { transition-duration: 0.01ms !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="intro">
+        <div>
+          <h1>Composer at preview width</h1>
+          <p>Three ways to keep task controls legible when Preview narrows the chat. Each version is shown at 360 px with a task running. Type in any composer to morph Stop into Send.</p>
+        </div>
+        <span class="constraint">360 px composer</span>
+      </header>
+
+      <section class="comparison" aria-label="Composer layout variants">
+        <article class="variant v1">
+          <header class="variant-head">
+            <div class="variant-copy">
+              <h2>Two-line dock</h2>
+              <p>Configuration stays explicit and moves above the actions.</p>
+            </div>
+            <span class="variant-number">01</span>
+          </header>
+          <div class="frame">
+            <div class="frame-toolbar"><span class="dot"></span><span>Task running</span></div>
+            <div class="message-line"></div>
+            <div class="message-line short"></div>
+            <div class="composer">
+              <textarea class="prompt" rows="1" aria-label="Steer the active task" placeholder="Steer the active task"></textarea>
+              <div class="config-strip">
+                <button type="button" class="control model" aria-label="Model, GPT-6 Astra">
+                  <span class="model-mark">6</span><span>GPT-6 Astra</span>
+                  <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <button type="button" class="control reasoning" aria-label="Reasoning effort, Medium">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.25 4.5A2.75 2.75 0 0 1 8 1.75a2.75 2.75 0 0 1 2.75 2.75A2.75 2.75 0 0 1 13.5 7.25 2.75 2.75 0 0 1 10.75 10 2.75 2.75 0 0 1 8 12.75 2.75 2.75 0 0 1 5.25 10 2.75 2.75 0 0 1 2.5 7.25 2.75 2.75 0 0 1 5.25 4.5Z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 4v5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                  <span>Medium</span>
+                  <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <button type="button" class="control icon fast" aria-label="Fast mode on" aria-pressed="true">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.3 1.8 3.9 8.5h3.7l-.9 5.7 5.4-6.8H8.4l.9-5.6Z" fill="currentColor"/></svg>
+                </button>
+              </div>
+              <div class="controls">
+                <div class="control-group">
+                  <button type="button" class="control icon" aria-label="Attach files">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  </button>
+                  <button type="button" class="control icon permission" aria-label="Permissions, full access">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.7 8s2.2-3.5 6.3-3.5S14.3 8 14.3 8s-2.2 3.5-6.3 3.5S1.7 8 1.7 8Z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.8" fill="currentColor"/></svg>
+                  </button>
+                </div>
+                <span class="spacer"></span>
+                <div class="control-group">
+                  <button type="button" class="control icon" aria-label="Start dictation">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="2" width="5" height="8" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.5 7.5A4.5 4.5 0 0 0 12.5 7.5M8 12v2M5.5 14h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                  </button>
+                  <button type="button" class="run-action" data-state="stop" aria-label="Stop task" title="Stop task">
+                    <span class="run-icon stop-icon"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor"/></svg></span>
+                    <span class="run-icon send-icon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m2.2 2.8 11.6 5.1-11.6 5.3 1.6-4.4L9.2 8 3.8 7.2 2.2 2.8Z" fill="currentColor"/></svg></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="tradeoff"><strong>Most transparent.</strong> It adds height, but no configuration is hidden or abbreviated.</p>
+        </article>
+
+        <article class="variant v2">
+          <header class="variant-head">
+            <div class="variant-copy">
+              <h2>Combined run profile</h2>
+              <p>Model, effort, and speed become one editable control.</p>
+            </div>
+            <span class="variant-number">02</span>
+          </header>
+          <div class="frame">
+            <div class="frame-toolbar"><span class="dot"></span><span>Task running</span></div>
+            <div class="message-line"></div>
+            <div class="message-line short"></div>
+            <div class="composer">
+              <textarea class="prompt" rows="1" aria-label="Steer the active task" placeholder="Steer the active task"></textarea>
+              <div class="controls">
+                <button type="button" class="control icon" aria-label="Attach files">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                </button>
+                <button type="button" class="control icon permission" aria-label="Permissions, full access">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.7 8s2.2-3.5 6.3-3.5S14.3 8 14.3 8s-2.2 3.5-6.3 3.5S1.7 8 1.7 8Z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.8" fill="currentColor"/></svg>
+                </button>
+                <button type="button" class="profile" aria-label="Run profile, GPT-6 Astra, Medium effort, fast mode on">
+                  <span class="model-mark">6</span><span>Astra</span><i></i><span>Medium</span>
+                  <svg class="fast-indicator" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M9.3 1.8 3.9 8.5h3.7l-.9 5.7 5.4-6.8H8.4l.9-5.6Z" fill="currentColor"/></svg>
+                </button>
+                <span class="spacer"></span>
+                <button type="button" class="control icon" aria-label="Start dictation">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="2" width="5" height="8" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.5 7.5A4.5 4.5 0 0 0 12.5 7.5M8 12v2M5.5 14h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
+                <button type="button" class="run-action" data-state="stop" aria-label="Stop task" title="Stop task">
+                  <span class="run-icon stop-icon"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor"/></svg></span>
+                  <span class="run-icon send-icon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m2.2 2.8 11.6 5.1-11.6 5.3 1.6-4.4L9.2 8 3.8 7.2 2.2 2.8Z" fill="currentColor"/></svg></span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <p class="tradeoff"><strong>Best balance.</strong> It keeps the composer short while the run profile still reads as one meaningful choice.</p>
+        </article>
+
+        <article class="variant v3">
+          <header class="variant-head">
+            <div class="variant-copy">
+              <h2>Focus + overflow</h2>
+              <p>Daily controls stay visible, secondary settings move aside.</p>
+            </div>
+            <span class="variant-number">03</span>
+          </header>
+          <div class="frame">
+            <div class="frame-toolbar"><span class="dot"></span><span>Task running</span></div>
+            <div class="message-line"></div>
+            <div class="message-line short"></div>
+            <div class="composer">
+              <textarea class="prompt" rows="1" aria-label="Steer the active task" placeholder="Steer the active task"></textarea>
+              <div class="controls">
+                <button type="button" class="control icon" aria-label="Attach files">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                </button>
+                <button type="button" class="profile" aria-label="Run profile, GPT-6 Astra, Medium effort">
+                  <span class="model-mark">6</span><span>Astra · Medium</span>
+                  <svg class="chevron" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <button type="button" class="control icon more" aria-label="More task settings, full access and fast mode on">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="13" cy="8" r="1.2" fill="currentColor"/></svg>
+                </button>
+                <span class="spacer"></span>
+                <button type="button" class="control icon" aria-label="Start dictation">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="2" width="5" height="8" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.5 7.5A4.5 4.5 0 0 0 12.5 7.5M8 12v2M5.5 14h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
+                <button type="button" class="run-action" data-state="stop" aria-label="Stop task" title="Stop task">
+                  <span class="run-icon stop-icon"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor"/></svg></span>
+                  <span class="run-icon send-icon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m2.2 2.8 11.6 5.1-11.6 5.3 1.6-4.4L9.2 8 3.8 7.2 2.2 2.8Z" fill="currentColor"/></svg></span>
+                </button>
+              </div>
+              <div class="overflow-key" aria-hidden="true"><strong>More</strong><span>Full access</span><i></i><span>Fast on</span></div>
+            </div>
+          </div>
+          <p class="tradeoff"><strong>Most compact.</strong> It protects the writing area, but permission and speed take one extra click.</p>
+        </article>
+      </section>
+    </main>
+    <script>
+      document.querySelectorAll(".composer").forEach((composer) => {
+        const draft = composer.querySelector(".prompt");
+        const action = composer.querySelector(".run-action");
+        const syncAction = () => {
+          const hasDraft = draft.value.trim().length > 0;
+          action.dataset.state = hasDraft ? "send" : "stop";
+          const label = hasDraft ? "Send steering message" : "Stop task";
+          action.setAttribute("aria-label", label);
+          action.title = label;
+        };
+
+        draft.addEventListener("input", syncAction);
+        syncAction();
+      });
+    </script>
+  </body>
+</html>

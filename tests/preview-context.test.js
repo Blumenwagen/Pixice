@@ -130,4 +130,22 @@ describe("Preview context", () => {
       editable: true
     });
   });
+
+  it("presents another thread's Preview in the controlling conversation", async () => {
+    const presentThread = async (request) => ({ presented: true, sourceThreadId: request.sourceThreadId });
+    const registry = new PreviewContextRegistry({ presentThread });
+
+    const response = await registry.handleToolCall({
+      threadId: "focus-thread",
+      turnId: "turn-1",
+      tool: "present_thread",
+      source: "codex",
+      arguments: { threadId: "worker-thread" }
+    });
+
+    expect(JSON.parse(response.contentItems[0].text)).toEqual({
+      presented: true,
+      sourceThreadId: "worker-thread"
+    });
+  });
 });
