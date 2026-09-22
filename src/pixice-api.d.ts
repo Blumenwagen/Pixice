@@ -446,12 +446,21 @@ declare global {
         open(): Promise<PixiceProject | null>;
       };
       focus: {
-        ensure(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{
+        state(payload: ProjectScope): Promise<{ work: Array<any>; decisions: Array<any>; policy: { coordinatorModel: string | null; workerModel: string | null; reviewModel: string | null; maxWorkers: number; permissionMode: string; executionHost: "current" }; events: Array<any>; seenSequence: number; latestSequence: number; unseenEvents: Array<any> }>;
+        controlWork(payload: ProjectScope & { workId: string; action: "pause" | "resume" | "cancel" }): Promise<any>;
+        followUp(payload: ProjectScope & { workId: string; prompt: string }): Promise<any>;
+        updatePolicy(payload: ProjectScope & { patch: { coordinatorModel?: string | null; workerModel?: string | null; reviewModel?: string | null; maxWorkers?: number; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; executionHost?: "current" } }): Promise<any>;
+        markSeen(payload: ProjectScope & { sequence: number }): Promise<{ seenSequence: number }>;
+        ensure(payload: ProjectScope & { model?: string; serviceTier?: string | null; replaceEmpty?: boolean; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{
           created: boolean;
           session: { projectId: string; threadId: string; userTurnCount: number; lastMemoryReviewTurn: number; createdAt: string; updatedAt: string };
           memory: { projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null };
+          configuration: { provider: string; model: string | null };
           thread: any;
         }>;
+        readMemory(payload: ProjectScope): Promise<{ projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null }>;
+        updateMemory(payload: ProjectScope & { expectedRevision: number; projectMemory: string; userMemory: string }): Promise<{ projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null }>;
+        clearMemory(payload: ProjectScope & { expectedRevision: number }): Promise<{ projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null }>;
       };
       board: {
         list(payload: ProjectScope): Promise<{ data: Array<any>; phases: Array<any> }>;

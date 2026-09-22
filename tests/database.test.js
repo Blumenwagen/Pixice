@@ -151,6 +151,44 @@ describe("thread runtime persistence", () => {
     database.db.close();
   });
 
+  it("preserves indexed Focus history when a provider summary refreshes", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-focus-summary-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const now = "2026-09-19T10:00:00.000Z";
+    database.createProject({ id: "project-focus", canonicalPath: "/workspace/focus", displayName: "Focus", folders: ["/workspace/focus"], createdAt: now, updatedAt: now });
+    database.saveThreadProviderBinding({ threadId: "focus-thread", provider: "codex", cwd: "/workspace/focus" });
+    database.saveProjectFocusSession({ projectId: "project-focus", threadId: "focus-thread" });
+    database.saveProviderThreadSnapshot("focus-thread", {
+      id: "focus-thread", cwd: "/workspace/focus", status: { type: "idle" },
+      turns: [{ id: "turn-1", status: "completed", items: [{ id: "decision", type: "userMessage", content: [{ type: "text", text: "Use smoky charcoal surfaces." }] }] }]
+    });
+
+    database.saveProviderThreadSummary("focus-thread", { id: "focus-thread", cwd: "/workspace/focus", name: "Focus", status: { type: "idle" } });
+
+    expect(database.searchProjectFocusHistory("project-focus", "charcoal", 8)).toEqual([
+      expect.objectContaining({ itemId: "decision", role: "user" })
+    ]);
+    expect(database.getProviderThreadSnapshot("focus-thread").turns).toHaveLength(1);
+    database.db.close();
+  });
+
+  it("merges compacted Focus transcripts into durable searchable history", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pixice-focus-compaction-"));
+    temporaryDirectories.push(directory);
+    const database = new PixiceDatabase(directory);
+    const now = "2026-09-19T10:00:00.000Z";
+    database.createProject({ id: "project-focus", canonicalPath: "/workspace/focus", displayName: "Focus", folders: ["/workspace/focus"], createdAt: now, updatedAt: now });
+    database.saveThreadProviderBinding({ threadId: "focus-thread", provider: "codex", cwd: "/workspace/focus" });
+    database.saveProjectFocusSession({ projectId: "project-focus", threadId: "focus-thread" });
+    database.saveProviderThreadSnapshot("focus-thread", { id: "focus-thread", cwd: "/workspace/focus", turns: [{ id: "old", status: "completed", items: [{ id: "old-decision", type: "userMessage", content: [{ type: "text", text: "Retain the charcoal surface." }] }] }] });
+    database.saveProviderThreadSnapshot("focus-thread", { id: "focus-thread", cwd: "/workspace/focus", turns: [{ id: "new", status: "completed", items: [{ id: "new-decision", type: "userMessage", content: [{ type: "text", text: "Add a quiet blue accent." }] }] }] });
+
+    expect(database.searchProjectFocusHistory("project-focus", "charcoal", 8)).toHaveLength(1);
+    expect(database.searchProjectFocusHistory("project-focus", "blue", 8)).toHaveLength(1);
+    database.db.close();
+  });
+
   it("deletes a project and its Pixice metadata without affecting other projects", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pixice-database-"));
     temporaryDirectories.push(directory);

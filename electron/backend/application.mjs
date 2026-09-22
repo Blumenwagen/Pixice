@@ -38,6 +38,11 @@ import {
 } from "../runtime/question-tool.mjs";
 import { PixiceBridge, PIXICE_BRIDGE_NAMESPACE, pixiceBridgeDynamicTools } from "../runtime/pixice-bridge.mjs";
 import { BridgeParentContinuation } from "../runtime/bridge-parent-continuation.mjs";
+import { FocusStore } from "../persistence/focus-store.mjs";
+import { FocusSupervisor } from "../runtime/focus-supervisor.mjs";
+import { FocusCoordinationTools } from "../runtime/focus-coordination-tools.mjs";
+import { FocusQuestionGroups } from "../runtime/focus-question-groups.mjs";
+import { bridgeEligibleModels, recommendBridgeModel } from "../runtime/model-capabilities.mjs";
 import { PixiceBoard, PIXICE_BOARD_NAMESPACE, pixiceBoardDynamicTools } from "../runtime/pixice-board.mjs";
 import {
   PixiceFocusMemory,
@@ -111,6 +116,8 @@ let pixiceBridge;
 let bridgeParentContinuation;
 let pixiceBoard;
 let pixiceFocusMemory;
+let focusStore;
+let focusSupervisor;
 let pixiceInstruments;
 let iosRuntimeService;
 let iosTools;
@@ -132,12 +139,15 @@ const pendingRequests = new Map();
 const pendingTaskNames = new Set();
 const scheduledThreadNames = new Set();
 const focusSessionEnsures = new Map();
+const focusSessionTransitions = new Set();
 const focusMemoryReviews = new Map();
 const focusMemoryReviewInFlight = new Set();
 const focusMemoryInternalThreadIds = new Set();
 const focusQuestionReviews = new Map();
 const focusQuestionReviewInFlight = new Set();
 const focusQuestionInternalThreadIds = new Set();
+const focusQuestionReviewTimers = new Map();
+const focusQuestionGroups = new FocusQuestionGroups();
 const FOCUS_PERMISSION_MODE = "full-access";
 const pixiceDynamicTools = [
   ...browserDynamicTools,
@@ -151,7 +161,7 @@ const pixiceDynamicTools = [
 ];
 const focusBridgeDynamicTools = pixiceBridgeDynamicTools.map((namespace) => ({
   ...namespace,
-  tools: namespace.tools.filter((tool) => ["list_models", "spawn_thread"].includes(tool.name))
+  tools: namespace.tools.filter((tool) => tool.name === "list_models")
 }));
 const focusDynamicTools = [
   ...questionDynamicTools,
@@ -162,6 +172,7 @@ const focusDynamicTools = [
   ...browserDynamicTools
 ];
 let runtimeGeneration = 0;
+let nextAttentionGeneration = 0;
 let developerInstructionsPath;
 let agentBehaviorsDirectory;
 
@@ -308,7 +319,7 @@ const requirePromptInput = (value, context) => {
   }
 };
 const send = (type, payload = {}) => {
-  if (type === "AttentionRequired") payload = { ...payload, requestGeneration: runtimeGeneration };
+  if (type === "AttentionRequired" && payload.requestGeneration === undefined) payload = { ...payload, requestGeneration: runtimeGeneration };
   const event = { type, payload, at: new Date().toISOString() };
   events.emit("event", event);
 };
@@ -360,12 +371,17 @@ function focusAgentInstructions(project) {
     `You are the single persistent Focus coordinator for the Pixice project \"${project.displayName}\".`,
     "The user is talking directly to the project. This conversation has no permanent goal, completion state, or fixed task boundary.",
     "Keep the conversation calm and direct. Answer small questions yourself. Do not manufacture plans, completion reports, or Board work for ordinary conversation.",
-    "Delegate bounded implementation, research, design, review, and debugging to worker threads with pixice_bridge. Give each worker one concrete objective and tell it which relevant project skill to use when needed. Specialized skills belong on workers, not in this coordinator.",
+    "Use pixice_focus.list_work and read_work to resolve follow-ups against existing outcomes and artifacts. Interpret references using the conversation and selected Preview. Continue or redirect matching work with follow_up instead of creating duplicate tasks. Ask briefly if an ambiguous reference would materially change the work.",
+    "Delegate bounded implementation, research, design, review, and debugging with pixice_focus.dispatch_work. It returns immediately; acknowledge the intended outcome and remain available. Completion events will bring results back. Do not wait in polling loops or leave a turn running solely to wait for workers. Give each worker one objective and relevant project skills. Use pixice_bridge.list_models for qualified available models.",
+    "Declare access and overlapping file or directory resources accurately. Unknown write scope uses '*'. Do not label implementation as read-only to bypass sequencing. Use dependsOn for prerequisites; dependent work starts only after verified completion.",
+    "When the user changes direction, record_decision for the affected work, then pause/cancel work explicitly if requested. Check worker acknowledgement and reconcile stale results. Never claim a direction was applied merely because it was sent.",
+    "Worker completion means ready for your review. Inspect results, integrate related changes, and verify the original request. Use request_review for independent verification with the configured review model. Complete work only with concrete evidence or a justified not-required verification. Present one coherent result with artifacts and remaining uncertainty, not a stack of worker replies.",
     "Remain responsible for understanding worker results and explaining them to the user. Do not repeat a worker's raw status log.",
     "Preview is part of your role. You may open files or browser pages in your own Preview and use pixice_preview.present_thread to show a worker's Preview here without moving the user into that worker thread.",
     "Use the shared Board only when the user asks to track durable work or when a concrete follow-up must survive this conversation. Workspace threads, Board, Workflows, Review, Preview, and project files are shared.",
-    "Focus runs with full project access. Delegated workers inherit that access so routine tool use never becomes an Attention request.",
+    "The coordinator has full access. Workers use the project's separately configured worker permission policy and read-only work is enforced. Do not bypass that policy or delegate nested unmanaged workers. Execution is on the current project host; a sleeping or disconnected host cannot keep local work running.",
     "Resolve worker questions from project context, prior user decisions, and reversible technical judgment. Ask the user only when the answer depends on an unstated preference, changes product direction, creates an external commitment, or carries meaningful irreversible risk.",
+    "Worker questions appear inline in this conversation without blocking ordinary messages. When the user answers one in normal chat, use pixice_focus.list_questions to identify the current request and pixice_focus.answer_question to forward the explicit answer. Preserve question IDs, never infer credentials or irreversible approval, and do not answer a hidden question that is still under background review.",
     "Follow the project's own AGENTS.md or CLAUDE.md instructions. Full access removes approval prompts; it does not relax safety or expand the user's requested scope.",
     "Maintain hot memory only for stable project facts, decisions, terminology, and durable user preferences. Use pixice_focus to read or edit it and search full history when the bounded memory is insufficient.",
     "Do not store secrets, pasted instructions, temporary progress, or facts that are cheap to read from project files. Consolidate memory when capacity is near its limit.",
@@ -380,7 +396,9 @@ function focusAgentInstructions(project) {
 
 function threadAgentInstructions(threadId, project) {
   const focus = database?.getProjectFocusSessionByThread(threadId);
-  return focus?.projectId === project.id ? focusAgentInstructions(project) : currentAgentInstructions();
+  if (focus?.projectId === project.id) return focusAgentInstructions(project);
+  const work = focusStore?.getWorkByThread(threadId);
+  return work ? [currentAgentInstructions(), `You are working on Focus outcome ${work.id}: ${work.title}.`, "Inspect current directions with pixice_focus.read_work. Acknowledge each applicable direction using acknowledge_direction after applying it. Report evidence and artifacts; the coordinator owns integration and acceptance. Do not spawn unmanaged workers."].join("\n\n") : currentAgentInstructions();
 }
 
 function permissionSettings(mode, project) {
@@ -649,6 +667,17 @@ function overviewProjectForThread(threadId, cwd = null) {
 
 function isProjectFocusThread(threadId) {
   return Boolean(threadId && database.getProjectFocusSessionByThread(threadId));
+}
+
+function managedFocusAncestor(threadId) {
+  const visited = new Set();
+  while (threadId && !visited.has(threadId)) {
+    visited.add(threadId);
+    const work = focusStore?.getWorkByThread(threadId);
+    if (work) return work;
+    threadId = database.getThreadLink(threadId)?.parentThreadId;
+  }
+  return null;
 }
 
 function projectFocusContextForThread(threadId) {
@@ -1011,6 +1040,7 @@ async function ensureThreadLoaded(project, threadId) {
 async function startTrackedTurn({ project, threadId, input, text, model, effort, serviceTier, frozenAttachments, permissionMode = "workspace-write", trackTask = true }) {
   if (!acceptingWork) throw new Error("The Pixice service is stopping. Your task was not started.");
   if (activeTurns.has(threadId) || startingTurns.has(threadId)) throw new Error("This task is already running.");
+  runtime.assertModelForThread(threadId, model);
   startingTurns.add(threadId);
   try {
     const cwd = await ensureThreadLoaded(project, threadId);
@@ -1057,7 +1087,7 @@ function focusMemoryTranscript(thread) {
         .map((part) => part.text ?? "")
         .join("\n")
         .trim();
-      return text ? [`USER: ${text}`] : [];
+      return text && !text.startsWith("[Pixice Focus work updates]\n") ? [`USER: ${text}`] : [];
     }
     if (item.type === "agentMessage" && item.phase === "final_answer" && String(item.text ?? "").trim()) {
       return [`COORDINATOR: ${item.text.trim()}`];
@@ -1084,7 +1114,7 @@ async function completeFocusMemoryReview(threadId, turn) {
   focusMemoryReviewInFlight.delete(review.focusThreadId);
   try {
     const result = parseFocusMemoryReview(finalAgentText(turn));
-    pixiceFocusMemory.replaceFromMaintenance(review.projectId, result, review.reviewedTurnCount);
+    pixiceFocusMemory.replaceFromMaintenance(review.projectId, result, review.reviewedTurnCount, review.expectedRevision);
   } catch (error) {
     codexRuntime.emit("diagnostic", `Focus memory review failed: ${error.message}`);
   } finally {
@@ -1135,6 +1165,7 @@ async function scheduleFocusMemoryReview(focusThreadId) {
       projectId: project.id,
       focusThreadId,
       reviewedTurnCount: session.userTurnCount,
+      expectedRevision: memory.revision,
       turnId: null
     });
     const prompt = [
@@ -1181,7 +1212,22 @@ function parseFocusQuestionReview(text, request) {
   if (!parsed || typeof parsed !== "object" || !["answer", "escalate"].includes(parsed.action)) {
     throw new Error("Focus question review returned an invalid decision");
   }
-  if (parsed.action === "escalate") return { action: "escalate", reason: String(parsed.reason ?? "").trim() };
+  if (parsed.action === "escalate") {
+    const validIds = new Set(questionIds(request));
+    const questions = parsed.questions && typeof parsed.questions === "object"
+      ? Object.fromEntries(Object.entries(parsed.questions).filter(([id]) => validIds.has(id)).map(([id, value]) => [id, {
+        question: String(value?.question ?? value ?? "").trim(),
+        recommendation: String(value?.recommendation ?? "").trim()
+      }]))
+      : {};
+    return {
+      action: "escalate",
+      reason: String(parsed.reason ?? "").trim(),
+      question: String(parsed.question ?? "").trim(),
+      recommendation: String(parsed.recommendation ?? "").trim(),
+      questions
+    };
+  }
   const answers = parsed.answers && typeof parsed.answers === "object" ? parsed.answers : {};
   const normalized = Object.fromEntries(Object.entries(answers).map(([id, answer]) => [id, String(answer ?? "").trim()]));
   if (questionIds(request).some((id) => !normalized[id])) {
@@ -1190,27 +1236,128 @@ function parseFocusQuestionReview(text, request) {
   return { action: "answer", answers: normalized };
 }
 
+function secretFocusQuestion(question) {
+  const kind = String(question?.inputType ?? question?.type ?? "").toLowerCase();
+  const text = `${question?.header ?? ""} ${question?.question ?? ""} ${question?.originalQuestion ?? ""}`.toLowerCase();
+  return question?.isSecret === true || question?.secret === true || question?.sensitive === true
+    || kind === "password" || /\b(password|secret|api key|access token|credential)\b/.test(text);
+}
+
+function boundedFocusQuestion(question) {
+  return {
+    id: String(question?.id ?? "").slice(0, 160),
+    header: String(question?.header ?? "").slice(0, 160),
+    question: String(question?.question ?? "").slice(0, 2_000),
+    options: (question?.options ?? []).slice(0, 20).map((option) => ({
+      label: String(option?.label ?? "").slice(0, 300),
+      description: String(option?.description ?? "").slice(0, 1_000)
+    }))
+  };
+}
+
+function recordFocusQuestionAnswer(pending, members, source) {
+  const focusContext = pending.focusContext;
+  if (!focusContext?.projectId || !focusStore) return;
+  const leaderQuestions = pending.displayRequest.params?.questions ?? [];
+  const leaderAnswers = members.find((member) => member.key === requestKey(pending.request.id))?.answers ?? {};
+  const safeQuestions = leaderQuestions.filter((question) => !secretFocusQuestion(question)).map(boundedFocusQuestion);
+  const safeIds = new Set(safeQuestions.map((question) => question.id));
+  const answers = Object.fromEntries(Object.entries(leaderAnswers)
+    .filter(([id]) => safeIds.has(id))
+    .map(([id, answer]) => [id, (Array.isArray(answer) ? answer : [answer]).map((value) => String(value).slice(0, 10_000))]));
+  const work = focusStore.getWorkByThread(focusContext.sourceThreadId);
+  const summary = safeQuestions.map((question) => {
+    const values = answers[question.id] ?? [];
+    return `${question.question || question.header}: ${values.join("; ")}`;
+  }).filter(Boolean).join(" | ").slice(0, 3_000);
+  try {
+    focusStore.appendEvent(focusContext.projectId, {
+      workId: work?.id ?? null,
+      kind: "question-answered",
+      message: `${source === "user" ? "The user" : "The Focus coordinator"} answered a worker question.${summary ? ` Quoted question and answer context: ${summary}` : " Secret answer omitted from durable context."}`,
+      focusCoordinatorQuestion: true,
+      wasVisible: pending.visible === true,
+      userEscalated: pending.visible === true,
+      source,
+      sourceThreadId: focusContext.sourceThreadId,
+      workerCount: members.length,
+      request: {
+        id: String(pending.request.id),
+        generation: pending.generation,
+        questions: safeQuestions
+      },
+      answers,
+      redactedCount: leaderQuestions.length - safeQuestions.length
+    });
+    send("FocusUpdated", { projectId: focusContext.projectId });
+    void focusSupervisor.flush(focusContext.projectId).catch((error) => {
+      codexRuntime.emit("diagnostic", `Focus question receipt delivery failed: ${error.message}`);
+    });
+  } catch (error) {
+    codexRuntime.emit("diagnostic", `Focus question receipt could not be saved: ${error.message}`);
+  }
+}
+
 function respondToPendingQuestion(pending, { action = "answer", answers = {} } = {}) {
+  const textAnswers = Object.fromEntries(Object.entries(answers).map(([id, answer]) => [id, Array.isArray(answer) ? answer.join("\n") : answer]));
   if (pending.kind === "pixice-question-tool") {
-    runtime.respond(pending.request.id, pixiceQuestionToolResult({ action, answers }));
+    runtime.respond(pending.request.id, pixiceQuestionToolResult({ action, answers: textAnswers }));
     return;
   }
   if (pending.kind === "pixice-question") {
-    runtime.respond(pending.request.id, { action, answers });
+    runtime.respond(pending.request.id, { action, answers: textAnswers });
     return;
   }
   if (pending.request.method?.includes("requestUserInput")) {
-    const nativeAnswers = Object.fromEntries(Object.entries(answers).map(([id, answer]) => [id, { answers: [answer] }]));
+    const nativeAnswers = Object.fromEntries(Object.entries(answers).map(([id, answer]) => [id, { answers: Array.isArray(answer) ? answer : [answer] }]));
     runtime.respond(pending.request.id, { answers: nativeAnswers });
     return;
   }
   throw new Error("Pending request is not a question");
 }
 
-function showFocusCoordinatorQuestion(pending, focusContext, reason = "") {
-  const taskTitle = focusContext.worker ? database.getThreadName(focusContext.sourceThreadId) : null;
+function respondToFocusQuestion(pending, result, { source = "coordinator" } = {}) {
+  const key = requestKey(pending.request.id);
+  const grouped = focusQuestionGroups.resolve(key, pending.generation, result.answers ?? {});
+  const members = grouped.length ? grouped : [{ key, generation: pending.generation, answers: result.answers ?? {} }];
+  for (const member of members) {
+    const current = pendingRequests.get(member.key);
+    if (current?.generation !== member.generation) continue;
+    respondToPendingQuestion(current, { ...result, answers: member.answers });
+    pendingRequests.delete(member.key);
+    send("AttentionResolved", { requestId: current.request.id, requestGeneration: current.generation, threadId: current.request.params?.threadId });
+  }
+  recordFocusQuestionAnswer(pending, members, source);
+}
+
+function removeFocusQuestionMember(key, generation) {
+  const next = focusQuestionGroups.remove(key, generation);
+  if (!next?.promoted) return;
+  const promoted = pendingRequests.get(next.leaderKey);
+  if (promoted?.generation !== next.leaderGeneration || !promoted.focusContext) return;
+  void scheduleFocusQuestionReview(next.leaderKey, promoted.focusContext);
+}
+
+function showFocusCoordinatorQuestion(pending, focusContext, escalation = "") {
+  const detail = typeof escalation === "string" ? { reason: escalation } : escalation ?? {};
+  const memberCount = focusQuestionGroups.members(requestKey(pending.request.id)).length;
+  const taskTitle = memberCount > 1 ? `${memberCount} workers need this decision` : focusContext.worker ? database.getThreadName(focusContext.sourceThreadId) : null;
+  const originalQuestions = pending.displayRequest.params?.questions ?? [];
+  const questions = originalQuestions.map((question, index) => {
+    const rewrite = detail.questions?.[question.id] ?? {};
+    const coordinatorQuestion = rewrite.question || (originalQuestions.length === 1 ? detail.question : "");
+    const recommendation = rewrite.recommendation || (originalQuestions.length === 1 ? detail.recommendation : "");
+    return {
+      ...question,
+      id: question.id ?? `question-${index + 1}`,
+      ...(secretFocusQuestion(question) ? { isSecret: true } : {}),
+      ...(coordinatorQuestion ? { question: coordinatorQuestion, originalQuestion: question.question } : {}),
+      ...(recommendation ? { coordinatorRecommendation: recommendation } : {})
+    };
+  });
   const displayRequest = {
     ...pending.displayRequest,
+    requestGeneration: pending.generation,
     focusManaged: true,
     focusCoordinatorQuestion: true,
     taskTitle,
@@ -1219,7 +1366,12 @@ function showFocusCoordinatorQuestion(pending, focusContext, reason = "") {
       ...pending.displayRequest.params,
       threadId: focusContext.focusThreadId,
       sourceThreadId: focusContext.sourceThreadId,
-      ...(reason ? { coordinatorReason: reason } : {})
+      isBlocking: false,
+      ...(focusContext.worker ? { workerCount: memberCount || 1 } : {}),
+      questions,
+      ...(detail.reason ? { coordinatorReason: detail.reason } : {}),
+      ...(detail.question ? { coordinatorQuestion: detail.question } : {}),
+      ...(detail.recommendation ? { coordinatorRecommendation: detail.recommendation } : {})
     }
   };
   pending.displayRequest = displayRequest;
@@ -1227,23 +1379,68 @@ function showFocusCoordinatorQuestion(pending, focusContext, reason = "") {
   send("AttentionRequired", displayRequest);
 }
 
+function listFocusCoordinatorQuestions(projectId) {
+  return [...pendingRequests.values()]
+    .filter((pending) => pending.visible === true
+      && pending.displayRequest?.focusCoordinatorQuestion === true
+      && pending.focusContext?.projectId === projectId)
+    .map((pending) => ({
+      requestId: String(pending.request.id),
+      requestGeneration: pending.generation,
+      questions: pending.displayRequest.params?.questions ?? [],
+      reason: pending.displayRequest.params?.coordinatorReason ?? "",
+      recommendation: pending.displayRequest.params?.coordinatorRecommendation ?? "",
+      sourceThreadId: pending.focusContext.sourceThreadId,
+      taskTitle: pending.displayRequest.taskTitle ?? null
+    }));
+}
+
+function answerFocusCoordinatorQuestion(projectId, input) {
+  const pending = [...pendingRequests.values()].find((candidate) =>
+    candidate.visible === true
+    && candidate.displayRequest?.focusCoordinatorQuestion === true
+    && candidate.focusContext?.projectId === projectId
+    && String(candidate.request.id) === String(input.requestId)
+    && candidate.generation === input.requestGeneration
+  );
+  if (!pending) throw new Error("Worker question is no longer pending in this Focus conversation");
+  const answers = input.answers ?? {};
+  const requiredIds = questionIds(pending.displayRequest);
+  if (requiredIds.some((id) => !String(answers[id] ?? "").trim())) {
+    throw new Error("Answer every worker question using its original question ID");
+  }
+  respondToFocusQuestion(pending, { action: "answer", answers }, { source: "coordinator" });
+  pendingRequests.delete(requestKey(pending.request.id));
+  return { ok: true, requestId: String(pending.request.id), requestGeneration: pending.generation };
+}
+
 async function completeFocusQuestionReview(threadId, turn) {
   const review = focusQuestionReviews.get(threadId);
   if (!review) return;
   focusQuestionReviews.delete(threadId);
+  clearTimeout(focusQuestionReviewTimers.get(threadId));
+  focusQuestionReviewTimers.delete(threadId);
   focusQuestionReviewInFlight.delete(review.requestKey);
   const pending = pendingRequests.get(review.requestKey);
   try {
-    if (!pending || pending.generation !== runtimeGeneration) return;
-    const result = parseFocusQuestionReview(finalAgentText(turn), pending.displayRequest);
+    if (!pending || pending.generation !== review.requestGeneration) return;
+    let answer = finalAgentText(turn);
+    if (!answer) {
+      const response = await runtime.request("thread/read", { threadId, includeTurns: true });
+      const current = pendingRequests.get(review.requestKey);
+      if (!current || current.generation !== review.requestGeneration) return;
+      const hydrated = (response?.thread?.turns ?? []).find((candidate) => candidate.id === (review.turnId ?? turn?.id));
+      answer = finalAgentText(hydrated);
+    }
+    const result = parseFocusQuestionReview(answer, pending.displayRequest);
     if (result.action === "answer") {
-      respondToPendingQuestion(pending, result);
+      respondToFocusQuestion(pending, result);
       pendingRequests.delete(review.requestKey);
     } else {
-      showFocusCoordinatorQuestion(pending, review.focusContext, result.reason);
+      showFocusCoordinatorQuestion(pending, review.focusContext, result);
     }
   } catch (error) {
-    if (pending && pending.generation === runtimeGeneration) {
+    if (pending?.generation === review.requestGeneration) {
       showFocusCoordinatorQuestion(pending, review.focusContext, "The coordinator could not resolve this safely from project context.");
     }
     codexRuntime.emit("diagnostic", `Focus question review failed: ${error.message}`);
@@ -1257,6 +1454,20 @@ async function completeFocusQuestionReview(threadId, turn) {
   }
 }
 
+async function focusQuestionReviewModel(focusContext) {
+  const provider = runtime.providerForThread(focusContext.focusThreadId);
+  const policy = focusStore.getPolicy(focusContext.projectId);
+  const candidates = [turnUsageMetadata.get(focusContext.focusThreadId)?.model, policy.coordinatorModel].filter(Boolean);
+  for (const model of candidates) {
+    if (runtime.providerForModel(model) === provider) return model;
+  }
+  const models = (await runtime.request("model/list", { limit: 100 })).data ?? [];
+  const matching = models.filter((model) => model.provider === provider);
+  const selected = matching.find((model) => model.isDefault) ?? matching[0];
+  if (!selected?.id) throw new Error(`No ${provider} model is available for coordinator question review.`);
+  return selected.id;
+}
+
 async function scheduleFocusQuestionReview(requestKeyValue, focusContext) {
   if (focusQuestionReviewInFlight.has(requestKeyValue)) return;
   const pending = pendingRequests.get(requestKeyValue);
@@ -1266,13 +1477,22 @@ async function scheduleFocusQuestionReview(requestKeyValue, focusContext) {
     return;
   }
   focusQuestionReviewInFlight.add(requestKeyValue);
+  let internalThreadId = null;
   try {
     const [focusResponse, workerResponse] = await Promise.all([
       runtime.request("thread/read", { threadId: focusContext.focusThreadId, includeTurns: true }),
       runtime.request("thread/read", { threadId: focusContext.sourceThreadId, includeTurns: true })
     ]);
     const permissions = permissionSettings("read-only", project);
-    const selectedModel = turnUsageMetadata.get(focusContext.focusThreadId)?.model || null;
+    const selectedModel = await focusQuestionReviewModel(focusContext);
+    const work = focusStore.getWorkByThread(focusContext.sourceThreadId);
+    const decisions = work ? focusStore.listDecisions(focusContext.projectId, { workId: work.id, limit: 40 }) : [];
+    const memory = pixiceFocusMemory.read(focusContext.projectId);
+    const latestSequence = focusStore.latestSequence(focusContext.projectId);
+    const priorAnswers = focusStore.listEvents(focusContext.projectId, { after: Math.max(0, latestSequence - 100), limit: 100 })
+      .filter((event) => event.kind === "question-answered")
+      .slice(-10)
+      .map(({ request, answers, source, createdAt }) => ({ request, answers, source, createdAt }));
     const started = await runtime.request("thread/start", {
       cwd: projectPrimaryRoot(project),
       runtimeWorkspaceRoots: runtimeRoots(project),
@@ -1286,29 +1506,46 @@ async function scheduleFocusQuestionReview(requestKeyValue, focusContext) {
         focusAgentInstructions(project),
         "",
         "# Worker question review",
-        "Decide whether the Focus coordinator can answer this worker without interrupting the user.",
-        "Answer routine implementation choices using explicit project context, prior user decisions, and the safest reversible option.",
-        "Escalate only for an unstated personal preference, a change in product direction, an external commitment, credentials, or meaningful irreversible risk.",
-        "Return JSON only. Use {\"action\":\"answer\",\"answers\":{\"question_id\":\"answer\"}} or {\"action\":\"escalate\",\"reason\":\"short reason\"}."
+        "Resolve as much as the project coordinator safely can without interrupting the user.",
+        "Answer from explicit durable directions, prior accepted answers, known project facts, or conservative reversible technical judgment. For option questions, use the exact option label. Never invent a personal preference or unknown fact.",
+        "Escalate only when work needs an unknown external fact, credential, meaningful irreversible authority, external commitment, or a genuine user choice that changes product direction.",
+        "When escalating, rewrite each question in calm coordinator language and recommend an option when project evidence supports one. Preserve the supplied question IDs and option meanings.",
+        "Return JSON only. Answer: {\"action\":\"answer\",\"answers\":{\"question_id\":\"answer\"}}. Escalate: {\"action\":\"escalate\",\"reason\":\"why user input is required\",\"questions\":{\"question_id\":{\"question\":\"coordinator wording\",\"recommendation\":\"recommended choice and why\"}}}."
       ].join("\n"),
       dynamicTools: [],
       internalNoTools: true,
       threadSource: "pixiceFocusQuestionReview"
     });
-    const internalThreadId = started.thread?.id;
+    internalThreadId = started.thread?.id;
     if (!internalThreadId) throw new Error("Question review did not create a thread");
     focusQuestionInternalThreadIds.add(internalThreadId);
     focusQuestionReviews.set(internalThreadId, {
       requestKey: requestKeyValue,
+      requestGeneration: pending.generation,
       focusContext,
       turnId: null
     });
     const prompt = [
+      "DURABLE WORK:",
+      work ? JSON.stringify({ id: work.id, title: work.title, prompt: work.prompt, access: work.access, resources: work.resources, status: work.status }, null, 2) : "(untracked Focus worker)",
+      "",
+      "CURRENT SCOPED DIRECTIONS:",
+      decisions.length ? JSON.stringify(decisions.map(({ revision, text, sourceThreadId, createdAt }) => ({ revision, text, sourceThreadId, createdAt })), null, 2) : "(none)",
+      "",
+      "PROJECT MEMORY:",
+      String(memory.projectMemory || "(empty)").slice(0, 12_000),
+      "",
+      "USER PREFERENCES:",
+      String(memory.userMemory || "(empty)").slice(0, 8_000),
+      "",
+      "PRIOR ACCEPTED WORKER ANSWERS:",
+      priorAnswers.length ? JSON.stringify(priorAnswers, null, 2).slice(0, 16_000) : "(none)",
+      "",
       "RECENT FOCUS CONVERSATION:",
-      focusMemoryTranscript(focusResponse.thread) || "(empty)",
+      String(focusMemoryTranscript(focusResponse.thread) || "(empty)").slice(-24_000),
       "",
       `WORKER: ${database.getThreadName(focusContext.sourceThreadId) || focusContext.sourceThreadId}`,
-      focusMemoryTranscript(workerResponse.thread) || "(no worker transcript)",
+      String(focusMemoryTranscript(workerResponse.thread) || "(no worker transcript)").slice(-20_000),
       "",
       "WORKER QUESTIONS:",
       JSON.stringify(pending.displayRequest.params?.questions ?? [], null, 2),
@@ -1328,28 +1565,39 @@ async function scheduleFocusQuestionReview(requestKeyValue, focusContext) {
       sandboxPolicy: permissions.sandboxPolicy
     });
     const review = focusQuestionReviews.get(internalThreadId);
-    if (review) review.turnId = response.turn?.id ?? null;
+    if (review) {
+      review.turnId = response.turn?.id ?? null;
+      const timer = setTimeout(() => {
+        const expired = focusQuestionReviews.get(internalThreadId);
+        if (!expired) return;
+        focusQuestionReviews.delete(internalThreadId);
+        focusQuestionReviewTimers.delete(internalThreadId);
+        focusQuestionReviewInFlight.delete(expired.requestKey);
+        const latest = pendingRequests.get(expired.requestKey);
+        if (latest?.generation === expired.requestGeneration) {
+          showFocusCoordinatorQuestion(latest, expired.focusContext, "The coordinator could not resolve this worker question in time.");
+        }
+        if (expired.turnId) void runtime.request("turn/interrupt", { threadId: internalThreadId, turnId: expired.turnId }).catch(() => {});
+        void runtime.request("thread/archive", { threadId: internalThreadId }).catch(() => {});
+      }, 120_000);
+      timer.unref?.();
+      focusQuestionReviewTimers.set(internalThreadId, timer);
+    }
   } catch (error) {
     focusQuestionReviewInFlight.delete(requestKeyValue);
+    if (internalThreadId) {
+      focusQuestionReviews.delete(internalThreadId);
+      focusQuestionInternalThreadIds.delete(internalThreadId);
+      clearTimeout(focusQuestionReviewTimers.get(internalThreadId));
+      focusQuestionReviewTimers.delete(internalThreadId);
+    }
     const latest = pendingRequests.get(requestKeyValue);
-    if (latest && latest.generation === runtimeGeneration) showFocusCoordinatorQuestion(latest, focusContext);
+    if (latest?.generation === pending?.generation) showFocusCoordinatorQuestion(latest, focusContext);
     codexRuntime.emit("diagnostic", `Focus question review could not start: ${error.message}`);
   }
 }
 
-async function ensureProjectFocusSession({ project, model, serviceTier }) {
-  const existing = database.getProjectFocusSession(project.id);
-  if (existing) {
-    await ensureThreadLoaded(project, existing.threadId);
-    const response = await runtime.request("thread/read", { threadId: existing.threadId, includeTurns: true });
-    rememberThread(project, response.thread, { loaded: true });
-    return {
-      created: false,
-      session: existing,
-      memory: pixiceFocusMemory.read(project.id),
-      thread: projectRendererThread(withPersistedThreadName(response.thread))
-    };
-  }
+async function createProjectFocusSession({ project, model, serviceTier }) {
   const focusPermissionMode = FOCUS_PERMISSION_MODE;
   const permissions = permissionSettings(focusPermissionMode, project);
   const response = await runtime.request("thread/start", {
@@ -1367,6 +1615,7 @@ async function ensureProjectFocusSession({ project, model, serviceTier }) {
   });
   rememberThread(project, response.thread, { loaded: true });
   const session = database.saveProjectFocusSession({ projectId: project.id, threadId: response.thread.id });
+  focusStore?.updatePolicy(project.id, { coordinatorModel: model || null });
   const name = `${project.displayName} Focus`;
   database.saveThreadName(response.thread.id, name);
   try {
@@ -1378,8 +1627,77 @@ async function ensureProjectFocusSession({ project, model, serviceTier }) {
     created: true,
     session,
     memory: pixiceFocusMemory.read(project.id),
+    configuration: { provider: runtime.providerForThread(response.thread.id), model: model || null },
     thread: projectRendererThread(withPersistedThreadName({ ...response.thread, name }))
   };
+}
+
+async function ensureProjectFocusSession({ project, model, serviceTier, replaceEmpty = false }) {
+  if (!replaceEmpty) model = focusStore?.getPolicy(project.id).coordinatorModel ?? model;
+  const existing = database.getProjectFocusSession(project.id);
+  if (existing) {
+    await ensureThreadLoaded(project, existing.threadId);
+    const response = await runtime.request("thread/read", { threadId: existing.threadId, includeTurns: true });
+    rememberThread(project, response.thread, { loaded: true });
+    const provider = runtime.providerForThread(existing.threadId);
+    const requestedProvider = model ? runtime.providerForModel(model) : provider;
+    const canReplace = replaceEmpty
+      && existing.userTurnCount === 0
+      && Array.isArray(response.thread?.turns)
+      && response.thread.turns.length === 0
+      && !activeTurns.has(existing.threadId)
+      && !startingTurns.has(existing.threadId);
+    if (requestedProvider !== provider && canReplace) {
+      const replacement = await createProjectFocusSession({ project, model, serviceTier });
+      threadSessions.delete(existing.threadId);
+      threadProjects.delete(existing.threadId);
+      turnUsageMetadata.delete(existing.threadId);
+      try {
+        await runtime.request("thread/archive", { threadId: existing.threadId, provider });
+      } catch (error) {
+        codexRuntime.emit("diagnostic", `Unused Focus thread cleanup failed: ${error.message}`);
+      }
+      return { ...replacement, replacedThreadId: existing.threadId };
+    }
+    return {
+      created: false,
+      session: existing,
+      memory: pixiceFocusMemory.read(project.id),
+      configuration: { provider, model: requestedProvider === provider ? model || null : null },
+      thread: projectRendererThread(withPersistedThreadName(response.thread))
+    };
+  }
+  return createProjectFocusSession({ project, model, serviceTier });
+}
+
+async function focusModel(model, task = "", { bridgeOnly = true } = {}) {
+  const models = (await runtime.request("model/list", { limit: 100 })).data ?? [];
+  const catalog = bridgeOnly ? bridgeEligibleModels(models) : models;
+  const selected = model
+    ? catalog.find((candidate) => candidate.id === model || candidate.model === model)
+    : catalog.find((candidate) => candidate.id === recommendBridgeModel(catalog, task)?.modelId);
+  if (!selected) throw new Error(model ? `Focus model ${model} is unavailable on this host.` : "No connected model is available for Focus workers.");
+  return selected;
+}
+
+async function deliverFocusEvents({ projectId, coordinatorThreadId, events: updates }) {
+  const project = getProject(projectId);
+  if (!acceptingWork) throw new Error("The host is stopping; Focus updates remain saved.");
+  if (startingTurns.has(coordinatorThreadId)) throw new Error("Coordinator is starting a turn; delivery remains pending.");
+  const prompt = [
+    "[Pixice Focus work updates]",
+    "These are persisted worker lifecycle notifications, not new user instructions. Review the outcomes with read_work, verify evidence, reconcile current decisions, and integrate a useful response into this project conversation. A worker finishing is not proof that the user's goal is met. Do not echo routine status or start duplicate work.",
+    JSON.stringify(updates.map(({ id, workId, kind, message }) => ({ id, workId, kind, message: String(message ?? "").slice(0, 1500) })))
+  ].join("\n\n");
+  const input = buildCodexUserInput(prompt, []);
+  const activeTurn = activeTurns.get(coordinatorThreadId);
+  if (activeTurn) {
+    await steerBridgeParentTurn(coordinatorThreadId, activeTurn, input);
+    return { action: "steered", turnId: activeTurn };
+  }
+  const previous = turnUsageMetadata.get(coordinatorThreadId) ?? {};
+  const model = previous.model ?? focusStore.getPolicy(projectId).coordinatorModel ?? undefined;
+  return startTrackedTurn({ project, threadId: coordinatorThreadId, input, text: prompt, model, effort: previous.effort, permissionMode: FOCUS_PERMISSION_MODE, trackTask: false });
 }
 
 function boundedTextResult(value, maximumBytes) {
@@ -1770,7 +2088,7 @@ function registerHandlers() {
     requests: [...pendingRequests.values()].filter((pending) => pending.visible !== false).map(({ request, displayRequest, generation }) => {
       const threadId = request.params?.threadId;
       const projectId = connectProjectIdForEvent({ type: "AttentionRequired", payload: { ...(displayRequest ?? request), threadId } });
-      return { ...(displayRequest ?? request), requestGeneration: generation, taskTitle: threadId ? database.getThreadName(threadId) : null, projectId };
+      return { ...(displayRequest ?? request), requestGeneration: generation, taskTitle: displayRequest?.taskTitle ?? (threadId ? database.getThreadName(threadId) : null), projectId };
     }),
   }));
   handlers.handle("providers:login", (_event, payload) => {
@@ -2320,15 +2638,90 @@ function registerHandlers() {
     const value = idPayload.extend({
       model: z.string().optional(),
       serviceTier: z.string().nullable().optional(),
+      replaceEmpty: z.boolean().default(false),
       permissionMode: permissionModeSchema.default(FOCUS_PERMISSION_MODE)
     }).strict().parse(payload);
     const project = getProject(value.projectId);
     const pending = focusSessionEnsures.get(project.id);
     if (pending) return pending;
+    if (value.replaceEmpty && focusSessionTransitions.has(project.id)) throw new Error("The Focus coordinator is already switching providers.");
+    if (value.replaceEmpty) focusSessionTransitions.add(project.id);
     const promise = ensureProjectFocusSession({ project, ...value })
-      .finally(() => focusSessionEnsures.delete(project.id));
+      .finally(() => {
+        if (focusSessionEnsures.get(project.id) === promise) focusSessionEnsures.delete(project.id);
+        if (value.replaceEmpty) focusSessionTransitions.delete(project.id);
+      });
     focusSessionEnsures.set(project.id, promise);
     return promise;
+  });
+  handlers.handle("focus:memory", (_event, payload) => {
+    const { projectId } = idPayload.strict().parse(payload);
+    getProject(projectId);
+    return pixiceFocusMemory.read(projectId);
+  });
+  handlers.handle("focus:memory:update", (_event, payload) => {
+    const value = idPayload.extend({
+      expectedRevision: z.number().int().nonnegative(),
+      projectMemory: z.string().max(6_000),
+      userMemory: z.string().max(2_000)
+    }).strict().parse(payload);
+    getProject(value.projectId);
+    return pixiceFocusMemory.replaceCurated(value.projectId, value, value.expectedRevision);
+  });
+  handlers.handle("focus:memory:clear", (_event, payload) => {
+    const value = idPayload.extend({ expectedRevision: z.number().int().nonnegative() }).strict().parse(payload);
+    getProject(value.projectId);
+    return pixiceFocusMemory.replaceCurated(value.projectId, { projectMemory: "", userMemory: "" }, value.expectedRevision);
+  });
+  handlers.handle("focus:state", (_event, payload) => {
+    const { projectId } = idPayload.strict().parse(payload);
+    getProject(projectId);
+    return focusSupervisor.state(projectId);
+  });
+  handlers.handle("focus:work:control", (_event, payload) => {
+    const value = idPayload.extend({ workId: z.string().min(1), action: z.enum(["pause", "resume", "cancel"]) }).strict().parse(payload);
+    getProject(value.projectId);
+    return focusSupervisor.control(value.projectId, value.workId, value);
+  });
+  handlers.handle("focus:work:follow-up", (_event, payload) => {
+    const value = idPayload.extend({ workId: z.string().min(1), prompt: z.string().trim().min(1).max(100_000) }).strict().parse(payload);
+    getProject(value.projectId);
+    return focusSupervisor.followUp(value.projectId, value.workId, value);
+  });
+  handlers.handle("focus:seen", (_event, payload) => {
+    const value = idPayload.extend({ sequence: z.number().int().nonnegative() }).strict().parse(payload);
+    getProject(value.projectId);
+    const seenSequence = focusStore.markSeen(value.projectId, value.sequence);
+    send("FocusUpdated", { projectId: value.projectId });
+    return { seenSequence };
+  });
+  handlers.handle("focus:policy:update", async (_event, payload) => {
+    const value = idPayload.extend({ patch: z.object({
+      coordinatorModel: z.string().min(1).max(160).nullable().optional(),
+      workerModel: z.string().min(1).max(160).nullable().optional(),
+      reviewModel: z.string().min(1).max(160).nullable().optional(),
+      maxWorkers: z.number().int().min(1).max(8).optional(),
+      permissionMode: permissionModeSchema.optional(), executionHost: z.literal("current").optional()
+    }).strict() }).strict().parse(payload);
+    getProject(value.projectId);
+    const session = database.getProjectFocusSession(value.projectId);
+    for (const field of ["coordinatorModel", "workerModel", "reviewModel"]) {
+      if (!value.patch[field]) continue;
+      const selected = await focusModel(value.patch[field], "", { bridgeOnly: field !== "coordinatorModel" });
+      if (field === "coordinatorModel" && session && runtime.providerForThread(session.threadId) !== selected.provider) {
+        throw new Error("The current coordinator stays with its provider. Choose a model from that provider; worker and review providers are independent.");
+      }
+      value.patch[field] = selected.id;
+    }
+    const policy = focusStore.updatePolicy(value.projectId, value.patch);
+    if (session && Object.hasOwn(value.patch, "coordinatorModel") && policy.coordinatorModel) {
+      turnUsageMetadata.set(session.threadId, { ...turnUsageMetadata.get(session.threadId), model: policy.coordinatorModel });
+    }
+    if (session) threadSessions.delete(session.threadId);
+    send("FocusUpdated", { projectId: value.projectId });
+    send("FocusPolicyUpdated", { projectId: value.projectId, policy });
+    focusSupervisor.policyChanged(value.projectId);
+    return policy;
   });
 
   handlers.handle("threads:list", async (context = {}, payload) => {
@@ -2406,6 +2799,7 @@ function registerHandlers() {
     const project = getProject(value.projectId);
     const focusContext = value.parentThreadId ? projectFocusContextForThread(value.parentThreadId) : null;
     if (focusContext && focusContext.projectId !== project.id) throw new Error("Focus parent belongs to another project");
+    if (value.parentThreadId && managedFocusAncestor(value.parentThreadId)) throw new Error("Managed Focus workers cannot create unsupervised children. Ask the coordinator to delegate the outcome.");
     const permissionMode = focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode;
     const permissions = permissionSettings(permissionMode, project);
     const roots = runtimeRoots(project);
@@ -2507,16 +2901,25 @@ function registerHandlers() {
       permissionMode: permissionModeSchema.default("workspace-write")
     }).superRefine(requirePromptInput).parse(payload);
     const project = getProject(value.projectId);
+    if (focusStore.getWorkByThread(value.threadId)) throw new Error("Continue this managed worker through Focus's Redirect control so its work stays supervised.");
     const focusSession = database.getProjectFocusSessionByThread(value.threadId);
     const isFocus = focusSession?.projectId === project.id;
+    if (isFocus && focusSessionTransitions.has(project.id)) {
+      throw new Error("The Focus coordinator is switching providers. Your message was not submitted; retry in a moment.");
+    }
     const focusContext = projectFocusContextForThread(value.threadId);
     const prompt = await preparePromptInput(value, project, value.threadId, context);
+    if (isFocus && (focusSessionTransitions.has(project.id) || database.getProjectFocusSession(project.id)?.threadId !== value.threadId)) {
+      throw new Error("The Focus coordinator changed while preparing your message. Your message was not submitted; retry now.");
+    }
     const response = await startTrackedTurn({
       project, threadId: value.threadId, input: buildCodexUserInput(prompt.text, prompt.images),
       text: value.text, model: value.model, effort: value.effort, serviceTier: value.serviceTier,
-      permissionMode: focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode, trackTask: !isFocus
+      permissionMode: focusStore.getWorkByThread(value.threadId)?.permissionMode ?? (focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode), trackTask: !isFocus
     });
-    if (isFocus) database.incrementProjectFocusTurn(project.id, value.threadId);
+    if (isFocus) {
+      database.incrementProjectFocusTurn(project.id, value.threadId);
+    }
     if (pendingTaskNames.delete(value.threadId)) {
       const attachmentCount = value.images.length + value.attachments.length + value.attachmentIds.length;
       scheduleThreadName({ project, threadId: value.threadId, source: value.text || `${attachmentCount} attached file${attachmentCount === 1 ? "" : "s"}`, kind: "task" });
@@ -2540,6 +2943,12 @@ function registerHandlers() {
       ...promptInputSchema
     }).superRefine(requirePromptInput).parse(payload);
     const project = getProject(value.projectId);
+    const managed = focusStore.getWorkByThread(value.threadId);
+    if (managed) {
+      if (managed.projectId !== project.id) throw new Error("Worker is outside this project");
+      if (value.images.length || value.attachments.length || value.attachmentIds.length) throw new Error("Send attachments to the Focus coordinator so it can include them in the worker's brief.");
+      return focusSupervisor.followUp(project.id, managed.id, { prompt: value.text });
+    }
     await ensureThreadLoaded(project, value.threadId);
     const prompt = await preparePromptInput(value, project, value.threadId, context);
     taskResults.stopReplay(value.threadId, true);
@@ -2555,6 +2964,11 @@ function registerHandlers() {
   });
   handlers.handle("turns:interrupt", async (_event, payload) => {
     const value = threadPayload.extend({ turnId: z.string().min(1) }).parse(payload);
+    const managed = focusStore.getWorkByThread(value.threadId);
+    if (managed) {
+      if (managed.projectId !== value.projectId) throw new Error("Worker is outside this project");
+      return focusSupervisor.control(value.projectId, managed.id, { action: "pause" });
+    }
     const project = getProject(value.projectId);
     await ensureThreadLoaded(project, value.threadId);
     taskResults.stopReplay(value.threadId);
@@ -2567,11 +2981,12 @@ function registerHandlers() {
   handlers.handle("approvals:resolve", (_event, payload) => {
     const value = z.object({
       requestId: z.union([z.string(), z.number()]),
+      requestGeneration: z.number().int().nonnegative(),
       decision: z.enum(["accept", "decline", "acceptForSession", "cancel"])
     }).parse(payload);
     const key = requestKey(value.requestId);
     const pending = pendingRequests.get(key);
-    if (!pending || pending.generation !== runtimeGeneration) throw new Error("Approval request is no longer pending");
+    if (!pending || value.requestGeneration !== pending.generation) throw new Error("Approval request is no longer pending");
     if (!pending.request.method?.toLowerCase().includes("approval")) throw new Error("Pending request is not an approval");
     runtime.respond(value.requestId, { decision: value.decision });
     pendingRequests.delete(key);
@@ -2580,38 +2995,41 @@ function registerHandlers() {
   handlers.handle("requests:respond", (_event, payload) => {
     const value = z.object({
       requestId: z.union([z.string(), z.number()]),
+      requestGeneration: z.number().int().nonnegative(),
       answers: z.record(z.object({ answers: z.array(z.string().trim().min(1)).min(1).max(20) }))
     }).parse(payload);
     const key = requestKey(value.requestId);
     const pending = pendingRequests.get(key);
-    if (!pending || pending.generation !== runtimeGeneration) throw new Error("Input request is no longer pending");
+    if (!pending || value.requestGeneration !== pending.generation) throw new Error("Input request is no longer pending");
     if (!pending.request.method?.includes("requestUserInput")) throw new Error("Pending request does not accept user input");
-    runtime.respond(value.requestId, { answers: value.answers });
+    respondToFocusQuestion(pending, { answers: Object.fromEntries(Object.entries(value.answers).map(([id, answer]) => [id, answer.answers])) }, { source: "user" });
     pendingRequests.delete(key);
     return { ok: true };
   });
   handlers.handle("questions:respond", (_event, payload) => {
     const value = z.object({
       requestId: z.union([z.string(), z.number()]),
+      requestGeneration: z.number().int().nonnegative(),
       action: z.enum(["answer", "cancel"]).default("answer"),
       answers: z.record(z.string().trim().min(1).max(10_000)).default({})
     }).parse(payload);
     const key = requestKey(value.requestId);
     const pending = pendingRequests.get(key);
-    if (!pending || pending.generation !== runtimeGeneration) throw new Error("Question is no longer pending");
-    respondToPendingQuestion(pending, value);
+    if (!pending || value.requestGeneration !== pending.generation) throw new Error("Question is no longer pending");
+    respondToFocusQuestion(pending, value, { source: "user" });
     pendingRequests.delete(key);
     return { ok: true };
   });
   handlers.handle("elicitations:respond", (_event, payload) => {
     const value = z.object({
       requestId: z.union([z.string(), z.number()]),
+      requestGeneration: z.number().int().nonnegative(),
       action: z.enum(["accept", "decline", "cancel"]),
       content: z.record(z.unknown()).optional()
     }).parse(payload);
     const key = requestKey(value.requestId);
     const pending = pendingRequests.get(key);
-    if (!pending || pending.generation !== runtimeGeneration) throw new Error("Elicitation request is no longer pending");
+    if (!pending || value.requestGeneration !== pending.generation) throw new Error("Elicitation request is no longer pending");
     if (!pending.request.method?.toLowerCase().includes("elicitation")) throw new Error("Pending request is not an elicitation");
     runtime.respond(value.requestId, {
       action: value.action,
@@ -2715,6 +3133,7 @@ function registerHandlers() {
   if (recordedDataVersion && recordedDataVersion !== version) recoverUpdateDataFromBackup({ userDataPath });
   await ensureVersionUpdateDataBackup({ userDataPath, currentVersion: version });
   database = new PixiceDatabase(userDataPath);
+  focusStore = new FocusStore(database);
   pixiceFocusMemory = new PixiceFocusMemory({
     database,
     onChange: ({ projectId }) => {
@@ -2868,12 +3287,15 @@ function registerHandlers() {
       });
       if (!project) return null;
       const focusContext = projectFocusContextForThread(threadId);
+      const managedWork = managedFocusAncestor(threadId);
       return {
         projectId: project.id,
         cwd: binding?.cwd || projectPrimaryRoot(project),
         runtimeWorkspaceRoots: projectRoots(project),
         developerInstructions: currentAgentInstructions(),
-        enforcedPermissionMode: focusContext ? FOCUS_PERMISSION_MODE : null,
+        focusCoordinator: Boolean(focusContext && !focusContext.worker),
+        managedFocusWork: Boolean(managedWork),
+        enforcedPermissionMode: managedWork?.permissionMode ?? (focusContext ? focusStore.getPolicy(project.id).permissionMode : null),
         permissionMode: turnUsageMetadata.get(threadId)?.permissionMode
           ?? database.getAppSettings().defaultPermissionMode
           ?? "workspace-write",
@@ -2892,6 +3314,45 @@ function registerHandlers() {
       ...payload,
       projectId: threadProjects.get(payload.threadId)
     })
+  });
+  focusSupervisor = new FocusSupervisor({
+    store: focusStore, runtime,
+    contextForProject: (projectId) => {
+      const project = getProject(projectId);
+      const session = database.getProjectFocusSession(projectId);
+      if (!session) throw new Error("Open the project's Focus coordinator before delegating work.");
+      return { coordinatorThreadId: session.threadId, cwd: projectPrimaryRoot(project) };
+    },
+    startWorker: async ({ projectId, workId, coordinatorThreadId, prompt, model, effort, permissionMode }) => {
+      if (!acceptingWork) throw new Error("The host is stopping; queued work remains saved.");
+      const selected = await focusModel(model, prompt);
+      return pixiceBridge.startDetached({ threadId: coordinatorThreadId }, {
+        prompt, model: selected.id, ...(effort ? { effort } : {}), permissionMode
+      }, { onCreated: (thread) => {
+        if (workId) focusStore.updateWork(projectId, workId, { threadId: thread.id, model: selected.id });
+      } });
+    },
+    continueWorker: async ({ projectId, threadId, turnId, prompt, model, effort, permissionMode }) => {
+      const project = getProject(projectId);
+      await ensureThreadLoaded(project, threadId);
+      if (turnId) {
+        await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(prompt, []) });
+        return { turnId };
+      }
+      const response = await startTrackedTurn({ project, threadId, input: buildCodexUserInput(prompt, []), text: prompt, model: model ?? undefined, effort, permissionMode });
+      return { turnId: response.turn.id };
+    },
+    interruptWorker: async ({ projectId, threadId, turnId }) => {
+      getProject(projectId);
+      if (turnId) await runtime.request("turn/interrupt", { threadId, turnId });
+    },
+    deliver: deliverFocusEvents,
+    onChange: (projectId) => send("FocusUpdated", { projectId })
+  });
+  pixiceFocusMemory.coordination = new FocusCoordinationTools({
+    database, store: focusStore, supervisor: focusSupervisor, validateModel: focusModel,
+    listQuestions: listFocusCoordinatorQuestions,
+    answerQuestion: answerFocusCoordinatorQuestion
   });
   proactiveStewardship = new ProactiveStewardship({
     database,
@@ -2975,27 +3436,59 @@ function registerHandlers() {
     });
   });
   runtime.on("status", (status) => {
-    if (status.state === "connecting" || status.state === "reconnecting" || status.state === "stopped") {
-      threadSessions.clear();
-      threadProjects.clear();
-      pendingRequests.clear();
-      activeTurns.clear();
-      pendingTaskNames.clear();
-      scheduledThreadNames.clear();
-      focusSessionEnsures.clear();
-      focusMemoryReviews.clear();
-      focusMemoryReviewInFlight.clear();
-      focusMemoryInternalThreadIds.clear();
-      focusQuestionReviews.clear();
-      focusQuestionReviewInFlight.clear();
-      focusQuestionInternalThreadIds.clear();
-      turnUsageMetadata.clear();
-      runtimeGeneration += 1;
+    const providerState = status.provider ? status.providers?.[status.provider]?.state ?? status.state : status.state;
+    if (status.provider && ["connecting", "reconnecting", "stopped", "unavailable"].includes(providerState)) {
+      const provider = status.provider;
+      const affectedThreadIds = new Set(database.listThreadProviderBindings({ provider }).map((binding) => binding.threadId));
+      focusSupervisor?.providerUnavailable(provider);
+      for (const threadId of affectedThreadIds) {
+        threadSessions.delete(threadId);
+        threadProjects.delete(threadId);
+        activeTurns.delete(threadId);
+        startingTurns.delete(threadId);
+        pendingTaskNames.delete(threadId);
+        scheduledThreadNames.delete(threadId);
+        turnUsageMetadata.delete(threadId);
+      }
+      for (const [key, pending] of pendingRequests) {
+        const threadId = pending.request?.params?.threadId;
+        if (!threadId || runtime.providerForThread(threadId) !== provider) continue;
+        pendingRequests.delete(key);
+        removeFocusQuestionMember(key, pending.generation);
+        send("AttentionResolved", { requestId: pending.request?.id, threadId });
+      }
+      for (const [projectId] of focusSessionEnsures) {
+        const threadId = database.getProjectFocusSession(projectId)?.threadId;
+        if (threadId && runtime.providerForThread(threadId) === provider) {
+          focusSessionEnsures.delete(projectId);
+          focusSessionTransitions.delete(projectId);
+        }
+      }
+      for (const [threadId, review] of focusMemoryReviews) {
+        if (runtime.providerForThread(threadId) !== provider) continue;
+        focusMemoryReviews.delete(threadId);
+        focusMemoryReviewInFlight.delete(review.focusThreadId);
+        focusMemoryInternalThreadIds.delete(threadId);
+      }
+      for (const [threadId, review] of focusQuestionReviews) {
+        if (runtime.providerForThread(threadId) !== provider) continue;
+        const pending = pendingRequests.get(review.requestKey);
+        if (pending?.generation === review.requestGeneration) {
+          showFocusCoordinatorQuestion(pending, review.focusContext, "The background coordinator became unavailable, so this worker question needs your input.");
+        }
+        focusQuestionReviews.delete(threadId);
+        focusQuestionReviewInFlight.delete(review.requestKey);
+        focusQuestionInternalThreadIds.delete(threadId);
+        clearTimeout(focusQuestionReviewTimers.get(threadId));
+        focusQuestionReviewTimers.delete(threadId);
+      }
       updateTrayMenu();
-      send("AttentionReset");
     }
     runtimeStatus = status;
     send("RuntimeStatus", { ...status, connected: runtime.connected });
+    if (focusSupervisor && providerState === "ready") {
+      void focusSupervisor.recover().catch((error) => codexRuntime.emit("diagnostic", `Focus recovery: ${error.message}`));
+    }
   });
   runtime.on("event", containListenerErrors((event) => {
     const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
@@ -3029,7 +3522,10 @@ function registerHandlers() {
     }
     const focusSession = threadId ? database.getProjectFocusSessionByThread(threadId) : null;
     if (method === "serverRequest/resolved") {
-      pendingRequests.delete(requestKey(event.payload.requestId));
+      const key = requestKey(event.payload.requestId);
+      const pending = pendingRequests.get(key);
+      pendingRequests.delete(key);
+      if (pending) removeFocusQuestionMember(key, pending.generation);
       send("AttentionResolved", { requestId: event.payload.requestId, threadId });
     }
     if (method === "account/rateLimits/updated") {
@@ -3059,7 +3555,7 @@ function registerHandlers() {
           model: collabItem.model ?? parentUsage.model ?? null,
           serviceTier: parentUsage.serviceTier ?? null,
           effort: collabItem.effort ?? parentUsage.effort ?? null,
-          permissionMode: parentFocusContext ? FOCUS_PERMISSION_MODE : parentUsage.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write",
+          permissionMode: managedFocusAncestor(parentThreadId)?.permissionMode ?? (parentFocusContext ? FOCUS_PERMISSION_MODE : parentUsage.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write"),
           provider: event.payload?.provider ?? parentUsage.provider ?? "codex"
         });
       }
@@ -3171,7 +3667,10 @@ function registerHandlers() {
         completionRevision: `turn:${turn?.id ?? event.payload?.turnId ?? receivedAt}`,
         updatedAt: turn?.completedAt ?? receivedAt
       });
-      if (focusSession) void scheduleFocusMemoryReview(threadId);
+      if (focusSession) {
+        void scheduleFocusMemoryReview(threadId);
+        void focusSupervisor?.flush(focusSession.projectId).catch((error) => codexRuntime.emit("diagnostic", `Focus delivery: ${error.message}`));
+      }
     }
     if (method === "turn/started" || method === "turn/completed") updateTrayMenu();
     scheduleDelegatedThreadNames(event);
@@ -3228,7 +3727,8 @@ function registerHandlers() {
     }
     const threadId = request.params?.threadId;
     const focusContext = threadId ? projectFocusContextForThread(threadId) : null;
-    if (focusContext && request.method?.toLowerCase().includes("approval")) {
+    const focusAccess = focusContext ? managedFocusAncestor(threadId)?.permissionMode ?? FOCUS_PERMISSION_MODE : null;
+    if (focusContext && focusAccess === "full-access" && request.method?.toLowerCase().includes("approval")) {
       runtime.respond(request.id, { decision: "accept" });
       return;
     }
@@ -3248,14 +3748,20 @@ function registerHandlers() {
     } else if (request.method === PIXICE_QUESTION_METHOD) kind = "pixice-question";
     const key = requestKey(request.id);
     const question = displayRequest.method?.includes("requestUserInput") && Array.isArray(displayRequest.params?.questions);
-    const pending = { request, displayRequest, kind, generation: runtimeGeneration, visible: !(focusContext?.worker && question) };
+    const pending = { request, displayRequest, kind, generation: ++nextAttentionGeneration, visible: !(focusContext?.worker && question), focusContext };
     pendingRequests.set(key, pending);
     if (focusContext && question) {
-      if (focusContext.worker) void scheduleFocusQuestionReview(key, focusContext);
+      if (focusContext.worker) {
+        const group = focusQuestionGroups.add({ key, generation: pending.generation, projectId: focusContext.projectId, questions: displayRequest.params.questions });
+        if (group.duplicate) {
+          const leader = pendingRequests.get(group.leaderKey);
+          if (leader?.visible && leader.focusContext) showFocusCoordinatorQuestion(leader, leader.focusContext);
+        } else void scheduleFocusQuestionReview(key, focusContext);
+      }
       else showFocusCoordinatorQuestion(pending, focusContext);
       return;
     }
-    send("AttentionRequired", { ...displayRequest, taskTitle: threadId ? database.getThreadName(threadId) : null, projectId: threadId ? authoritativeThreadProjectId(threadId) : null });
+    send("AttentionRequired", { ...displayRequest, requestGeneration: pending.generation, taskTitle: threadId ? database.getThreadName(threadId) : null, projectId: threadId ? authoritativeThreadProjectId(threadId) : null });
     const settings = database.getAppSettings();
     if (!focusContext && settings.attentionNotifications !== false) {
       void platform.notify({
@@ -3271,12 +3777,14 @@ function registerHandlers() {
   registerHandlers();
   await runtime.start();
   resolveRuntimeReady();
+  await focusSupervisor.recover();
   runtime.startProviderUpdateChecks({ enabled: database.getAppSettings().checkProviderUpdates !== false });
   await pixiceBridge.workflowReady;
   if (!pixiceBridge.workflowError) markUpdateDataVersion(userDataPath, version);
   }
 
   async function quiesce() {
+    acceptingWork = false;
     const workflows = pixiceBridge?.workflowIntegration?.workflows;
     if (workflows) await workflows.close();
     await Promise.allSettled([...activeTurns].map(([threadId, turnId]) => runtime.request("turn/interrupt", { threadId, turnId })));
@@ -3285,6 +3793,8 @@ function registerHandlers() {
     if (stopped) return;
     if ((activeTurns.size || startingTurns.size || pixiceBridge?.workflowIntegration?.workflows.activeRuns.size) && !force) throw new Error("Active work is still running. Stop it first or explicitly interrupt it.");
     stopped = true;
+    acceptingWork = false;
+    focusSupervisor?.dispose();
     flushRendererDeltas();
     await pixiceBridge?.workflowIntegration?.close();
     await iosRuntimeService?.destroy();

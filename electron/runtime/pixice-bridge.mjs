@@ -163,6 +163,12 @@ export class PixiceBridge {
     }
   }
 
+  // Focus owns durable completion delivery; ordinary bridge callers retain the
+  // original blocking contract.
+  startDetached(params, input, { onCreated } = {}) {
+    return this.#spawnThread(params, z.object(spawnThreadShape).parse(input), { detached: true, onCreated });
+  }
+
   async #listModels(shape, input) {
     z.object(shape).parse(input);
     const response = await this.runtime.request("model/list", { limit: 100 });
@@ -199,9 +205,11 @@ export class PixiceBridge {
     };
   }
 
-  async #spawnThread(params, input) {
+  async #spawnThread(params, input, { detached = false, onCreated } = {}) {
     const context = this.threadContext(params.threadId);
     if (!context?.projectId || !context.cwd) throw new Error("The parent thread is not attached to an open Pixice project");
+    if (context.managedFocusWork) throw new Error("Ask the Focus coordinator to delegate additional work; managed workers cannot bypass its scheduling policy.");
+    if (context.focusCoordinator && !detached) throw new Error("Use pixice_focus.dispatch_work so the coordinator remains available while work runs.");
     const catalog = (await this.#listModels(listModelsShape, {})).models;
     const matches = catalog.filter((model) => model.id === input.model || model.model === input.model);
     if (matches.length !== 1) {
@@ -212,7 +220,7 @@ export class PixiceBridge {
     if (input.effort && effortValues.length && !effortValues.includes(input.effort)) {
       throw new Error(`${input.effort} is not supported by ${selected.displayName}`);
     }
-    const permissionMode = context.enforcedPermissionMode
+    const permissionMode = (detached ? input.permissionMode : context.enforcedPermissionMode)
       ?? input.permissionMode
       ?? context.permissionMode
       ?? "workspace-write";
@@ -239,6 +247,7 @@ export class PixiceBridge {
       effort: input.effort ?? null
     });
     this.onThreadCreated?.({ context, thread: child, prompt: input.prompt, model: selected, permissionMode });
+    onCreated?.(child);
     this.#publishAgentState({
       parentThreadId: params.threadId,
       childThreadId: child.id,
@@ -255,8 +264,10 @@ export class PixiceBridge {
       parentTurnId: params.turnId ?? null,
       model: selected.id,
       effort: input.effort ?? null,
-      prompt: input.prompt
+      prompt: input.prompt,
+      detached
     }));
+    let startedTurnId = null;
     try {
       const turn = await this.runtime.request("turn/start", {
         threadId: child.id,
@@ -270,6 +281,7 @@ export class PixiceBridge {
         approvalsReviewer: permissions.approvalsReviewer,
         sandboxPolicy: permissions.sandboxPolicy
       });
+      startedTurnId = turn.turn.id;
       const record = this.pending.get(child.id);
       if (record) record.turnId = turn.turn.id;
     } catch (error) {
@@ -283,6 +295,9 @@ export class PixiceBridge {
         message: error.message
       });
       throw error;
+    }
+    if (detached) {
+      return { threadId: child.id, turnId: startedTurnId };
     }
     return completion;
   }
@@ -337,6 +352,7 @@ export class PixiceBridge {
       error: turn?.error?.message ?? null
     };
     pending.resolve(result);
+    if (pending.detached) return;
     const completionTimer = setTimeout(() => {
       void Promise.resolve(this.onCompletion?.({
         parentThreadId: pending.parentThreadId,

@@ -1511,6 +1511,18 @@ export class PixiceDatabase {
     if (focus) this.#indexFocusSnapshot(focus.projectId, threadId, snapshot);
   }
 
+  saveProviderThreadSummary(threadId, summary) {
+    const updatedAt = this.#nextProviderWriteTimestamp(threadId);
+    const existing = this.db.prepare("SELECT snapshot FROM provider_thread_snapshots WHERE thread_id = ?").get(threadId);
+    const snapshot = existing ? parsedJson(existing.snapshot, {}) : summary;
+    this.db.prepare(`
+      INSERT INTO provider_thread_snapshots (thread_id, snapshot, summary, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        summary=excluded.summary
+    `).run(threadId, JSON.stringify(snapshot), JSON.stringify(providerThreadSummary(summary)), updatedAt);
+  }
+
   #indexFocusSnapshot(projectId, threadId, snapshot) {
     const entries = focusHistoryItems(snapshot);
     const insert = this.db.prepare(`
@@ -1523,11 +1535,11 @@ export class PixiceDatabase {
     `) : null;
     this.db.exec("BEGIN");
     try {
-      this.db.prepare("DELETE FROM project_focus_history WHERE project_id = ? AND thread_id = ?").run(projectId, threadId);
-      if (this.focusHistoryFts) {
-        this.db.prepare("DELETE FROM project_focus_history_fts WHERE project_id = ? AND thread_id = ?").run(projectId, threadId);
-      }
       for (const entry of entries) {
+        this.db.prepare("DELETE FROM project_focus_history WHERE project_id = ? AND thread_id = ? AND item_id = ?").run(projectId, threadId, entry.itemId);
+        if (this.focusHistoryFts) {
+          this.db.prepare("DELETE FROM project_focus_history_fts WHERE project_id = ? AND thread_id = ? AND item_id = ?").run(projectId, threadId, entry.itemId);
+        }
         const values = [projectId, threadId, entry.itemId, entry.role, entry.content, entry.createdAt];
         insert.run(...values);
         insertFts?.run(...values);

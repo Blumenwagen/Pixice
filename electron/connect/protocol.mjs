@@ -34,7 +34,7 @@ export const CAPABILITIES = {
   providers: { list: 'providers:list' },
   usage: { summary: 'usage:summary', limits: 'usage:limits' },
   projects: { list: 'projects:list', touch: 'projects:touch', create: 'projects:create', delete: 'projects:delete' },
-  focus: { ensure: 'focus:ensure' },
+  focus: { ensure: 'focus:ensure', readMemory: 'focus:memory', updateMemory: 'focus:memory:update', clearMemory: 'focus:memory:clear', state: 'focus:state', controlWork: 'focus:work:control', followUp: 'focus:work:follow-up', updatePolicy: 'focus:policy:update', markSeen: 'focus:seen' },
   threads: { list: 'threads:list', read: 'threads:read', children: 'threads:children', create: 'threads:create', fork: 'threads:fork', archive: 'threads:archive' },
   turns: { start: 'turns:start', steer: 'turns:steer', interrupt: 'turns:interrupt' },
   approvals: { resolve: 'approvals:resolve' },
@@ -54,7 +54,7 @@ export const CAPABILITIES = {
   transcription: { state: 'transcription:state', install: 'transcription:install', cancelInstall: 'transcription:install-cancel', remove: 'transcription:remove', select: 'transcription:select', configure: 'transcription:configure', start: 'transcription:start', chunk: 'transcription:chunk', finish: 'transcription:finish', abort: 'transcription:abort' }
 };
 export const OPERATIONS = new Map(Object.entries(CAPABILITIES).flatMap(([group, entries]) => Object.entries(entries).map(([name, channel]) => [`${group}.${name}`, channel])));
-export const REMOTE_EVENTS = new Set(['BrowserState', 'BrowserOpenRequested', 'PreviewWorkspacePresentRequested', 'ActivityReceived', 'RuntimeEvent', 'RuntimeStatus', 'RuntimeError', 'TaskUpdated', 'AgentUpdated', 'AttentionRequired', 'AttentionResolved', 'AttentionReset', 'BoardUpdated', 'ProjectDeleted', 'ProactivityUpdated', 'TaskReceiptUpdated', 'UsageUpdated', 'CodexLimitsUpdated', 'InstrumentUpdated', 'InstrumentOpenRequested', 'InstrumentInteractionUpdated', 'TaskPreviewOpenRequested', 'FilePreviewOpenRequested', 'WorkflowUpdated', 'WorkflowRunUpdated', 'WorkflowOpenRequested', 'WorkflowTriggersUpdated', 'TranscriptionState', 'TranscriptionModelProgress']);
+export const REMOTE_EVENTS = new Set(['BrowserState', 'BrowserOpenRequested', 'PreviewWorkspacePresentRequested', 'ActivityReceived', 'RuntimeEvent', 'RuntimeStatus', 'RuntimeError', 'TaskUpdated', 'AgentUpdated', 'AttentionRequired', 'AttentionResolved', 'AttentionReset', 'BoardUpdated', 'FocusUpdated', 'FocusPolicyUpdated', 'ProjectDeleted', 'ProactivityUpdated', 'TaskReceiptUpdated', 'UsageUpdated', 'CodexLimitsUpdated', 'InstrumentUpdated', 'InstrumentOpenRequested', 'InstrumentInteractionUpdated', 'TaskPreviewOpenRequested', 'FilePreviewOpenRequested', 'WorkflowUpdated', 'WorkflowRunUpdated', 'WorkflowOpenRequested', 'WorkflowTriggersUpdated', 'TranscriptionState', 'TranscriptionModelProgress']);
 export function normalizeEndpoint(value) {
   const url = new URL(value);
   if (url.username || url.password || url.search || url.hash || !['https:', 'http:'].includes(url.protocol) || url.pathname !== '/') throw new Error('Use the instance origin, such as https://pixice.example.com');
@@ -62,4 +62,4 @@ export function normalizeEndpoint(value) {
   return url.origin;
 }
 
-export const READ_OPERATIONS = new Set(['browser.state', 'browser.frame', 'app.bootstrap', 'app.overview', 'runtime.status', 'git.status', 'providers.list', 'usage.summary', 'usage.limits', 'projects.list', 'projects.directories', 'threads.list', 'threads.read', 'threads.children', 'review.read', 'review.file', 'files.read', 'files.preview', 'models.list', 'tasks.receipts', 'tasks.receipt', 'tasks.interventions', 'board.list', 'board.read', 'board.activity', 'board.readProposal', 'proactivity.list', 'instruments.list', 'instruments.tools', 'instruments.read', 'instruments.events', 'instruments.receipts', 'instruments.revisions', 'workflows.list', 'workflows.read', 'workflows.taskRuns', 'workflows.triggers', 'transcription.state']);
+export const READ_OPERATIONS = new Set(['browser.state', 'browser.frame', 'app.bootstrap', 'app.overview', 'runtime.status', 'git.status', 'providers.list', 'usage.summary', 'usage.limits', 'projects.list', 'projects.directories', 'focus.readMemory', 'focus.state', 'threads.list', 'threads.read', 'threads.children', 'review.read', 'review.file', 'files.read', 'files.preview', 'models.list', 'tasks.receipts', 'tasks.receipt', 'tasks.interventions', 'board.list', 'board.read', 'board.activity', 'board.readProposal', 'proactivity.list', 'instruments.list', 'instruments.tools', 'instruments.read', 'instruments.events', 'instruments.receipts', 'instruments.revisions', 'workflows.list', 'workflows.read', 'workflows.taskRuns', 'workflows.triggers', 'transcription.state']);

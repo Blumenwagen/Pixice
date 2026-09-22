@@ -32,7 +32,7 @@ export const AGENT_BEHAVIORS = Object.freeze([
     description: "Cut AI writing tells and use a plainer, more human voice.",
     category: "core",
     filename: "unslop.md",
-    defaultEnabled: false
+    defaultEnabled: true
   }),
   Object.freeze({
     id: "workflowAutomation",
@@ -40,7 +40,7 @@ export const AGENT_BEHAVIORS = Object.freeze([
     description: "Proactively use Pixice workflows for repeatable, scheduled, or reusable processes.",
     category: "pixice-native",
     filename: "workflow-first-automation.md",
-    defaultEnabled: false
+    defaultEnabled: true
   }),
   Object.freeze({
     id: "boardStewardship",
@@ -48,7 +48,7 @@ export const AGENT_BEHAVIORS = Object.freeze([
     description: "Proactively inspect the board, attach tracked work, and capture durable follow-ups.",
     category: "pixice-native",
     filename: "board-stewardship.md",
-    defaultEnabled: false
+    defaultEnabled: true
   }),
   Object.freeze({
     id: "threadOrchestration",
@@ -64,7 +64,7 @@ export const AGENT_BEHAVIORS = Object.freeze([
     description: "Extend Pixice with project-specific controls and views without building a separate app.",
     category: "pixice-native",
     filename: "tools.md",
-    defaultEnabled: false
+    defaultEnabled: true
   })
 ]);
 

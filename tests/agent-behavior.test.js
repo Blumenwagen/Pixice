@@ -25,7 +25,14 @@ describe("agent behavior packs", () => {
   });
 
   it("uses safe defaults and honors persisted overrides", () => {
-    expect(resolveAgentBehaviors({ parallelDelegation: true, verification: false })).toEqual({
+    expect(resolveAgentBehaviors({
+      parallelDelegation: true,
+      verification: false,
+      unslop: false,
+      workflowAutomation: false,
+      boardStewardship: false,
+      tools: false
+    })).toEqual({
       structuredPlanning: true,
       parallelDelegation: true,
       verification: false,
@@ -34,6 +41,17 @@ describe("agent behavior packs", () => {
       boardStewardship: false,
       threadOrchestration: false,
       tools: false
+    });
+
+    expect(resolveAgentBehaviors()).toEqual({
+      structuredPlanning: true,
+      parallelDelegation: false,
+      verification: true,
+      unslop: true,
+      workflowAutomation: true,
+      boardStewardship: true,
+      threadOrchestration: false,
+      tools: true
     });
   });
 

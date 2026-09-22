@@ -271,6 +271,60 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
   const boardActivity = new Map(boardTasks.map((task) => [task.id, [{ id: `${task.id}:activity`, taskId: task.id, projectId: project.id, kind: "schedule-changed", summary: task.schedule.explanation, actorKind: "agent", actorId: task.owner, createdAt: task.updatedAt }]]));
   const listeners = new Set();
   const emit = (type, payload) => listeners.forEach((listener) => listener({ type, payload }));
+  let focusPolicy = {
+    coordinatorModel: "gpt-5.6",
+    workerModel: "gpt-5.6-luna",
+    reviewModel: "gpt-5.6",
+    maxWorkers: 2,
+    permissionMode: "workspace-write",
+    executionHost: "current"
+  };
+  let focusWork = [
+    {
+      id: "preview-focus-research", title: "Check token handling", prompt: "Read the existing session and token flow before changing it.",
+      status: "running", threadId: "preview-focus-research-thread", answer: "", error: null, verification: null,
+      model: "gpt-5.6-luna", access: "read", resources: ["src/auth"], dependsOn: [], decisionRevision: 2, acknowledgedDecisionRevision: 2, updatedAt: new Date(Date.now() - 18_000).toISOString()
+    },
+    {
+      id: "preview-focus-implementation", title: "Implement session migration", prompt: "Make the client session migration safe and ready for coordinator review.",
+      status: "review", threadId: "preview-focus-implementation-thread", answer: "The migration preserves the existing session shape and adds the guarded refresh path.", error: null,
+      verification: { status: "passed", evidence: "pnpm test -- session-migration" }, model: "gpt-5.6-luna", access: "write", resources: ["src/auth", "src/client"], dependsOn: ["preview-focus-research"], decisionRevision: 3, acknowledgedDecisionRevision: 2, updatedAt: new Date(Date.now() - 48_000).toISOString()
+    },
+    {
+      id: "preview-focus-verification", title: "Verify the auth regression", prompt: "Run the focused auth regression checks.",
+      status: "done", threadId: "preview-focus-verification-thread", answer: "Focused auth checks pass.", error: null,
+      verification: { status: "passed", evidence: "pnpm test -- auth-regression" }, model: "gpt-5.6-luna", access: "read", resources: ["tests/auth"], dependsOn: [], decisionRevision: 1, acknowledgedDecisionRevision: 1, updatedAt: new Date(Date.now() - 91_000).toISOString()
+    }
+  ];
+  let focusEvents = [
+    { id: "preview-focus-event-1", sequence: 1, projectId: project.id, workId: "preview-focus-verification", kind: "completed", summary: "Auth regression verification completed." },
+    { id: "preview-focus-event-2", sequence: 2, projectId: project.id, workId: "preview-focus-implementation", kind: "review", summary: "Session migration is ready for review." }
+  ];
+  let focusSeenSequence = 1;
+  let focusSequence = focusEvents.length;
+  let pendingFocusQuestion = focusPreview ? {
+    id: "preview-focus-question", requestGeneration: 1, projectId: project.id,
+    method: "pixice/requestUserInput", focusManaged: true, focusCoordinatorQuestion: true,
+    params: {
+      threadId: focusThread.id, sourceThreadId: "preview-focus-implementation-thread", isBlocking: false, workerCount: 2,
+      coordinatorReason: "The migration is ready. I need your rollout decision before applying it to existing accounts.",
+      coordinatorRecommendation: "Start with the beta group so we can verify the migration before a wider rollout.",
+      questions: [{ id: "rollout", header: "Rollout", question: "Who should receive the session update first?", options: [
+        { label: "Beta group", description: "Verify the change with a small group first.", recommended: true },
+        { label: "All accounts", description: "Make the change available to everyone." }
+      ] }]
+    }
+  } : null;
+  const focusSnapshot = () => ({
+    work: structuredClone(focusWork), decisions: [], policy: structuredClone(focusPolicy), events: structuredClone(focusEvents),
+    seenSequence: focusSeenSequence, latestSequence: focusSequence,
+    unseenEvents: focusEvents.filter((event) => event.sequence > focusSeenSequence)
+  });
+  const updateFocus = (kind, workId, summary) => {
+    focusSequence += 1;
+    focusEvents = [...focusEvents, { id: `preview-focus-event-${focusSequence}`, sequence: focusSequence, projectId: project.id, workId, kind, summary }];
+    emit("FocusUpdated", { projectId: project.id });
+  };
   const findBoardTask = (taskId) => boardTasks.find((task) => task.id === taskId);
   const touchBoardTask = (task, patch = {}) => {
     const updatedAt = new Date().toISOString();
@@ -289,6 +343,19 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
   return {
     app: { bootstrap: async () => ({ projects: [previewProject], models, runtime: { state: "ready", connected: true, userAgent: "Preview runtime" } }) },
     runtime: { status: async () => ({ state: "ready", connected: true }) },
+    tasks: { interventions: async () => ({ requests: pendingFocusQuestion ? [structuredClone(pendingFocusQuestion)] : [] }) },
+    questions: { respond: async ({ requestId, requestGeneration, answers }) => {
+      if (!pendingFocusQuestion || pendingFocusQuestion.id !== requestId || pendingFocusQuestion.requestGeneration !== requestGeneration) throw new Error("This question is no longer waiting for an answer.");
+      const request = pendingFocusQuestion;
+      pendingFocusQuestion = null;
+      focusSequence += 1;
+      focusEvents.push({ id: `preview-focus-event-${focusSequence}`, sequence: focusSequence, projectId: project.id,
+        kind: "question-answered", message: "Your rollout decision was forwarded to both workers.",
+        focusCoordinatorQuestion: true, source: "user", wasVisible: true, userEscalated: true, requestId, requestGeneration, request, questions: request.params.questions, answers });
+      emit("AttentionResolved", { requestId, requestGeneration, threadId: focusThread.id });
+      emit("FocusUpdated", { projectId: project.id });
+      return { accepted: true };
+    } },
     git: {
       status: async () => currentGitStatus,
       installCommandLineTools: async () => {
@@ -364,6 +431,37 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
           memory: { projectId: project.id, projectMemory: "Focus keeps project decisions concise.", userMemory: "", revision: 1 },
           thread: focusThread
         };
+      },
+      state: async () => focusSnapshot(),
+      controlWork: async ({ workId, action }) => {
+        const statusForAction = { pause: "paused", resume: "running", cancel: "cancelled" };
+        if (!statusForAction[action]) throw new Error("Unknown preview work action");
+        const work = focusWork.find((candidate) => candidate.id === workId);
+        if (!work) throw new Error("Preview work item not found");
+        const status = statusForAction[action];
+        focusWork = focusWork.map((candidate) => candidate.id === workId ? { ...candidate, status, updatedAt: new Date().toISOString() } : candidate);
+        updateFocus(action, workId, `${work.title} ${action === "pause" ? "paused" : action === "resume" ? "resumed" : "cancelled"}.`);
+        return structuredClone(focusWork.find((candidate) => candidate.id === workId));
+      },
+      followUp: async ({ workId, prompt }) => {
+        const work = focusWork.find((candidate) => candidate.id === workId);
+        if (!work) throw new Error("Preview work item not found");
+        const direction = String(prompt ?? "").trim();
+        if (!direction) throw new Error("A follow-up needs direction");
+        focusWork = focusWork.map((candidate) => candidate.id === workId ? { ...candidate, prompt: `${candidate.prompt}\n\nCoordinator direction: ${direction}`, updatedAt: new Date().toISOString() } : candidate);
+        updateFocus("follow-up", workId, `Direction added to ${work.title}.`);
+        return structuredClone(focusWork.find((candidate) => candidate.id === workId));
+      },
+      updatePolicy: async ({ patch = {} }) => {
+        focusPolicy = { ...focusPolicy, ...patch };
+        emit("FocusPolicyUpdated", { projectId: project.id, policy: structuredClone(focusPolicy) });
+        updateFocus("policy", null, "Coordinator policy updated.");
+        return structuredClone(focusPolicy);
+      },
+      markSeen: async ({ sequence }) => {
+        focusSeenSequence = Math.max(focusSeenSequence, Math.min(Number(sequence) || 0, focusSequence));
+        emit("FocusUpdated", { projectId: project.id });
+        return focusSeenSequence;
       }
     },
     files: {

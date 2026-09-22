@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift } from "../src/App.jsx";
 import { listPricingCatalog } from "../electron/usage/pricing.mjs";
@@ -56,6 +57,7 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
   let boardTasks = [];
   let boardPhases = [];
   let proactiveSuggestions = [...initialProactiveSuggestions];
+  let focusMemory = { projectId: project.id, projectMemory: "Uses calm project coordination.", userMemory: "", revision: 1, updatedAt: new Date().toISOString() };
   const browserState = {
     native: false,
     activeTabId: "browser-1",
@@ -317,13 +319,26 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
       ensure: vi.fn(async () => ({
         created: false,
         session: { projectId: project.id, threadId: "focus-thread", userTurnCount: 2, lastMemoryReviewTurn: 0 },
-        memory: { projectId: project.id, projectMemory: "Uses calm project coordination.", userMemory: "", revision: 1, updatedAt: new Date().toISOString() },
+        memory: focusMemory,
         thread: { ...thread, id: "focus-thread", name: "Aurora Focus", preview: "", parentThreadId: null, turns: [] }
-      }))
+      })),
+      readMemory: vi.fn(async () => focusMemory),
+      updateMemory: vi.fn(async (payload) => {
+        focusMemory = { ...focusMemory, projectMemory: payload.projectMemory, userMemory: payload.userMemory, revision: focusMemory.revision + 1 };
+        return focusMemory;
+      }),
+      clearMemory: vi.fn(async () => {
+        focusMemory = { ...focusMemory, projectMemory: "", userMemory: "", revision: focusMemory.revision + 1 };
+        return focusMemory;
+      })
     },
     threads: {
       list: vi.fn().mockResolvedValue({ data: threadValues, nextCursor: null }),
-      read: vi.fn(async ({ threadId }) => ({ thread: threadValues.find((candidate) => candidate.id === threadId) ?? threadValues[0] })),
+      read: vi.fn(async ({ threadId }) => ({
+        thread: threadId === "focus-thread"
+          ? { ...threadValues[0], id: "focus-thread", name: "Aurora Focus", preview: "", parentThreadId: null, turns: [] }
+          : threadValues.find((candidate) => candidate.id === threadId) ?? threadValues[0]
+      })),
       children: vi.fn().mockResolvedValue({ data: [], nextCursor: null }),
       create: vi.fn(async () => {
         const created = { ...thread, id: "thread-new", name: null, preview: "", parentThreadId: null, turns: [] };
@@ -405,7 +420,7 @@ describe("Pixice app shell", () => {
       turns: [{ id: "turn-paused", status: "completed", items: [] }]
     };
     window.pixice = createApi([activeTask, pausedTask]);
-    render(<App />);
+    render(<StrictMode><App /></StrictMode>);
 
     fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
 
@@ -419,6 +434,20 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("menu", { name: "Choose project" })).toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: "Aurora" })).toHaveAttribute("aria-checked", "true");
     expect(document.querySelector(".focus-project-tile")).toHaveStyle({ "--project-color": "#c3a7ee" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Focus memory" }));
+    expect(await screen.findByRole("dialog", { name: "Focus memory" })).toBeInTheDocument();
+    const projectMemory = screen.getByRole("textbox", { name: "Project decisions" });
+    fireEvent.change(projectMemory, { target: { value: "Keep one persistent coordinator conversation." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(window.pixice.focus.updateMemory).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: project.id,
+      expectedRevision: 1,
+      projectMemory: "Keep one persistent coordinator conversation."
+    })));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Focus memory" })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Focus memory" }));
+    expect(await screen.findByRole("textbox", { name: "Project decisions" })).toHaveValue("Keep one persistent coordinator conversation.");
     fireEvent.keyDown(window, { key: "Escape" });
     const taskProgress = screen.getByRole("complementary", { name: "Task progress overview" });
     expect(within(taskProgress).getByRole("progressbar", { name: "Refactor authentication progress" })).toHaveAttribute("aria-valuenow", "2");
@@ -496,10 +525,70 @@ describe("Pixice app shell", () => {
       }
     }));
     expect(await screen.findByRole("heading", { name: "Should this launch for every project?" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toBeInTheDocument();
+    expect(document.querySelector(".composer-question")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Workspace" }));
     expect(await screen.findByRole("button", { name: "New task" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Talk to Aurora" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the Focus draft and offers reconnect after a first-send session failure", async () => {
+    const api = createApi();
+    api.models.list.mockResolvedValue([{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", provider: "codex", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }]);
+    api.turns.start.mockRejectedValueOnce(new Error("thread not found: runtime session is not loaded"));
+    window.pixice = api;
+    localStorage.setItem("pixice.draft.project-1:focus", "Keep this draft while reconnecting");
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Focus" }));
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await waitFor(() => expect(prompt).toHaveValue("Keep this draft while reconnecting"));
+    const send = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(send).toBeEnabled());
+    await user.click(send);
+
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Coordinator unavailable. Your draft and Focus history are still saved.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toHaveValue("Keep this draft while reconnecting");
+    const ensureCalls = api.focus.ensure.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.focus.ensure.mock.calls.length).toBeGreaterThan(ensureCalls));
+    expect(api.turns.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Focus questions inline without replacing the draft or moving keyboard focus", async () => {
+    const api = createApi();
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await waitFor(() => expect(prompt).toBeEnabled());
+    fireEvent.change(prompt, { target: { value: "Meanwhile compare the hosting options" } });
+    prompt.focus();
+    expect(prompt).toHaveFocus();
+    const scroll = document.querySelector(".focus-conversation-scroll");
+    Object.defineProperties(scroll, { scrollHeight: { configurable: true, value: 1200 }, clientHeight: { configurable: true, value: 300 } });
+    scroll.scrollTop = 100;
+    fireEvent.scroll(scroll);
+    act(() => api.emit({
+      type: "AttentionRequired",
+      payload: {
+        id: "focus-inline", requestGeneration: 4, projectId: project.id,
+        method: "pixice/requestUserInput", focusManaged: true, focusCoordinatorQuestion: true,
+        params: { threadId: "focus-thread", sourceThreadId: "worker-1", isBlocking: false,
+          coordinatorReason: "This changes who gets the new behavior.",
+          questions: [{ id: "scope", header: "Rollout", question: "Which users should get the update?", options: [] }] }
+      }
+    }));
+    expect(await screen.findByRole("heading", { name: "Which users should get the update?" })).toBeInTheDocument();
+    expect(prompt).toHaveFocus();
+    expect(prompt).toHaveValue("Meanwhile compare the hosting options");
+    expect(scroll.scrollTop).toBe(100);
+    expect(document.querySelector(".composer-question")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-surface-mode", "focus");
   });
 
   it("surfaces repeated work as a reviewable workflow draft suggestion", async () => {
@@ -2174,10 +2263,11 @@ describe("Pixice app shell", () => {
         { id: "structuredPlanning", label: "Structured planning", description: "Plan multi-step work.", category: "core", defaultEnabled: true },
         { id: "parallelDelegation", label: "Parallel delegation", description: "Use focused helper agents.", category: "core", defaultEnabled: false },
         { id: "verification", label: "Verification before handoff", description: "Run proportionate checks.", category: "core", defaultEnabled: true },
-        { id: "workflowAutomation", label: "Workflow-first automation", description: "Proactively use Pixice workflows for reusable processes.", category: "pixice-native", defaultEnabled: false },
-        { id: "boardStewardship", label: "Board stewardship", description: "Proactively inspect the board and capture durable follow-ups.", category: "pixice-native", defaultEnabled: false },
+        { id: "unslop", label: "Unslop writing", description: "Cut AI writing tells.", category: "core", defaultEnabled: true },
+        { id: "workflowAutomation", label: "Workflow-first automation", description: "Proactively use Pixice workflows for reusable processes.", category: "pixice-native", defaultEnabled: true },
+        { id: "boardStewardship", label: "Board stewardship", description: "Proactively inspect the board and capture durable follow-ups.", category: "pixice-native", defaultEnabled: true },
         { id: "threadOrchestration", label: "Thread orchestration", description: "Spawn focused Pixice threads.", category: "pixice-native", defaultEnabled: false },
-        { id: "tools", label: "Tools", description: "Extend Pixice with project-specific controls and views without building a separate app.", category: "pixice-native", defaultEnabled: false }
+        { id: "tools", label: "Tools", description: "Extend Pixice with project-specific controls and views without building a separate app.", category: "pixice-native", defaultEnabled: true }
       ]
     });
     window.pixice = api;
@@ -2188,8 +2278,18 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Agents/ }));
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Pixice-native features" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Structured planning" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Parallel delegation" })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Tools" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Verification before handoff" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Unslop writing" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Workflow-first automation" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Board stewardship" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Thread orchestration" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Tools" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Show task progress" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Expand task progress by default" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Open task map when agents join" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Bring approvals forward" })).not.toBeChecked();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Tools" }));
     expect(api.app.saveSettings).toHaveBeenCalledWith({
@@ -2197,10 +2297,11 @@ describe("Pixice app shell", () => {
         structuredPlanning: true,
         parallelDelegation: false,
         verification: true,
-        workflowAutomation: false,
-        boardStewardship: false,
+        unslop: true,
+        workflowAutomation: true,
+        boardStewardship: true,
         threadOrchestration: false,
-        tools: true
+        tools: false
       }
     });
   });

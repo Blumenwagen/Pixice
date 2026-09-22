@@ -1,10 +1,12 @@
 import { z } from "zod";
+import { focusCoordinationShapes, focusCoordinationTools } from "./focus-coordination-tools.mjs";
 
 export const PIXICE_FOCUS_NAMESPACE = "pixice_focus";
 export const PIXICE_FOCUS_MCP_TOOLS = new Set([
   "mcp__pixice_focus__read_memory",
   "mcp__pixice_focus__update_memory",
-  "mcp__pixice_focus__search_history"
+  "mcp__pixice_focus__search_history",
+  ...Object.keys(focusCoordinationShapes).map((name) => `mcp__pixice_focus__${name}`)
 ]);
 export const PROJECT_FOCUS_MEMORY_LIMIT = 6_000;
 export const USER_FOCUS_MEMORY_LIMIT = 2_000;
@@ -18,6 +20,7 @@ const operation = z.object({
 }).strict();
 
 export const pixiceFocusToolShapes = {
+  ...focusCoordinationShapes,
   read_memory: {},
   update_memory: {
     expectedRevision: z.number().int().nonnegative(),
@@ -31,6 +34,7 @@ export const pixiceFocusToolShapes = {
 const schemas = Object.fromEntries(Object.entries(pixiceFocusToolShapes).map(([name, shape]) => [name, z.object(shape).strict()]));
 
 export const pixiceFocusTools = [
+  ...focusCoordinationTools,
   {
     type: "function",
     name: "read_memory",
@@ -85,7 +89,7 @@ export const pixiceFocusTools = [
 export const pixiceFocusDynamicTools = [{
   type: "namespace",
   name: PIXICE_FOCUS_NAMESPACE,
-  description: "Maintain bounded, curated memory for the one persistent Focus coordinator in the current Pixice project. These tools work only from that coordinator thread.",
+  description: "Manage asynchronous project work, directions, reviewed outcomes, and curated memory from the persistent Focus coordinator. Workers can inspect and acknowledge only their own assigned outcome.",
   tools: pixiceFocusTools
 }];
 
@@ -150,9 +154,10 @@ function editMemory(source, input) {
 }
 
 export class PixiceFocusMemory {
-  constructor({ database, onChange = () => {} }) {
+  constructor({ database, coordination = null, onChange = () => {} }) {
     this.database = database;
     this.onChange = onChange;
+    this.coordination = coordination;
   }
 
   read(projectId) {
@@ -162,12 +167,24 @@ export class PixiceFocusMemory {
     );
   }
 
-  replaceFromMaintenance(projectId, memory, reviewedTurnCount) {
+  replaceCurated(projectId, memory, expectedRevision) {
+    const projectMemory = String(memory.projectMemory ?? "").trim();
+    const userMemory = String(memory.userMemory ?? "").trim();
+    if (projectMemory.length > PROJECT_FOCUS_MEMORY_LIMIT) throw new Error(`Project memory exceeds ${PROJECT_FOCUS_MEMORY_LIMIT} characters.`);
+    if (userMemory.length > USER_FOCUS_MEMORY_LIMIT) throw new Error(`User memory exceeds ${USER_FOCUS_MEMORY_LIMIT} characters.`);
+    assertSafeMemory(projectMemory);
+    assertSafeMemory(userMemory);
+    const saved = this.database.replaceProjectFocusMemory(projectId, { projectMemory, userMemory }, expectedRevision);
+    this.onChange({ projectId, memory: saved });
+    return memoryView(saved, this.database.getProjectFocusSession(projectId));
+  }
+
+  replaceFromMaintenance(projectId, memory, reviewedTurnCount, expectedRevision) {
     const projectMemory = String(memory.projectMemory ?? "").trim().slice(0, PROJECT_FOCUS_MEMORY_LIMIT);
     const userMemory = String(memory.userMemory ?? "").trim().slice(0, USER_FOCUS_MEMORY_LIMIT);
     assertSafeMemory(projectMemory);
     assertSafeMemory(userMemory);
-    const saved = this.database.replaceProjectFocusMemory(projectId, { projectMemory, userMemory });
+    const saved = this.database.replaceProjectFocusMemory(projectId, { projectMemory, userMemory }, expectedRevision);
     this.database.markProjectFocusMemoryReviewed(projectId, reviewedTurnCount);
     this.onChange({ projectId, memory: saved });
     return memoryView(saved, this.database.getProjectFocusSession(projectId));
@@ -176,6 +193,10 @@ export class PixiceFocusMemory {
   async handleToolCall(params) {
     try {
       if (!params?.threadId) throw new Error("Focus memory tools require an active coordinator thread.");
+      if (focusCoordinationShapes[params.tool]) {
+        if (!this.coordination) throw new Error("Focus supervision is not ready.");
+        return textResult(await this.coordination.call(params));
+      }
       const session = this.database.getProjectFocusSessionByThread(params.threadId);
       if (!session) throw new Error("Focus memory is available only in a project's Focus coordinator.");
       const schema = schemas[params.tool];

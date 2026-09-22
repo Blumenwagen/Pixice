@@ -261,6 +261,20 @@ export class ProviderRegistry extends EventEmitter {
     return this.threadOwners.get(threadId) ?? this.database.getThreadProviderBinding(threadId)?.provider ?? "codex";
   }
 
+  providerForModel(model) {
+    return this.#providerForModel(model);
+  }
+
+  assertModelForThread(threadId, model) {
+    if (!model) return this.providerForThread(threadId);
+    const threadProvider = this.providerForThread(threadId);
+    const modelProvider = this.#providerForModel(model);
+    if (threadProvider !== modelProvider) {
+      throw new Error(`This conversation uses ${threadProvider}. Choose a ${threadProvider} model before sending.`);
+    }
+    return threadProvider;
+  }
+
   #providerForRequest(method, params) {
     let providerId = params.provider;
     if (!providerId && params.threadId) providerId = this.providerForThread(params.threadId);
@@ -366,7 +380,11 @@ export class ProviderRegistry extends EventEmitter {
         forkedFromId: response.thread.forkedFromId ?? (method === "thread/fork" ? params.threadId : null)
       });
       const thread = tagProvider(projectPersistedForkLineage(this.database, response.thread), providerId);
-      this.#saveThreadSummary(providerId, thread);
+      if (method === "thread/read" && params.includeTurns === true && Array.isArray(thread.turns) && this.database.getProjectFocusSessionByThread?.(thread.id)) {
+        this.#saveThreadSnapshot(providerId, thread);
+      } else {
+        this.#saveThreadSummary(providerId, thread);
+      }
       return { ...response, thread };
     }
     return response;
@@ -395,7 +413,7 @@ export class ProviderRegistry extends EventEmitter {
 
   #saveThreadSummary(provider, thread) {
     if (provider !== "codex" || !thread?.id || !this.database.saveProviderThreadSnapshot) return;
-    this.database.saveProviderThreadSnapshot(thread.id, {
+    const summary = {
       id: thread.id,
       providerThreadId: thread.providerThreadId ?? null,
       cwd: thread.cwd ?? "",
@@ -407,7 +425,14 @@ export class ProviderRegistry extends EventEmitter {
       parentThreadId: thread.parentThreadId ?? null,
       forkedFromId: thread.forkedFromId ?? null,
       status: thread.status ?? { type: "notLoaded" }
-    });
+    };
+    if (this.database.saveProviderThreadSummary) this.database.saveProviderThreadSummary(thread.id, summary);
+    else this.database.saveProviderThreadSnapshot(thread.id, summary);
+  }
+
+  #saveThreadSnapshot(provider, thread) {
+    if (provider !== "codex" || !thread?.id || !this.database.saveProviderThreadSnapshot) return;
+    this.database.saveProviderThreadSnapshot(thread.id, thread);
   }
 
   #handleStatus(provider, status) {

@@ -1,0 +1,51 @@
+.focus-coordination {
+  width: min(800px, calc(100% - 32px));
+  margin: 0 auto 12px;
+  color: var(--foreground, #eef1f3);
+  background: rgba(34, 37, 40, .5);
+  border: 1px solid rgba(255, 255, 255, .075);
+  border-radius: 12px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.focus-coordination-trigger, .focus-coordination-policy > button { width: 100%; padding: 9px 11px; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: inherit; background: transparent; border: 0; cursor: pointer; text-align: left; }
+.focus-coordination-trigger span, .focus-coordination-work-title span { min-width: 0; display: grid; gap: 2px; }
+.focus-coordination-trigger strong { font-size: 11px; font-weight: 650; }
+.focus-coordination-trigger small, .focus-coordination-work-title small { color: #8f9aa2; font-size: 10px; }
+.focus-coordination-trigger > svg, .focus-coordination-policy > button > svg { color: #87929a; transition: transform 160ms ease; }
+.focus-coordination-trigger[aria-expanded="true"] > svg, .focus-coordination-policy > button[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.focus-coordination-unseen { padding: 8px 11px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #b8c1c7; background: rgba(255, 255, 255, .045); border-bottom: 1px solid rgba(255,255,255,.065); border-radius: 12px 12px 0 0; font-size: 10px; }
+.focus-coordination-unseen span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.focus-coordination-unseen strong { margin-right: 7px; color: #e8ecee; font-weight: 650; }.focus-coordination-unseen button, .focus-coordination-work-actions button { padding: 3px 6px; color: #b9c3c9; background: transparent; border: 0; border-radius: 5px; font: inherit; font-size: 10px; cursor: pointer; }.focus-coordination-unseen button:hover, .focus-coordination-work-actions button:hover { color: #f3f6f7; background: rgba(255,255,255,.07); }
+.focus-coordination-disclosure { display: grid; gap: 8px; padding: 0 8px 8px; }
+.focus-coordination-work-list { display: grid; gap: 4px; }.focus-coordination-work { border: 1px solid transparent; border-radius: 9px; }.focus-coordination-work:hover { background: rgba(255,255,255,.025); border-color: rgba(255,255,255,.045); }.focus-coordination-work-main { min-height: 37px; display: grid; grid-template-columns: 15px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 3px 7px; }.focus-coordination-status { width: 15px; display: grid; place-items: center; color: #b7c1c7; }.focus-coordination-status i { width: 6px; height: 6px; border-radius: 50%; background: #7f8b94; }.focus-coordination-work[data-status="running"] .focus-coordination-status i, .focus-coordination-work[data-status="starting"] .focus-coordination-status i { background: #9c86ca; box-shadow: 0 0 0 3px rgba(156,134,202,.12); }.focus-coordination-work[data-status="review"] .focus-coordination-status { color: #b8a4e8; }.focus-coordination-work[data-status="done"] .focus-coordination-status { color: #9db5a6; }.focus-coordination-work[data-status="failed"] .focus-coordination-status, .focus-coordination-work[data-status="needs-attention"] .focus-coordination-status { color: #e6a0a5; }
+.focus-coordination-work-title { min-width: 0; padding: 3px 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: inherit; background: transparent; border: 0; cursor: pointer; text-align: left; }.focus-coordination-work-title strong { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.focus-coordination-work-title > svg { flex: none; color: #7f8a91; }.focus-coordination-work-title[aria-expanded="true"] > svg { transform: rotate(180deg); }.focus-coordination-work-actions { display: flex; align-items: center; gap: 1px; }.focus-coordination-work-actions .danger:hover { color: #f0adb1; }.focus-coordination-work-actions button:disabled { opacity: .45; cursor: default; }
+.focus-coordination-work-detail { margin: 0 7px 7px 28px; display: grid; gap: 7px; color: #aeb8be; font-size: 10.5px; line-height: 1.45; }.focus-coordination-work-detail p { margin: 0; }.focus-coordination-answer { padding: 7px 8px; background: rgba(0,0,0,.12); border-radius: 7px; }.focus-coordination-answer strong { display: block; margin-bottom: 2px; color: #d9e0e4; font-size: 10px; }.focus-coordination-verification { color: #a9bfb0; }.focus-coordination-meta { color: #8f9aa2; }.focus-coordination-decision-state { color: #c8b7ed; }.focus-coordination-decision-state.acknowledged { color: #a9c2b1; }
+.focus-coordination-followup { display: flex; gap: 5px; }.focus-coordination-followup input { min-width: 0; flex: 1; height: 27px; padding: 0 8px; color: #e8edef; background: rgba(0,0,0,.13); border: 1px solid rgba(255,255,255,.07); border-radius: 7px; font: inherit; font-size: 10px; }.focus-coordination-followup button { width: 28px; display: grid; place-items: center; color: #b9c5ca; background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.07); border-radius: 7px; cursor: pointer; }.focus-coordination-followup button:disabled { opacity: .4; cursor: default; }
+.focus-coordination-empty { margin: 3px 4px 7px; color: #89949b; font-size: 10px; }.focus-coordination-policy { border-top: 1px solid rgba(255,255,255,.06); }.focus-coordination-policy > button { padding: 8px 4px 3px; color: #b7c0c6; font-size: 10px; font-weight: 600; }.focus-coordination-policy-body { display: grid; gap: 6px; padding: 5px 4px 1px; }.focus-coordination-policy-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, 150px); align-items: center; gap: 10px; color: #98a3aa; font-size: 10px; }.focus-coordination-policy select { height: 26px; min-width: 0; padding: 0 6px; color: #dce2e5; background: rgba(0,0,0,.14); border: 1px solid rgba(255,255,255,.08); border-radius: 6px; font: inherit; font-size: 10px; }.focus-coordination-policy-help, .focus-coordination-host { margin: 1px 0; color: #87929a; font-size: 9.5px; line-height: 1.35; }.focus-coordination-host strong { margin-left: 4px; color: #b7c1c7; font-weight: 600; }.focus-coordination-error { margin: 2px 4px; color: #ee9ca3; font-size: 10px; }
+@media (max-width: 600px) { .focus-coordination { width: calc(100% - 24px); }.focus-coordination-work-main { grid-template-columns: 13px minmax(0,1fr); }.focus-coordination-work-actions { grid-column: 2; justify-content: flex-start; }.focus-coordination-policy-row { grid-template-columns: 1fr; gap: 3px; }.focus-coordination-policy select { width: 100%; } }
+
+/* Keep optional controls as readable as the conversation's native chrome. */
+.focus-coordination-trigger strong,
+.focus-coordination-work-title strong,
+.focus-coordination-work-detail,
+.focus-coordination-followup input,
+.focus-coordination-policy-row,
+.focus-coordination-policy select { font-size: 14px; }
+.focus-coordination-trigger small,
+.focus-coordination-work-title small,
+.focus-coordination-unseen,
+.focus-coordination-unseen button,
+.focus-coordination-work-actions button,
+.focus-coordination-answer strong,
+.focus-coordination-empty,
+.focus-coordination-policy > button,
+.focus-coordination-policy-help,
+.focus-coordination-host,
+.focus-coordination-error { font-size: 12px; }
+.focus-coordination-followup input,
+.focus-coordination-policy select { min-height: 32px; }
+.focus-coordination-work-detail p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.focus-update-notice { margin: 12px 0; color: #929ca4; font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .focus-coordination * { transition: none !important; }
+}

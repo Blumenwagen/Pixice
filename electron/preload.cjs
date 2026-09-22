@@ -61,7 +61,15 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     open: invoke("projects:open")
   }),
   focus: Object.freeze({
-    ensure: invoke("focus:ensure")
+    state: invoke("focus:state"),
+    controlWork: invoke("focus:work:control"),
+    followUp: invoke("focus:work:follow-up"),
+    updatePolicy: invoke("focus:policy:update"),
+    markSeen: invoke("focus:seen"),
+    ensure: invoke("focus:ensure"),
+    readMemory: invoke("focus:memory"),
+    updateMemory: invoke("focus:memory:update"),
+    clearMemory: invoke("focus:memory:clear")
   }),
   board: Object.freeze({
     list: invoke("board:list"),

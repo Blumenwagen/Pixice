@@ -54,6 +54,8 @@ import { OperationCapsuleStack } from "./components/OperationCapsule.jsx";
 import { ImageGeneration } from "./components/ImageGeneration.jsx";
 import { InspectablePicture } from "./components/PictureInspector.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
+import { FocusCoordination } from "./components/FocusCoordination.jsx";
+import { FocusCoordinatorQuestions } from "./components/FocusCoordinatorQuestions.jsx";
 import { KanbanBoard } from "./components/KanbanBoard.jsx";
 import { ProjectCreationDialog, ProjectGlyph, ProjectSwitcher, projectTileStyle } from "./components/sidebar/ProjectSwitcher.jsx";
 import { ThreadCleanupPopover } from "./components/sidebar/ThreadCleanupPopover.jsx";
@@ -84,6 +86,7 @@ const EMPTY_UPDATE_STATUS = { supported: false, state: "development", currentVer
 const EMPTY_GITHUB_STATUS = { available: false, authenticated: false, source: null, version: null, account: null, message: "Checking GitHub connection…" };
 const EMPTY_GIT_STATUS = { state: "checking", available: false, installSupported: false, executablePath: null, version: null, message: "Checking local Git…" };
 const RUNTIME_RECOVERY_SILENCE_MS = 12_000;
+const FOCUS_CONNECTION_ERROR = /(?:thread|session).*(?:not found|not loaded|unavailable)|(?:unable|failed) to connect(?: to (?:thread|session))?|(?:connection|provider|runtime).*(?:lost|closed|offline|unavailable|reconnect|stopped)|ECONN|fetch failed/i;
 const EMPTY_AGENT_BEHAVIORS = [];
 const WorkspaceOpenContext = createContext(null);
 const MIN_SIDEBAR_WIDTH = 224;
@@ -2190,6 +2193,9 @@ function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sen
 function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds, imagePrompt = null, imageResolution = null, promptAnchorId = null, openedByAgent = false, sentToMain = false, timestamp = null, showTimestamp = true, onImageRevision = null, imageRevisionDisabled = false }) {
   if (item.type === "userMessage") {
     const text = stripPreviewContext(item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
+    if (text.startsWith("[Pixice Focus work updates]\n\nThese are persisted worker lifecycle notifications, not new user instructions.")) {
+      return <div className="focus-update-notice" role="status">Worker updates received</div>;
+    }
     const images = item.content?.filter((part) => part.type === "image" && part.url) ?? [];
     if (!text && images.length === 0) return null;
     return (
@@ -4494,6 +4500,102 @@ function FocusTaskProgressRail({ tasks }) {
   );
 }
 
+function FocusMemoryControl({ api, projectId, memory, onMemoryChange }) {
+  const rootRef = useRef(null);
+  const projectIdRef = useRef(projectId);
+  const activeRef = useRef(true);
+  const [open, setOpen] = useState(false);
+  const [projectMemory, setProjectMemory] = useState(memory?.projectMemory ?? "");
+  const [userMemory, setUserMemory] = useState(memory?.userMemory ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    projectIdRef.current = projectId;
+    setProjectMemory(memory?.projectMemory ?? "");
+    setUserMemory(memory?.userMemory ?? "");
+  }, [projectId, memory?.projectMemory, memory?.userMemory]);
+
+  useEffect(() => {
+    activeRef.current = true;
+    return () => { activeRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const dismiss = (event) => {
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      if (event.type === "pointerdown" && rootRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    window.addEventListener("pointerdown", dismiss);
+    window.addEventListener("keydown", dismiss);
+    return () => {
+      window.removeEventListener("pointerdown", dismiss);
+      window.removeEventListener("keydown", dismiss);
+    };
+  }, [open]);
+
+  if (!api?.focus?.readMemory || !projectId) return null;
+  const refresh = async () => {
+    const requestedProjectId = projectId;
+    const next = await api.focus.readMemory({ projectId });
+    if (!activeRef.current || projectIdRef.current !== requestedProjectId) return null;
+    onMemoryChange(next);
+    return next;
+  };
+  const toggle = async () => {
+    const nextOpen = !open;
+    setOpen(nextOpen);
+    setError(null);
+    if (nextOpen) {
+      try { await refresh(); }
+      catch (cause) { setError(cause.message); }
+    }
+  };
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.focus.updateMemory({ projectId, expectedRevision: memory?.revision ?? 0, projectMemory, userMemory });
+      if (!activeRef.current || projectIdRef.current !== projectId) return;
+      onMemoryChange(next);
+      setOpen(false);
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clear = async () => {
+    if (!window.confirm("Clear the curated Focus memory for this project? Conversation history will remain available.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.focus.clearMemory({ projectId, expectedRevision: memory?.revision ?? 0 });
+      if (!activeRef.current || projectIdRef.current !== projectId) return;
+      onMemoryChange(next);
+      setOpen(false);
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="focus-memory-control" ref={rootRef}>
+      <IconButton className={`focus-memory-button${open ? " active" : ""}`} label="Focus memory" onClick={toggle}><Brain size={16} /></IconButton>
+      {open && <div className="focus-memory-popover" role="dialog" aria-label="Focus memory">
+        <header><strong>Project memory</strong><small>Revision {memory?.revision ?? 0}</small></header>
+        <label>Project decisions<textarea value={projectMemory} maxLength={6000} onChange={(event) => setProjectMemory(event.target.value)} /></label>
+        <label>User preferences<textarea value={userMemory} maxLength={2000} onChange={(event) => setUserMemory(event.target.value)} /></label>
+        {error && <p role="alert">{error}</p>}
+        <footer><button type="button" onClick={clear} disabled={busy}>Clear</button><button type="button" className="primary" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</button></footer>
+      </div>}
+    </div>
+  );
+}
+
 function FocusWorkspace({
   api,
   storage,
@@ -4509,12 +4611,17 @@ function FocusWorkspace({
   defaultFastMode,
   providers,
   attention,
+  focusQuestions = [],
   preferences,
   plan,
   seenResponseIds,
   showMessageTimestamps,
   completedWorkDetails,
   composerProps,
+  connectionError,
+  onRetry,
+  memory,
+  onMemoryChange,
   onExit,
   onSelectProject,
   previewOpen,
@@ -4556,14 +4663,14 @@ function FocusWorkspace({
   const scrollRef = useRef(null);
   const followLatestRef = useRef(true);
   const projection = useMemo(() => projectConversation(thread), [thread]);
-  const hasConversation = projection.itemCount > 0;
+  const hasConversation = projection.itemCount > 0 || focusQuestions.length > 0;
   const progressTasks = useMemo(() => focusTaskProgressEntries(threads, thread?.id), [thread?.id, threads]);
   const taskRailVisible = !previewOpen && progressTasks.length > 0;
 
   useLayoutEffect(() => {
     const node = scrollRef.current;
     if (node && followLatestRef.current) node.scrollTop = node.scrollHeight;
-  }, [thread?.id, thread?.turns, composerProps.questionRequest?.id]);
+  }, [thread?.id, thread?.turns]);
 
   const previewAvailable = Boolean(
     browserState?.tabs?.length
@@ -4588,15 +4695,18 @@ function FocusWorkspace({
           <span>Workspace</span>
         </button>
         <FocusProjectPicker project={project} projects={projects} onSelectProject={onSelectProject} />
-        {previewAvailable && (
-          <IconButton
-            className={`focus-preview-button${previewOpen ? " active" : ""}`}
-            label={previewOpen ? "Close preview workspace" : "Open preview workspace"}
-            onClick={onPreviewToggle}
-          >
-            <PreviewIcon size={16} />
-          </IconButton>
-        )}
+        <div className="focus-chrome-actions">
+          <FocusMemoryControl key={project?.id} api={api} projectId={project?.id} memory={memory} onMemoryChange={onMemoryChange} />
+          {previewAvailable && (
+            <IconButton
+              className={`focus-preview-button${previewOpen ? " active" : ""}`}
+              label={previewOpen ? "Close preview workspace" : "Open preview workspace"}
+              onClick={onPreviewToggle}
+            >
+              <PreviewIcon size={16} />
+            </IconButton>
+          )}
+        </div>
       </header>
 
       <div
@@ -4630,6 +4740,8 @@ function FocusWorkspace({
             <h1>Talk to {project?.displayName ?? "your project"}</h1>
           </div>
         )}
+        <FocusCoordinatorQuestions key={project?.id} api={api} projectId={project?.id} storage={storage} requests={focusQuestions} onResolve={onQuestionResolve} />
+        <FocusCoordination api={api} projectId={project?.id} models={models} />
       </div>
 
       {taskRailVisible && <FocusTaskProgressRail tasks={progressTasks} />}
@@ -4638,6 +4750,7 @@ function FocusWorkspace({
         <div className="focus-composer-wrap">
           <Composer
             {...composerProps}
+            questionRequest={null}
             disabled={composerProps.disabled || loading || !thread}
             draftKey={`${project.id}:focus`}
             ariaLabel="Project Focus prompt"
@@ -4646,7 +4759,14 @@ function FocusWorkspace({
           />
         </div>
       )}
-      {!runtime?.connected && <div className="focus-offline">The agent runtime is offline. Your Focus session is still saved.</div>}
+      {connectionError ? (
+        <div className="focus-offline focus-connection-error" role="status">
+          <span>Coordinator unavailable. Your draft and Focus history are still saved.</span>
+          <button type="button" onClick={onRetry}>Retry</button>
+        </div>
+      ) : !runtime?.connected ? (
+        <div className="focus-offline">The agent runtime is reconnecting. Your draft and Focus history are still saved.</div>
+      ) : null}
     </main>
     <AnimatePresence initial={false}>
       {previewOpen && (
@@ -6944,6 +7064,8 @@ export function App({ readOnly = false } = {}) {
   const [focusThreadId, setFocusThreadId] = useState(null);
   const focusThreadIdRef = useRef(null);
   const [focusLoading, setFocusLoading] = useState(false);
+  const [focusConnectionError, setFocusConnectionError] = useState(null);
+  const [focusMemory, setFocusMemory] = useState(null);
   const focusEnsureRequestRef = useRef(0);
   const workspaceThreadByProjectRef = useRef(new Map());
   const [threads, setThreads] = useState([]);
@@ -7497,17 +7619,19 @@ export function App({ readOnly = false } = {}) {
     }
   }, [api, normalizePlan]);
 
-  const loadFocusSession = useCallback(async (projectId) => {
+  const loadFocusSession = useCallback(async (projectId, { modelOverride = null, replaceEmpty = false } = {}) => {
     if (!api?.focus?.ensure || !projectId) return;
     const requestId = ++focusEnsureRequestRef.current;
     setFocusLoading(true);
     try {
-      const model = models.find((candidate) => candidate.model === defaultModel);
+      const requestedModel = modelOverride || defaultModel;
+      const model = models.find((candidate) => candidate.model === requestedModel);
       const serviceTier = defaultFastMode ? fastServiceTier(model) : undefined;
       const response = await api.focus.ensure({
         projectId,
-        model: defaultModel || undefined,
+        model: requestedModel || undefined,
         ...(serviceTier !== undefined ? { serviceTier } : {}),
+        ...(replaceEmpty ? { replaceEmpty: true } : {}),
         permissionMode: "full-access"
       });
       if (requestId !== focusEnsureRequestRef.current || selectedProjectIdRef.current !== projectId || surfaceModeRef.current !== "focus") return;
@@ -7520,21 +7644,37 @@ export function App({ readOnly = false } = {}) {
       setThread(focusThread);
       setPlan([]);
       setDraftMode(false);
-      if (!loadThreadConfiguration(focusThread.id, storage)) {
-        saveThreadConfiguration(focusThread.id, {
-          model: defaultModel,
-          effort: defaultEffort,
-          fastMode: Boolean(serviceTier),
-          permissionMode: "full-access"
-        }, storage);
-      }
+      const saved = loadThreadConfiguration(focusThread.id, storage);
+      const provider = response.configuration?.provider ?? focusThread.provider;
+      const savedDefinition = saved?.model ? models.find((candidate) => candidate.model === saved.model) : null;
+      const responseModel = response.configuration?.model;
+      const responseDefinition = responseModel ? models.find((candidate) => candidate.model === responseModel || candidate.id === responseModel) : null;
+      const responseModelName = responseDefinition?.model ?? responseModel;
+      const configuredModel = (modelOverride && (!provider || responseDefinition?.provider === provider) ? responseModelName : null)
+        ?? (saved && (!provider || (savedDefinition && savedDefinition.provider === provider)) ? saved.model : null)
+        ?? (responseModel && (!provider || responseDefinition?.provider === provider) ? responseModelName : null)
+        ?? models.find((candidate) => candidate.provider === provider)?.model
+        ?? requestedModel;
+      const configuredDefinition = models.find((candidate) => candidate.model === configuredModel);
+      const configuredEffort = resolveReasoningEffort(saved?.effort, configuredDefinition, defaultEffort);
+      const configuration = {
+        model: configuredModel,
+        effort: configuredEffort,
+        fastMode: Boolean((saved ? saved.fastMode : defaultFastMode) && fastServiceTier(configuredDefinition)),
+        permissionMode: "full-access"
+      };
+      saveThreadConfiguration(focusThread.id, configuration, storage);
+      setSelectedModel(configuration.model);
+      setEffort(configuration.effort);
+      setFastMode(configuration.fastMode);
+      setPermissionMode("full-access");
+      setFocusMemory(response.memory ?? null);
+      setFocusConnectionError(null);
       setError(null);
     } catch (cause) {
       if (requestId === focusEnsureRequestRef.current && selectedProjectIdRef.current === projectId) {
         setError(cause.message);
-        focusThreadIdRef.current = null;
-        setFocusThreadId(null);
-        setThread(null);
+        setFocusConnectionError(cause.message);
       }
     } finally {
       if (requestId === focusEnsureRequestRef.current) setFocusLoading(false);
@@ -8238,6 +8378,24 @@ export function App({ readOnly = false } = {}) {
   useEffect(() => {
     if (!api) return;
     return api.events.subscribe((event) => {
+      if (event.type === "FocusPolicyUpdated") {
+        const projectId = event.payload?.projectId;
+        const coordinatorModel = event.payload?.policy?.coordinatorModel;
+        if (projectId !== selectedProjectIdRef.current || surfaceModeRef.current !== "focus" || !coordinatorModel) return;
+        const model = models.find((candidate) => candidate.id === coordinatorModel || candidate.model === coordinatorModel);
+        const focusThreadId = focusThreadIdRef.current;
+        if (!model || !focusThreadId) return;
+        const nextEffort = resolveReasoningEffort(effort, model, defaultEffort);
+        setSelectedModel(model.model);
+        setEffort(nextEffort);
+        saveThreadConfiguration(focusThreadId, {
+          model: model.model,
+          effort: nextEffort,
+          fastMode,
+          permissionMode: "full-access"
+        }, storage);
+        return;
+      }
       if (event.type === "ApplicationResync" || event.type === "ServiceReset") {
         setServiceRevision((value) => value + 1);
         const projectId = selectedProjectIdRef.current;
@@ -8693,7 +8851,7 @@ export function App({ readOnly = false } = {}) {
         }
       }
     });
-  }, [api, commitRuntimePayload, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadProactivity, loadReview, loadThreads, mirrorPreviewPresentations, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, updatePreviewWorkspace]);
+  }, [api, commitRuntimePayload, defaultEffort, effort, fastMode, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadProactivity, loadReview, loadThreads, mirrorPreviewPresentations, models, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, storage, updatePreviewWorkspace]);
 
   const openProject = () => {
     if (!api?.projects) return;
@@ -8763,6 +8921,8 @@ export function App({ readOnly = false } = {}) {
     focusThreadIdRef.current = null;
     setFocusThreadId(null);
     setFocusLoading(true);
+    setFocusConnectionError(null);
+    setFocusMemory(null);
     selectedThreadIdRef.current = null;
     setSelectedThreadId(null);
     setThread(null);
@@ -8777,6 +8937,7 @@ export function App({ readOnly = false } = {}) {
     surfaceModeRef.current = "workspace";
     setSurfaceMode("workspace");
     setFocusLoading(false);
+    setFocusConnectionError(null);
     const preferredId = workspaceThreadByProjectRef.current.get(selectedProjectId);
     const candidates = threads.filter((candidate) => candidate.id !== focusThreadIdRef.current && isSidebarThread(candidate));
     const nextId = candidates.some((candidate) => candidate.id === preferredId) ? preferredId : candidates[0]?.id ?? null;
@@ -8794,6 +8955,8 @@ export function App({ readOnly = false } = {}) {
     focusThreadIdRef.current = null;
     setFocusThreadId(null);
     setFocusLoading(true);
+    setFocusConnectionError(null);
+    setFocusMemory(null);
     selectedProjectIdRef.current = projectId;
     selectedThreadIdRef.current = null;
     setSelectedProjectId(projectId);
@@ -9133,6 +9296,10 @@ export function App({ readOnly = false } = {}) {
     const nextEffort = resolveReasoningEffort(effort, model, defaultEffort);
     setEffort(nextEffort);
     saveThreadConfiguration(selectedThreadId, { model: modelName, effort: nextEffort, fastMode, permissionMode }, storage);
+    const currentProvider = models.find((candidate) => candidate.model === selectedModel)?.provider;
+    if (focusActive && models.find((candidate) => candidate.model === modelName)?.provider !== currentProvider) {
+      void loadFocusSession(selectedProjectId, { modelOverride: modelName, replaceEmpty: true });
+    }
   };
 
   const changeDefaultEffort = (nextEffort) => {
@@ -9824,6 +9991,7 @@ export function App({ readOnly = false } = {}) {
       }
       markThreadMessaged(targetThreadId);
       assertSubmissionActive(signal);
+      if (surfaceModeRef.current === "focus") setFocusConnectionError(null);
       setError(null);
       return true;
     } catch (cause) {
@@ -9835,7 +10003,12 @@ export function App({ readOnly = false } = {}) {
           removeEmptyTurn: removeOptimisticTurnOnFailure
         }));
       }
-      if (!signal?.aborted) setError(cause.message);
+      if (!signal?.aborted) {
+        setError(cause.message);
+        if (surfaceModeRef.current === "focus" && FOCUS_CONNECTION_ERROR.test(String(cause.message ?? ""))) {
+          setFocusConnectionError(cause.message);
+        }
+      }
       return false;
     } finally {
       submittingRef.current = false;
@@ -9873,7 +10046,7 @@ export function App({ readOnly = false } = {}) {
       setAttention((current) => current.filter((candidate) => !sameAttentionRequest(candidate, request)));
       return true;
     } catch (cause) {
-      setError(cause.message);
+      if (!request.focusCoordinatorQuestion) setError(cause.message);
       return false;
     }
   };
@@ -10346,12 +10519,19 @@ export function App({ readOnly = false } = {}) {
             defaultFastMode={defaultFastMode}
             providers={providers}
             attention={[]}
+            focusQuestions={attention.filter((request) => isQuestionRequest(request) && request.params?.threadId === focusThreadId)}
             preferences={preferences}
             plan={plan}
             seenResponseIds={seenResponseIdsRef.current}
             showMessageTimestamps={preferences.showMessageTimestamps}
             completedWorkDetails={preferences.completedWorkDetails}
             composerProps={{ ...composerProps, globalFileDrop: true }}
+            connectionError={focusConnectionError}
+            onRetry={() => loadFocusSession(selectedProjectId)}
+            memory={focusMemory}
+            onMemoryChange={(next) => {
+              if (next?.projectId === selectedProjectIdRef.current) setFocusMemory(next);
+            }}
             onExit={exitFocus}
             onSelectProject={selectFocusProject}
             previewOpen={previewOpen}

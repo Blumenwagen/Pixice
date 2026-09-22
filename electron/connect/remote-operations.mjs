@@ -32,7 +32,7 @@ export function createRemoteInvoker({ handlers, pendingRequest, generation, acti
     if (!handler) throw new Error('This capability is not ready on this host');
     if (RESPONSES.has(operation)) {
       const pending = pendingRequest(payload?.requestId);
-      if (!pending || payload?.requestGeneration !== pending.generation || pending.generation !== generation()) throw new Error('This request is no longer current. Refresh the task.');
+      if (!pending || payload?.requestGeneration !== pending.generation) throw new Error('This request is no longer current. Refresh the task.');
     }
     if (operation.startsWith('files.')) {
       const value = z.object({ projectId: z.string().min(1), path: z.string().min(1) }).parse(payload);

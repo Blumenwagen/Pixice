@@ -3788,7 +3788,16 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.focus-preview-button {
+.focus-chrome-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+}
+.focus-memory-control { position: relative; }
+.focus-preview-button,
+.focus-memory-button {
   justify-self: end;
   width: 34px;
   height: 34px;
@@ -3802,7 +3811,44 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   pointer-events: auto;
 }
 .focus-preview-button:hover,
-.focus-preview-button.active { color: #f8fafb; background: rgba(41, 45, 49, .78); }
+.focus-preview-button.active,
+.focus-memory-button:hover,
+.focus-memory-button.active { color: #f8fafb; background: rgba(41, 45, 49, .78); }
+.focus-memory-popover {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  width: min(360px, calc(100vw - 32px));
+  padding: 14px;
+  display: grid;
+  gap: 11px;
+  color: #eef1f3;
+  background: rgba(35, 39, 42, .97);
+  border: 1px solid rgba(255, 255, 255, .11);
+  border-radius: 14px;
+  box-shadow: 0 22px 64px rgba(0, 0, 0, .36);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+.focus-memory-popover header,
+.focus-memory-popover footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.focus-memory-popover header strong { font-size: 12px; }
+.focus-memory-popover header small { color: #87929a; font-size: 9px; }
+.focus-memory-popover label { display: grid; gap: 5px; color: #aab3ba; font-size: 10px; }
+.focus-memory-popover textarea {
+  min-height: 88px;
+  resize: vertical;
+  padding: 9px 10px;
+  color: #eef1f3;
+  background: rgba(255, 255, 255, .035);
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 9px;
+  font: 11px/1.45 system-ui, sans-serif;
+}
+.focus-memory-popover p { margin: 0; color: #ef8992; font-size: 10px; }
+.focus-memory-popover footer { justify-content: flex-end; }
+.focus-memory-popover footer button { padding: 6px 10px; color: #bdc8cf; background: transparent; border: 0; border-radius: 7px; font: inherit; font-size: 10px; cursor: pointer; }
+.focus-memory-popover footer button.primary { color: #1b1e20; background: #eef1f3; }
 .focus-layout.preview-open .focus-chrome { right: 12px; left: 12px; }
 .focus-layout.preview-open .focus-conversation-scroll { padding-right: 12px; padding-left: 12px; }
 .focus-layout.preview-open .focus-conversation-column {
@@ -4041,6 +4087,22 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   font-size: 9px;
   text-align: center;
   pointer-events: none;
+}
+.focus-connection-error {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+.focus-connection-error button {
+  padding: 3px 8px;
+  color: #eef1f3;
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 7px;
+  font: inherit;
+  cursor: pointer;
 }
 .pixice-app[data-reduce-transparency="true"] .focus-workspace-button,
 .pixice-app[data-reduce-transparency="true"] .focus-project-trigger,
