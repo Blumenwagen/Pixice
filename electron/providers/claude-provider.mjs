@@ -59,6 +59,7 @@ function normalizeClaudeModels(discovered = []) {
 
 function serializeClaudeModels(models) {
   return models.map((model) => ({
+    ...model,
     id: model.value,
     model: model.value,
     displayName: model.displayName,

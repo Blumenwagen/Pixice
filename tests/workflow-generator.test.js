@@ -20,11 +20,37 @@ describe("workflow generation", () => {
     const models = [
       { id: "claude:claude-sonnet-5", model: "claude-sonnet-5", provider: "claude", displayName: "Claude Sonnet 5" },
       { id: "codex:gpt-5.6-luna", model: "gpt-5.6-luna", provider: "codex" },
-      { id: "codex:gpt-5.6-terra", model: "gpt-5.6-terra", provider: "codex" }
+      {
+        id: "codex:gpt-5.6-terra",
+        model: "gpt-5.6-terra",
+        provider: "codex",
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "medium" }]
+      }
     ];
     expect(resolveWorkflowGenerationModel("auto", models)).toMatchObject({ id: "codex:gpt-5.6-terra", effort: "medium" });
     expect(resolveWorkflowGenerationModel("auto", models.slice(0, 1))).toMatchObject({ id: "claude:claude-sonnet-5", effort: null });
     expect(resolveWorkflowGenerationModel("claude:claude-sonnet-5", models)).toMatchObject({ provider: "claude" });
+  });
+
+  it("uses future provider models and never invents a workflow reasoning effort", () => {
+    const futureGpt = {
+      id: "codex:gpt-7-nova",
+      model: "gpt-7-nova",
+      provider: "codex",
+      isDefault: true,
+      defaultReasoningEffort: "balanced",
+      supportedReasoningEfforts: [{ reasoningEffort: "balanced" }, { reasoningEffort: "deep" }]
+    };
+    expect(resolveWorkflowGenerationModel("auto", [futureGpt])).toMatchObject({
+      id: "codex:gpt-7-nova",
+      effort: "balanced"
+    });
+    expect(resolveWorkflowGenerationModel("auto", [{
+      id: "claude:claude-oracle-7",
+      model: "claude-oracle-7",
+      provider: "claude"
+    }])).toMatchObject({ id: "claude:claude-oracle-7", effort: null });
   });
 
   it("parses and validates an executable generated graph", () => {
@@ -55,7 +81,14 @@ describe("workflow generation", () => {
       calls = [];
       async request(method, payload) {
         this.calls.push([method, payload]);
-        if (method === "model/list") return { data: [{ id: "codex:gpt-5.6-terra", model: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", provider: "codex" }] };
+        if (method === "model/list") return { data: [{
+          id: "codex:gpt-5.6-terra",
+          model: "gpt-5.6-terra",
+          displayName: "GPT-5.6 Terra",
+          provider: "codex",
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: [{ reasoningEffort: "medium" }]
+        }] };
         if (method === "thread/start") return { thread: { id: "helper-thread" } };
         if (method === "turn/start") {
           queueMicrotask(() => {
@@ -85,6 +118,7 @@ describe("workflow generation", () => {
       permissionMode: "read-only",
       serviceName: "pixice_workflow_generation"
     });
+    expect(runtime.calls.find(([method]) => method === "turn/start")[1]).toMatchObject({ effort: "medium" });
     expect(runtime.calls.at(-1)).toEqual(["thread/archive", { threadId: "helper-thread" }]);
   });
 

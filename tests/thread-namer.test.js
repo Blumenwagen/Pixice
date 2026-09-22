@@ -88,10 +88,16 @@ describe("ThreadNamer", () => {
     expect(runtime.request.mock.calls.filter(([method]) => method === "thread/name/set")).toHaveLength(1);
   });
 
-  it("prefers Luna automatically and falls back to Haiku", () => {
+  it("prefers the strongest cheap and fast profile and only uses advertised effort", () => {
     const models = [
       { id: "claude:haiku", model: "haiku", provider: "claude", displayName: "Claude Haiku" },
-      { id: "codex:gpt-5.6-luna", model: "gpt-5.6-luna", provider: "codex", displayName: "GPT 5.6 Luna" }
+      {
+        id: "codex:gpt-5.6-luna",
+        model: "gpt-5.6-luna",
+        provider: "codex",
+        displayName: "GPT 5.6 Luna",
+        supportedReasoningEfforts: [{ reasoningEffort: "high" }, { reasoningEffort: "low" }]
+      }
     ];
 
     expect(resolveThreadNamingModel(THREAD_NAMING_AUTO, models)).toMatchObject({
@@ -102,6 +108,29 @@ describe("ThreadNamer", () => {
     expect(resolveThreadNamingModel(THREAD_NAMING_AUTO, models.slice(0, 1))).toMatchObject({
       id: "claude:haiku",
       provider: "claude",
+      effort: null
+    });
+  });
+
+  it("falls back to future discovered agent models and uses their advertised default effort", () => {
+    const models = [
+      { id: "codex:gpt-7-hidden", model: "gpt-7-hidden", provider: "codex", hidden: true },
+      {
+        id: "codex:gpt-7-nova",
+        model: "gpt-7-nova",
+        provider: "codex",
+        defaultReasoningEffort: "economy",
+        supportedReasoningEfforts: [{ reasoningEffort: "economy" }, { reasoningEffort: "high" }]
+      },
+      { id: "claude:claude-oracle-7", model: "claude-oracle-7", provider: "claude" }
+    ];
+
+    expect(resolveThreadNamingModel(THREAD_NAMING_AUTO, models)).toMatchObject({
+      id: "codex:gpt-7-nova",
+      effort: "economy"
+    });
+    expect(resolveThreadNamingModel("claude:claude-oracle-7", models)).toMatchObject({
+      id: "claude:claude-oracle-7",
       effort: null
     });
   });

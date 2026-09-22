@@ -114,6 +114,29 @@ describe("ProviderRegistry", () => {
     });
   });
 
+  it("keeps synthetic future provider models in the shared runtime catalog", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    registry.register(new FakeProvider("codex", ["gpt-7-nova"]));
+    registry.register(new FakeProvider("claude", ["claude-oracle-7"]));
+
+    const models = await registry.request("model/list");
+
+    expect(models.data).toEqual([
+      expect.objectContaining({
+        id: "codex:gpt-7-nova",
+        model: "gpt-7-nova",
+        provider: "codex",
+        bridge: expect.objectContaining({ eligible: true, rated: false, ratings: null })
+      }),
+      expect.objectContaining({
+        id: "claude:claude-oracle-7",
+        model: "claude-oracle-7",
+        provider: "claude",
+        bridge: expect.objectContaining({ eligible: true, rated: false, ratings: null })
+      })
+    ]);
+  });
+
   it("routes provider server-request responses back to their owner", () => {
     const registry = new ProviderRegistry({ database: new MemoryDatabase() });
     const codex = registry.register(new FakeProvider("codex", []));

@@ -45,7 +45,7 @@ describe("Claude provider", () => {
       queryFactory: () => ({
         supportedModels: vi.fn().mockResolvedValue([
           { value: "default", displayName: "Default (recommended)" },
-          { value: "sonnet", displayName: "Sonnet" },
+          { value: "sonnet", displayName: "Sonnet", hidden: true },
           { value: "haiku", displayName: "Haiku" }
         ]),
         close: vi.fn()
@@ -58,6 +58,7 @@ describe("Claude provider", () => {
 
     expect(response.data.map((model) => model.model)).toEqual(["default", "sonnet", "haiku"]);
     expect(cachedResponse).toEqual(response);
+    expect(response.data.find((model) => model.model === "sonnet")).toMatchObject({ hidden: true });
     expect(response.data).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ model: "opus" })
     ]));

@@ -1,4 +1,4 @@
-import { recommendBridgeModel } from "./model-capabilities.mjs";
+import { bridgeEligibleModels, recommendBridgeModel, selectAdvertisedReasoningEffort } from "./model-capabilities.mjs";
 
 export const WORKFLOW_GENERATION_AUTO = "auto";
 
@@ -9,7 +9,7 @@ function qualifiedModelId(model) {
 }
 
 export function workflowGenerationModels(models = []) {
-  return models.filter((model) => ["codex", "claude"].includes(model?.provider) && qualifiedModelId(model));
+  return bridgeEligibleModels(models).filter((model) => ["codex", "claude"].includes(model?.provider) && qualifiedModelId(model));
 }
 
 export function resolveWorkflowGenerationModel(selection = WORKFLOW_GENERATION_AUTO, models = []) {
@@ -30,6 +30,6 @@ export function resolveWorkflowGenerationModel(selection = WORKFLOW_GENERATION_A
     model: selected.model ?? selected.id,
     provider: selected.provider,
     displayName: selected.displayName ?? selected.model ?? selected.id,
-    effort: selected.provider === "codex" ? "medium" : null
+    effort: selectAdvertisedReasoningEffort(selected)
   };
 }

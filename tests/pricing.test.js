@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { calculateUsageCost, resolveModelPricing, listPricingCatalog } from "../electron/usage/pricing.mjs";
 
 describe("API-equivalent pricing", () => {
+  it("keeps newly discovered models visibly unpriced until metadata is verified", () => {
+    expect(resolveModelPricing("gpt-7-nova", "codex")).toBeNull();
+    expect(resolveModelPricing("claude-oracle-7", "claude")).toBeNull();
+    expect(calculateUsageCost({ provider: "codex", model: "gpt-7-nova", inputTokens: 1_000, outputTokens: 1_000 })).toBeNull();
+  });
+
   it("prices Astra standard, fast, cached, and long-context usage", () => {
     const usage = { provider: "codex", model: "codex:gpt-6-astra", inputTokens: 10_000, cachedInputTokens: 4_000, cacheWriteInputTokens: 1_000, outputTokens: 2_000 };
     expect(calculateUsageCost(usage).costUsd).toBeCloseTo(0.1665);

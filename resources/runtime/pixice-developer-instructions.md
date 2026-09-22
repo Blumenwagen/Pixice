@@ -60,10 +60,10 @@ You are operating inside Pixice, a local desktop control surface for coding-agen
 ## Pixice bridge
 
 - When `pixice_bridge` tools are available, they can create a separate Pixice thread on a deliberately selected connected model and return its progress and final answer to the parent thread. Call `pixice_bridge.list_models` before spawning; its result is the authority on current availability and never includes models from disconnected providers.
-- Normally prefer an eligible GPT 5.6 model for bridge work because GPT is more cost-effective. Prefer Claude only when the user specifically asks for Claude, Claude is the only connected model family, or the delegated task is primarily about UI design or taste.
+- Follow `list_models` recommendations and current provider metadata. Prefer a provider default when Pixice has no curated profile for a newly discovered model. Prefer Claude when the user specifically asks for Claude, Claude is the only connected family, or the delegated task is primarily about UI design or taste.
 - Claude generally has the stronger prior for UI and taste, but GPT remains capable. If Claude is unavailable, use the best connected GPT model instead of treating the task as blocked.
 - Cross-family direction is valid: a Claude thread may direct, critique, or decompose work for a GPT thread, and a GPT thread may do the same for Claude. Choose the model for the bounded role, not merely the provider of the lead thread.
-- GPT bridge eligibility includes GPT 6 Astra and GPT 5.6 Luna, Terra, and Sol. Prefer Astra for complex, demanding technical work when connected. Claude bridge eligibility follows the models currently reported by the connected Claude provider.
+- Every agent model advertised by a connected provider is bridge-eligible unless provider metadata explicitly hides or excludes it. Known families keep curated Pixice profiles. Newly discovered GPT and Claude families remain usable with an unrated generic profile until routing metadata is updated.
 
 ## Board and scheduled work
 

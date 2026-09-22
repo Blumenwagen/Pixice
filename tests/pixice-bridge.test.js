@@ -63,16 +63,18 @@ function createBridge(models, contextOverrides = {}) {
 }
 
 describe("Pixice bridge", () => {
-  it("reports only eligible models with capability ratings", async () => {
+  it("reports every discovered agent model and marks unknown profiles as unrated", async () => {
     const { bridge } = createBridge();
     const result = await bridge.handleToolCall({ threadId: "parent-1", tool: "list_models", arguments: {} });
     const payload = JSON.parse(result.contentItems[0].text);
 
     expect(payload.models.map((model) => model.id)).toEqual([
       "codex:gpt-5.6-luna",
+      "codex:gpt-5.5",
       "claude:claude-sonnet-4-6"
     ]);
-    expect(payload.models[1].profile.ratings).toMatchObject({ ui: 5, taste: 5 });
+    expect(payload.models[1].profile).toMatchObject({ rated: false, ratings: null });
+    expect(payload.models[2].profile.ratings).toMatchObject({ ui: 5, taste: 5 });
     expect(payload.models.every((model) => model.availability === "connected")).toBe(true);
     expect(payload.connectedFamilies).toEqual(["gpt", "claude"]);
     expect(payload.recommendation.provider).toBe("codex");
@@ -98,6 +100,44 @@ describe("Pixice bridge", () => {
     ]));
     runtime.emit("event", { payload: { method: "turn/completed", threadId: "child-1", turn: { id: "turn-1", status: "completed", items: [] } } });
     expect(JSON.parse((await pending).contentItems[0].text)).toMatchObject({ threadId: "child-1", status: "completed" });
+  });
+
+  it("accepts future provider models and rejects reasoning efforts they did not advertise", async () => {
+    const { bridge } = createBridge([{
+      id: "codex:gpt-7-nova",
+      model: "gpt-7-nova",
+      provider: "codex",
+      isDefault: true,
+      defaultReasoningEffort: "balanced",
+      supportedReasoningEfforts: [{ reasoningEffort: "balanced" }]
+    }, {
+      id: "claude:claude-oracle-7",
+      model: "claude-oracle-7",
+      provider: "claude"
+    }]);
+    const catalog = await bridge.handleToolCall({ threadId: "parent-1", tool: "list_models", arguments: {} });
+    const payload = JSON.parse(catalog.contentItems[0].text);
+    expect(payload.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "codex:gpt-7-nova", defaultReasoningEffort: "balanced", profile: expect.objectContaining({ rated: false }) }),
+      expect.objectContaining({ id: "claude:claude-oracle-7", profile: expect.objectContaining({ rated: false }) })
+    ]));
+    expect(payload.recommendation).toMatchObject({ modelId: "codex:gpt-7-nova", provider: "codex" });
+
+    const unsupported = await bridge.handleToolCall({
+      threadId: "parent-1",
+      tool: "spawn_thread",
+      arguments: { prompt: "Implement the change", model: "codex:gpt-7-nova", effort: "medium" }
+    });
+    expect(unsupported.success).toBe(false);
+    expect(JSON.parse(unsupported.contentItems[0].text).error).toMatch(/not supported/);
+
+    const unadvertised = await bridge.handleToolCall({
+      threadId: "parent-1",
+      tool: "spawn_thread",
+      arguments: { prompt: "Review the change", model: "claude:claude-oracle-7", effort: "high" }
+    });
+    expect(unadvertised.success).toBe(false);
+    expect(JSON.parse(unadvertised.contentItems[0].text).error).toMatch(/not supported/);
   });
 
   it("recommends whichever eligible family is actually connected", async () => {

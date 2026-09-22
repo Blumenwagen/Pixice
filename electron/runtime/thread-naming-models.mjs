@@ -1,3 +1,5 @@
+import { bridgeEligibleModels, selectAdvertisedReasoningEffort } from "./model-capabilities.mjs";
+
 export const THREAD_NAMING_AUTO = "auto";
 export const THREAD_NAMING_OFF = "off";
 
@@ -11,16 +13,26 @@ function qualifiedModelId(model) {
   return id.includes(":") || !model?.provider ? id : `${model.provider}:${id}`;
 }
 
-function isLuna(model) {
-  return model?.provider === "codex" && normalizedModel(model).includes("gpt-5.6-luna");
+function numericSignal(model, key) {
+  const value = model?.bridge?.ratings?.[key] ?? model?.[key] ?? model?.metadata?.[key];
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
 
-function isHaiku(model) {
-  return model?.provider === "claude" && normalizedModel(model).includes("haiku");
+function namingSuitability(model) {
+  const id = normalizedModel(model);
+  const familySignal = ["luna", "haiku", "mini", "nano", "flash", "fast", "lite", "small"]
+    .some((family) => id.includes(family)) ? 4 : 0;
+  return numericSignal(model, "speed")
+    + numericSignal(model, "costEfficiency")
+    + familySignal
+    + (model.isDefault ? 0.5 : 0);
 }
 
 export function threadNamingModels(models = []) {
-  return models.filter((model) => isLuna(model) || isHaiku(model));
+  return bridgeEligibleModels(models)
+    .map((model, index) => ({ model, index, score: namingSuitability(model) }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map(({ model }) => model);
 }
 
 export function resolveThreadNamingModel(selection = THREAD_NAMING_AUTO, models = []) {
@@ -28,7 +40,7 @@ export function resolveThreadNamingModel(selection = THREAD_NAMING_AUTO, models 
   const eligible = threadNamingModels(models);
   let selected = null;
   if (!selection || selection === THREAD_NAMING_AUTO) {
-    selected = eligible.find(isLuna) ?? eligible.find(isHaiku) ?? null;
+    selected = eligible[0] ?? null;
   } else {
     selected = eligible.find((model) => qualifiedModelId(model) === selection) ?? null;
   }
@@ -38,6 +50,6 @@ export function resolveThreadNamingModel(selection = THREAD_NAMING_AUTO, models 
     model: selected.model ?? selected.id,
     provider: selected.provider,
     displayName: selected.displayName ?? selected.model ?? selected.id,
-    effort: selected.provider === "codex" ? "low" : null
+    effort: selectAdvertisedReasoningEffort(selected, { preferLow: true })
   };
 }

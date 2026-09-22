@@ -53,8 +53,9 @@ describe('standalone application service', () => {
     const second = new ApplicationClient({ id: service.descriptor.hostId, endpoint: service.descriptor.endpoint, token: service.descriptor.token }, { probe: 'service.status' });
     cleanup.push(() => second.close()); await second.connect();
     expect((await second.call('threads.read', { projectId: project.id, threadId: thread.id })).thread.turns.at(-1).id).toBe(turn.id);
+    const startsBeforeStop = provider.starts;
     await expect(second.call('service.stop')).rejects.toThrow('Active work');
-    expect(provider.starts).toBe(1);
+    expect(provider.starts).toBe(startsBeforeStop);
     await second.call('turns.interrupt', { projectId: project.id, threadId: thread.id, turnId: turn.id });
     expect(service.status().activeTurns).toBe(0);
   });

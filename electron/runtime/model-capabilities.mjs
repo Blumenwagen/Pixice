@@ -61,27 +61,57 @@ const CLAUDE_PROFILES = {
   }
 };
 
+const GENERIC_PROFILE = {
+  label: "Discovered agent model",
+  summary: "Advertised by the connected provider. Pixice has not assigned a curated capability rating to this model.",
+  strengths: [],
+  ratings: null,
+  rated: false
+};
+
+function providerMetadata(model) {
+  return [model, model?.metadata, model?.capabilities].filter((value) => value && typeof value === "object");
+}
+
+function hasMetadataValue(model, keys, expected) {
+  return providerMetadata(model).some((source) => keys.some((key) => source[key] === expected));
+}
+
+function explicitNonAgentType(model) {
+  const values = providerMetadata(model).flatMap((source) => [source.type, source.kind, source.modelType, source.model_type]);
+  return values.some((value) => ["non-agent", "non_agent", "embedding", "image", "audio", "transcription", "realtime"].includes(String(value ?? "").toLowerCase()));
+}
+
+function providerExclusion(model) {
+  if (hasMetadataValue(model, ["hidden", "isHidden"], true) || hasMetadataValue(model, ["visible", "isVisible"], false)) return "hidden";
+  if (hasMetadataValue(model, ["eligible", "isEligible", "bridgeEligible", "agentEligible"], false)) return "ineligible";
+  if (hasMetadataValue(model, ["agent", "isAgent", "supportsAgent"], false) || explicitNonAgentType(model)) return "non-agent";
+  return null;
+}
+
 function gptProfile(id) {
-  if (/^(?:codex:)?gpt-6-astra(?:-20\d{2}-\d{2}-\d{2})?$/.test(id)) return GPT_ASTRA_PROFILE;
+  if (id.includes("gpt-6-astra")) return GPT_ASTRA_PROFILE;
   if (!id.includes("5.6")) return null;
   return Object.entries(GPT_56_PROFILES).find(([family]) => id.includes(family))?.[1] ?? null;
 }
 
 function claudeProfile(id) {
   return Object.entries(CLAUDE_PROFILES).find(([family]) => id.includes(family))?.[1]
-    ?? CLAUDE_PROFILES.default;
+    ?? null;
 }
 
 export function bridgeModelProfile(model) {
   const id = normalizedModelId(model);
   const provider = model?.provider ?? (id.includes("claude") ? "claude" : "codex");
+  const exclusionReason = providerExclusion(model);
+  if (!id || exclusionReason) return { eligible: false, ...(exclusionReason ? { exclusionReason } : {}) };
   const profile = provider === "claude" ? claudeProfile(id) : gptProfile(id);
-  if (!profile) return { eligible: false };
+  const selectedProfile = profile ?? GENERIC_PROFILE;
   return {
     eligible: true,
     provider,
-    ...profile,
-    ratingScale: { minimum: 1, maximum: 5 }
+    ...selectedProfile,
+    ...(profile ? { rated: true, ratingScale: { minimum: 1, maximum: 5 } } : {})
   };
 }
 
@@ -103,7 +133,29 @@ function preferredModel(models, provider, families) {
     const match = candidates.find((model) => normalizedModelId(model).includes(family));
     if (match) return match;
   }
-  return candidates[0] ?? null;
+  return candidates.find((model) => model.isDefault) ?? candidates[0] ?? null;
+}
+
+export function advertisedReasoningEfforts(model) {
+  const values = model?.supportedReasoningEfforts ?? model?.reasoningEfforts ?? [];
+  return [...new Set(values.map((entry) => entry?.reasoningEffort ?? entry?.effort ?? entry).filter((value) => typeof value === "string" && value))];
+}
+
+export function selectAdvertisedReasoningEffort(model, { preferLow = false } = {}) {
+  const efforts = advertisedReasoningEfforts(model);
+  if (preferLow && efforts.includes("low")) return "low";
+  const providerDefault = model?.defaultReasoningEffort ?? model?.defaultEffort ?? null;
+  if (providerDefault && (!efforts.length || efforts.includes(providerDefault))) return providerDefault;
+  return efforts[0] ?? null;
+}
+
+function recommendationReason(model, fallback) {
+  if (model.bridge?.rated === false) {
+    return model.isDefault
+      ? "The provider marks this connected model as its default. Pixice has no curated capability rating for it yet."
+      : "This model is advertised by the connected provider. Pixice has no curated capability rating for it yet.";
+  }
+  return fallback;
 }
 
 export function recommendBridgeModel(models = [], task = "") {
@@ -124,11 +176,11 @@ export function recommendBridgeModel(models = [], task = "") {
     return {
       modelId: model.id,
       provider: "claude",
-      reason: explicitlyClaude
+      reason: recommendationReason(model, explicitlyClaude
         ? "The task explicitly asks for Claude."
         : !gptModels.length
           ? "Claude is the only connected model family available to the bridge."
-          : "This task centers on UI design or taste, where Claude generally has the stronger prior."
+          : "This task centers on UI design or taste, where Claude generally has the stronger prior.")
     };
   }
 
@@ -140,20 +192,22 @@ export function recommendBridgeModel(models = [], task = "") {
     return {
       modelId: model.id,
       provider: "codex",
-      reason: normalizedModelId(model).includes("gpt-6-astra")
+      reason: recommendationReason(model, normalizedModelId(model).includes("gpt-6-astra")
         ? "GPT-6 Astra is the connected GPT choice for complex, demanding work."
         : deepTask
           ? "GPT is preferred for cost efficiency; Sol best fits this unusually deep technical task."
           : routineTask
             ? "GPT is preferred for cost efficiency; Luna best fits routine or high-volume work."
-            : "GPT is the normal default for cost-effective delegation; Terra provides the best general balance."
+            : "GPT is the normal default for cost-effective delegation; Terra provides the best general balance.")
     };
   }
 
-  const model = preferredModel(eligible, "claude", ["sonnet", "opus", "default", "haiku"]);
+  const model = preferredModel(eligible, "claude", ["sonnet", "opus", "default", "haiku"])
+    ?? eligible.find((candidate) => candidate.isDefault)
+    ?? eligible[0];
   return {
     modelId: model.id,
-    provider: "claude",
-    reason: "Claude is the only connected model family available to the bridge."
+    provider: model.provider,
+    reason: recommendationReason(model, `${model.provider} is the only connected model provider available to the bridge.`)
   };
 }
