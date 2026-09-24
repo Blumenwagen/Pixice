@@ -40,7 +40,8 @@ import { PixiceBridge, PIXICE_BRIDGE_NAMESPACE, pixiceBridgeDynamicTools } from 
 import { BridgeParentContinuation } from "../runtime/bridge-parent-continuation.mjs";
 import { FocusStore } from "../persistence/focus-store.mjs";
 import { FocusSupervisor } from "../runtime/focus-supervisor.mjs";
-import { FocusCoordinationTools } from "../runtime/focus-coordination-tools.mjs";
+import { FocusVisuals } from "../runtime/focus-visuals.mjs";
+import { FocusCoordinationTools, focusFollowUpPayload } from "../runtime/focus-coordination-tools.mjs";
 import { FocusQuestionGroups } from "../runtime/focus-question-groups.mjs";
 import { bridgeEligibleModels, recommendBridgeModel } from "../runtime/model-capabilities.mjs";
 import { PixiceBoard, PIXICE_BOARD_NAMESPACE, pixiceBoardDynamicTools } from "../runtime/pixice-board.mjs";
@@ -87,6 +88,11 @@ import { IosTools, PIXICE_IOS_NAMESPACE, iosDynamicTools, iosToolSchemas } from 
 import { createRemoteInvoker, createRemoteThreadValidator } from "../connect/remote-operations.mjs";
 import { EventEmitter } from "node:events";
 import { installWorkflowRuntimeHost } from "../workflows/workflow-runtime-host.mjs";
+import { WidgetStore, widgetSpecSchema } from "./widgets.mjs";
+import { draftFocusWidget } from "./widget-draft-router.mjs";
+import { refreshWidgetSource } from "./widget-sources.mjs";
+import { widgetV2Schema } from "../../src/widgets/widget-schema.mjs";
+import { WidgetCredentials } from "./widget-credentials.mjs";
 
 // Application state lives in this service instance. Native UI and network transports
 // are adapters; neither owns provider execution, projects, approvals, or workflows.
@@ -125,8 +131,12 @@ let transcriptionService;
 let proactiveStewardship;
 let database;
 let taskResults;
+const widgetStore = new WidgetStore(userDataPath);
+const widgetCredentials = new WidgetCredentials(userDataPath, platform.credentialCrypto);
+const widgetDrafts = new Map();
 let runtimeStatus = { state: "starting" };
 const activeTurns = new Map();
+const focusCurrentUserInputs = new Map();
 const startingTurns = new Set();
 const turnUsageMetadata = new Map();
 const threadSessions = new ThreadSessionRegistry();
@@ -373,6 +383,7 @@ function focusAgentInstructions(project) {
     "Keep the conversation calm and direct. Answer small questions yourself. Do not manufacture plans, completion reports, or Board work for ordinary conversation.",
     "Use pixice_focus.list_work and read_work to resolve follow-ups against existing outcomes and artifacts. Interpret references using the conversation and selected Preview. Continue or redirect matching work with follow_up instead of creating duplicate tasks. Ask briefly if an ambiguous reference would materially change the work.",
     "Delegate bounded implementation, research, design, review, and debugging with pixice_focus.dispatch_work. It returns immediately; acknowledge the intended outcome and remain available. Completion events will bring results back. Do not wait in polling loops or leave a turn running solely to wait for workers. Give each worker one objective and relevant project skills. Use pixice_bridge.list_models for qualified available models.",
+    "Focus has no built-in numeric worker limit. The supervisor starts all eligible queued work unless dependencies or resource conflicts block it. If the user explicitly requests a concurrent worker limit, record that preference in project memory and honor it through dispatch judgment: inspect active and queued work before dispatching or resuming work, and defer additional dispatches until the requested capacity is available. Do not invent a default cap or queue extra eligible work expecting the supervisor to enforce a numeric limit.",
     "Declare access and overlapping file or directory resources accurately. Unknown write scope uses '*'. Do not label implementation as read-only to bypass sequencing. Use dependsOn for prerequisites; dependent work starts only after verified completion.",
     "When the user changes direction, record_decision for the affected work, then pause/cancel work explicitly if requested. Check worker acknowledgement and reconcile stale results. Never claim a direction was applied merely because it was sent.",
     "Worker completion means ready for your review. Inspect results, integrate related changes, and verify the original request. Use request_review for independent verification with the configured review model. Complete work only with concrete evidence or a justified not-required verification. Present one coherent result with artifacts and remaining uncertainty, not a stack of worker replies.",
@@ -2332,6 +2343,8 @@ function registerHandlers() {
     integration.workflows.deleteProject(projectId);
     integration.credentialStore.deleteProject(projectId);
     pixiceInstruments.deleteProject(projectId);
+    for (const [requestId, draft] of widgetDrafts) if (draft.projectId === projectId) { draft.controller.abort(); widgetDrafts.delete(requestId); }
+    widgetStore.deleteProject(projectId);
     database.deleteProject(projectId);
     for (const [threadId, knownProjectId] of threadProjects) {
       if (knownProjectId === projectId) threadProjects.delete(threadId);
@@ -2355,6 +2368,28 @@ function registerHandlers() {
     });
     return projectWithRepository(project);
   });
+
+  handlers.handle("widgets:list", (_event, payload) => { const { projectId } = idPayload.parse(payload); getProject(projectId); return { data: widgetStore.list(projectId) }; });
+  handlers.handle("widgets:draft", async (_event, payload) => {
+    const value = z.object({ projectId: z.string().min(1), text: z.string().min(3).max(4000), requestId: z.string().uuid().optional(), context: z.object({ projectName: z.string().max(160).optional() }).strict().optional() }).strict().parse(payload);
+    const project = getProject(value.projectId);
+    const controller = new AbortController();
+    if (value.requestId) {
+      if (widgetDrafts.has(value.requestId)) throw new Error("Widget draft request is already active");
+      widgetDrafts.set(value.requestId, { projectId: value.projectId, controller });
+    }
+    try { return await draftFocusWidget({ projectId: value.projectId, text: value.text, projectName: project.displayName }, { resolveKey: () => widgetCredentials.resolve(), signal: controller.signal }); }
+    finally { if (value.requestId) widgetDrafts.delete(value.requestId); }
+  });
+  handlers.handle("widgets:cancel-draft", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), requestId: z.string().uuid() }).strict().parse(payload); getProject(value.projectId); const draft = widgetDrafts.get(value.requestId); if (draft?.projectId === value.projectId) draft.controller.abort(); return { cancelled: Boolean(draft && draft.projectId === value.projectId) }; });
+  handlers.handle("widgets:commit", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), spec: z.union([widgetSpecSchema, widgetV2Schema]) }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.commit(value.projectId, value.spec); send("WidgetUpdated", { projectId: value.projectId, widgetId: widget.id, action: "committed" }); return widget; });
+  handlers.handle("widgets:update", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), widgetId: z.string().uuid(), spec: z.union([widgetSpecSchema, widgetV2Schema]), expectedRevision: z.number().int().positive() }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.update(value.projectId, value.widgetId, value.spec, value.expectedRevision); send("WidgetUpdated", { projectId: value.projectId, widgetId: widget.id, action: "updated" }); return widget; });
+  handlers.handle("widgets:update-user-state", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), widgetId: z.string().uuid(), userState: z.record(z.union([z.string(), z.number().finite(), z.boolean()])), expectedRevision: z.number().int().positive() }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.updateUserState(value.projectId, value.widgetId, value.userState, value.expectedRevision); send("WidgetUpdated", { projectId: value.projectId, widgetId: widget.id, action: "updated" }); return widget; });
+  handlers.handle("widgets:read-source", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), widgetId: z.string().uuid(), source: z.string().min(1).max(80) }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.list(value.projectId).find((item) => item.id === value.widgetId); if (!widget || widget.spec.version !== 2) throw new Error("Widget source not found in this project"); const declaration = widget.spec.sources[value.source]; if (!declaration) throw new Error("Widget source is not declared"); return { data: refreshWidgetSource(declaration, { projectId: value.projectId, listBoardTasks: (projectId) => database.listBoardTasks(projectId) }) }; });
+  handlers.handle("widgets:delete", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), widgetId: z.string().uuid() }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.delete(value.projectId, value.widgetId); send("WidgetUpdated", { projectId: value.projectId, widgetId: widget.id, action: "deleted" }); return widget; });
+  handlers.handle("widgets:key-status", () => widgetCredentials.status());
+  handlers.handle("widgets:key-save", async (_event, payload) => widgetCredentials.save(z.object({ key: z.string().min(1).max(4096) }).strict().parse(payload).key));
+  handlers.handle("widgets:key-remove", () => widgetCredentials.remove());
 
   handlers.handle("board:list", (_event, payload) => {
     const { projectId } = idPayload.parse(payload);
@@ -2684,7 +2719,7 @@ function registerHandlers() {
     return focusSupervisor.control(value.projectId, value.workId, value);
   });
   handlers.handle("focus:work:follow-up", (_event, payload) => {
-    const value = idPayload.extend({ workId: z.string().min(1), prompt: z.string().trim().min(1).max(100_000) }).strict().parse(payload);
+    const value = focusFollowUpPayload.parse(payload);
     getProject(value.projectId);
     return focusSupervisor.followUp(value.projectId, value.workId, value);
   });
@@ -2700,7 +2735,6 @@ function registerHandlers() {
       coordinatorModel: z.string().min(1).max(160).nullable().optional(),
       workerModel: z.string().min(1).max(160).nullable().optional(),
       reviewModel: z.string().min(1).max(160).nullable().optional(),
-      maxWorkers: z.number().int().min(1).max(8).optional(),
       permissionMode: permissionModeSchema.optional(), executionHost: z.literal("current").optional()
     }).strict() }).strict().parse(payload);
     getProject(value.projectId);
@@ -2883,6 +2917,7 @@ function registerHandlers() {
     threadSessions.delete(threadId);
     threadProjects.delete(threadId);
     turnUsageMetadata.delete(threadId);
+    focusCurrentUserInputs.delete(threadId);
     await browserWorkspace.destroyWorkspace(threadId);
     previewContextRegistry.clear(threadId);
     await iosRuntimeService.stop(threadId, "Thread archived");
@@ -2918,6 +2953,11 @@ function registerHandlers() {
       permissionMode: focusStore.getWorkByThread(value.threadId)?.permissionMode ?? (focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode), trackTask: !isFocus
     });
     if (isFocus) {
+      if (activeTurns.get(value.threadId) === response.turn.id) focusCurrentUserInputs.set(value.threadId, {
+        turnId: response.turn.id,
+        messageId: response.turn.items?.find((item) => item.type === "userMessage")?.id ?? null,
+        images: prompt.images
+      });
       database.incrementProjectFocusTurn(project.id, value.threadId);
     }
     if (pendingTaskNames.delete(value.threadId)) {
@@ -2958,6 +2998,7 @@ function registerHandlers() {
       input: buildCodexUserInput(prompt.text, prompt.images)
     });
     if (database.getProjectFocusSessionByThread(value.threadId)?.projectId === project.id) {
+      if (activeTurns.get(value.threadId) === value.turnId) focusCurrentUserInputs.set(value.threadId, { turnId: value.turnId, messageId: null, images: prompt.images });
       database.incrementProjectFocusTurn(project.id, value.threadId);
     }
     return response;
@@ -3316,30 +3357,36 @@ function registerHandlers() {
     })
   });
   focusSupervisor = new FocusSupervisor({
-    store: focusStore, runtime,
+    store: focusStore, runtime, visuals: new FocusVisuals({ userDataPath, readThread: async ({ projectId, threadId }) => {
+      if (database.getProjectFocusSession(projectId)?.threadId !== threadId) throw new Error("Selected visual is outside the current project coordinator thread.");
+      const response = await runtime.request("thread/read", { threadId, includeTurns: true });
+      if (database.getProjectFocusSession(projectId)?.threadId !== threadId || response?.thread?.id !== threadId) throw new Error("Coordinator thread changed while selecting visuals.");
+      const capture = focusCurrentUserInputs.get(threadId);
+      return { projectId, thread: response.thread, currentUserInput: capture?.turnId === activeTurns.get(threadId) ? capture : null };
+    } }),
     contextForProject: (projectId) => {
       const project = getProject(projectId);
       const session = database.getProjectFocusSession(projectId);
       if (!session) throw new Error("Open the project's Focus coordinator before delegating work.");
       return { coordinatorThreadId: session.threadId, cwd: projectPrimaryRoot(project) };
     },
-    startWorker: async ({ projectId, workId, coordinatorThreadId, prompt, model, effort, permissionMode }) => {
+    startWorker: async ({ projectId, workId, coordinatorThreadId, prompt, images, model, effort, permissionMode }) => {
       if (!acceptingWork) throw new Error("The host is stopping; queued work remains saved.");
       const selected = await focusModel(model, prompt);
       return pixiceBridge.startDetached({ threadId: coordinatorThreadId }, {
-        prompt, model: selected.id, ...(effort ? { effort } : {}), permissionMode
+        prompt, images, model: selected.id, ...(effort ? { effort } : {}), permissionMode
       }, { onCreated: (thread) => {
         if (workId) focusStore.updateWork(projectId, workId, { threadId: thread.id, model: selected.id });
       } });
     },
-    continueWorker: async ({ projectId, threadId, turnId, prompt, model, effort, permissionMode }) => {
+    continueWorker: async ({ projectId, threadId, turnId, prompt, images, model, effort, permissionMode }) => {
       const project = getProject(projectId);
       await ensureThreadLoaded(project, threadId);
       if (turnId) {
-        await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(prompt, []) });
+        await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(prompt, images ?? []) });
         return { turnId };
       }
-      const response = await startTrackedTurn({ project, threadId, input: buildCodexUserInput(prompt, []), text: prompt, model: model ?? undefined, effort, permissionMode });
+      const response = await startTrackedTurn({ project, threadId, input: buildCodexUserInput(prompt, images ?? []), text: prompt, model: model ?? undefined, effort, permissionMode });
       return { turnId: response.turn.id };
     },
     interruptWorker: async ({ projectId, threadId, turnId }) => {
@@ -3663,6 +3710,7 @@ function registerHandlers() {
     }
     if (method === "turn/completed" && threadId) {
       activeTurns.delete(threadId);
+      focusCurrentUserInputs.delete(threadId);
       trayCompletionRevisions.set(threadId, {
         completionRevision: `turn:${turn?.id ?? event.payload?.turnId ?? receivedAt}`,
         updatedAt: turn?.completedAt ?? receivedAt
@@ -3794,6 +3842,8 @@ function registerHandlers() {
     if ((activeTurns.size || startingTurns.size || pixiceBridge?.workflowIntegration?.workflows.activeRuns.size) && !force) throw new Error("Active work is still running. Stop it first or explicitly interrupt it.");
     stopped = true;
     acceptingWork = false;
+    for (const draft of widgetDrafts.values()) draft.controller.abort();
+    widgetDrafts.clear();
     focusSupervisor?.dispose();
     flushRendererDeltas();
     await pixiceBridge?.workflowIntegration?.close();

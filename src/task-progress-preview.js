@@ -1,3 +1,16 @@
+import { materializeWidgetCandidates } from '../electron/backend/widget-composition.mjs';
+
+function previewFormulaWidget(text, id, size) {
+  const material = materializeWidgetCandidates(text);
+  if (!material || material.invalid || material.kind !== 'formula') throw new Error('Invalid Focus math preview');
+  const pieces = [...material.parts.filter((item) => item.required), ...material.parts.filter((item) => item.id === 'formulaText')];
+  const spec = {
+    ...material.base, size, root: 'root',
+    nodes: [{ id: 'root', type: 'Card', props: { title: material.base.title }, slots: { body: pieces.map((item) => item.id) } }, ...pieces.map((item) => item.node)]
+  };
+  return { id, projectId: project.id, revision: 1, spec };
+}
+
 const project = {
   id: "preview-project",
   displayName: "Pixice",
@@ -256,7 +269,8 @@ const releaseTool = {
   lastOpenedAt: "2026-08-23T09:30:00.000Z"
 };
 
-export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavailable = false, updatePreview = false } = {}) {
+export function createTaskProgressPreviewApi({ focusPreview = false, focusV2Preview = false, focusIdlePreview = false, gitUnavailable = false, updatePreview = false } = {}) {
+  const previewFocusThread = focusIdlePreview ? { ...focusThread, turns: [] } : focusThread;
   const gitStatus = gitUnavailable
     ? { state: "command-line-tools-missing", available: false, installSupported: true, executablePath: null, version: null, message: "Apple Command Line Tools are not installed. Pixice can still work with folders, but Git features are unavailable." }
     : { state: "ready", available: true, installSupported: false, executablePath: "/usr/bin/git", version: "git version 2.50.1", message: "git version 2.50.1 is ready." };
@@ -271,11 +285,37 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
   const boardActivity = new Map(boardTasks.map((task) => [task.id, [{ id: `${task.id}:activity`, taskId: task.id, projectId: project.id, kind: "schedule-changed", summary: task.schedule.explanation, actorKind: "agent", actorId: task.owner, createdAt: task.updatedAt }]]));
   const listeners = new Set();
   const emit = (type, payload) => listeners.forEach((listener) => listener({ type, payload }));
+  let previewWidgets = focusV2Preview ? [
+    { id: "preview-v2-board", projectId: project.id, revision: 1, spec: {
+      version: 2, catalogVersion: 1, title: "Active Board tasks", size: "large", root: "root",
+      nodes: [
+        { id: "root", type: "Card", props: { title: "Active Board tasks" }, slots: { body: ["column", "tasks"] } },
+        { id: "column", type: "Select", props: { label: "Column", value: { path: "/view/column" }, options: ["backlog", "ready", "active", "done"] }, on: { change: "chooseColumn" } },
+        { id: "tasks", type: "Table", props: { rows: { path: "/derived/filtered" }, columns: [{ field: "title", label: "Title" }, { field: "column", label: "Column" }, { field: "updatedAt", label: "Updated" }], emptyText: "No tasks in this column" } }
+      ], state: { user: {}, view: { column: "active" } }, sources: { board: { capability: "board.list", arguments: {}, refresh: "event" } },
+      derived: { filtered: { op: "filterRows", input: { path: "/data/board" }, field: "column", equals: { path: "/view/column" } } },
+      actions: { chooseColumn: { type: "assign", target: "/view/column", input: "value" } }
+    } },
+    previewFormulaWidget('12 + 8', 'preview-v2-math-simple', 'small'),
+    previewFormulaWidget('calculator: (hours * rate) + fee with hours=4, rate=100, fee=20', 'preview-v2-math-formula', 'medium'),
+    { id: 'preview-v1-counter', projectId: project.id, revision: 1, spec: { version: 1, title: 'Reviews', size: 'small', blocks: [{ type: 'counter', label: 'Reviews', value: 7, step: 1 }] } }
+  ] : focusPreview ? [
+    { id: "preview-focus-timer", projectId: project.id, revision: 1, spec: { version: 1, title: "Focus session", size: "medium", blocks: [{ type: "timer", label: "Focus session", durationSeconds: 1500, endAt: new Date(Date.now() + 1400_000).toISOString() }] } },
+    { id: "preview-focus-list", projectId: project.id, revision: 1, spec: { version: 1, title: "Before you wrap up", size: "large", blocks: [{ type: "checklist", label: "Before you wrap up", items: [
+      { id: "423b6f28-0fe9-491b-91c7-e43ba5f17624", text: "Review the design", done: true },
+      { id: "67c5b152-e60c-425e-b1e2-a0b05e45823a", text: "Send the update", done: false },
+      { id: "7ad9b853-0aca-4571-b12f-18bb82b90c44", text: "Plan tomorrow", done: false }
+    ] }] } }
+  ] : [];
+  if (focusV2Preview) {
+    const selection = new URLSearchParams(window.location.search).get('widget');
+    const selectedId = { board: 'preview-v2-board', math: 'preview-v2-math-simple', formula: 'preview-v2-math-formula', counter: 'preview-v1-counter' }[selection];
+    if (selectedId) previewWidgets = previewWidgets.filter((widget) => widget.id === selectedId);
+  }
   let focusPolicy = {
     coordinatorModel: "gpt-5.6",
     workerModel: "gpt-5.6-luna",
     reviewModel: "gpt-5.6",
-    maxWorkers: 2,
     permissionMode: "workspace-write",
     executionHost: "current"
   };
@@ -302,7 +342,7 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
   ];
   let focusSeenSequence = 1;
   let focusSequence = focusEvents.length;
-  let pendingFocusQuestion = focusPreview ? {
+  let pendingFocusQuestion = focusPreview && !focusV2Preview ? {
     id: "preview-focus-question", requestGeneration: 1, projectId: project.id,
     method: "pixice/requestUserInput", focusManaged: true, focusCoordinatorQuestion: true,
     params: {
@@ -394,7 +434,7 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
     preview: { setContext: async ({ context }) => context },
     focus: {
       ensure: async () => {
-        if (focusPreview) {
+        if (focusPreview && !focusV2Preview) {
           window.setTimeout(() => {
             emit("FilePreviewOpenRequested", {
               workspaceId: rootThread.id,
@@ -429,7 +469,7 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
           created: false,
           session: { projectId: project.id, threadId: focusThread.id, userTurnCount: 1, lastMemoryReviewTurn: 0 },
           memory: { projectId: project.id, projectMemory: "Focus keeps project decisions concise.", userMemory: "", revision: 1 },
-          thread: focusThread
+          thread: previewFocusThread
         };
       },
       state: async () => focusSnapshot(),
@@ -504,10 +544,39 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
       delete: async () => null
     },
     projects: { list: async () => [previewProject], open: async () => previewProject },
+    widgets: {
+      list: async () => ({ data: structuredClone(previewWidgets) }),
+      readSource: async ({ projectId, widgetId, source }) => {
+        const widget = previewWidgets.find((item) => item.projectId === projectId && item.id === widgetId);
+        if (!widget?.spec?.sources?.[source] || projectId !== project.id) throw new Error("Widget source not found");
+        return { data: boardTasks.filter((task) => task.projectId === projectId).map(({ id, title, description, column, threadId, updatedAt }) => ({ id, title, description, column, threadId, updatedAt })) };
+      },
+      updateUserState: async ({ projectId, widgetId, userState, expectedRevision }) => {
+        const index = previewWidgets.findIndex((item) => item.projectId === projectId && item.id === widgetId && item.spec.version === 2);
+        if (index < 0 || previewWidgets[index].revision !== expectedRevision) throw new Error("Widget changed. Refresh and try again.");
+        const original = previewWidgets[index];
+        const saved = { ...original, revision: expectedRevision + 1, spec: { ...original.spec, state: { ...original.spec.state, user: userState } } };
+        previewWidgets = previewWidgets.map((item, position) => position === index ? saved : item);
+        emit("WidgetUpdated", { projectId, widgetId, action: "updated" });
+        return structuredClone(saved);
+      },
+      update: async ({ widgetId, spec, expectedRevision }) => {
+        const index = previewWidgets.findIndex((widget) => widget.id === widgetId);
+        if (index < 0 || previewWidgets[index].revision !== expectedRevision) throw new Error("Widget changed. Refresh and try again.");
+        const saved = { ...previewWidgets[index], revision: expectedRevision + 1, spec };
+        previewWidgets = previewWidgets.map((widget, candidateIndex) => candidateIndex === index ? saved : widget);
+        emit("WidgetUpdated", { projectId: project.id, widgetId, action: "updated" });
+        return structuredClone(saved);
+      },
+      delete: async ({ widgetId }) => {
+        previewWidgets = previewWidgets.filter((widget) => widget.id !== widgetId);
+        emit("WidgetUpdated", { projectId: project.id, widgetId, action: "deleted" });
+      }
+    },
     threads: {
-      list: async () => ({ data: threads, nextCursor: null }),
+      list: async () => ({ data: focusIdlePreview ? threads.map((item) => item.id === focusThread.id ? previewFocusThread : item) : threads, nextCursor: null }),
       read: async ({ threadId }) => threadId === focusThread.id
-        ? { thread: focusThread, plan: [] }
+        ? { thread: previewFocusThread, plan: [] }
         : threadId === secondaryThread.id ? { thread: secondaryThread, plan: [] }
           : threadId === documentationThread.id ? { thread: documentationThread, plan: [] }
             : { thread: rootThread, plan },

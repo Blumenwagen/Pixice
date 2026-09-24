@@ -15,6 +15,7 @@ type PixiceEvent = {
     | "BrowserOpenRequested"
     | "PreviewWorkspacePresentRequested"
     | "BoardUpdated"
+    | "WidgetUpdated"
     | "InstrumentUpdated"
     | "InstrumentOpenRequested"
     | "InstrumentInteractionUpdated"
@@ -39,6 +40,29 @@ type PixiceEvent = {
 };
 
 type ProjectScope = { projectId: string };
+type WidgetBlock =
+  | { type: 'timer'; label: string; durationSeconds: number; endAt: string | null }
+  | { type: 'checklist'; label: string; items: Array<{ id: string; text: string; done: boolean }> }
+  | { type: 'counter'; label: string; value: number; step: number };
+type WidgetSpec = { version: 1; title: string; size?: 'small' | 'medium' | 'large'; blocks: WidgetBlock[] };
+// Pixice-owned composable widget document.
+type WidgetV2Path = `/user/${string}` | `/view/${string}` | `/data/${string}` | `/derived/${string}`;
+type WidgetV2Binding = { path: WidgetV2Path };
+type WidgetV2Scalar = string | number | boolean;
+type WidgetV2Candidate = { type: string; description: string; cues: string[]; recipe: 'catalog-node-v1' };
+type WidgetV2Node = { id: string; type: string; props?: Record<string, WidgetV2Scalar | WidgetV2Binding | WidgetV2Scalar[] | Array<{ field: 'id' | 'title' | 'description' | 'column' | 'threadId' | 'updatedAt'; label: string }> | Array<{ label: string; value: number }> | Array<{ id: string; text: string; done: boolean }>>; slots?: Record<string, string[]>; on?: Record<string, string> };
+type WidgetV2Action =
+  | { type: 'set'; target: WidgetV2Path; value: WidgetV2Scalar }
+  | { type: 'assign'; target: WidgetV2Path; input: 'value' | 'checked' | 'number' }
+  | { type: 'toggle'; target: WidgetV2Path }
+  | { type: 'increment'; target: WidgetV2Path; amount: number }
+  | { type: 'refresh'; source: string };
+type WidgetV2Derived =
+  | { op: 'add' | 'subtract' | 'multiply' | 'divide'; left: number | WidgetV2Binding; right: number | WidgetV2Binding }
+  | { op: 'filterRows'; input: WidgetV2Binding; field: 'id' | 'title' | 'description' | 'column' | 'threadId' | 'updatedAt'; equals: WidgetV2Scalar | WidgetV2Binding };
+type WidgetV2Document = { version: 2; catalogVersion: 1; title: string; size?: 'small' | 'medium' | 'large'; root: string; nodes: WidgetV2Node[]; state: { user: Record<string, WidgetV2Scalar>; view: Record<string, WidgetV2Scalar> }; sources: Record<string, { capability: 'board.list'; arguments: {}; refresh: 'manual' | 'onOpen' | 'event' }>; derived: Record<string, WidgetV2Derived>; actions: Record<string, WidgetV2Action> };
+type ProjectWidget = { id: string; projectId: string; spec: WidgetSpec | WidgetV2Document; revision: number; createdAt: string; updatedAt: string };
+type WidgetDraftResult = { status: 'draft'; projectId: string; spec: WidgetSpec | WidgetV2Document; candidate: string } | { status: 'fallback'; reason: 'key_missing' | 'credential_error' | 'no_candidate' | 'low_confidence' | 'service_error' | 'timeout' | 'cancelled' };
 
 type PixiceTranscriptionModel = {
   id: string;
@@ -445,11 +469,24 @@ declare global {
         delete(payload: ProjectScope): Promise<PixiceProject>;
         open(): Promise<PixiceProject | null>;
       };
+      widgets: {
+        list(payload: ProjectScope): Promise<{ data: ProjectWidget[] }>;
+        draft(payload: ProjectScope & { text: string; requestId?: string; context?: { projectName?: string } }): Promise<WidgetDraftResult>;
+        cancelDraft(payload: ProjectScope & { requestId: string }): Promise<{ cancelled: boolean }>;
+        commit(payload: ProjectScope & { spec: WidgetSpec | WidgetV2Document }): Promise<ProjectWidget>;
+        update(payload: ProjectScope & { widgetId: string; spec: WidgetSpec | WidgetV2Document; expectedRevision: number }): Promise<ProjectWidget>;
+        updateUserState(payload: ProjectScope & { widgetId: string; userState: Record<string, WidgetV2Scalar>; expectedRevision: number }): Promise<ProjectWidget>;
+        readSource(payload: ProjectScope & { widgetId: string; source: string }): Promise<{ data: Array<Record<string, string | null>> }>;
+        delete(payload: ProjectScope & { widgetId: string }): Promise<ProjectWidget>;
+        keyStatus(): Promise<{ configured: boolean }>;
+        keySave(payload: { key: string }): Promise<{ configured: boolean }>;
+        keyRemove(): Promise<{ configured: boolean }>;
+      };
       focus: {
-        state(payload: ProjectScope): Promise<{ work: Array<any>; decisions: Array<any>; policy: { coordinatorModel: string | null; workerModel: string | null; reviewModel: string | null; maxWorkers: number; permissionMode: string; executionHost: "current" }; events: Array<any>; seenSequence: number; latestSequence: number; unseenEvents: Array<any> }>;
+        state(payload: ProjectScope): Promise<{ work: Array<any>; decisions: Array<any>; policy: { coordinatorModel: string | null; workerModel: string | null; reviewModel: string | null; permissionMode: string; executionHost: "current" }; events: Array<any>; seenSequence: number; latestSequence: number; unseenEvents: Array<any> }>;
         controlWork(payload: ProjectScope & { workId: string; action: "pause" | "resume" | "cancel" }): Promise<any>;
-        followUp(payload: ProjectScope & { workId: string; prompt: string }): Promise<any>;
-        updatePolicy(payload: ProjectScope & { patch: { coordinatorModel?: string | null; workerModel?: string | null; reviewModel?: string | null; maxWorkers?: number; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; executionHost?: "current" } }): Promise<any>;
+        followUp(payload: ProjectScope & { workId: string; prompt: string; visuals?: Array<{ source: "conversation"; messageId?: string; index: number; label?: string } | { source: "file"; path: string; label?: string }> }): Promise<any>;
+        updatePolicy(payload: ProjectScope & { patch: { coordinatorModel?: string | null; workerModel?: string | null; reviewModel?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; executionHost?: "current" } }): Promise<any>;
         markSeen(payload: ProjectScope & { sequence: number }): Promise<{ seenSequence: number }>;
         ensure(payload: ProjectScope & { model?: string; serviceTier?: string | null; replaceEmpty?: boolean; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{
           created: boolean;

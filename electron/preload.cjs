@@ -60,6 +60,11 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     delete: invoke("projects:delete"),
     open: invoke("projects:open")
   }),
+  widgets: Object.freeze({
+    list: invoke('widgets:list'), draft: invoke('widgets:draft'), cancelDraft: invoke('widgets:cancel-draft'), commit: invoke('widgets:commit'),
+    update: invoke('widgets:update'), updateUserState: invoke('widgets:update-user-state'), readSource: invoke('widgets:read-source'), delete: invoke('widgets:delete'),
+    keyStatus: invoke('widgets:key-status'), keySave: invoke('widgets:key-save'), keyRemove: invoke('widgets:key-remove')
+  }),
   focus: Object.freeze({
     state: invoke("focus:state"),
     controlWork: invoke("focus:work:control"),

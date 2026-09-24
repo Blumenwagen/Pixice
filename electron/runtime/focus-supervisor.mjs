@@ -80,11 +80,14 @@ function workerPrompt(work, decisions, { continuation = false, direction = null 
     ? `Continue durable Focus work ${work.id}. Keep the same work identity and thread.`
     : `Execute durable Focus work ${work.id} for project ${work.projectId}.`;
   const requested = direction ? `\nNew direction to apply:\n${bounded(direction, 8_000)}\n` : "\n";
+  const visualNote = !direction && asArray(work.visuals).length
+    ? `\nAttached visuals in this model turn:\n${work.visuals.map((visual, index) => `- Image ${index + 1}: ${bounded(visual.label || visual.source, 120)} (${bounded(visual.source, 240)})`).join("\n")}\n`
+    : "";
   return `${prefix}
 
 Work request:
 ${bounded(work.prompt, 40_000)}
-${requested}
+${requested}${visualNote}
 Coordinator directions:
 ${decisionText}
 
@@ -98,6 +101,7 @@ Before presenting a result, inspect current project context, apply every scoped 
 export class FocusSupervisor {
   constructor({
     store,
+    visuals,
     runtime,
     contextForProject,
     startWorker,
@@ -108,6 +112,7 @@ export class FocusSupervisor {
   }) {
     if (!store) throw new Error("FocusSupervisor requires a store");
     this.store = store;
+    this.visuals = visuals;
     this.runtime = runtime;
     this.contextForProject = contextForProject;
     this.startWorker = startWorker;
@@ -170,6 +175,9 @@ export class FocusSupervisor {
     const access = input?.access === "read" ? "read" : "write";
     const requestedPermission = access === "read" ? "read-only" : input?.permissionMode;
     const permissionMode = permissionAtMost(requestedPermission, policy.permissionMode);
+    const stagedVisuals = input?.visuals?.length
+      ? await this.visuals?.stage(projectId, context.coordinatorThreadId, input.visuals) : [];
+    if (input?.visuals?.length && stagedVisuals?.length !== input.visuals.length) throw new Error("Focus visual staging failed; no worker was queued.");
     const created = this.store.createWork(projectId, {
       coordinatorThreadId: context.coordinatorThreadId,
       title: bounded(input?.title || input?.prompt || "Focus work", 160),
@@ -179,6 +187,7 @@ export class FocusSupervisor {
       permissionMode,
       access,
       resources: normalizedResources({ access, resources: input?.resources }),
+      visuals: stagedVisuals,
       dependsOn: asArray(input?.dependsOn),
       reviewOf: input?.reviewOf ?? null,
       status: "queued"
@@ -189,17 +198,21 @@ export class FocusSupervisor {
     return this.store.getWork(projectId, created.id) ?? created;
   }
 
-  async followUp(projectId, id, { prompt }) {
+  async followUp(projectId, id, { prompt, visuals = [] }) {
     const work = this.#requiredWork(projectId, id);
     if (["cancelled", "cancelling"].includes(work.status)) throw new Error("Cancelled work cannot be continued");
     const nextPrompt = bounded(prompt, 80_000);
+    const stagedVisuals = visuals.length ? await this.visuals?.stage(projectId, work.coordinatorThreadId, visuals) : [];
+    if (visuals.length && stagedVisuals?.length !== visuals.length) throw new Error("Focus visual staging failed; follow-up was not sent.");
     if (ACTIVE_STATUSES.has(work.status) && work.threadId && work.turnId) {
       const decisions = this.store.listDecisions(projectId, { workId: work.id, limit: 100 });
+      const imageUrls = stagedVisuals.length ? await this.visuals.load(projectId, work.coordinatorThreadId, stagedVisuals) : [];
       const steered = await this.continueWorker({ projectId, workId: work.id, threadId: work.threadId, turnId: work.turnId,
-        prompt: workerPrompt({ ...work, prompt: nextPrompt }, decisions, { continuation: true }),
+        prompt: workerPrompt({ ...work, prompt: nextPrompt, visuals: stagedVisuals }, decisions, { continuation: true }), images: imageUrls,
         model: work.model, effort: work.effort, permissionMode: work.permissionMode });
       const updated = this.store.updateWork(projectId, id, {
         prompt: nextPrompt,
+        visuals: stagedVisuals,
         turnId: steered?.turnId ?? steered?.turn?.id ?? work.turnId,
         answer: "",
         error: null,
@@ -213,6 +226,7 @@ export class FocusSupervisor {
     if (work.status === "starting") throw new Error("Worker dispatch is still starting; retry the follow-up after its thread is available");
     const updated = this.store.updateWork(projectId, id, {
       prompt: nextPrompt,
+      visuals: stagedVisuals,
       status: "queued",
       turnId: null,
       answer: "",
@@ -477,8 +491,6 @@ export class FocusSupervisor {
 
   async #drain(projectId) {
     if (this.disposed) return;
-    const policy = this.store.getPolicy(projectId);
-    const limit = Math.max(1, Number(policy.maxWorkers) || 1);
     let work = asArray(this.store.listRecoverableWork()).filter((item) => item.projectId === projectId);
     for (const queued of work.filter((item) => ["queued", "blocked"].includes(item.status))) {
       const dependencies = asArray(queued.dependsOn).map((id) => this.store.getWork(projectId, id));
@@ -494,7 +506,6 @@ export class FocusSupervisor {
       || (item.status === "needs-attention" && item.threadId && item.turnId && String(item.error ?? "").startsWith(DEFERRED_RECOVERY_PREFIX)));
     const selected = [];
     for (const candidate of work.filter((item) => item.status === "queued")) {
-      if (active.length + selected.length >= limit) break;
       if ([...active, ...selected].some((other) => conflicts(candidate, other))) continue;
       this.startReservations.add(candidate.id);
       const starting = this.store.updateWork(projectId, candidate.id, { status: "starting", error: null });
@@ -521,6 +532,7 @@ export class FocusSupervisor {
         workId: work.id,
         coordinatorThreadId: work.coordinatorThreadId,
         prompt: workerPrompt(current, decisions, { continuation: Boolean(current.threadId) }),
+        images: asArray(current.visuals).length ? await this.visuals.load(work.projectId, current.coordinatorThreadId, current.visuals) : [],
         model: work.model,
         effort: work.effort,
         permissionMode: work.permissionMode

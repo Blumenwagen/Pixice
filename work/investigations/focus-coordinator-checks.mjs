@@ -85,7 +85,7 @@ describe('Focus coordinator backend', () => {
     request.mockImplementation(async (method, params) => method === 'model/list'
       ? { data: [{ id: 'gpt-5.6-terra', model: 'gpt-5.6-terra', displayName: 'Terra', isDefault: true }] }
       : original.call(codex, method, params));
-    await client.call('focus.updatePolicy', { projectId: project.id, patch: { workerModel: 'codex:gpt-5.6-terra', maxWorkers: 1 } });
+    await client.call('focus.updatePolicy', { projectId: project.id, patch: { workerModel: 'codex:gpt-5.6-terra' } });
     const work = await tool('dispatch_work', { title: 'Inspect exports', prompt: 'Inspect the exporter and report evidence.', access: 'read' });
     assert.ok(work.id);
     const state = () => client.call('focus.state', { projectId: project.id });
@@ -124,12 +124,14 @@ describe('Focus coordinator backend', () => {
     claude.request = async (method, params) => method === 'model/list'
       ? { data: [{ id: 'sonnet', model: 'sonnet', displayName: 'Sonnet' }] }
       : original.call(claude, method, params);
-    await client.call('focus.updatePolicy', { projectId: project.id, patch: { coordinatorModel: 'codex:gpt-5.6-terra', workerModel: 'claude:sonnet', reviewModel: 'codex:gpt-5.6-terra', maxWorkers: 2, permissionMode: 'auto-approve' } });
+    await client.call('focus.updatePolicy', { projectId: project.id, patch: { coordinatorModel: 'codex:gpt-5.6-terra', workerModel: 'claude:sonnet', reviewModel: 'codex:gpt-5.6-terra', permissionMode: 'auto-approve' } });
     await client.call('turns.start', { projectId: project.id, threadId: focus.thread.id, text: 'A thread-specific model override', model: 'codex:fixture-model' });
     const state = await client.call('focus.state', { projectId: project.id });
     assert.equal(state.policy.coordinatorModel, 'codex:gpt-5.6-terra');
     assert.equal(state.policy.workerModel, 'claude:sonnet');
     assert.equal(state.policy.permissionMode, 'auto-approve');
+    assert.equal(Object.hasOwn(state.policy, 'maxWorkers'), false);
+    await assert.rejects(client.call('focus.updatePolicy', { projectId: project.id, patch: { maxWorkers: 1 } }), /maxWorkers/);
     await assert.rejects(client.call('focus.updatePolicy', { projectId: project.id, patch: { coordinatorModel: 'claude:sonnet' } }), /stays with its provider/);
     const defaults = await client.call('app.bootstrap');
     assert.notEqual(defaults.settings.defaultModel, 'codex:gpt-5.6-terra');

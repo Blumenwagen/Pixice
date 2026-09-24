@@ -24,22 +24,47 @@ function fixture() {
 describe("FocusStore", () => {
   it("persists policy and work across a reopened Pixice database", () => {
     const { directory, database, store } = fixture();
-    expect(store.getPolicy("project-a")).toEqual({ coordinatorModel: null, workerModel: null, reviewModel: null, maxWorkers: 2, permissionMode: "workspace-write", executionHost: "current" });
-    expect(store.updatePolicy("project-a", { workerModel: "gpt-5.6-luna", maxWorkers: 3 })).toMatchObject({ workerModel: "gpt-5.6-luna", maxWorkers: 3 });
+    expect(store.getPolicy("project-a")).toEqual({ coordinatorModel: null, workerModel: null, reviewModel: null, permissionMode: "workspace-write", executionHost: "current" });
+    expect(store.updatePolicy("project-a", { workerModel: "gpt-5.6-luna" })).toMatchObject({ workerModel: "gpt-5.6-luna" });
     const created = store.createWork("project-a", { title: "Inspect persistence", prompt: "Keep the coordinator durable.", coordinatorThreadId: "focus-thread" });
     expect(created).toMatchObject({ projectId: "project-a", model: "gpt-5.6-luna", status: "queued", access: "write", revision: 1 });
     database.db.close();
 
     const reopenedDatabase = new PixiceDatabase(directory);
     const reopened = new FocusStore(reopenedDatabase);
-    expect(reopened.getPolicy("project-a").maxWorkers).toBe(3);
+    expect(reopened.getPolicy("project-a")).toMatchObject({ workerModel: "gpt-5.6-luna" });
+    expect(reopened.getPolicy("project-a")).not.toHaveProperty("maxWorkers");
     expect(reopened.getWork("project-a", created.id)).toMatchObject({ title: "Inspect persistence", coordinatorThreadId: "focus-thread" });
+    reopenedDatabase.db.close();
+  });
+
+  it("persists bounded visual metadata without image bytes", () => {
+    const { database, store } = fixture();
+    const visual = { path: "/private/frame.png", mimeType: "image/png", bytes: 68, source: "local file frame.png", label: "Frame at 00:02" };
+    const work = store.createWork("project-a", { title: "Inspect frame", visuals: [visual] });
+    expect(store.getWork("project-a", work.id).visuals).toEqual([visual]);
+    expect(JSON.stringify(store.listWork("project-a"))).not.toContain("base64");
+    expect(() => store.updateWork("project-a", work.id, { visuals: [{ ...visual, path: `data:image/png;base64,${"A".repeat(3000)}` }] })).toThrow(/visual path exceeds/);
+    database.db.close();
+  });
+
+  it("preserves legacy worker counts without exposing them as policy", () => {
+    const { directory, database, store } = fixture();
+    store.updatePolicy("project-a", { workerModel: "gpt-5.6-luna" });
+    database.db.prepare("UPDATE focus_policies SET max_workers = 1 WHERE project_id = ?").run("project-a");
+    database.db.close();
+
+    const reopenedDatabase = new PixiceDatabase(directory);
+    const reopened = new FocusStore(reopenedDatabase);
+    expect(reopened.getPolicy("project-a")).not.toHaveProperty("maxWorkers");
+    expect(reopened.updatePolicy("project-a", { reviewModel: "review-model" })).not.toHaveProperty("maxWorkers");
+    expect(reopenedDatabase.db.prepare("SELECT max_workers FROM focus_policies WHERE project_id = ?").get("project-a").max_workers).toBe(1);
     reopenedDatabase.db.close();
   });
 
   it("validates policy and work boundaries, including project-scoped dependencies", () => {
     const { database, store } = fixture();
-    expect(() => store.updatePolicy("project-a", { maxWorkers: 9 })).toThrow(/1 to 8/);
+    expect(() => store.updatePolicy("project-a", { maxWorkers: 1 })).toThrow(/Unknown policy field: maxWorkers/);
     expect(() => store.updatePolicy("project-a", { executionHost: "remote" })).toThrow(/current/);
     expect(() => store.createWork("project-a", { title: "Unsafe", permissionMode: "root" })).toThrow(/permissionMode/);
     expect(() => store.createWork("project-a", { title: "Unknown", owner: "agent" })).toThrow(/Unknown work field/);

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Focus question and Activity geometry</title>
+  <link rel="stylesheet" href="/src/styles.css">
+  <link rel="stylesheet" href="/src/components/FocusCoordinatorQuestions.css">
+  <link rel="stylesheet" href="/src/components/FocusCoordination.css">
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #1d2023; color: #eef1f3; font-family: Manrope, system-ui, sans-serif; }
+    .qa-shell { width: 1662px; height: 900px; display: flex; }
+    .qa-sidebar { width: 412px; flex: none; background: #191c1f; }
+    .qa-shell .focus-workspace { width: 1250px; flex: none; }
+    .qa-message { min-height: 62px; padding: 20px; color: #dce2e5; }
+    .qa-composer { min-height: 88px; padding: 20px; color: #dce2e5; }
+    .qa-note { position: fixed; left: 14px; bottom: 12px; color: #aeb8be; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="qa-shell focus-layout">
+    <aside class="qa-sidebar"></aside>
+    <main class="focus-workspace" data-task-rail="true" data-has-conversation="true">
+      <div class="focus-conversation-scroll">
+        <div class="focus-conversation-column"><div class="qa-message">Show me the interface direction the design worker made.<br><br>I pulled the worker's prototype into Preview.</div></div>
+        <section class="focus-coordinator-questions" aria-label="Coordinator questions">
+          <article class="focus-coordinator-question" aria-label="Coordinator question">
+            <header class="focus-coordinator-question-header"><span>Coordinator question</span><small>Guides 2 workers</small></header>
+            <p class="focus-coordinator-question-reason">The migration is ready. I need your rollout decision before applying it to existing accounts.</p>
+            <p class="focus-coordinator-question-recommendation"><strong>Recommendation</strong>Start with the beta group so we can verify the migration before a wider rollout.</p>
+            <div class="focus-coordinator-question-list"><section class="focus-coordinator-question-item"><h3>Who should receive the session update first?</h3><p>Rollout</p>
+              <div class="focus-coordinator-question-options" role="radiogroup" aria-label="Who should receive the session update first?">
+                <button type="button" role="radio"><span><strong>Beta group</strong><em>Recommended</em><small>Verify the change with a small group first.</small></span></button>
+                <button type="button" role="radio"><span><strong>All accounts</strong><small>Make the change available to everyone.</small></span></button>
+              </div>
+            </section></div>
+            <footer class="focus-coordinator-question-actions"><button type="button" class="answer">Send answer</button></footer>
+          </article>
+        </section>
+      </div>
+      <aside class="focus-task-rail" aria-label="Task progress overview"><header class="focus-task-rail-header"><span>Work in flight</span><strong>2</strong></header><div class="focus-task-list"><article class="focus-task-item"><div class="focus-task-copy"><span class="focus-task-state"><i></i></span><span><strong>Refine Focus rails</strong><small>Working · 2 of 4</small></span></div></article></div></aside>
+      <aside class="focus-coordination focus-activity-panel" data-open="true" aria-label="Coordinator activity"><header class="focus-activity-panel-header"><span><strong>Activity</strong><small>2 active</small></span><button type="button" aria-label="Close activity panel">×</button></header><div class="focus-coordination-disclosure"><div class="focus-coordination-work-list"><article class="focus-coordination-work" data-status="running"><div class="focus-coordination-work-main"><span class="focus-coordination-status"><i></i></span><button class="focus-coordination-work-title"><span><strong>Refine Focus rails to match update toasts</strong><small>Working · GPT-6 Sol</small></span><span>⌄</span></button><div class="focus-coordination-work-actions"><button class="focus-coordination-action-primary">Pause</button><button class="danger">Cancel</button></div></div></article></div></div></aside>
+      <div class="focus-composer-wrap"><div class="composer qa-composer">Ask, decide, or start something</div></div>
+    </main>
+  </div>
+  <div class="qa-note">1780px viewport, 412px sidebar, 1250px Focus workspace. Add ?closed to compare unchanged chat and composer positions.</div>
+  <script>if (new URLSearchParams(location.search).has("closed")) document.querySelector(".focus-activity-panel").setAttribute("data-open", "false");</script>
+</body>
+</html>

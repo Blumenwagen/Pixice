@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift } from "../src/App.jsx";
+import { draftFocusWidget } from "../electron/backend/widget-draft-router.mjs";
+import { materializeWidgetCandidates } from "../electron/backend/widget-composition.mjs";
 import { listPricingCatalog } from "../electron/usage/pricing.mjs";
 import { ConnectRoot } from "../src/connect/ConnectRoot.jsx";
 import { WorkflowHost } from "../src/components/workflows/WorkflowHost.jsx";
@@ -21,6 +23,18 @@ it("keeps picker popovers aligned inside the prompt box", () => {
     { left: 80, right: 464 },
     0
   )).toBe(-26);
+});
+
+it("keeps Focus overflow menus outside clipping and wraps project shortcuts on compact headers", () => {
+  expect(appCss).toMatch(/\.focus-chrome-start\s*\{[^}]*overflow: visible;/s);
+  expect(appCss).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?\.focus-project-overflow\s*\{[\s\S]*?position: static;/);
+  expect(appCss).toMatch(/@media \(max-width: 480px\)\s*\{[\s\S]*?\.focus-project-tiles\s*\{[\s\S]*?flex-wrap: wrap;/);
+  expect(appCss).not.toContain(".focus-navigation-dock::before");
+  expect(appCss).toMatch(/\.focus-navigation-dock\s*\{[^}]*position: absolute;[^}]*bottom: 16px;[^}]*left: 16px;/s);
+  expect(appCss).toMatch(/\.focus-navigation-dock\s*\{[^}]*box-sizing: border-box;[^}]*height: 36px;[^}]*padding: 2px;/s);
+  expect(appCss).toMatch(/\.focus-navigation-dock \.focus-workspace-button:focus-visible,[\s\S]*?transform: none;/);
+  expect(appCss).toMatch(/\.focus-workspace\[data-has-conversation="true"\] \.focus-navigation-dock\s*\{ bottom: var\(--focus-composer-clearance, 144px\); \}/);
+  expect(appCss).toMatch(/\.focus-layout\.preview-open \.focus-workspace\[data-has-conversation="true"\] \.focus-navigation-dock\s*\{ bottom: var\(--focus-composer-clearance, 144px\); \}/);
 });
 
 const project = {
@@ -429,11 +443,10 @@ describe("Pixice app shell", () => {
     const focusPrompt = screen.getByRole("textbox", { name: "Project Focus prompt" });
     expect(focusPrompt).toBeInTheDocument();
     expect(within(focusPrompt.closest(".composer")).queryByRole("button", { name: /^Permissions:/ })).not.toBeInTheDocument();
-    const projectPicker = screen.getByRole("button", { name: "Switch project, current project Aurora" });
-    fireEvent.click(projectPicker);
-    expect(screen.getByRole("menu", { name: "Choose project" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitemradio", { name: "Aurora" })).toHaveAttribute("aria-checked", "true");
-    expect(document.querySelector(".focus-project-tile")).toHaveStyle({ "--project-color": "#c3a7ee" });
+    const projectShortcuts = screen.getByRole("group", { name: "Projects" });
+    expect(within(projectShortcuts).getByRole("button", { name: "Aurora, current project" })).toHaveAttribute("aria-current", "page");
+    expect(within(projectShortcuts).queryByRole("button", { name: "More projects" })).not.toBeInTheDocument();
+    expect(document.querySelector(".focus-project-shortcut")).toHaveStyle({ "--project-color": "#c3a7ee" });
     fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: "Focus memory" }));
     expect(await screen.findByRole("dialog", { name: "Focus memory" })).toBeInTheDocument();
@@ -531,6 +544,180 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Workspace" }));
     expect(await screen.findByRole("button", { name: "New task" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Talk to Aurora" })).not.toBeInTheDocument();
+  });
+
+  it("commits a project widget from the Focus composer and sends fallback requests as conversation", async () => {
+    const api = createApi();
+    const spec = { version: 1, title: "Focus session", size: "medium", blocks: [{ type: "timer", label: "Focus", durationSeconds: 1500, endAt: null }] };
+    let saved = [];
+    api.widgets = {
+      list: vi.fn(async () => ({ data: saved })),
+      draft: vi.fn().mockResolvedValueOnce({ status: "draft", projectId: project.id, spec }).mockResolvedValueOnce({ status: "fallback", reason: "no_candidate" }),
+      commit: vi.fn(async ({ projectId, spec: nextSpec }) => {
+        saved = [{ id: "focus-widget", projectId, revision: 1, spec: nextSpec }];
+        return saved[0];
+      }),
+      update: vi.fn(),
+      delete: vi.fn()
+    };
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    await screen.findByRole("heading", { name: "Talk to Aurora" });
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await waitFor(() => expect(prompt).not.toBeDisabled());
+    fireEvent.change(prompt, { target: { value: "Make a focus timer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(api.widgets.commit).toHaveBeenCalledWith({ projectId: project.id, spec }));
+    expect(api.turns.start).not.toHaveBeenCalled();
+    expect(await screen.findByRole("complementary", { name: "Live widgets" })).toBeInTheDocument();
+    expect(api.widgets.list).toHaveBeenCalledTimes(2);
+
+    fireEvent.change(prompt, { target: { value: "Explain the release plan" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ projectId: project.id, text: "Explain the release plan" })));
+    expect(api.widgets.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes bare math and named formulas through v2, then sends malformed math to chat", async () => {
+    const api = createApi();
+    const saved = [];
+    const resolveKey = vi.fn(async () => 'host-test-key');
+    const fetchImpl = vi.fn(async (_url, request) => {
+      const body = JSON.parse(request.body);
+      expect(request.headers.authorization).toBe('Bearer host-test-key');
+      expect(body.state.purpose).toBe('formula');
+      const material = materializeWidgetCandidates(body.state.request);
+      const yes = { type: 'noul', noul: .95 };
+      return { ok: true, json: async () => ({ answers: {
+        suitable: yes,
+        layout: { type: 'choice', choice: 'layoutCard', confidence: .9 },
+        grouping: { type: 'choice', choice: 'flat', confidence: .9 },
+        order: { type: 'choice', choice: 'inputsFirst', confidence: .9 },
+        ...Object.fromEntries(material.parts.map((item) => [`include_${item.id}`, yes])),
+        include_heading: { type: 'noul', noul: .05 }
+      } }) };
+    });
+    api.widgets = {
+      list: vi.fn(async () => ({ data: [...saved] })),
+      draft: vi.fn(({ projectId, text }) => draftFocusWidget({ projectId, text, projectName: project.displayName }, { resolveKey, fetchImpl })),
+      commit: vi.fn(async ({ projectId, spec }) => {
+        const widget = { id: `math-${saved.length + 1}`, projectId, revision: 1, spec };
+        saved.push(widget);
+        return widget;
+      })
+    };
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Focus' }));
+    const prompt = await screen.findByRole('textbox', { name: 'Project Focus prompt' });
+    await waitFor(() => expect(prompt).not.toBeDisabled());
+    fireEvent.change(prompt, { target: { value: '12 + 8' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api.widgets.commit).toHaveBeenCalledTimes(1));
+    expect(saved[0].spec.version).toBe(2);
+    expect(saved[0].spec.size).toBe('small');
+    expect(Object.keys(saved[0].spec.state.user)).toEqual(['operand1', 'operand2']);
+    expect(saved[0].spec.nodes.filter((node) => node.type === 'NumberInput')).toHaveLength(2);
+    expect(screen.getByLabelText('Result value')).toHaveTextContent('20');
+    expect(api.turns.start).not.toHaveBeenCalled();
+
+    const formula = 'calculator: (hours * rate) + fee with hours=4, rate=100, fee=20';
+    fireEvent.change(prompt, { target: { value: formula } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api.widgets.commit).toHaveBeenCalledTimes(2));
+    expect(saved[1].spec.state.user).toEqual({ hours: 4, rate: 100, fee: 20 });
+    await waitFor(() => expect(screen.getAllByLabelText('Result value').some((result) => result.textContent === '420')).toBe(true));
+    expect(api.turns.start).not.toHaveBeenCalled();
+
+    fireEvent.change(prompt, { target: { value: 'calculator: 4 +' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ projectId: project.id, text: 'calculator: 4 +' })));
+    expect(api.widgets.commit).toHaveBeenCalledTimes(2);
+    expect(resolveKey).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps saved v1 and v2 widgets under the live app accent when it changes", async () => {
+    localStorage.setItem('pixice.preferences', JSON.stringify({ accentColor: 'blue' }));
+    const material = materializeWidgetCandidates('12 + 8');
+    const parts = material.parts.filter((item) => item.required);
+    const spec = { ...material.base, root: 'root', nodes: [
+      { id: 'root', type: 'Card', props: { title: '12 + 8' }, slots: { body: parts.map((item) => item.id) } },
+      ...parts.map((item) => item.node)
+    ] };
+    const api = createApi();
+    api.widgets = { list: vi.fn(async () => ({ data: [
+      { id: 'saved-timer', projectId: project.id, revision: 1, spec: { version: 1, title: 'Saved timer', blocks: [{ type: 'timer', label: 'Saved timer', durationSeconds: 600, endAt: new Date(Date.now() + 600_000).toISOString() }] } },
+      { id: 'saved-math', projectId: project.id, revision: 1, spec }
+    ] })) };
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Focus' }));
+    await screen.findByRole('article', { name: 'Saved timer' });
+    const shell = document.querySelector('.pixice-app');
+    expect(shell).toHaveAttribute('data-accent-color', 'blue');
+    expect(shell.querySelector('article[data-kind="timer"]')).toBeInTheDocument();
+    expect(shell.querySelector('article[data-kind="v2"]')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Appearance/ }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Green accent' }));
+    expect(shell).toHaveAttribute('data-accent-color', 'green');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to task' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Focus' }));
+    await screen.findByRole('article', { name: 'Saved timer' });
+    expect(shell.querySelector('article[data-kind="timer"]')).toBeInTheDocument();
+    expect(shell.querySelector('article[data-kind="v2"]')).toBeInTheDocument();
+    expect(screen.getByLabelText('Result value')).toHaveTextContent('20');
+    expect(shell).toHaveAttribute('data-accent-color', 'green');
+  });
+
+  it("hides tool-call details only in the Focus coordinator conversation", async () => {
+    const workspaceThread = {
+      ...thread,
+      turns: [{
+        id: "workspace-turn",
+        status: "completed",
+        items: [
+          { id: "workspace-user", type: "userMessage", content: [{ type: "text", text: "Review the release plan" }] },
+          { id: "workspace-commentary", type: "agentMessage", phase: "commentary", text: "I am checking the current state." },
+          { id: "workspace-command", type: "commandExecution", command: "git status --short", status: "completed", aggregatedOutput: " M src/App.jsx" },
+          { id: "workspace-file-change", type: "fileChange", status: "completed", changes: [{ path: "src/App.jsx" }] },
+          { id: "workspace-reasoning", type: "reasoning", summary: "Reviewing context continuity." },
+          { id: "workspace-compaction", type: "contextCompaction", status: "completed", completedAt: "2026-09-23T07:00:00.000Z" },
+          { id: "workspace-collaboration", type: "collabAgentToolCall", tool: "collaboration.spawn", receiverThreadIds: ["worker-1"], status: "completed" },
+          { id: "workspace-mcp", type: "mcpToolCall", tool: "focus.read", server: "pixice", status: "completed" },
+          { id: "workspace-dynamic", type: "dynamicToolCall", tool: "workspace.inspect", status: "completed" },
+          { id: "workspace-final", type: "agentMessage", phase: "final_answer", text: "The release plan is ready." }
+        ]
+      }]
+    };
+    const coordinatorThread = { ...workspaceThread, id: "focus-thread", name: "Aurora Focus" };
+    const api = createApi(workspaceThread);
+    api.focus.ensure.mockResolvedValue({
+      created: false,
+      session: { projectId: project.id, threadId: coordinatorThread.id, userTurnCount: 1, lastMemoryReviewTurn: 0 },
+      memory: { projectId: project.id, projectMemory: "", userMemory: "", revision: 1 },
+      thread: coordinatorThread
+    });
+    window.pixice = api;
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+
+    expect(await screen.findByText("Review the release plan")).toBeInTheDocument();
+    expect(screen.getByText("I am checking the current state.")).toBeInTheDocument();
+    expect(screen.getByText("The release plan is ready.")).toBeInTheDocument();
+    expect(screen.getByText("Reviewing context continuity.")).toBeInTheDocument();
+    expect(screen.getByText("Compacted context")).toBeInTheDocument();
+    expect(screen.queryByText("git status --short")).not.toBeInTheDocument();
+    expect(screen.queryByText("M src/App.jsx")).not.toBeInTheDocument();
+    expect(screen.queryByText("collaboration.spawn")).not.toBeInTheDocument();
+    expect(screen.queryByText("focus.read")).not.toBeInTheDocument();
+    expect(screen.queryByText("workspace.inspect")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Workspace" }));
+    expect(await screen.findByText("git status --short")).toBeInTheDocument();
   });
 
   it("keeps the Focus draft and offers reconnect after a first-send session failure", async () => {
@@ -1674,6 +1861,74 @@ describe("Pixice app shell", () => {
     expect(within(recent).getAllByRole("button")).toHaveLength(9);
     expect(within(recent).getByRole("button", { name: "Project 9" })).toBeInTheDocument();
     expect(within(recent).queryByRole("button", { name: "Project 10" })).not.toBeInTheDocument();
+  });
+
+  it("shows Focus project shortcuts up to the limit and puts remaining projects in an accessible overflow menu", async () => {
+    const additionalProjects = Array.from({ length: 9 }, (_, index) => ({
+      id: `project-${index + 2}`,
+      displayName: `Project ${index + 2}`,
+      canonicalPath: `/work/project-${index + 2}`,
+      icon: "folder",
+      color: "blue",
+      folders: [`/work/project-${index + 2}`],
+      lastUsedAt: new Date(Date.now() - ((index + 1) * 1_000)).toISOString()
+    }));
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project, ...additionalProjects],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    window.pixice = api;
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const shortcuts = await screen.findByRole("group", { name: "Projects" });
+    expect(document.querySelector(".focus-chrome-start")).toContainElement(shortcuts);
+    const dock = screen.getByRole("navigation", { name: "Focus navigation" });
+    expect(within(dock).getByRole("button", { name: "Workspace" })).toBeInTheDocument();
+    expect(within(dock).getByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(within(dock).queryByRole("group", { name: "Projects" })).not.toBeInTheDocument();
+    expect(within(shortcuts).getAllByRole("button")).toHaveLength(7);
+    expect(within(shortcuts).getByRole("button", { name: "Switch to Project 6" })).toBeInTheDocument();
+    expect(within(shortcuts).queryByRole("button", { name: "Switch to Project 7" })).not.toBeInTheDocument();
+
+    const overflowTrigger = within(shortcuts).getByRole("button", { name: "More projects" });
+    fireEvent.keyDown(overflowTrigger, { key: "ArrowDown" });
+    const overflow = await screen.findByRole("menu", { name: "More projects" });
+    const projectSeven = within(overflow).getByRole("menuitemradio", { name: "Project 7" });
+    expect(projectSeven).toHaveFocus();
+    fireEvent.keyDown(projectSeven, { key: "ArrowDown" });
+    expect(within(overflow).getByRole("menuitemradio", { name: "Project 8" })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement, { key: "End" });
+    const projectTen = within(overflow).getByRole("menuitemradio", { name: "Project 10" });
+    expect(projectTen).toHaveFocus();
+    fireEvent.keyDown(projectTen, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "More projects" })).not.toBeInTheDocument());
+    await waitFor(() => expect(overflowTrigger).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Show third project row" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+
+    const expandedShortcuts = await screen.findByRole("group", { name: "Projects" });
+    expect(within(expandedShortcuts).getAllByRole("button")).toHaveLength(10);
+    expect(within(expandedShortcuts).getByRole("button", { name: "Switch to Project 9" })).toBeInTheDocument();
+    fireEvent.click(within(expandedShortcuts).getByRole("button", { name: "More projects" }));
+    expect(await screen.findByRole("menuitemradio", { name: "Project 10" })).toBeInTheDocument();
+  });
+
+  it("returns to Workspace from the compact Focus navigation dock", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const dock = screen.getByRole("navigation", { name: "Focus navigation" });
+    fireEvent.click(within(dock).getByRole("button", { name: "Workspace" }));
+    expect(await screen.findByRole("complementary", { name: "Primary navigation" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Focus navigation" })).not.toBeInTheDocument();
   });
 
   it("keeps the legacy sidebar off by default and restores nested project rows when enabled", async () => {

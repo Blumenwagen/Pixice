@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { FocusCoordinationTools } from "../electron/runtime/focus-coordination-tools.mjs";
+import { FocusCoordinationTools, focusCoordinationTools, focusFollowUpPayload } from "../electron/runtime/focus-coordination-tools.mjs";
 
 function work(overrides = {}) {
   return {
@@ -40,6 +40,22 @@ function call(tools, threadId, tool, args) {
 }
 
 describe("FocusCoordinationTools", () => {
+  it("exposes bounded conversation and file visual selectors on dispatch and follow-up", async () => {
+    const { tools, supervisor } = fixture();
+    const selected = [{ source: "conversation", messageId: "user-1", index: 0, label: "Sketch" }, { source: "file", path: "/frames/x-post-02.png" }];
+    await call(tools, "coordinator", "dispatch_work", { title: "Inspect", prompt: "Compare", visuals: selected });
+    await call(tools, "coordinator", "follow_up", { workId: "work-1", prompt: "Compare again", visuals: selected });
+    expect(supervisor.dispatch).toHaveBeenCalledWith("project-1", expect.objectContaining({ visuals: selected }));
+    expect(supervisor.followUp).toHaveBeenCalledWith("project-1", "work-1", expect.objectContaining({ visuals: selected }));
+    expect(focusCoordinationTools.find((tool) => tool.name === "dispatch_work").inputSchema.properties.visuals.items.oneOf).toHaveLength(2);
+    await expect(call(tools, "coordinator", "dispatch_work", { title: "Invalid", prompt: "No", visuals: [{ source: "conversation", index: -1 }] })).rejects.toThrow();
+  });
+
+  it("accepts visuals in the IPC follow-up payload shared with the application handler", () => {
+    const payload = { projectId: "project-1", workId: "work-1", prompt: "Inspect this frame", visuals: [{ source: "file", path: "/frames/current.png" }] };
+    expect(focusFollowUpPayload.parse(payload)).toEqual(payload);
+    expect(() => focusFollowUpPayload.parse({ ...payload, visuals: [{ source: "conversation", index: -1 }] })).toThrow();
+  });
   it("lets only the coordinator list and answer current project questions", async () => {
     const { tools, listQuestions, answerQuestion } = fixture();
 

@@ -20,7 +20,7 @@ const deferred = () => {
 
 class MemoryStore {
   constructor(policy = {}) {
-    this.policy = { coordinatorModel: null, workerModel: "codex:gpt-worker", reviewModel: "codex:gpt-review", maxWorkers: 2, permissionMode: "workspace-write", executionHost: "current", ...policy };
+    this.policy = { coordinatorModel: null, workerModel: "codex:gpt-worker", reviewModel: "codex:gpt-review", permissionMode: "workspace-write", executionHost: "current", ...policy };
     this.work = new Map();
     this.events = [];
     this.decisions = [];
@@ -82,12 +82,48 @@ function fixture(options = {}) {
   const deliver = options.deliver ?? vi.fn(async ({ events }) => ({ accepted: true, eventIds: events.map((event) => event.id) }));
   const onChange = vi.fn();
   const supervisor = new FocusSupervisor({ store, runtime,
+    visuals: options.visuals,
     contextForProject: async () => ({ coordinatorThreadId: "coordinator-1", cwd: "/project" }),
     startWorker, continueWorker, interruptWorker, deliver, onChange });
   return { supervisor, store, runtime, startWorker, continueWorker, interruptWorker, deliver, onChange };
 }
 
 describe("FocusSupervisor", () => {
+  it("stages dispatch and follow-up visuals and reloads them for worker turns", async () => {
+    const visuals = {
+      stage: vi.fn(async (_project, _thread, selected) => selected.map((item) => ({ path: `/private/${item.label}.png`, mimeType: "image/png", bytes: 10, source: "local file frame.png", label: item.label }))),
+      load: vi.fn(async (_project, _thread, staged) => staged.map((item) => `data:image/png;base64,${item.label}`))
+    };
+    const { supervisor, store, startWorker, continueWorker } = fixture({ visuals });
+    const work = await supervisor.dispatch("project-1", { title: "Inspect frames", prompt: "Analyze", visuals: [{ source: "file", path: "/frames/a.png", label: "first" }] });
+    await tick();
+    expect(startWorker).toHaveBeenCalledWith(expect.objectContaining({ images: ["data:image/png;base64,first"], prompt: expect.stringContaining("Image 1: first") }));
+    expect(store.getWork("project-1", work.id).visuals).toHaveLength(1);
+    await supervisor.followUp("project-1", work.id, { prompt: "Inspect another frame", visuals: [{ source: "file", path: "/frames/b.png", label: "second" }] });
+    expect(continueWorker).toHaveBeenCalledWith(expect.objectContaining({ images: ["data:image/png;base64,second"], prompt: expect.stringContaining("Image 1: second") }));
+    supervisor.dispose();
+  });
+
+  it("reloads queued visuals when a recovered worker starts", async () => {
+    const visuals = { load: vi.fn(async () => ["data:image/png;base64,recovered"]) };
+    const { supervisor, store, startWorker } = fixture({ visuals });
+    store.createWork("project-1", { id: "recover-image", coordinatorThreadId: "coordinator-1", title: "Recover", prompt: "Review image", access: "read", resources: [], status: "queued", visuals: [{ path: "/private/frame.png", mimeType: "image/png", bytes: 1, source: "local file frame.png", label: "frame" }] });
+    await supervisor.reconcile("project-1");
+    await tick();
+    expect(startWorker).toHaveBeenCalledWith(expect.objectContaining({ images: ["data:image/png;base64,recovered"] }));
+    supervisor.dispose();
+  });
+
+  it("does not start a text-only worker when a queued visual cannot be loaded", async () => {
+    const visuals = { load: vi.fn(async () => { throw new Error("Staged Focus visual is missing; reattach the image."); }) };
+    const { supervisor, store, startWorker } = fixture({ visuals });
+    store.createWork("project-1", { id: "missing-image", coordinatorThreadId: "coordinator-1", title: "Inspect", prompt: "Review", access: "read", resources: [], status: "queued", visuals: [{ path: "/private/missing.png", mimeType: "image/png", bytes: 1, source: "local file missing.png", label: "missing" }] });
+    await supervisor.reconcile("project-1");
+    await tick();
+    expect(startWorker).not.toHaveBeenCalled();
+    expect(store.getWork("project-1", "missing-image").error).toMatch(/reattach the image/);
+    supervisor.dispose();
+  });
   it("durably returns dispatch before a worker starts and applies policy defaults and ceilings", async () => {
     const gate = deferred();
     const startWorker = vi.fn(() => gate.promise);
@@ -103,14 +139,34 @@ describe("FocusSupervisor", () => {
     supervisor.dispose();
   });
 
-  it("enforces max workers atomically and serializes overlapping writes while reads can run together", async () => {
+  it.each([{}, { maxWorkers: 1 }])("starts every eligible worker without a numeric cap, including legacy policy %j", async (policy) => {
     const gates = [];
     const startWorker = vi.fn(() => {
       const gate = deferred();
       gates.push(gate);
       return gate.promise;
     });
-    const { supervisor, store } = fixture({ startWorker, policy: { maxWorkers: 3 } });
+    const { supervisor, store } = fixture({ startWorker, policy });
+    const work = await Promise.all(Array.from({ length: 12 }, (_, index) => supervisor.dispatch("project-1", {
+      title: `Independent ${index}`, prompt: "Work", access: index % 2 ? "write" : "read", resources: [`area-${index}`]
+    })));
+    await tick();
+    expect(startWorker).toHaveBeenCalledTimes(12);
+    expect(work.every((item) => store.getWork("project-1", item.id).status === "starting")).toBe(true);
+    gates.forEach((gate, index) => gate.resolve({ threadId: `thread-${index}`, turnId: `turn-${index}` }));
+    await tick();
+    expect(work.every((item) => store.getWork("project-1", item.id).status === "running")).toBe(true);
+    supervisor.dispose();
+  });
+
+  it("serializes overlapping writes atomically while reads can run together", async () => {
+    const gates = [];
+    const startWorker = vi.fn(() => {
+      const gate = deferred();
+      gates.push(gate);
+      return gate.promise;
+    });
+    const { supervisor, store } = fixture({ startWorker });
     const [a, b, c, d] = await Promise.all([
       supervisor.dispatch("project-1", { title: "A", prompt: "A", access: "write", resources: ["src/a"] }),
       supervisor.dispatch("project-1", { title: "B", prompt: "B", access: "write", resources: ["src/a"] }),
@@ -132,7 +188,7 @@ describe("FocusSupervisor", () => {
   it("treats parent and child resource paths as overlapping", async () => {
     const gate = deferred();
     const startWorker = vi.fn(() => gate.promise);
-    const { supervisor, store } = fixture({ startWorker, policy: { maxWorkers: 2 } });
+    const { supervisor, store } = fixture({ startWorker });
     const parent = await supervisor.dispatch("project-1", { title: "Parent", prompt: "parent", access: "write", resources: ["src/features"] });
     const child = await supervisor.dispatch("project-1", { title: "Child", prompt: "child", access: "read", resources: ["src\\features/focus"] });
     await tick();
@@ -143,14 +199,14 @@ describe("FocusSupervisor", () => {
     supervisor.dispose();
   });
 
-  it("counts every durable active worker even beyond the bounded UI list", async () => {
-    const store = new MemoryStore({ maxWorkers: 1 });
+  it("checks resource conflicts against durable workers beyond the bounded UI list", async () => {
+    const store = new MemoryStore();
     store.createWork("project-1", { id: "old-active", title: "Old", prompt: "old", status: "running", access: "write", resources: ["old"], threadId: "old-thread", turnId: "old-turn" });
     for (let index = 0; index < 205; index += 1) {
       store.createWork("project-1", { title: `Done ${index}`, prompt: "done", status: "done", completionReported: true, access: "read", resources: [] });
     }
     const { supervisor, startWorker } = fixture({ store });
-    const queued = await supervisor.dispatch("project-1", { title: "New", prompt: "new", access: "read" });
+    const queued = await supervisor.dispatch("project-1", { title: "New", prompt: "new", access: "read", resources: ["old"] });
     await tick();
     expect(store.getWork("project-1", queued.id).status).toBe("queued");
     expect(startWorker).not.toHaveBeenCalled();
@@ -158,7 +214,7 @@ describe("FocusSupervisor", () => {
   });
 
   it("keeps dependency-blocked work visible and starts it only after reviewed completion", async () => {
-    const { supervisor, store, runtime, startWorker } = fixture({ policy: { maxWorkers: 2 } });
+    const { supervisor, store, runtime, startWorker } = fixture();
     const first = await supervisor.dispatch("project-1", { title: "First", prompt: "first", access: "write", resources: ["a"] });
     const second = await supervisor.dispatch("project-1", { title: "Second", prompt: "second", dependsOn: [first.id], access: "write", resources: ["b"] });
     await tick();
@@ -167,8 +223,37 @@ describe("FocusSupervisor", () => {
     runtime.emit("event", { method: "turn/completed", threadId: running.threadId, turn: { id: running.turnId, status: "completed", items: [{ type: "agentMessage", text: "ready" }] } });
     await tick();
     expect(store.getWork("project-1", first.id).status).toBe("review");
+    expect(store.getWork("project-1", second.id).status).toBe("blocked");
     supervisor.resolve("project-1", first.id, { summary: "done", verification: { status: "passed", evidence: "tests passed" } });
     await tick();
+    expect(startWorker).toHaveBeenCalledTimes(2);
+    supervisor.dispose();
+  });
+
+  it("keeps failed dependencies blocked while independent work starts", async () => {
+    const store = new MemoryStore();
+    store.createWork("project-1", { id: "failed", title: "Failed", status: "failed", completionReported: true });
+    const { supervisor, startWorker } = fixture({ store });
+    const blocked = await supervisor.dispatch("project-1", { title: "Dependent", prompt: "wait", access: "read", dependsOn: ["failed"] });
+    const independent = await supervisor.dispatch("project-1", { title: "Independent", prompt: "run", access: "read" });
+    await tick();
+    expect(store.getWork("project-1", blocked.id)).toMatchObject({ status: "blocked", error: "Dependency failed cannot complete." });
+    expect(store.getWork("project-1", independent.id).status).toBe("running");
+    expect(startWorker).toHaveBeenCalledTimes(1);
+    supervisor.dispose();
+  });
+
+  it("serializes unknown write scope and releases waiting work after completion", async () => {
+    const { supervisor, store, runtime, startWorker } = fixture();
+    const writer = await supervisor.dispatch("project-1", { title: "Writer", prompt: "write", access: "write" });
+    const reader = await supervisor.dispatch("project-1", { title: "Reader", prompt: "read", access: "read", resources: ["independent"] });
+    await tick();
+    expect(startWorker).toHaveBeenCalledTimes(1);
+    expect(store.getWork("project-1", reader.id).status).toBe("queued");
+    const running = store.getWork("project-1", writer.id);
+    runtime.emit("event", { method: "turn/completed", threadId: running.threadId, turn: { id: running.turnId, status: "completed", items: [{ type: "agentMessage", text: "ready" }] } });
+    await tick();
+    expect(store.getWork("project-1", reader.id).status).toBe("running");
     expect(startWorker).toHaveBeenCalledTimes(2);
     supervisor.dispose();
   });
@@ -303,16 +388,21 @@ describe("FocusSupervisor", () => {
     supervisor.dispose();
   });
 
-  it("reserves disconnected worker capacity until provider recovery confirms its outcome", async () => {
-    const store = new MemoryStore({ maxWorkers: 1 });
+  it("reserves disconnected worker resources without blocking independent work", async () => {
+    const store = new MemoryStore();
     store.createWork("project-1", { id: "disconnected", coordinatorThreadId: "coordinator-1", title: "Disconnected", prompt: "work", model: "m", effort: null, permissionMode: "workspace-write", access: "write", resources: ["a"], dependsOn: [], status: "running", threadId: "claude-thread", turnId: "claude-turn" });
     const { supervisor, runtime, startWorker } = fixture({ store });
     runtime.providerForThread = vi.fn(() => "claude");
     expect(supervisor.providerUnavailable("claude")).toEqual([expect.objectContaining({ id: "disconnected", status: "needs-attention" })]);
-    const queued = await supervisor.dispatch("project-1", { title: "Queued", prompt: "queued", access: "read" });
+    const queued = await supervisor.dispatch("project-1", { title: "Queued", prompt: "queued", access: "read", resources: ["a"] });
     await tick();
     expect(store.getWork("project-1", queued.id).status).toBe("queued");
     expect(startWorker).not.toHaveBeenCalled();
+    const independent = await supervisor.dispatch("project-1", { title: "Independent", prompt: "work", access: "write", resources: ["b"] });
+    await tick();
+    expect(store.getWork("project-1", independent.id).status).toBe("running");
+    expect(store.getWork("project-1", queued.id).status).toBe("queued");
+    expect(startWorker).toHaveBeenCalledTimes(1);
     supervisor.dispose();
   });
 

@@ -4,7 +4,6 @@ const DEFAULT_POLICY = Object.freeze({
   coordinatorModel: null,
   workerModel: null,
   reviewModel: null,
-  maxWorkers: 2,
   permissionMode: "workspace-write",
   executionHost: "current"
 });
@@ -81,6 +80,20 @@ function normalizeArtifacts(value) {
   jsonValue(artifacts, "artifacts");
   return artifacts;
 }
+function normalizeVisuals(value) {
+  return boundedArray(value, "visuals", 8).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("visual must be metadata");
+    const result = {
+      path: boundedString(item.path, "visual path", { max: 2000, required: true }),
+      mimeType: boundedString(item.mimeType, "visual mimeType", { max: 32, required: true }),
+      bytes: item.bytes,
+      source: boundedString(item.source, "visual source", { max: 240, required: true }),
+      label: boundedString(item.label ?? "", "visual label", { max: 120 })
+    };
+    if (!new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]).has(result.mimeType) || !Number.isInteger(result.bytes) || result.bytes < 1 || result.bytes > 8 * 1024 * 1024) throw new Error("Invalid visual metadata");
+    return result;
+  });
+}
 
 function normalizeLimit(value, fallback, maximum) {
   if (value === undefined) return fallback;
@@ -93,7 +106,6 @@ function mapPolicy(row) {
     coordinatorModel: row.coordinator_model,
     workerModel: row.worker_model,
     reviewModel: row.review_model,
-    maxWorkers: row.max_workers,
     permissionMode: row.permission_mode,
     executionHost: row.execution_host
   } : { ...DEFAULT_POLICY };
@@ -113,6 +125,7 @@ function mapWork(row) {
     access: row.access,
     resources: parseJson(row.resources, []),
     artifacts: parseJson(row.artifacts, []),
+    visuals: parseJson(row.visuals, []),
     dependsOn: parseJson(row.depends_on, []),
     reviewOf: row.review_of,
     status: row.status,
@@ -171,6 +184,7 @@ export class FocusStore {
         coordinator_model TEXT,
         worker_model TEXT,
         review_model TEXT,
+        -- Retained for existing databases; legacy values no longer control scheduling.
         max_workers INTEGER NOT NULL DEFAULT 2,
         permission_mode TEXT NOT NULL DEFAULT 'workspace-write',
         execution_host TEXT NOT NULL DEFAULT 'current',
@@ -189,6 +203,7 @@ export class FocusStore {
         access TEXT NOT NULL,
         resources TEXT NOT NULL DEFAULT '[]',
         artifacts TEXT NOT NULL DEFAULT '[]',
+        visuals TEXT NOT NULL DEFAULT '[]',
         depends_on TEXT NOT NULL DEFAULT '[]',
         review_of TEXT,
         status TEXT NOT NULL DEFAULT 'queued',
@@ -243,6 +258,7 @@ export class FocusStore {
       CREATE INDEX IF NOT EXISTS focus_decisions_project_revision ON focus_decisions(project_id, revision DESC);
     `);
     this.#ensureColumn("focus_work", "artifacts", "TEXT NOT NULL DEFAULT '[]'");
+    this.#ensureColumn("focus_work", "visuals", "TEXT NOT NULL DEFAULT '[]'");
     this.#ensureColumn("focus_work", "review_of", "TEXT");
   }
 
@@ -271,15 +287,11 @@ export class FocusStore {
 
   #validatePolicyPatch(patch) {
     if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("Policy patch must be an object");
-    const allowed = new Set(["coordinatorModel", "workerModel", "reviewModel", "maxWorkers", "permissionMode", "executionHost"]);
+    const allowed = new Set(["coordinatorModel", "workerModel", "reviewModel", "permissionMode", "executionHost"]);
     for (const key of Object.keys(patch)) if (!allowed.has(key)) throw new Error(`Unknown policy field: ${key}`);
     const result = {};
     for (const field of ["coordinatorModel", "workerModel", "reviewModel"]) {
       if (Object.hasOwn(patch, field)) result[field] = boundedString(patch[field], field, { max: 256, nullable: true });
-    }
-    if (Object.hasOwn(patch, "maxWorkers")) {
-      if (!Number.isInteger(patch.maxWorkers) || patch.maxWorkers < 1 || patch.maxWorkers > 8) throw new Error("maxWorkers must be an integer from 1 to 8");
-      result.maxWorkers = patch.maxWorkers;
     }
     if (Object.hasOwn(patch, "permissionMode")) {
       if (!PERMISSION_MODES.has(patch.permissionMode)) throw new Error("Unsupported permissionMode");
@@ -301,12 +313,12 @@ export class FocusStore {
     const id = this.#requireProject(projectId);
     const next = { ...this.getPolicy(id), ...this.#validatePolicyPatch(patch) };
     this.db.prepare(`INSERT INTO focus_policies (
-      project_id, coordinator_model, worker_model, review_model, max_workers, permission_mode, execution_host, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      project_id, coordinator_model, worker_model, review_model, permission_mode, execution_host, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(project_id) DO UPDATE SET coordinator_model=excluded.coordinator_model,
-      worker_model=excluded.worker_model, review_model=excluded.review_model, max_workers=excluded.max_workers,
+      worker_model=excluded.worker_model, review_model=excluded.review_model,
       permission_mode=excluded.permission_mode, execution_host=excluded.execution_host, updated_at=excluded.updated_at`).run(
-      id, next.coordinatorModel, next.workerModel, next.reviewModel, next.maxWorkers, next.permissionMode, next.executionHost, now()
+      id, next.coordinatorModel, next.workerModel, next.reviewModel, next.permissionMode, next.executionHost, now()
     );
     return this.getPolicy(id);
   }
@@ -338,7 +350,7 @@ export class FocusStore {
     const allowed = new Set([
       "id",
       "coordinatorThreadId", "title", "prompt", "model", "effort", "permissionMode", "access", "resources", "dependsOn",
-      "artifacts", "reviewOf", "status", "threadId", "turnId", "answer", "error", "verification", "decisionRevision", "acknowledgedDecisionRevision", "completionReported"
+      "artifacts", "visuals", "reviewOf", "status", "threadId", "turnId", "answer", "error", "verification", "decisionRevision", "acknowledgedDecisionRevision", "completionReported"
     ]);
     for (const key of Object.keys(input)) {
       if (!allowed.has(key) || (key === "id" && current)) throw new Error(`Unknown work field: ${key}`);
@@ -346,7 +358,7 @@ export class FocusStore {
     const policy = this.getPolicy(projectId);
     const base = current ?? {
       coordinatorThreadId: null, title: "", prompt: "", model: policy.workerModel, effort: null,
-      permissionMode: policy.permissionMode, access: "write", resources: [], artifacts: [], dependsOn: [], reviewOf: null, status: "queued", threadId: null,
+      permissionMode: policy.permissionMode, access: "write", resources: [], artifacts: [], visuals: [], dependsOn: [], reviewOf: null, status: "queued", threadId: null,
       turnId: null, answer: "", error: null, verification: null, decisionRevision: 0, acknowledgedDecisionRevision: 0, completionReported: false
     };
     const value = { ...base };
@@ -367,6 +379,7 @@ export class FocusStore {
     }
     if (Object.hasOwn(input, "resources")) value.resources = normalizeResources(input.resources);
     if (Object.hasOwn(input, "artifacts")) value.artifacts = normalizeArtifacts(input.artifacts);
+    if (Object.hasOwn(input, "visuals")) value.visuals = normalizeVisuals(input.visuals);
     if (Object.hasOwn(input, "dependsOn")) value.dependsOn = normalizeIdList(input.dependsOn, "dependsOn", MAX_DEPENDENCIES);
     if (Object.hasOwn(input, "reviewOf")) value.reviewOf = boundedString(input.reviewOf, "reviewOf", { max: 160, nullable: true });
     if (Object.hasOwn(input, "status")) {
@@ -423,12 +436,12 @@ export class FocusStore {
       this.#validateDependencies(id, workId, value.dependsOn);
       if (value.reviewOf && !this.getWork(id, value.reviewOf)) throw new Error("reviewOf belongs to another project or does not exist");
       this.db.prepare(`INSERT INTO focus_work (
-        id, project_id, coordinator_thread_id, title, prompt, model, effort, permission_mode, access, resources, artifacts, depends_on, review_of,
+        id, project_id, coordinator_thread_id, title, prompt, model, effort, permission_mode, access, resources, artifacts, visuals, depends_on, review_of,
         status, thread_id, turn_id, answer, error, verification, revision, decision_revision, acknowledged_decision_revision,
         completion_reported, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`).run(
         workId, id, value.coordinatorThreadId, value.title, value.prompt, value.model, value.effort, value.permissionMode, value.access,
-        jsonValue(value.resources, "resources"), jsonValue(value.artifacts, "artifacts"), jsonValue(value.dependsOn, "dependsOn"), value.reviewOf,
+        jsonValue(value.resources, "resources"), jsonValue(value.artifacts, "artifacts"), jsonValue(value.visuals, "visuals"), jsonValue(value.dependsOn, "dependsOn"), value.reviewOf,
         value.status, value.threadId, value.turnId, value.answer, value.error, value.verification === null ? null : jsonValue(value.verification, "verification"), value.decisionRevision,
         value.acknowledgedDecisionRevision, value.completionReported ? 1 : 0, timestamp, timestamp
       );
@@ -447,10 +460,10 @@ export class FocusStore {
       if (value.reviewOf && (value.reviewOf === work || !this.getWork(id, value.reviewOf))) throw new Error("reviewOf belongs to another project or does not exist");
       const timestamp = now();
       this.db.prepare(`UPDATE focus_work SET coordinator_thread_id=?, title=?, prompt=?, model=?, effort=?, permission_mode=?, access=?,
-        resources=?, artifacts=?, depends_on=?, review_of=?, status=?, thread_id=?, turn_id=?, answer=?, error=?, verification=?, revision=revision + 1,
+        resources=?, artifacts=?, visuals=?, depends_on=?, review_of=?, status=?, thread_id=?, turn_id=?, answer=?, error=?, verification=?, revision=revision + 1,
         decision_revision=?, acknowledged_decision_revision=?, completion_reported=?, updated_at=? WHERE project_id=? AND id=?`).run(
         value.coordinatorThreadId, value.title, value.prompt, value.model, value.effort, value.permissionMode, value.access,
-        jsonValue(value.resources, "resources"), jsonValue(value.artifacts, "artifacts"), jsonValue(value.dependsOn, "dependsOn"), value.reviewOf,
+        jsonValue(value.resources, "resources"), jsonValue(value.artifacts, "artifacts"), jsonValue(value.visuals, "visuals"), jsonValue(value.dependsOn, "dependsOn"), value.reviewOf,
         value.status, value.threadId, value.turnId, value.answer, value.error, value.verification === null ? null : jsonValue(value.verification, "verification"), value.decisionRevision,
         value.acknowledgedDecisionRevision, value.completionReported ? 1 : 0, timestamp, id, work
       );

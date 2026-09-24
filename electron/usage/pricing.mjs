@@ -23,6 +23,26 @@ const PRICE_CATALOG = [
   },
   {
     provider: "codex",
+    id: "gpt-6-sol",
+    label: "GPT-6 Sol",
+    // https://developers.openai.com/api/docs/pricing
+    verifiedAt: "2026-09-22",
+    rates: rate(2, 0.2, 10, 2.5),
+    fastRates: rate(4, 0.4, 20, 5),
+    longContext: { threshold: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 }
+  },
+  {
+    provider: "codex",
+    id: "gpt-6-luna",
+    label: "GPT-6 Luna",
+    // https://developers.openai.com/api/docs/pricing
+    verifiedAt: "2026-09-22",
+    rates: rate(0.1, 0.01, 0.5, 0.125),
+    fastRates: rate(0.2, 0.02, 1, 0.25),
+    longContext: { threshold: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 }
+  },
+  {
+    provider: "codex",
     id: "gpt-5.6-sol",
     label: "GPT-5.6 Sol",
     aliases: ["gpt-5.6"],
@@ -98,6 +118,10 @@ const PRICE_CATALOG = [
   { provider: "codex", id: "gpt-4o-mini", label: "GPT-4o mini", rates: rate(0.15, 0.075, 0.6) },
   { provider: "codex", id: "gpt-4o", label: "GPT-4o", rates: rate(2.5, 1.25, 10) },
 
+  // Cache-write prices represent Anthropic's 5-minute cache duration.
+  { provider: "claude", id: "claude-fable-5-1", label: "Claude Fable 5.1", verifiedAt: "2026-09-01", rates: rate(10, 0.25, 50, 12.5) },
+  { provider: "claude", id: "claude-mythos-5-1", label: "Claude Mythos 5.1", verifiedAt: "2026-09-01", rates: rate(10, 0.25, 50, 12.5) },
+  { provider: "claude", id: "claude-opus-5-5", label: "Claude Opus 5.5", verifiedAt: "2026-09-22", rates: rate(4, 0.2, 20, 5) },
   { provider: "claude", id: "claude-fable-5", label: "Claude Fable 5", rates: rate(10, 1, 50, 12.5) },
   { provider: "claude", id: "claude-mythos-5", label: "Claude Mythos 5", rates: rate(10, 1, 50, 12.5) },
   { provider: "claude", id: "claude-opus-5", label: "Claude Opus 5", rates: rate(5, 0.5, 25, 6.25) },
@@ -109,8 +133,8 @@ const PRICE_CATALOG = [
     provider: "claude",
     id: "claude-sonnet-5",
     label: "Claude Sonnet 5",
-    rates: rate(3, 0.3, 15, 3.75),
-    historicalRates: [{ before: "2026-09-01T00:00:00.000Z", rates: rate(2, 0.2, 10, 2.5) }]
+    verifiedAt: "2026-09-23",
+    rates: rate(2, 0.2, 10, 2.5)
   },
   { provider: "claude", id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", rates: rate(3, 0.3, 15, 3.75) },
   { provider: "claude", id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", rates: rate(3, 0.3, 15, 3.75) },

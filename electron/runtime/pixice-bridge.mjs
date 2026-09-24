@@ -167,7 +167,7 @@ export class PixiceBridge {
   // Focus owns durable completion delivery; ordinary bridge callers retain the
   // original blocking contract.
   startDetached(params, input, { onCreated } = {}) {
-    return this.#spawnThread(params, z.object(spawnThreadShape).parse(input), { detached: true, onCreated });
+    return this.#spawnThread(params, z.object({ ...spawnThreadShape, images: z.array(z.string()).max(8).optional() }).parse(input), { detached: true, onCreated });
   }
 
   async #listModels(shape, input) {
@@ -277,7 +277,7 @@ export class PixiceBridge {
     try {
       const turn = await this.runtime.request("turn/start", {
         threadId: child.id,
-        input: buildCodexUserInput(input.prompt, []),
+        input: buildCodexUserInput(input.prompt, input.images ?? []),
         cwd: context.cwd,
         runtimeWorkspaceRoots,
         model: selected.id,

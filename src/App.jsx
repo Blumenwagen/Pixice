@@ -56,6 +56,7 @@ import { InspectablePicture } from "./components/PictureInspector.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
 import { FocusCoordination } from "./components/FocusCoordination.jsx";
 import { FocusCoordinatorQuestions } from "./components/FocusCoordinatorQuestions.jsx";
+import WidgetShelf from "./components/WidgetShelf.jsx";
 import { KanbanBoard } from "./components/KanbanBoard.jsx";
 import { ProjectCreationDialog, ProjectGlyph, ProjectSwitcher, projectTileStyle } from "./components/sidebar/ProjectSwitcher.jsx";
 import { ThreadCleanupPopover } from "./components/sidebar/ThreadCleanupPopover.jsx";
@@ -2251,6 +2252,7 @@ function ConversationItem({ item, forceFinal = false, responseKey, seenResponseI
 }
 
 const TRACE_ITEM_TYPES = new Set(["reasoning", "commandExecution", "fileChange", "contextCompaction", "collabAgentToolCall", "mcpToolCall", "dynamicToolCall"]);
+const TOOL_CALL_TRACE_ITEM_TYPES = new Set(["commandExecution", "fileChange", "collabAgentToolCall", "mcpToolCall", "dynamicToolCall"]);
 
 function turnIsRunning(status) {
   return status === "inProgress" || status === "running" || status === "active";
@@ -2611,16 +2613,17 @@ export function ComposerPicker({ label, hint, value, options, onChange, kind, al
   );
 }
 
-export function WorkingTrace({ items, running, settled, startedAt = null, completedAt = null, defaultDisclosure = "auto" }) {
+export function WorkingTrace({ items, running, settled, startedAt = null, completedAt = null, defaultDisclosure = "auto", hideToolCalls = false }) {
   const disclosureId = useId();
   const [manualExpanded, setManualExpanded] = useState(null);
   const wasSettled = useRef(settled);
   const systemReducedMotion = useReducedMotion();
   const now = useLiveNow(running);
-  const toolCount = items.filter((item) => item.type !== "agentMessage" && item.type !== "reasoning").length;
-  const reasoningItems = items.filter((item) => item.type === "reasoning" || (item.type === "agentMessage" && item.text));
-  const latestTraceIndex = items.findLastIndex((item) => item.type === "agentMessage" ? Boolean(item.text) : TRACE_ITEM_TYPES.has(item.type));
-  const latestTraceItem = latestTraceIndex === -1 ? null : items[latestTraceIndex];
+  const visibleItems = hideToolCalls ? items.filter((item) => !TOOL_CALL_TRACE_ITEM_TYPES.has(item.type)) : items;
+  const toolCount = visibleItems.filter((item) => item.type !== "agentMessage" && item.type !== "reasoning").length;
+  const reasoningItems = visibleItems.filter((item) => item.type === "reasoning" || (item.type === "agentMessage" && item.text));
+  const latestTraceIndex = visibleItems.findLastIndex((item) => item.type === "agentMessage" ? Boolean(item.text) : TRACE_ITEM_TYPES.has(item.type));
+  const latestTraceItem = latestTraceIndex === -1 ? null : visibleItems[latestTraceIndex];
   const latestAction = latestTraceItem && latestTraceItem.type !== "agentMessage" && latestTraceItem.type !== "reasoning"
     ? latestTraceItem
     : null;
@@ -2705,7 +2708,7 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
           <div id={disclosureId} className="trace-disclosure" aria-hidden={!expanded} inert={!expanded}>
             <div className="trace-disclosure-inner">
               <div className="trace-list">
-                {items.map((item, index) => item.type === "agentMessage" ? (
+                {visibleItems.map((item, index) => item.type === "agentMessage" ? (
                   item.text ? <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div> : null
                 ) : (
                   <ActivityItem item={item} key={item.renderId ?? item.id ?? `${item.type}-${index}`} />
@@ -2719,7 +2722,7 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
   );
 }
 
-const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds, showTimestamps = true, completedWorkDetails = "auto", onImageRevision = null, imageRevisionDisabled = false, onFork = null, receipt = null, onReceiptCompare = null }) {
+const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds, showTimestamps = true, completedWorkDetails = "auto", hideToolCalls = false, onImageRevision = null, imageRevisionDisabled = false, onFork = null, receipt = null, onReceiptCompare = null }) {
   const items = turn.items ?? [];
   const threadId = thread.id;
   const running = turnIsRunning(turn.status);
@@ -2743,13 +2746,14 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     if (!traceItems.length) return;
     const key = traceItems[0].renderId ?? traceItems[0].id ?? `trace-${rendered.length}`;
     workingTraceIndexes.push(rendered.length);
-    rendered.push(<WorkingTrace items={traceItems} running={false} settled={settled} startedAt={startedAt} completedAt={completedAt} defaultDisclosure={completedWorkDetails} key={key} />);
+    rendered.push(<WorkingTrace items={traceItems} running={false} settled={settled} startedAt={startedAt} completedAt={completedAt} defaultDisclosure={completedWorkDetails} hideToolCalls={hideToolCalls} key={key} />);
     renderedWorkingTrace = true;
     traceItems = [];
   };
 
   items.forEach((item, index) => {
     if (item.type === "plan") return;
+    if (hideToolCalls && TOOL_CALL_TRACE_ITEM_TYPES.has(item.type)) return;
     const isFinal = index === finalIndex;
     const isTrace = !isFinal && (item.type === "agentMessage" || TRACE_ITEM_TYPES.has(item.type));
     if (isTrace) {
@@ -2802,7 +2806,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     rendered[activeTraceIndex] = cloneElement(rendered[activeTraceIndex], { running: true });
   }
   if (running && !renderedWorkingTrace && finalIndex === -1) {
-    rendered.push(<WorkingTrace items={[]} running settled={false} startedAt={startedAt} defaultDisclosure={completedWorkDetails} key={`pending-${turn.renderId ?? turn.id}`} />);
+    rendered.push(<WorkingTrace items={[]} running settled={false} startedAt={startedAt} defaultDisclosure={completedWorkDetails} hideToolCalls={hideToolCalls} key={`pending-${turn.renderId ?? turn.id}`} />);
   }
 
   return <div className="conversation-turn" data-turn-id={turn.id}>{rendered}</div>;
@@ -2813,6 +2817,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
   && previous.thread?.bridgeModel === next.thread?.bridgeModel
   && previous.showTimestamps === next.showTimestamps
   && previous.completedWorkDetails === next.completedWorkDetails
+  && previous.hideToolCalls === next.hideToolCalls
   && previous.onImageRevision === next.onImageRevision
   && previous.imageRevisionDisabled === next.imageRevisionDisabled
   && previous.onFork === next.onFork
@@ -4338,12 +4343,18 @@ function EmptyConversation({ project, runtime, onOpenProject }) {
   );
 }
 
-function FocusProjectPicker({ project, projects, onSelectProject }) {
+function FocusProjectTiles({ project, projects, visibleProjectLimit, onSelectProject }) {
   const menuId = useId();
   const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const initialMenuFocusRef = useRef("first");
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
-  const projectLabel = project?.displayName || "Untitled project";
+  const visibleProjects = projects.slice(0, visibleProjectLimit);
+  const overflowProjects = projects.slice(visibleProjectLimit);
+
+  const restoreTriggerFocus = () => window.setTimeout(() => triggerRef.current?.focus(), reduceMotion ? 0 : 180);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -4351,6 +4362,7 @@ function FocusProjectPicker({ project, projects, onSelectProject }) {
       if (event.type === "keydown" && event.key !== "Escape") return;
       if (event.type === "pointerdown" && rootRef.current?.contains(event.target)) return;
       setOpen(false);
+      if (event.type === "keydown") restoreTriggerFocus();
     };
     window.addEventListener("pointerdown", dismiss);
     window.addEventListener("keydown", dismiss);
@@ -4365,61 +4377,118 @@ function FocusProjectPicker({ project, projects, onSelectProject }) {
     onSelectProject(projectId);
   };
 
+  useEffect(() => {
+    if (!open) return;
+    const items = menuRef.current?.querySelectorAll('[role="menuitemradio"]');
+    const target = initialMenuFocusRef.current === "last" ? items?.[items.length - 1] : items?.[0];
+    target?.focus();
+  }, [open]);
+
+  const openMenu = (focus = "first") => {
+    initialMenuFocusRef.current = focus;
+    setOpen(true);
+  };
+
+  const handleMenuKeyDown = (event) => {
+    const items = [...(menuRef.current?.querySelectorAll('[role="menuitemradio"]') ?? [])];
+    const currentIndex = items.indexOf(document.activeElement);
+    if (!items.length) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      restoreTriggerFocus();
+      return;
+    }
+    let nextIndex = null;
+    if (event.key === "ArrowDown") nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+    if (event.key === "ArrowUp") nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = items.length - 1;
+    if (nextIndex == null) return;
+    event.preventDefault();
+    items[nextIndex].focus();
+  };
+
   return (
-    <div className="focus-project-picker" ref={rootRef}>
-      <button
-        type="button"
-        className="focus-project-trigger"
-        aria-label={`Switch project, current project ${projectLabel}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="focus-project-trigger-tile" style={projectTileStyle(project)} aria-hidden="true">
-          <ProjectGlyph icon={project?.icon} size={13} />
-        </span>
-        <span className="focus-project-trigger-label">{projectLabel}</span>
-        <CaretDown className="focus-project-trigger-caret" size={11} />
-      </button>
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div
-            className="focus-project-menu"
-            id={menuId}
-            role="menu"
-            aria-label="Choose project"
-            initial={reduceMotion ? false : { opacity: 0, y: -5, scale: .975 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: .98 }}
-            transition={{ duration: reduceMotion ? 0 : .15, ease: [0.2, 0.8, 0.2, 1] }}
+    <div className="focus-project-tiles" role="group" aria-label="Projects">
+      {visibleProjects.map((candidate) => {
+        const selected = candidate.id === project?.id;
+        const label = candidate.displayName || "Untitled project";
+        return (
+          <button
+            type="button"
+            className={`focus-project-shortcut${selected ? " active" : ""}`}
+            style={projectTileStyle(candidate)}
+            aria-label={selected ? `${label}, current project` : `Switch to ${label}`}
+            aria-current={selected ? "page" : undefined}
+            aria-pressed={selected}
+            title={label}
+            key={candidate.id}
+            onClick={() => onSelectProject(candidate.id)}
           >
-            <div className="focus-project-grid">
-              {projects.map((candidate) => {
-                const selected = candidate.id === project?.id;
-                const label = candidate.displayName || "Untitled project";
-                return (
-                  <button
-                    type="button"
-                    className={`focus-project-option${selected ? " active" : ""}`}
-                    role="menuitemradio"
-                    aria-checked={selected}
-                    aria-label={label}
-                    title={label}
-                    key={candidate.id}
-                    onClick={() => selectProject(candidate.id)}
-                  >
-                    <span className="focus-project-tile" style={projectTileStyle(candidate)} aria-hidden="true">
-                      <ProjectGlyph icon={candidate.icon} size={20} />
-                    </span>
-                    <span className="focus-project-option-label">{label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            <ProjectGlyph icon={candidate.icon} size={14} />
+          </button>
+        );
+      })}
+      {overflowProjects.length > 0 && <div className="focus-project-overflow" ref={rootRef}>
+        <button
+          type="button"
+          className="focus-project-overflow-trigger"
+          ref={triggerRef}
+          aria-label="More projects"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? menuId : undefined}
+          onClick={() => open ? setOpen(false) : openMenu()}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+            event.preventDefault();
+            openMenu(event.key === "ArrowUp" ? "last" : "first");
+          }}
+        >
+          <CaretDown size={12} />
+        </button>
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div
+              className="focus-project-menu"
+              id={menuId}
+              ref={menuRef}
+              role="menu"
+              aria-label="More projects"
+              onKeyDown={handleMenuKeyDown}
+              initial={reduceMotion ? false : { opacity: 0, y: -5, scale: .975 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: .98 }}
+              transition={{ duration: reduceMotion ? 0 : .15, ease: [0.2, 0.8, 0.2, 1] }}
+            >
+              <div className="focus-project-grid">
+                {overflowProjects.map((candidate) => {
+                  const selected = candidate.id === project?.id;
+                  const label = candidate.displayName || "Untitled project";
+                  return (
+                    <button
+                      type="button"
+                      className={`focus-project-option${selected ? " active" : ""}`}
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      aria-label={label}
+                      title={label}
+                      key={candidate.id}
+                      onClick={() => selectProject(candidate.id)}
+                    >
+                      <span className="focus-project-tile" style={projectTileStyle(candidate)} aria-hidden="true">
+                        <ProjectGlyph icon={candidate.icon} size={20} />
+                      </span>
+                      <span className="focus-project-option-label">{label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>}
     </div>
   );
 }
@@ -4623,6 +4692,7 @@ function FocusWorkspace({
   memory,
   onMemoryChange,
   onExit,
+  onOpenSettings,
   onSelectProject,
   previewOpen,
   onPreviewToggle,
@@ -4661,11 +4731,75 @@ function FocusWorkspace({
   onResolveAttention
 }) {
   const scrollRef = useRef(null);
+  const workspaceRef = useRef(null);
+  const composerWrapRef = useRef(null);
   const followLatestRef = useRef(true);
+  const [activityPanelOpen, setActivityPanelOpen] = useState(false);
+  const [widgetReloadToken, setWidgetReloadToken] = useState(0);
+  const [widgetSubmissionError, setWidgetSubmissionError] = useState('');
+  const widgetProjectRef = useRef(project?.id);
+  widgetProjectRef.current = project?.id;
   const projection = useMemo(() => projectConversation(thread), [thread]);
   const hasConversation = projection.itemCount > 0 || focusQuestions.length > 0;
+  const focusActivityAvailable = Boolean(api?.focus?.state && project?.id);
   const progressTasks = useMemo(() => focusTaskProgressEntries(threads, thread?.id), [thread?.id, threads]);
   const taskRailVisible = !previewOpen && progressTasks.length > 0;
+
+  const submitFocusPrompt = async (text, attachments, prepared, sourceAttachments, signal, draftLifecycle) => {
+    const sendToConversation = () => composerProps.onSubmit(text, attachments, prepared, sourceAttachments, signal, draftLifecycle);
+    if (attachments?.length || !api?.widgets?.draft || !api?.widgets?.commit || !project?.id) return sendToConversation();
+    setWidgetSubmissionError('');
+    const requestId = globalThis.crypto?.randomUUID?.();
+    const cancelDraft = () => { if (requestId) void api.widgets.cancelDraft?.({ projectId: project.id, requestId }); };
+    signal?.addEventListener('abort', cancelDraft, { once: true });
+    let draft;
+    try {
+      draft = await api.widgets.draft({ projectId: project.id, text, ...(requestId ? { requestId } : {}), context: { projectName: project.displayName } });
+    } catch {
+      if (signal?.aborted) return false;
+      return sendToConversation();
+    } finally {
+      signal?.removeEventListener('abort', cancelDraft);
+    }
+    if (signal?.aborted || widgetProjectRef.current !== project.id) return false;
+    if (draft?.status !== 'draft' || draft.projectId !== project.id || !draft.spec) return sendToConversation();
+    try {
+      await api.widgets.commit({ projectId: project.id, spec: draft.spec });
+      if (widgetProjectRef.current === project.id) setWidgetReloadToken((value) => value + 1);
+      return true;
+    } catch (cause) {
+      setWidgetSubmissionError(cause?.message || 'Could not save this widget.');
+      return false;
+    }
+  };
+
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    const composer = composerWrapRef.current;
+    if (!workspace || !composer) return undefined;
+    const measure = () => {
+      const bounds = workspace.getBoundingClientRect();
+      const composerBounds = composer.getBoundingClientRect();
+      const rail = workspace.querySelector('.focus-task-rail');
+      const railBottom = rail && getComputedStyle(rail).display !== 'none' ? rail.getBoundingClientRect().bottom - bounds.top + 12 : 96;
+      const bottom = Math.max(24, Math.ceil(bounds.bottom - composerBounds.top + 16));
+      workspace.style.setProperty('--focus-composer-clearance', `${bottom}px`);
+      workspace.style.setProperty('--widget-shelf-top-clearance', `${Math.ceil(railBottom)}px`);
+      if ((followLatestRef.current || (previewOpen && focusQuestions.length > 0)) && scrollRef.current) {
+        requestAnimationFrame(() => {
+          if ((followLatestRef.current || (previewOpen && focusQuestions.length > 0)) && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        });
+      }
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    observer?.observe(workspace);
+    observer?.observe(composer);
+    const rail = workspace.querySelector('.focus-task-rail');
+    if (rail) observer?.observe(rail);
+    window.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, [project?.id, previewOpen, hasConversation, taskRailVisible, focusQuestions.length]);
 
   useLayoutEffect(() => {
     const node = scrollRef.current;
@@ -4683,19 +4817,29 @@ function FocusWorkspace({
     <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
     <div className={`focus-layout${previewOpen ? " preview-open" : ""}`}>
     <main
+      ref={workspaceRef}
       className="focus-workspace"
       data-has-conversation={hasConversation}
+      data-question-active={focusQuestions.length > 0}
       data-task-rail={taskRailVisible}
+      data-activity-panel={activityPanelOpen}
       style={{ "--focus-background-image": `url(${focusBackgroundDark})` }}
     >
       <div className="focus-atmosphere" aria-hidden="true" />
       <header className="focus-chrome">
-        <button type="button" className="focus-workspace-button" onClick={onExit}>
-          <CaretLeft size={14} />
-          <span>Workspace</span>
-        </button>
-        <FocusProjectPicker project={project} projects={projects} onSelectProject={onSelectProject} />
+        <div className="focus-chrome-start">
+          <FocusProjectTiles project={project} projects={projects} visibleProjectLimit={preferences.showThirdProjectRow ? 9 : 6} onSelectProject={onSelectProject} />
+        </div>
         <div className="focus-chrome-actions">
+          {focusActivityAvailable && <IconButton
+            className={`focus-activity-button${activityPanelOpen ? " active" : ""}`}
+            label={activityPanelOpen ? "Close activity panel" : "Open activity panel"}
+            aria-expanded={activityPanelOpen}
+            aria-controls="focus-activity-panel"
+            onClick={() => setActivityPanelOpen((current) => !current)}
+          >
+            <TreeStructure size={16} />
+          </IconButton>}
           <FocusMemoryControl key={project?.id} api={api} projectId={project?.id} memory={memory} onMemoryChange={onMemoryChange} />
           {previewAvailable && (
             <IconButton
@@ -4708,6 +4852,15 @@ function FocusWorkspace({
           )}
         </div>
       </header>
+
+      <nav className="focus-navigation-dock" aria-label="Focus navigation">
+        <button type="button" className="focus-workspace-button" aria-label="Workspace" title="Workspace" onClick={onExit}>
+          <CaretLeft size={15} />
+          <span>Workspace</span>
+        </button>
+        <span className="focus-dock-divider" aria-hidden="true" />
+        <IconButton className="focus-settings-button" label="Settings" onClick={onOpenSettings}><Gear size={15} /></IconButton>
+      </nav>
 
       <div
         className="focus-conversation-scroll"
@@ -4729,6 +4882,7 @@ function FocusWorkspace({
                 seenResponseIds={seenResponseIds}
                 showTimestamps={showMessageTimestamps}
                 completedWorkDetails={completedWorkDetails}
+                hideToolCalls
                 key={turn.renderId ?? turn.id}
               />
             ))}
@@ -4741,15 +4895,19 @@ function FocusWorkspace({
           </div>
         )}
         <FocusCoordinatorQuestions key={project?.id} api={api} projectId={project?.id} storage={storage} requests={focusQuestions} onResolve={onQuestionResolve} />
-        <FocusCoordination api={api} projectId={project?.id} models={models} />
       </div>
+
+      {focusActivityAvailable && <FocusCoordination api={api} projectId={project?.id} models={models} open={activityPanelOpen} onClose={() => setActivityPanelOpen(false)} />}
 
       {taskRailVisible && <FocusTaskProgressRail tasks={progressTasks} />}
 
+      {project?.id && api?.widgets?.list && !previewOpen && <WidgetShelf key={project.id} projectId={project.id} api={api} storage={storage} reloadToken={widgetReloadToken} hideWhenEmpty className="focus-widget-shelf" />}
+
       {project && (
-        <div className="focus-composer-wrap">
+        <div className="focus-composer-wrap" ref={composerWrapRef}>
           <Composer
             {...composerProps}
+            onSubmit={submitFocusPrompt}
             questionRequest={null}
             disabled={composerProps.disabled || loading || !thread}
             draftKey={`${project.id}:focus`}
@@ -4757,6 +4915,7 @@ function FocusWorkspace({
             placeholder="Ask, decide, or start something"
             runningPlaceholder="Add direction while Focus is working"
           />
+          {widgetSubmissionError && <p className="focus-widget-submit-error" role="alert">{widgetSubmissionError}</p>}
         </div>
       )}
       {connectionError ? (
@@ -6892,7 +7051,7 @@ function SettingsWorkspace({
           <SettingsRow title="Show shortcut hints" description="Display available keyboard shortcuts beside navigation actions.">
             <SettingsToggle label="Show shortcut hints" checked={preferences.showShortcutHints} onChange={(value) => onPreferenceChange("showShortcutHints", value)} />
           </SettingsRow>
-          <SettingsRow title="Show third project row" description="Show up to nine recent projects in the sidebar instead of six.">
+          <SettingsRow title="Show third project row" description="Show up to nine project shortcuts in the Workspace sidebar and Focus header instead of six.">
             <SettingsToggle label="Show third project row" checked={preferences.showThirdProjectRow} onChange={(value) => onPreferenceChange("showThirdProjectRow", value)} />
           </SettingsRow>
           <SettingsRow title="Legacy sidebar" description="Restore the original project list with threads nested under the active project.">
@@ -7059,7 +7218,7 @@ export function App({ readOnly = false } = {}) {
   const [projectCreateBusy, setProjectCreateBusy] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const selectedProjectIdRef = useRef(null);
-  const [surfaceMode, setSurfaceMode] = useState(() => api?.focus && storage.getItem("pixice.surfaceMode") === "focus" ? "focus" : "workspace");
+  const [surfaceMode, setSurfaceMode] = useState(() => api?.focus && (storage.getItem("pixice.surfaceMode") === "focus" || (import.meta.env.DEV && new URLSearchParams(window.location.search).has("focus-v2-preview"))) ? "focus" : "workspace");
   const surfaceModeRef = useRef(surfaceMode);
   const [focusThreadId, setFocusThreadId] = useState(null);
   const focusThreadIdRef = useRef(null);
@@ -10533,6 +10692,10 @@ export function App({ readOnly = false } = {}) {
               if (next?.projectId === selectedProjectIdRef.current) setFocusMemory(next);
             }}
             onExit={exitFocus}
+            onOpenSettings={() => {
+              exitFocus();
+              changeView("settings");
+            }}
             onSelectProject={selectFocusProject}
             previewOpen={previewOpen}
             onPreviewToggle={togglePreview}

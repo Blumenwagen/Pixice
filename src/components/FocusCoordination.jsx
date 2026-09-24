@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretDown, Check, Pause, PaperPlaneTilt, Warning } from "./icons/index.jsx";
+import { CaretDown, Check, Pause, PaperPlaneTilt, Warning, X } from "./icons/index.jsx";
 import "./FocusCoordination.css";
 
 const EMPTY_STATE = { work: [], decisions: [], policy: null, events: [], seenSequence: 0, latestSequence: 0, unseenEvents: [] };
-const TERMINAL = new Set(["done", "failed", "cancelled"]);
+const TERMINAL = new Set(["done", "completed", "failed", "cancelled"]);
+const RECENT_TERMINAL_MS = 24 * 60 * 60 * 1000;
+const RECENT_TERMINAL_LIMIT = 3;
 
 function modelId(model) {
   return model?.id ?? model?.model ?? "";
@@ -30,6 +32,21 @@ function eventCopy(event) {
 
 function safeWork(state) {
   return Array.isArray(state?.work) ? state.work : [];
+}
+
+function terminalUpdatedAt(item) {
+  const timestamp = Date.parse(item.updatedAt ?? "");
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function visibleWork(items, now) {
+  const current = items.filter((item) => !TERMINAL.has(item.status));
+  const recentTerminal = items.filter((item) => {
+    if (!TERMINAL.has(item.status)) return false;
+    const updatedAt = terminalUpdatedAt(item);
+    return updatedAt !== null && updatedAt <= now && now - updatedAt < RECENT_TERMINAL_MS;
+  }).sort((left, right) => terminalUpdatedAt(right) - terminalUpdatedAt(left)).slice(0, RECENT_TERMINAL_LIMIT);
+  return [...current, ...recentTerminal];
 }
 
 function verificationCopy(verification) {
@@ -88,8 +105,8 @@ function WorkItem({ item, onControl, onFollowUp, busy }) {
           <CaretDown size={13} />
         </button>
         <div className="focus-coordination-work-actions">
-          {canPause && <button type="button" onClick={() => onControl(item.id, "pause")} disabled={busy}>Pause</button>}
-          {canResume && <button type="button" onClick={() => onControl(item.id, "resume")} disabled={busy}>Resume</button>}
+          {canPause && <button type="button" className="focus-coordination-action-primary" onClick={() => onControl(item.id, "pause")} disabled={busy}>Pause</button>}
+          {canResume && <button type="button" className="focus-coordination-action-primary" onClick={() => onControl(item.id, "resume")} disabled={busy}>Resume</button>}
           {active && <button type="button" className="danger" onClick={() => onControl(item.id, "cancel")} disabled={busy}>Cancel</button>}
         </div>
       </div>
@@ -111,13 +128,13 @@ function WorkItem({ item, onControl, onFollowUp, busy }) {
 }
 
 /** Compact, event-driven companion for a Focus coordinator conversation. */
-export function FocusCoordination({ api, projectId, models = [] }) {
+export function FocusCoordination({ api, projectId, models = [], open = false, onClose }) {
   const [state, setState] = useState(EMPTY_STATE);
-  const [open, setOpen] = useState(false);
   const [policyOpen, setPolicyOpen] = useState(false);
   const [busyWork, setBusyWork] = useState(null);
   const [policyBusy, setPolicyBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
   const scopeRef = useRef(projectId);
   const requestRef = useRef(0);
   const refreshTimerRef = useRef(null);
@@ -129,6 +146,7 @@ export function FocusCoordination({ api, projectId, models = [] }) {
       const next = await api.focus.state({ projectId });
       if (scopeRef.current !== projectId || request !== requestRef.current) return;
       setState({ ...EMPTY_STATE, ...(next ?? {}) });
+      setNow(Date.now());
       setError(null);
     } catch (cause) {
       if (scopeRef.current === projectId && request === requestRef.current) setError(cause?.message ?? "Could not refresh Focus activity.");
@@ -155,6 +173,16 @@ export function FocusCoordination({ api, projectId, models = [] }) {
       refreshTimerRef.current = window.setTimeout(() => { refreshTimerRef.current = null; void refresh(); }, 150);
     });
   }, [api, projectId, refresh]);
+
+  useEffect(() => {
+    const nextExpiry = safeWork(state).filter((item) => TERMINAL.has(item.status))
+      .map((item) => terminalUpdatedAt(item))
+      .filter((timestamp) => timestamp !== null && timestamp + RECENT_TERMINAL_MS > now)
+      .reduce((earliest, timestamp) => Math.min(earliest, timestamp + RECENT_TERMINAL_MS), Infinity);
+    if (!Number.isFinite(nextExpiry)) return undefined;
+    const timer = window.setTimeout(() => setNow(Date.now()), Math.max(1, nextExpiry - Date.now() + 1));
+    return () => window.clearTimeout(timer);
+  }, [state.work, now]);
 
   const control = async (workId, action) => {
     if (!api?.focus?.controlWork) return;
@@ -221,7 +249,7 @@ export function FocusCoordination({ api, projectId, models = [] }) {
     }
   };
 
-  const work = safeWork(state);
+  const work = useMemo(() => visibleWork(safeWork(state), now), [state.work, now]);
   const activeCount = work.filter((item) => !TERMINAL.has(item.status)).length;
   const unseen = state.unseenEvents ?? [];
   const policy = state.policy;
@@ -231,14 +259,14 @@ export function FocusCoordination({ api, projectId, models = [] }) {
   if (!available) return null;
 
   return (
-    <section className="focus-coordination" data-focus-coordination="true" aria-label="Coordinator activity">
+    <aside id="focus-activity-panel" className="focus-coordination focus-activity-panel" data-focus-coordination="true" data-open={open} aria-label="Coordinator activity" aria-hidden={!open} inert={!open ? true : undefined}>
+      <header className="focus-activity-panel-header">
+        <span><strong>Activity</strong><small>{activeCount ? `${activeCount} active` : work.length ? "Up to date" : "No current work"}</small></span>
+        <button type="button" onClick={onClose} aria-label="Close activity panel"><X size={14} /></button>
+      </header>
       {unseen.length > 0 && <div className="focus-coordination-unseen" role="status"><span><strong>Since you were away</strong>{unseen.slice(0, 2).map(eventCopy).join(" · ")}</span><button type="button" onClick={dismissUnseen}>Dismiss</button></div>}
-      <button type="button" className="focus-coordination-trigger" onClick={() => setOpen((current) => !current)} aria-label="Activity" aria-expanded={open}>
-        <span><strong>Activity</strong><small>{activeCount ? `${activeCount} active` : work.length ? "Up to date" : "No delegated work"}</small></span>
-        <CaretDown size={14} />
-      </button>
-      {open && <div className="focus-coordination-disclosure">
-        {work.length ? <div className="focus-coordination-work-list">{work.map((item) => <WorkItem key={item.id} item={item} onControl={control} onFollowUp={followUp} busy={Boolean(busyWork)} />)}</div> : <p className="focus-coordination-empty">The coordinator will show delegated work here.</p>}
+      <div className="focus-coordination-disclosure">
+        {work.length ? <div className="focus-coordination-work-list">{work.map((item) => <WorkItem key={item.id} item={item} onControl={control} onFollowUp={followUp} busy={Boolean(busyWork)} />)}</div> : <p className="focus-coordination-empty">No active or recent work.</p>}
         {policy && <section className="focus-coordination-policy">
           <button type="button" onClick={() => setPolicyOpen((current) => !current)} aria-expanded={policyOpen}><span>Coordinator policy</span><CaretDown size={13} /></button>
           {policyOpen && <div className="focus-coordination-policy-body" aria-busy={policyBusy}>
@@ -247,13 +275,12 @@ export function FocusCoordination({ api, projectId, models = [] }) {
             <PolicyModelSelect label="Review" field="reviewModel" value={policy.reviewModel} models={models} onChange={updatePolicy} bridgeRequired />
             {coordinatorProvider && <p className="focus-coordination-policy-help">The active coordinator stays with {coordinatorProvider}; choose another model from that provider.</p>}
             <p className="focus-coordination-host">Coordinator <strong>Full access</strong></p>
-            <label className="focus-coordination-policy-row"><span>Concurrent workers</span><select value={policy.maxWorkers ?? 2} aria-label="Concurrent workers" onChange={(event) => updatePolicy("maxWorkers", Number(event.target.value))}>{[1, 2, 3, 4, 5, 6, 7, 8].map((value) => <option value={value} key={value}>{value}</option>)}</select></label>
             <label className="focus-coordination-policy-row"><span>New work access</span><select value={policy.permissionMode ?? "workspace-write"} aria-label="New work access" onChange={(event) => updatePolicy("permissionMode", event.target.value)}><option value="read-only">Read only</option><option value="workspace-write">Workspace access</option><option value="auto-approve">Auto-review</option><option value="full-access">Full access</option></select></label>
             <p className="focus-coordination-host">Execution host <strong>Current host</strong></p>
           </div>}
         </section>}
         {error && <p className="focus-coordination-error" role="alert">{error}</p>}
-      </div>}
-    </section>
+      </div>
+    </aside>
   );
 }
