@@ -2,6 +2,27 @@
 .connect-root, .connect-application { width: 100%; height: 100%; min-width: 0; }
 .connect-root { position: relative; }
 .connect-environment-bar { position: absolute; inset: 0 0 auto; height: 30px; display: flex; align-items: center; justify-content: center; padding: 0 12px; background: var(--chrome-glass); z-index: 180; -webkit-app-region: drag; }
+.connect-root:has(.pixice-app[data-surface-mode="focus"]) { background: var(--canvas); }
+.connect-root:has(.pixice-app[data-surface-mode="focus"])::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 62%;
+  background-image: linear-gradient(to bottom, rgba(10, 15, 22, .35), transparent 64px), url("../assets/focus-background-dark.png");
+  background-position: center top;
+  background-size: cover;
+  background-repeat: no-repeat;
+  mask-image: linear-gradient(to bottom, #000 0%, #000 42%, rgba(0, 0, 0, .82) 57%, rgba(0, 0, 0, .28) 82%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 42%, rgba(0, 0, 0, .82) 57%, rgba(0, 0, 0, .28) 82%, transparent 100%);
+  opacity: .88;
+  pointer-events: none;
+  content: "";
+}
+.connect-root:has(.pixice-app[data-surface-mode="focus"]) .connect-environment-bar,
+.connect-root:has(.pixice-app[data-surface-mode="focus"]) .pixice-stage,
+.connect-root:has(.pixice-app[data-surface-mode="focus"]) .pixice-app,
+.connect-root:has(.pixice-app[data-surface-mode="focus"]) .focus-layout,
+.connect-root:has(.pixice-app[data-surface-mode="focus"]) .focus-workspace { background: transparent; }
+.connect-root:has(.pixice-app[data-surface-mode="focus"]) .focus-atmosphere { display: none; }
 .connect-environment-menu-root { position: relative; width: fit-content; max-width: 100%; -webkit-app-region: no-drag; }
 .connect-environment-trigger { width: fit-content; max-width: min(260px, calc(100vw - 24px)); min-width: 0; min-height: 26px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; color: var(--muted); background: transparent; border-radius: 8px; cursor: pointer; font-size: 11px; font-weight: 540; line-height: 1.2; }
 .connect-environment-trigger:hover, .connect-environment-trigger[aria-expanded="true"] { color: var(--foreground); background: rgba(255, 255, 255, .055); }

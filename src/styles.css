@@ -3647,7 +3647,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 }
 .focus-chrome {
   position: absolute;
-  top: 38px;
+  top: 24px;
   right: 16px;
   left: 16px;
   z-index: 12;
