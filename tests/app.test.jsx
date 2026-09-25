@@ -2583,6 +2583,37 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("button", { name: "Check sign-in" })).toBeInTheDocument();
   });
 
+  it("saves and removes the TypeSafe key from Provider Settings", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    api.widgets = {
+      keyStatus: vi.fn().mockResolvedValue({ configured: false }),
+      keySave: vi.fn().mockResolvedValue({ configured: true }),
+      keyRemove: vi.fn().mockResolvedValue({ configured: false })
+    };
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /^Providers/ }));
+    const section = screen.getByRole("heading", { name: "Jev widget creation" }).closest("section");
+    expect(await within(section).findByText("Not configured")).toBeInTheDocument();
+
+    const input = within(section).getByLabelText("TypeSafe API key");
+    expect(input).toHaveAttribute("type", "password");
+    await user.type(input, "ts_test_secret");
+    await user.click(within(section).getByRole("button", { name: "Save key" }));
+    await waitFor(() => expect(api.widgets.keySave).toHaveBeenCalledWith({ key: "ts_test_secret" }));
+    expect(await within(section).findByText("Saved")).toBeInTheDocument();
+    expect(input).toHaveValue("");
+    expect(within(section).queryByText("ts_test_secret")).not.toBeInTheDocument();
+
+    await user.click(within(section).getByRole("button", { name: "Remove key" }));
+    await waitFor(() => expect(api.widgets.keyRemove).toHaveBeenCalledOnce());
+    expect(await within(section).findByText("Not configured")).toBeInTheDocument();
+  });
+
   it("keeps Provider Settings open when a discovered model has no capability ratings", async () => {
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({

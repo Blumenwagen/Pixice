@@ -5937,7 +5937,81 @@ function providerRuntimeHealth(provider, lifecycle, loading) {
   };
 }
 
-function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onAction, updateChecksEnabled, onUpdateChecksEnabledChange }) {
+function JevKeySettings({ credentials }) {
+  const [configured, setConfigured] = useState(null);
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    if (!credentials?.keyStatus) return;
+    let active = true;
+    credentials.keyStatus().then((status) => {
+      if (active) setConfigured(Boolean(status?.configured));
+    }).catch((cause) => {
+      if (active) setError(cause?.message || "Could not check the TypeSafe key.");
+    });
+    return () => { active = false; };
+  }, [credentials]);
+
+  const save = async (event) => {
+    event.preventDefault();
+    if (!key.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const status = await credentials.keySave({ key: key.trim() });
+      setConfigured(Boolean(status?.configured));
+      setKey("");
+      setNotice("API key saved on this device.");
+    } catch (cause) {
+      setError(cause?.message || "Could not save the TypeSafe key.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const status = await credentials.keyRemove();
+      setConfigured(Boolean(status?.configured));
+      setKey("");
+      setNotice("API key removed.");
+    } catch (cause) {
+      setError(cause?.message || "Could not remove the TypeSafe key.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsGroup title="Jev widget creation" description="Add a TypeSafe API key to create widgets from the normal composer. The key is encrypted on this device and is never shown again.">
+      <div className="jev-key-settings">
+        <div className="jev-key-heading">
+          <span><strong>TypeSafe API key</strong><small>{configured ? "A key is saved. Enter a new one to replace it." : "Enter your key to enable widget creation."}</small></span>
+          <span className={`settings-status ${configured ? "ready" : ""}`} role="status"><i />{!credentials?.keyStatus ? "Unavailable" : configured === null ? "Checking…" : configured ? "Saved" : "Not configured"}</span>
+        </div>
+        {credentials?.keySave ? (
+          <form className="jev-key-form" onSubmit={save}>
+            <input aria-label="TypeSafe API key" type="password" autoComplete="off" spellCheck={false} value={key} onChange={(event) => setKey(event.target.value)} placeholder={configured ? "Replace saved key" : "Paste TypeSafe API key"} disabled={busy} />
+            <button className="settings-action primary" type="submit" disabled={busy || !key.trim()}>{busy ? "Saving…" : "Save key"}</button>
+            {configured && credentials?.keyRemove && <button className="settings-action" type="button" disabled={busy} onClick={remove}>Remove key</button>}
+          </form>
+        ) : <p className="jev-key-message">Open this setting in the Pixice desktop app.</p>}
+        {error && <p className="jev-key-error" role="alert">{error}</p>}
+        {notice && <p className="jev-key-message" role="status">{notice}</p>}
+      </div>
+    </SettingsGroup>
+  );
+}
+
+function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onAction, updateChecksEnabled, onUpdateChecksEnabledChange, widgetCredentials }) {
   const [providerOperations, setProviderOperations] = useState({});
   const [pendingProvider, setPendingProvider] = useState(null);
   const [actionErrors, setActionErrors] = useState({});
@@ -6002,6 +6076,7 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onA
         <p className="providers-intro">Set up each runtime separately. Accounts stay with the provider, and Pixice only reads the resulting connection status.</p>
         <IconButton label="Refresh providers" onClick={onRefresh} disabled={loading}><ArrowClockwise className={loading ? "spin-icon" : ""} size={17} /></IconButton>
       </div>
+      <JevKeySettings credentials={widgetCredentials} />
       <SettingsGroup title="Runtime health" description="Codex and Claude start independently. One unavailable runtime never blocks the other or unrelated Pixice features.">
         {providerRows.map((provider) => {
           const lifecycle = providerLifecycle(provider);
@@ -6519,7 +6594,7 @@ const SETTINGS_PAGES = [
   { id: "conversation", label: "Conversation", description: "Writing, reading, and live output", icon: PencilSimple, keywords: "composer enter send shortcut drafts autofocus spellcheck slash commands timestamps work details expanded collapsed" },
   { id: "voice", label: "Voice", description: "Dictation and transcription models", icon: Microphone, keywords: "voice dictation speech transcription microphone mic parakeet whisper moonshine sensevoice model download offline on-device audio input language threads" },
   { id: "agents", label: "Agents", description: "Behavior and orchestration", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration tools instruments interactive progress task map approvals" },
-  { id: "providers", label: "Providers", description: "Accounts, runtimes, and models", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions runtime health status connected update install locate repair" },
+  { id: "providers", label: "Providers", description: "Accounts, runtimes, and models", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions runtime health status connected update install locate repair widgets jev typesafe api key" },
   { id: "connections", label: "Connections", description: "Remote instances and paired devices", icon: Globe, keywords: "connect remote network tunnel web https pairing devices host instance tailscale" },
   { id: "capabilities", label: "Capabilities", description: "GitHub, skills, apps, and MCP", icon: PlugsConnected, keywords: "extensions plugins tools servers github gh cli login pull request issues push fetch workflow" },
   { id: "appearance", label: "Appearance", description: "Layout, text, color, and motion", icon: Eye, keywords: "compact comfortable conversation width focused balanced wide text size small large accent coral rose amber green teal blue violet graphite transparency projects sidebar recent third row nine legacy old nested shortcuts animation" },
@@ -6789,6 +6864,7 @@ function SettingsWorkspace({
   onProviderAction,
   providerUpdateChecksEnabled,
   onProviderUpdateChecksEnabledChange,
+  widgetCredentials,
   githubStatus,
   githubLoading,
   githubProgress,
@@ -7092,7 +7168,7 @@ function SettingsWorkspace({
   } else if (page === "voice") {
     pageContent = <VoiceSettings transcription={transcription} micDeviceId={preferences.micDeviceId} onMicDeviceChange={(value) => onPreferenceChange("micDeviceId", value)} />;
   } else if (page === "providers") {
-    pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} updateChecksEnabled={providerUpdateChecksEnabled} onUpdateChecksEnabledChange={onProviderUpdateChecksEnabledChange} />;
+    pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} updateChecksEnabled={providerUpdateChecksEnabled} onUpdateChecksEnabledChange={onProviderUpdateChecksEnabledChange} widgetCredentials={widgetCredentials} />;
   } else if (page === "connections") {
     pageContent = <ConnectionsSettings />;
   } else if (page === "usage") {
@@ -10503,6 +10579,7 @@ export function App({ readOnly = false } = {}) {
         onProviderAction={runProviderAction}
         providerUpdateChecksEnabled={providerUpdateChecksEnabled}
         onProviderUpdateChecksEnabledChange={changeProviderUpdateChecksEnabled}
+        widgetCredentials={api?.widgets}
         githubStatus={githubStatus}
         githubLoading={loading.github}
         githubProgress={githubProgress}
