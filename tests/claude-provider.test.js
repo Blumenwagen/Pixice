@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserDynamicTools } from "../electron/browser/browser-workspace.mjs";
 import { iosDynamicTools } from "../electron/ios/ios-tools.mjs";
-import { AsyncPromptQueue, ClaudeProvider, claudeAccountIsAuthenticated, claudeExternallyManagedAuth, claudePermissionSettings, claudeQueryOptions } from "../electron/providers/claude-provider.mjs";
+import { AsyncPromptQueue, ClaudeProvider, claudeAccountIsAuthenticated, claudeExternallyManagedAuth, claudePermissionSettings, claudeQueryOptions, claudeSlashCommands } from "../electron/providers/claude-provider.mjs";
 import { PixiceDatabase } from "../electron/persistence/database.mjs";
 import { pixiceBoardTools } from "../electron/runtime/pixice-board.mjs";
 import { pixiceBridgeDynamicTools } from "../electron/runtime/pixice-bridge.mjs";
@@ -21,6 +21,16 @@ function tick() {
 }
 
 describe("Claude provider", () => {
+  it("publishes safe Claude and project commands while excluding terminal commands", () => {
+    expect(claudeSlashCommands(
+      ["/compact", "/my-skill", "/statusline", "/my-skill", "bad/name"],
+      [{ name: "my-skill", description: "Project helper" }],
+      ["statusline"]
+    )).toEqual([
+      { name: "compact", description: "Claude command" },
+      { name: "my-skill", description: "Project helper" }
+    ]);
+  });
   it("does not treat a bare first-party backend as an authenticated account", () => {
     expect(claudeAccountIsAuthenticated({ apiProvider: "firstParty", apiKeySource: "none" })).toBe(false);
     expect(claudeAccountIsAuthenticated({ apiProvider: "firstParty", email: "dev@example.com" })).toBe(true);
@@ -270,6 +280,7 @@ describe("Claude provider", () => {
     let queryArguments;
     const query = {
       [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
+      supportedCommands: vi.fn().mockResolvedValue([{ name: "my-skill", description: "Project helper" }]),
       setModel: vi.fn(),
       setPermissionMode: vi.fn(),
       interrupt: vi.fn(),
@@ -393,9 +404,22 @@ describe("Claude provider", () => {
       arguments: { taskId: "task-1" }
     }));
 
-    output.push({ type: "system", subtype: "init", session_id: thread.providerThreadId, uuid: "init-1" });
+    output.push({ type: "system", subtype: "init", session_id: thread.providerThreadId, uuid: "init-1", slash_commands: ["compact", "my-skill", "statusline"], terminal_slash_commands: ["statusline"] });
     output.push({ type: "system", subtype: "status", status: "compacting", session_id: thread.providerThreadId, uuid: "compact-1" });
     await tick();
+
+    expect((await provider.request("thread/read", { threadId: thread.id })).thread.slashCommands).toEqual([
+      { name: "compact", description: "Claude command" },
+      { name: "my-skill", description: "Project helper" }
+    ]);
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({
+      type: "TaskUpdated",
+      payload: expect.objectContaining({ method: "thread/slash-commands/updated", threadId: thread.id })
+    })]));
+    output.push({ type: "system", subtype: "commands_changed", session_id: thread.providerThreadId, uuid: "commands-2", commands: [{ name: "new-skill", description: "New project skill" }] });
+    await tick();
+    expect((await provider.request("thread/read", { threadId: thread.id })).thread.slashCommands)
+      .toEqual([{ name: "new-skill", description: "New project skill" }]);
 
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({

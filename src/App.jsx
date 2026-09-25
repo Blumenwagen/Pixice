@@ -326,7 +326,7 @@ const AutoReviewIcon = APP_ICONS.autoReview;
 // Mirrors the slash-command discovery surface in the installed Codex runtime.
 // Pixice only presents and autocompletes these commands; Codex remains responsible
 // for interpreting them when the user submits the composer.
-const SLASH_COMMANDS = [
+const CODEX_SLASH_COMMANDS = [
   { name: "model", description: "Choose what model and reasoning effort to use" },
   { name: "fast", description: "Use faster inference with increased usage" },
   { name: "ide", description: "Include open files, selections, and IDE context" },
@@ -372,6 +372,42 @@ const SLASH_COMMANDS = [
   { name: "stop", description: "Stop all background terminals" },
   { name: "clear", description: "Clear the surface and start a new chat" }
 ];
+
+// The active Claude session replaces this starter list with its own commands,
+// including project skills. Keep a useful menu before the first session starts.
+const CLAUDE_SLASH_COMMANDS = [
+  { name: "review", description: "Review code changes" },
+  { name: "compact", description: "Summarize the conversation to preserve context" },
+  { name: "init", description: "Create project instructions" },
+  { name: "simplify", description: "Review changed code for reuse and quality" },
+  { name: "security-review", description: "Review changes for security issues" }
+];
+
+export function slashCommandAtCaret(value, caret) {
+  if (typeof value !== "string" || !Number.isInteger(caret) || caret < 0 || caret > value.length) return null;
+  const before = value.slice(0, caret);
+  const match = /(?:^|\s)\/([\w:.-]*)$/.exec(before);
+  if (!match) return null;
+  const start = caret - match[1].length - 1;
+  const suffix = value.slice(caret).match(/^[\w:.-]*/)?.[0] ?? "";
+  if (value[caret + suffix.length] && !/\s/.test(value[caret + suffix.length])) return null;
+  return { start, end: caret + suffix.length, query: match[1].toLowerCase() };
+}
+
+export function prepareSlashCommandPrompt(value, commands) {
+  if (/^\s*\/[\w:.-]+(?=\s|$)/.test(value)) return value.trim();
+  const names = new Set(commands.map((command) => command.name.toLowerCase()));
+  const inline = /(?:^|\s)\/([\w:.-]+)(?=\s|$)/g;
+  let match;
+  while ((match = inline.exec(value))) {
+    if (!names.has(match[1].toLowerCase())) continue;
+    const start = match.index + match[0].lastIndexOf("/");
+    const command = value.slice(start, start + match[1].length + 1);
+    const rest = [value.slice(0, start).trim(), value.slice(start + command.length).trim()].filter(Boolean).join(" ");
+    return `${command}${rest ? ` ${rest}` : ""}`;
+  }
+  return value.trim();
+}
 
 function loadPreferences(storage = localStorage) {
   try {
@@ -3019,7 +3055,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
+export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, slashCommands, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
@@ -3027,6 +3063,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   const [attachmentNotice, setAttachmentNotice] = useState("");
   const [commandSelection, setCommandSelection] = useState(0);
   const [commandsDismissed, setCommandsDismissed] = useState(false);
+  const [caretPosition, setCaretPosition] = useState(0);
   const [draftHydratedKey, setDraftHydratedKey] = useState(null);
   const [uploadState, setUploadState] = useState(null);
   const [submissionBusy, setSubmissionBusy] = useState(false);
@@ -3121,7 +3158,9 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
       return;
     }
     if (!identityChanged && draftReloadToken > 0 && draftInteractionRef.current) return;
-    setText(preserveDrafts ? storage.getItem(storageKey) ?? "" : "");
+    const restoredText = preserveDrafts ? storage.getItem(storageKey) ?? "" : "";
+    setText(restoredText);
+    setCaretPosition(restoredText.length);
     let restored = [];
     if (preserveDrafts) {
       try {
@@ -3264,10 +3303,13 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
       target.removeEventListener("drop", onDrop);
     };
   }, [addAttachmentFiles, disabled, globalFileDrop, questionRequest]);
-  const slashMatch = showSlashCommands ? text.match(/^\/([^\s]*)$/) : null;
-  const slashQuery = slashMatch?.[1].toLowerCase() ?? null;
-  const matchingCommands = slashQuery === null ? [] : SLASH_COMMANDS.filter((command) => {
-    return command.name.includes(slashQuery) || command.description.toLowerCase().includes(slashQuery);
+  const isClaude = modelProvider(selected) === "claude";
+  const availableCommands = isClaude
+    ? (Array.isArray(slashCommands) ? slashCommands : CLAUDE_SLASH_COMMANDS)
+    : CODEX_SLASH_COMMANDS;
+  const slashToken = showSlashCommands ? slashCommandAtCaret(text, caretPosition) : null;
+  const matchingCommands = !slashToken ? [] : availableCommands.filter((command) => {
+    return command.name.toLowerCase().includes(slashToken.query) || command.description.toLowerCase().includes(slashToken.query);
   });
   const commandMenuOpen = !disabled && !commandsDismissed && matchingCommands.length > 0;
   const activeCommandIndex = Math.min(commandSelection, Math.max(0, matchingCommands.length - 1));
@@ -3298,15 +3340,20 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   }, []);
 
   const completeCommand = (command) => {
-    if (!command || disabled) return;
-    const value = `/${command.name} `;
+    if (!command || disabled || !slashToken) return;
+    const before = text.slice(0, slashToken.start);
+    const after = text.slice(slashToken.end);
+    const insertion = `/${command.name}${after && /^\s/.test(after) ? "" : " "}`;
+    const value = `${before}${insertion}${after}`;
+    const caret = before.length + insertion.length;
     draftInteractionRef.current = true;
     setText(value);
+    setCaretPosition(caret);
     setCommandsDismissed(true);
     if (preserveDrafts) storage.setItem(storageKey, value);
     window.setTimeout(() => {
       textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(value.length, value.length);
+      textareaRef.current?.setSelectionRange(caret, caret);
     }, 0);
   };
   // Dictated text lands at the cursor and is never submitted on its own, so a
@@ -3325,6 +3372,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     const caret = before.length + spacer.length + addition.length;
     draftInteractionRef.current = true;
     setText(value);
+    setCaretPosition(caret);
     if (preserveDrafts) storage.setItem(storageKey, value);
     window.setTimeout(() => {
       const target = textareaRef.current;
@@ -3483,7 +3531,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     setAttachmentNotice("Upload cancelled. Send again to restart.");
   };
   const submit = async () => {
-    const value = text.trim();
+    const value = prepareSlashCommandPrompt(text, availableCommands);
     if (attachments.some((attachment) => attachment.needsReselect)) {
       setAttachmentNotice("Reselect each saved attachment before sending.");
       return;
@@ -3605,7 +3653,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
       {commandMenuOpen && (
         <div className="slash-command-menu" id={commandListId} role="listbox" aria-label="Slash commands">
           <div className="slash-command-head">
-            <span>Codex commands</span>
+            <span>{isClaude ? "Claude commands" : "Codex commands"}</span>
             <small><kbd>↑↓</kbd> navigate <kbd>Tab</kbd> complete</small>
           </div>
           <div className="slash-command-options">
@@ -3679,10 +3727,12 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
         }}
         onFocus={() => setCommandsDismissed(false)}
         onBlur={() => setCommandsDismissed(true)}
+        onSelect={(event) => setCaretPosition(event.currentTarget.selectionStart)}
         onChange={(event) => {
           const value = event.target.value;
           draftInteractionRef.current = true;
           setText(value);
+          setCaretPosition(event.target.selectionStart);
           setCommandsDismissed(false);
           setCommandSelection(0);
           if (preserveDrafts) storage.setItem(storageKey, value);
@@ -3831,6 +3881,9 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
 function applySideThreadRuntimePayload(current, payload) {
   if (payload.method === "thread/name/updated") {
     return current?.id === payload.threadId ? { ...current, name: payload.name } : current;
+  }
+  if (payload.method === "thread/slash-commands/updated") {
+    return current?.id === payload.threadId ? { ...current, slashCommands: payload.slashCommands } : current;
   }
   return applyRuntimePayload(current ?? payload.thread ?? null, payload);
 }
@@ -4253,6 +4306,7 @@ function SideThreadSurface({
         spellCheckComposer={preferences.spellCheckComposer}
         autoFocusComposer={false}
         showSlashCommands={preferences.showSlashCommands}
+        slashCommands={snapshot?.slashCommands}
         showPermissionPicker={!enforcedPermissionMode}
         running={Boolean(activeTurn)}
         questionRequest={questionRequest}
@@ -7036,7 +7090,7 @@ function SettingsWorkspace({
           <SettingsRow title="Check spelling" description="Use the operating system's spelling suggestions in prompts.">
             <SettingsToggle label="Check spelling in prompts" checked={preferences.spellCheckComposer} onChange={(value) => onPreferenceChange("spellCheckComposer", value)} />
           </SettingsRow>
-          <SettingsRow title="Slash command suggestions" description="Open Codex's command menu when a prompt begins with a slash.">
+          <SettingsRow title="Slash command suggestions" description="Suggest commands at the cursor for the selected provider.">
             <SettingsToggle label="Show slash command suggestions" checked={preferences.showSlashCommands} onChange={(value) => onPreferenceChange("showSlashCommands", value)} />
           </SettingsRow>
         </SettingsGroup>
@@ -9056,6 +9110,12 @@ export function App({ readOnly = false } = {}) {
           setThread((current) => current?.id === payload.threadId ? { ...current, name: payload.name } : current);
         }
       }
+      if (payload.method === "thread/slash-commands/updated") {
+        setThreads((current) => current.map((candidate) => candidate.id === payload.threadId ? { ...candidate, slashCommands: payload.slashCommands } : candidate));
+        if (payload.threadId === selectedThreadIdRef.current) {
+          setThread((current) => current?.id === payload.threadId ? { ...current, slashCommands: payload.slashCommands } : current);
+        }
+      }
       if (payload.method === "turn/plan/updated") {
         refreshEventInstrumentSources(["tasks.plan"], payload.projectId);
         setThreads((current) => current.map((candidate) => candidate.id === payload.threadId
@@ -10450,6 +10510,7 @@ export function App({ readOnly = false } = {}) {
     spellCheckComposer: preferences.spellCheckComposer,
     autoFocusComposer: preferences.autoFocusComposer,
     showSlashCommands: preferences.showSlashCommands,
+    slashCommands: targetIsOrigin ? thread?.slashCommands : undefined,
     showPermissionPicker: !focusActive,
     running: Boolean(activeTurn),
     questionRequest,

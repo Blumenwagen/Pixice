@@ -26,7 +26,7 @@ const OBSERVER_EVENT_TYPES = new Set([
 const NORMALIZED_RUNTIME_EVENT_TYPES = new Set(["TaskUpdated", "ActivityReceived", "AgentUpdated", "RuntimeEvent"]);
 
 const SAFE_RUNTIME_METHODS = new Set([
-  "thread/started", "thread/name/updated", "thread/status/changed", "thread/deleted", "thread/archived",
+  "thread/started", "thread/name/updated", "thread/slash-commands/updated", "thread/status/changed", "thread/deleted", "thread/archived",
   "turn/started", "turn/completed", "turn/plan/updated", "item/started", "item/completed",
   "item/agentMessage/delta", "item/agentMessage/updated"
 ]);
@@ -182,6 +182,12 @@ function minimalRuntimeEventPayload(payload) {
   }
   if (typeof payload.receivedAt === "string") result.receivedAt = payload.receivedAt.slice(0, 80);
   if (typeof payload.name === "string") result.name = payload.name.slice(0, 240);
+  if (method === "thread/slash-commands/updated" && Array.isArray(payload.slashCommands)) {
+    result.slashCommands = payload.slashCommands.slice(0, 100).flatMap((command) => {
+      if (!command || typeof command.name !== "string" || !/^[\w][\w:.-]{0,79}$/.test(command.name)) return [];
+      return [{ name: command.name, description: String(command.description ?? "").slice(0, 180) }];
+    });
+  }
   if (typeof payload.delta === "string") result.delta = payload.delta.slice(0, 100_000);
   const status = minimalRuntimeStatus(payload.status);
   if (status !== undefined) result.status = status;

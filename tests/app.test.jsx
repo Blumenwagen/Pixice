@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { App, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift } from "../src/App.jsx";
+import { App, Composer, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift, prepareSlashCommandPrompt, slashCommandAtCaret } from "../src/App.jsx";
 import { draftFocusWidget } from "../electron/backend/widget-draft-router.mjs";
 import { materializeWidgetCandidates } from "../electron/backend/widget-composition.mjs";
 import { listPricingCatalog } from "../electron/usage/pricing.mjs";
@@ -3899,6 +3899,43 @@ describe("Pixice app shell", () => {
     await user.clear(composer);
     await user.type(composer, "/not-a-pixice-command{Enter}");
     await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({ text: "/not-a-pixice-command" })));
+  });
+
+  it("completes a provider command at the cursor without replacing surrounding text", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(<Composer
+      draftKey="claude-slash"
+      models={[{ model: "sonnet", displayName: "Claude Sonnet", provider: "claude", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }]}
+      selectedModel="sonnet"
+      effort="high"
+      providers={[]}
+      showSlashCommands
+      slashCommands={[{ name: "compact", description: "Compact context" }, { name: "my-skill", description: "Project skill" }]}
+      globalFileDrop={false}
+      onSubmit={onSubmit}
+    />);
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
+    await user.type(composer, "Please  later");
+    composer.setSelectionRange(7, 7);
+    fireEvent.select(composer);
+    await user.keyboard("/comp");
+    expect(composer).toHaveValue("Please /comp later");
+    expect(within(screen.getByRole("listbox", { name: "Slash commands" })).getByRole("option", { name: /\/compact/ })).toBeInTheDocument();
+    expect(screen.getByText("Claude commands")).toBeInTheDocument();
+    await user.keyboard("{Tab}");
+    expect(composer).toHaveValue("Please /compact later");
+    expect(screen.queryByText("Codex commands")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("/compact Please later", expect.any(Array), expect.any(Object), expect.any(Array), expect.any(AbortSignal), expect.any(Object)));
+  });
+
+  it("only detects a slash token at a word boundary and caret", () => {
+    expect(slashCommandAtCaret("Fix /rev this", 8)).toEqual({ start: 4, end: 8, query: "rev" });
+    expect(slashCommandAtCaret("https://example.com", 8)).toBeNull();
+    expect(slashCommandAtCaret("src/file", 8)).toBeNull();
+    expect(prepareSlashCommandPrompt("Read https://example.com/path", [{ name: "path" }])).toBe("Read https://example.com/path");
+    expect(prepareSlashCommandPrompt("Use /unknown here", [{ name: "review" }])).toBe("Use /unknown here");
   });
 
   it("does not submit a new task twice when send is clicked repeatedly", async () => {

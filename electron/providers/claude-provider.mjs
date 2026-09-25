@@ -234,6 +234,23 @@ function now() {
   return new Date().toISOString();
 }
 
+function normalizeClaudeSlashName(value) {
+  const name = String(value ?? "").replace(/^\//, "").trim();
+  return /^[\w][\w:.-]{0,79}$/.test(name) ? name : null;
+}
+
+export function claudeSlashCommands(names, details = [], terminalNames = []) {
+  const terminal = new Set(terminalNames.map(normalizeClaudeSlashName).filter(Boolean));
+  const descriptions = new Map(details.map((command) => [normalizeClaudeSlashName(command?.name), String(command?.description ?? "").slice(0, 180)]));
+  const seen = new Set();
+  return names.flatMap((value) => {
+    const name = normalizeClaudeSlashName(value);
+    if (!name || terminal.has(name) || seen.has(name) || seen.size >= 100) return [];
+    seen.add(name);
+    return [{ name, description: descriptions.get(name) || "Claude command" }];
+  });
+}
+
 function threadStatus(type) {
   return type === "active" ? { type: "active", activeFlags: [] } : { type };
 }
@@ -1209,7 +1226,27 @@ export class ClaudeProvider extends EventEmitter {
     }
     if (message.type === "system" && message.subtype === "init") {
       context.resumeCursor = message.session_id;
+      if (Array.isArray(message.slash_commands)) {
+        const names = message.slash_commands;
+        context.slashCommandNames = names;
+        context.terminalSlashCommands = message.terminal_slash_commands ?? [];
+        this.#updateSlashCommands(context, claudeSlashCommands(names, [], context.terminalSlashCommands));
+        const query = context.query;
+        if (typeof query?.supportedCommands === "function") {
+          void Promise.resolve().then(() => query.supportedCommands()).then((details) => {
+            if (context.query === query && context.slashCommandNames === names) {
+              this.#updateSlashCommands(context, claudeSlashCommands(names, Array.isArray(details) ? details : [], context.terminalSlashCommands));
+            }
+          }).catch(() => {});
+        }
+      }
       this.#persist(context);
+      return;
+    }
+    if (message.type === "system" && message.subtype === "commands_changed" && Array.isArray(message.commands)) {
+      const names = message.commands.map((command) => command.name);
+      context.slashCommandNames = names;
+      this.#updateSlashCommands(context, claudeSlashCommands(names, message.commands, context.terminalSlashCommands));
       return;
     }
     if (message.type === "system" && ["task_started", "task_progress", "task_updated", "task_notification"].includes(message.subtype)) {
@@ -1228,6 +1265,13 @@ export class ClaudeProvider extends EventEmitter {
     else if (message.type === "system" && message.subtype === "api_retry") this.#handleApiRetry(context, message);
     else if (message.type === "system" && message.subtype === "model_refusal_fallback") this.#handleRefusalFallback(context, message);
     else if (message.type === "system" && message.subtype === "model_refusal_no_fallback") this.#handleRefusalFailure(context, message);
+  }
+
+  #updateSlashCommands(context, commands) {
+    if (JSON.stringify(context.thread.slashCommands) === JSON.stringify(commands)) return;
+    context.thread.slashCommands = commands;
+    this.#persist(context);
+    this.#emitEvent("TaskUpdated", { method: "thread/slash-commands/updated", threadId: context.thread.id, slashCommands: commands });
   }
 
   #handleStatus(context, message) {
