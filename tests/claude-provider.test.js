@@ -408,10 +408,8 @@ describe("Claude provider", () => {
     output.push({ type: "system", subtype: "status", status: "compacting", session_id: thread.providerThreadId, uuid: "compact-1" });
     await tick();
 
-    expect((await provider.request("thread/read", { threadId: thread.id })).thread.slashCommands).toEqual([
-      { name: "compact", description: "Claude command" },
-      { name: "my-skill", description: "Project helper" }
-    ]);
+    expect((await provider.request("thread/read", { threadId: thread.id })).thread.slashCommands)
+      .toEqual([{ name: "my-skill", description: "Project helper" }]);
     expect(events).toEqual(expect.arrayContaining([expect.objectContaining({
       type: "TaskUpdated",
       payload: expect.objectContaining({ method: "thread/slash-commands/updated", threadId: thread.id })

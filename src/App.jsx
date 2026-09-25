@@ -323,65 +323,19 @@ const TaskProgressIcon = APP_ICONS.taskProgress;
 const FastModeIcon = APP_ICONS.fastMode;
 const AutoReviewIcon = APP_ICONS.autoReview;
 
-// Mirrors the slash-command discovery surface in the installed Codex runtime.
-// Pixice only presents and autocompletes these commands; Codex remains responsible
-// for interpreting them when the user submits the composer.
-const CODEX_SLASH_COMMANDS = [
-  { name: "model", description: "Choose what model and reasoning effort to use" },
-  { name: "fast", description: "Use faster inference with increased usage" },
-  { name: "ide", description: "Include open files, selections, and IDE context" },
-  { name: "permissions", description: "Choose what Codex is allowed to do" },
-  { name: "keymap", description: "Remap Codex shortcuts" },
-  { name: "vim", description: "Toggle Vim mode for the composer" },
-  { name: "experimental", description: "Toggle experimental features" },
-  { name: "approve", description: "Approve one retry of a recent auto-review denial" },
-  { name: "memories", description: "Configure memory use and generation" },
-  { name: "skills", description: "Use skills for specific tasks" },
-  { name: "import", description: "Import setup and chats from Claude Code" },
-  { name: "hooks", description: "View and manage lifecycle hooks" },
-  { name: "review", description: "Review current changes and find issues" },
-  { name: "name", description: "Name the current thread" },
-  { name: "new", description: "Start a new chat" },
-  { name: "archive", description: "Archive this session" },
-  { name: "delete", description: "Permanently delete this session" },
-  { name: "resume", description: "Resume a saved chat" },
-  { name: "fork", description: "Fork the current chat" },
-  { name: "app", description: "Continue this session in Codex Desktop" },
-  { name: "init", description: "Create an AGENTS.md file with Codex instructions" },
-  { name: "compact", description: "Summarize the conversation to preserve context" },
-  { name: "plan", description: "Switch to Plan mode" },
-  { name: "goal", description: "Set or view a long-running task goal" },
-  { name: "agent", description: "Switch the active agent thread" },
-  { name: "side", description: "Start a side conversation" },
-  { name: "copy", description: "Copy the last response as Markdown" },
-  { name: "raw", description: "Toggle raw output mode" },
-  { name: "diff", description: "Show the Git diff, including untracked files" },
-  { name: "mention", description: "Mention a file" },
-  { name: "status", description: "Show session configuration and token usage" },
-  { name: "usage", description: "View account usage and limits" },
-  { name: "title", description: "Configure the terminal title" },
-  { name: "statusline", description: "Configure the status line" },
-  { name: "theme", description: "Choose a syntax-highlighting theme" },
-  { name: "pets", description: "Show or hide the terminal pet" },
-  { name: "mcp", description: "List configured MCP tools" },
-  { name: "plugins", description: "Browse plugins" },
-  { name: "logout", description: "Log out of Codex" },
-  { name: "exit", description: "Exit Codex" },
-  { name: "feedback", description: "Send logs to the Codex maintainers" },
-  { name: "ps", description: "List background terminals" },
-  { name: "stop", description: "Stop all background terminals" },
-  { name: "clear", description: "Clear the surface and start a new chat" }
+// These are Pixice actions with handlers in the app. Provider commands are
+// listed separately only when that provider reports them for the session.
+const PIXICE_SLASH_COMMANDS = [
+  { name: "usage", description: "Open Usage in Pixice", source: "pixice" },
+  { name: "settings", description: "Open Settings in Pixice", source: "pixice" }
 ];
 
-// The active Claude session replaces this starter list with its own commands,
-// including project skills. Keep a useful menu before the first session starts.
-const CLAUDE_SLASH_COMMANDS = [
-  { name: "review", description: "Review code changes" },
-  { name: "compact", description: "Summarize the conversation to preserve context" },
-  { name: "init", description: "Create project instructions" },
-  { name: "simplify", description: "Review changed code for reuse and quality" },
-  { name: "security-review", description: "Review changes for security issues" }
-];
+function availableSlashCommands(provider, providerCommands, onCommand) {
+  const pixiceCommands = onCommand ? PIXICE_SLASH_COMMANDS : [];
+  if (provider !== "claude" || !Array.isArray(providerCommands)) return pixiceCommands;
+  const nativeNames = new Set(pixiceCommands.map((command) => command.name));
+  return [...pixiceCommands, ...providerCommands.filter((command) => !nativeNames.has(command.name))];
+}
 
 export function slashCommandAtCaret(value, caret) {
   if (typeof value !== "string" || !Number.isInteger(caret) || caret < 0 || caret > value.length) return null;
@@ -3055,7 +3009,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, slashCommands, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
+export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, slashCommands, onCommand, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
@@ -3304,9 +3258,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     };
   }, [addAttachmentFiles, disabled, globalFileDrop, questionRequest]);
   const isClaude = modelProvider(selected) === "claude";
-  const availableCommands = isClaude
-    ? (Array.isArray(slashCommands) ? slashCommands : CLAUDE_SLASH_COMMANDS)
-    : CODEX_SLASH_COMMANDS;
+  const availableCommands = availableSlashCommands(modelProvider(selected), slashCommands, onCommand);
   const slashToken = showSlashCommands ? slashCommandAtCaret(text, caretPosition) : null;
   const matchingCommands = !slashToken ? [] : availableCommands.filter((command) => {
     return command.name.toLowerCase().includes(slashToken.query) || command.description.toLowerCase().includes(slashToken.query);
@@ -3343,6 +3295,17 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     if (!command || disabled || !slashToken) return;
     const before = text.slice(0, slashToken.start);
     const after = text.slice(slashToken.end);
+    if (command.source === "pixice") {
+      const remainder = `${before}${after}`;
+      const nextText = remainder.trim() ? remainder : "";
+      draftInteractionRef.current = true;
+      setText(nextText);
+      setCaretPosition(before.length);
+      setCommandsDismissed(true);
+      if (preserveDrafts) storage.setItem(storageKey, nextText);
+      onCommand(command.name);
+      return;
+    }
     const insertion = `/${command.name}${after && /^\s/.test(after) ? "" : " "}`;
     const value = `${before}${insertion}${after}`;
     const caret = before.length + insertion.length;
@@ -3532,6 +3495,20 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   };
   const submit = async () => {
     const value = prepareSlashCommandPrompt(text, availableCommands);
+    const nativeCommand = availableCommands.find((command) => command.source === "pixice" && (value === `/${command.name}` || value.startsWith(`/${command.name} `)));
+    if (nativeCommand && attachments.length === 0 && !disabled) {
+      const remainingText = value.slice(nativeCommand.name.length + 1).trim();
+      draftInteractionRef.current = true;
+      setText(remainingText);
+      setCaretPosition(remainingText.length);
+      setCommandsDismissed(true);
+      if (preserveDrafts) {
+        if (remainingText) storage.setItem(storageKey, remainingText);
+        else storage.removeItem(storageKey);
+      }
+      onCommand(nativeCommand.name);
+      return;
+    }
     if (attachments.some((attachment) => attachment.needsReselect)) {
       setAttachmentNotice("Reselect each saved attachment before sending.");
       return;
@@ -3653,7 +3630,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
       {commandMenuOpen && (
         <div className="slash-command-menu" id={commandListId} role="listbox" aria-label="Slash commands">
           <div className="slash-command-head">
-            <span>{isClaude ? "Claude commands" : "Codex commands"}</span>
+            <span>{isClaude && slashCommands?.length ? (onCommand ? "Pixice and Claude commands" : "Claude commands") : "Pixice commands"}</span>
             <small><kbd>↑↓</kbd> navigate <kbd>Tab</kbd> complete</small>
           </div>
           <div className="slash-command-options">
@@ -3906,6 +3883,7 @@ function SideThreadSurface({
   onQuestionResolve,
   onProviderLogin,
   onProvidersRefresh,
+  onCommand,
   onThreadCreated,
   onThreadActivity,
   onThreadViewed,
@@ -4323,6 +4301,7 @@ function SideThreadSurface({
         providers={providers}
         onProviderLogin={onProviderLogin}
         onProvidersRefresh={onProvidersRefresh}
+        onCommand={onCommand}
         onSubmit={submit}
         onDraftStateChange={updateDraftState}
         onInterrupt={async () => {
@@ -7090,7 +7069,7 @@ function SettingsWorkspace({
           <SettingsRow title="Check spelling" description="Use the operating system's spelling suggestions in prompts.">
             <SettingsToggle label="Check spelling in prompts" checked={preferences.spellCheckComposer} onChange={(value) => onPreferenceChange("spellCheckComposer", value)} />
           </SettingsRow>
-          <SettingsRow title="Slash command suggestions" description="Suggest commands at the cursor for the selected provider.">
+          <SettingsRow title="Slash command suggestions" description="Suggest Pixice actions and confirmed provider commands at the cursor.">
             <SettingsToggle label="Show slash command suggestions" checked={preferences.showSlashCommands} onChange={(value) => onPreferenceChange("showSlashCommands", value)} />
           </SettingsRow>
         </SettingsGroup>
@@ -10501,6 +10480,12 @@ export function App({ readOnly = false } = {}) {
       return next;
     });
   };
+  const openPixiceCommand = (name) => {
+    if (name !== "usage" && name !== "settings") return;
+    if (focusActive) exitFocus();
+    setSettingsPage(name === "usage" ? "usage" : "general");
+    changeView("settings");
+  };
   const composerProps = {
     disabled: !targetConnected || !targetProjectReady || !targetProviderReady,
     busy: submitting,
@@ -10511,6 +10496,7 @@ export function App({ readOnly = false } = {}) {
     autoFocusComposer: preferences.autoFocusComposer,
     showSlashCommands: preferences.showSlashCommands,
     slashCommands: targetIsOrigin ? thread?.slashCommands : undefined,
+    onCommand: openPixiceCommand,
     showPermissionPicker: !focusActive,
     running: Boolean(activeTurn),
     questionRequest,
@@ -10743,6 +10729,7 @@ export function App({ readOnly = false } = {}) {
               onQuestionResolve: resolveQuestion,
               onProviderLogin: loginProvider,
               onProvidersRefresh: refreshProviders,
+              onCommand: openPixiceCommand,
               onThreadCreated: registerSideThread,
               onThreadActivity: markThreadMessaged,
               onThreadViewed: markThreadCompletionSeen,

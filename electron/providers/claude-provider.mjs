@@ -1230,12 +1230,13 @@ export class ClaudeProvider extends EventEmitter {
         const names = message.slash_commands;
         context.slashCommandNames = names;
         context.terminalSlashCommands = message.terminal_slash_commands ?? [];
-        this.#updateSlashCommands(context, claudeSlashCommands(names, [], context.terminalSlashCommands));
+        this.#updateSlashCommands(context, []);
         const query = context.query;
         if (typeof query?.supportedCommands === "function") {
           void Promise.resolve().then(() => query.supportedCommands()).then((details) => {
             if (context.query === query && context.slashCommandNames === names) {
-              this.#updateSlashCommands(context, claudeSlashCommands(names, Array.isArray(details) ? details : [], context.terminalSlashCommands));
+              const supported = Array.isArray(details) ? details : [];
+              this.#updateSlashCommands(context, claudeSlashCommands(supported.map((command) => command.name), supported, context.terminalSlashCommands));
             }
           }).catch(() => {});
         }

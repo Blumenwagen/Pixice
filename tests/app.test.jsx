@@ -3866,7 +3866,7 @@ describe("Pixice app shell", () => {
     expect(appCss).toMatch(/\.pixice-app\[data-reduce-motion="true"\][^{]*\.new-task-hover-plus\s*\{\s*transition-duration:\s*1ms/);
   });
 
-  it("discovers and autocompletes Codex commands from the slash menu", async () => {
+  it("offers only implemented Pixice commands and opens Usage without sending a turn", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -3874,31 +3874,50 @@ describe("Pixice app shell", () => {
 
     await user.type(composer, "/");
     const commands = screen.getByRole("listbox", { name: "Slash commands" });
-    expect(within(commands).getByRole("option", { name: /\/model/ })).toHaveAttribute("aria-selected", "true");
-    expect(within(commands).getByRole("option", { name: /\/permissions/ })).toBeInTheDocument();
-    expect(within(commands).getByRole("option", { name: /\/compact/ })).toBeInTheDocument();
+    expect(within(commands).getByRole("option", { name: /\/usage/ })).toHaveAttribute("aria-selected", "true");
+    expect(within(commands).getByRole("option", { name: /\/settings/ })).toBeInTheDocument();
+    expect(within(commands).queryByRole("option", { name: /\/model|\/permissions|\/compact/ })).not.toBeInTheDocument();
 
-    await user.keyboard("{ArrowDown}{Enter}");
-    expect(composer).toHaveValue("/fast ");
+    await user.keyboard("{Enter}");
+    await screen.findByRole("region", { name: "Usage overview" });
     expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
     expect(window.pixice.turns.start).not.toHaveBeenCalled();
   });
 
-  it("filters slash commands and keeps unknown commands sendable", async () => {
+  it("opens Usage from the Focus composer without sending the coordinator a prompt", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const composer = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await user.type(composer, "/usage");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await screen.findByRole("region", { name: "Usage overview" });
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-surface-mode", "workspace");
+    expect(window.pixice.turns.start).not.toHaveBeenCalled();
+  });
+
+  it("runs typed /usage through Pixice and keeps unsupported commands sendable as text", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     const composer = screen.getByRole("textbox", { name: "Task prompt" });
 
     await user.type(composer, "/compact");
-    const commands = screen.getByRole("listbox", { name: "Slash commands" });
-    expect(within(commands).getAllByRole("option")).toHaveLength(1);
-    expect(within(commands).getByRole("option", { name: /\/compact/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument();
+    expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
 
     await user.clear(composer);
-    await user.type(composer, "/not-a-pixice-command{Enter}");
+    await user.type(composer, "/usage");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await screen.findByRole("region", { name: "Usage overview" });
+    expect(window.pixice.turns.start).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Back to task" }));
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "/settings{Enter}");
+    expect(await screen.findByRole("complementary", { name: "Settings navigation" })).toBeInTheDocument();
+    expect(window.pixice.turns.start).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Back to task" }));
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "/not-a-pixice-command{Enter}");
     await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({ text: "/not-a-pixice-command" })));
+    expect(window.pixice.turns.start).toHaveBeenCalledTimes(1);
   });
 
   it("completes a provider command at the cursor without replacing surrounding text", async () => {
