@@ -2583,6 +2583,31 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("button", { name: "Check sign-in" })).toBeInTheDocument();
   });
 
+  it("keeps Provider Settings open when a discovered model has no capability ratings", async () => {
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [
+        { id: "rated", model: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", provider: "codex", bridge: { eligible: true, ratings: { coding: 5, reasoning: 5, ui: 4, taste: 4, speed: 3, costEfficiency: 2 }, summary: "Curated model" } },
+        { id: "discovered", model: "new-agent", displayName: "New agent", provider: "codex", bridge: { eligible: true, rated: false, ratings: null, summary: "Advertised by the provider" } }
+      ],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Providers/ }));
+
+    expect(await screen.findByRole("heading", { name: "Providers" })).toBeInTheDocument();
+    expect(screen.getByText("New agent")).toBeInTheDocument();
+    expect(screen.getByText("Not yet rated")).toBeInTheDocument();
+    expect(screen.getByLabelText("GPT-5.6 Sol capability ratings")).toHaveTextContent("Coding5");
+    expect(screen.getByRole("button", { name: "Refresh providers" })).toBeInTheDocument();
+  });
+
   it("shows Codex and Claude runtime health independently", async () => {
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({

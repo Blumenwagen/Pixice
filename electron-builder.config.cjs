@@ -21,6 +21,8 @@ module.exports = {
   files: [
     "dist/client/**/*",
     "electron/**/*",
+    "src/widgets/widget-catalog.mjs",
+    "src/widgets/widget-schema.mjs",
     "package.json",
     "!node_modules/@anthropic-ai/claude-agent-sdk-*/**/*"
   ],

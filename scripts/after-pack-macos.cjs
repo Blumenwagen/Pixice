@@ -18,6 +18,10 @@ const forbiddenAsarPaths = [
   /(^|\/)node_modules\/@anthropic-ai\/claude-agent-sdk-(?:darwin|linux|win32)-[^/]+\//i,
   /(^|\/)resources\/runtime\/(?:darwin|linux|win32)-[^/]+\//i
 ];
+const requiredBackendPaths = [
+  "/src/widgets/widget-catalog.mjs",
+  "/src/widgets/widget-schema.mjs"
+];
 const forbiddenResourceNames = new Set([
   "claude",
   "claude.exe",
@@ -50,6 +54,10 @@ function verifyProviderFreePackage(context) {
   const resources = resourcesDirectory(context);
   const asarPath = path.join(resources, "app.asar");
   const asarEntries = listPackage(asarPath);
+  const missingBackendPaths = requiredBackendPaths.filter((entry) => !asarEntries.includes(entry));
+  if (missingBackendPaths.length) {
+    throw new Error(`Packaged Pixice is missing backend modules: ${missingBackendPaths.join(", ")}`);
+  }
   const forbiddenEntries = asarEntries.filter((entry) => forbiddenAsarPaths.some((pattern) => pattern.test(entry)));
   const forbiddenResources = packagedResourceFiles(resources)
     .filter((filename) => filename !== asarPath && statSync(filename).isFile())

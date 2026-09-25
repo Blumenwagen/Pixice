@@ -3161,6 +3161,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .bridge-ratings > span { min-width: 0; padding: 5px 3px; display: flex; flex-direction: column; align-items: center; gap: 2px; background: color-mix(in oklab, var(--surface-raised) 75%, transparent); border-radius: 6px; }
 .bridge-ratings i { overflow: hidden; width: 100%; color: var(--quiet); font-size: 7px; font-style: normal; text-align: center; text-overflow: ellipsis; }
 .bridge-ratings b { color: var(--foreground); font-size: 10px; font-weight: 650; }
+.bridge-unrated { color: var(--quiet); font-size: 11px; }
 .bridge-model-note { margin: 7px 2px 0; color: var(--quiet); font-size: 8.5px; }
 @media (max-width: 1180px) {
   .bridge-model-row { grid-template-columns: 30px minmax(0, 1fr); }

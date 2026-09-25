@@ -6094,15 +6094,17 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onA
                   <strong>{model.displayName ?? model.model}</strong>
                   <small>{model.bridge.summary}</small>
                 </span>
-                <span className="bridge-ratings" aria-label={`${model.displayName ?? model.model} capability ratings`}>
-                  {["coding", "reasoning", "ui", "taste", "speed", "costEfficiency"].map((metric) => (
-                    <span key={metric}><i>{metric === "costEfficiency" ? "Cost" : metric === "ui" ? "UI" : metric[0].toUpperCase() + metric.slice(1)}</i><b>{model.bridge.ratings[metric]}</b></span>
-                  ))}
-                </span>
+                {model.bridge.ratings ? (
+                  <span className="bridge-ratings" aria-label={`${model.displayName ?? model.model} capability ratings`}>
+                    {["coding", "reasoning", "ui", "taste", "speed", "costEfficiency"].map((metric) => (
+                      <span key={metric}><i>{metric === "costEfficiency" ? "Cost" : metric === "ui" ? "UI" : metric[0].toUpperCase() + metric.slice(1)}</i><b>{model.bridge.ratings[metric]}</b></span>
+                    ))}
+                  </span>
+                ) : <span className="bridge-unrated">Not yet rated</span>}
               </article>
             ))}
           </div>
-          <p className="bridge-model-note">Connected models only. Pixice normally prefers cost-effective GPT 5.6 Luna, Terra, or Sol, and GPT 6 Astra for demanding technical work; Claude is preferred when requested, when it is the only family available, or for UI and taste work.</p>
+          <p className="bridge-model-note">Connected models only. Pixice chooses among them using task fit, availability, and project preferences.</p>
         </section>
       )}
     </div>
