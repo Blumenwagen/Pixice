@@ -1826,6 +1826,25 @@ describe("Pixice app shell", () => {
     expect(await screen.findByText("Sign in required")).toBeInTheDocument();
   });
 
+  it("applies and persists a painted Focus scene and background blur", async () => {
+    window.pixice = createApi();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Golden forest" }));
+    fireEvent.change(screen.getByRole("slider", { name: "Focus background blur" }), { target: { value: "12" } });
+    expect(screen.getByRole("button", { name: "Golden forest" })).toHaveAttribute("aria-pressed", "true");
+    expect(JSON.parse(localStorage.getItem("pixice.preferences"))).toMatchObject({ focusBackground: "golden", focusBackgroundBlur: 12 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const workspace = document.querySelector(".focus-workspace");
+    expect(workspace.style.getPropertyValue("--focus-background-image")).toContain("focus-background-golden-forest");
+    expect(workspace.style.getPropertyValue("--focus-background-blur")).toBe("12px");
+  });
+
   it("keeps the third project row off by default and persists the nine-tile opt-in", async () => {
     const additionalProjects = Array.from({ length: 9 }, (_, index) => ({
       id: `project-${index + 2}`,

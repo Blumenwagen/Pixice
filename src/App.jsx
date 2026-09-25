@@ -33,6 +33,10 @@ import {
 import { APP_ICONS } from "./components/icons/app-iconography.jsx";
 import pixiceIcon from "./assets/pixice-icon.png";
 import focusBackgroundDark from "./assets/focus-background-dark.png";
+import focusBackgroundCozy from "./assets/focus-background-cozy.jpg";
+import focusBackgroundGoldenForest from "./assets/focus-background-golden-forest.jpg";
+import focusBackgroundMidnight from "./assets/focus-background-midnight.jpg";
+import { useCustomFocusBackground } from "./focus-appearance.js";
 import { DictationButton } from "./components/DictationButton.jsx";
 import { useTranscription, formatModelBytes } from "./lib/use-transcription.js";
 import { listAudioInputs, dictationUnsupportedReason } from "./lib/dictation.js";
@@ -108,6 +112,13 @@ const THREAD_COMPLETIONS_SEEN_KEY = "pixice.threadCompletionsSeen";
 const THREAD_COMPLETIONS_SEEN_BASELINE_KEY = "__baselineAt";
 const THREAD_MESSAGE_RECENCY_KEY = "pixice.threadMessageRecency";
 const COMPOSER_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"]);
+const FOCUS_BACKGROUNDS = [
+  { id: "original", label: "Original", image: focusBackgroundDark },
+  { id: "cozy", label: "Cozy dusk", image: focusBackgroundCozy },
+  { id: "golden", label: "Golden forest", image: focusBackgroundGoldenForest },
+  { id: "midnight", label: "Moonlit", image: focusBackgroundMidnight }
+];
+const FOCUS_BACKGROUND_BY_ID = Object.fromEntries(FOCUS_BACKGROUNDS.map((background) => [background.id, background.image]));
 const DEFAULT_PREFERENCES = {
   confirmBeforeDelete: true,
   preserveDrafts: true,
@@ -129,6 +140,8 @@ const DEFAULT_PREFERENCES = {
   conversationWidth: "balanced",
   conversationTextSize: "standard",
   accentColor: "coral",
+  focusBackground: "original",
+  focusBackgroundBlur: 0,
   reduceTransparency: false,
   reduceMotion: false,
   // The microphone belongs to the device in front of the person, so it stays a
@@ -139,7 +152,8 @@ const DEFAULT_PREFERENCES = {
 const APPEARANCE_PREFERENCE_OPTIONS = {
   conversationWidth: new Set(["focused", "balanced", "wide"]),
   conversationTextSize: new Set(["small", "standard", "large"]),
-  accentColor: new Set(["coral", "rose", "amber", "green", "teal", "blue", "violet", "graphite"])
+  accentColor: new Set(["coral", "rose", "amber", "green", "teal", "blue", "violet", "graphite"]),
+  focusBackground: new Set([...FOCUS_BACKGROUNDS.map((background) => background.id), "custom"])
 };
 
 const VOICE_GLOW_ACCENT_PALETTES = {
@@ -371,6 +385,9 @@ function loadPreferences(storage = localStorage) {
     Object.entries({ ...APPEARANCE_PREFERENCE_OPTIONS, ...BEHAVIOR_PREFERENCE_OPTIONS }).forEach(([key, options]) => {
       if (!options.has(preferences[key])) preferences[key] = DEFAULT_PREFERENCES[key];
     });
+    preferences.focusBackgroundBlur = Number.isFinite(preferences.focusBackgroundBlur)
+      ? Math.max(0, Math.min(24, Math.round(preferences.focusBackgroundBlur)))
+      : DEFAULT_PREFERENCES.focusBackgroundBlur;
     return preferences;
   } catch {
     return DEFAULT_PREFERENCES;
@@ -4715,6 +4732,7 @@ function FocusWorkspace({
   attention,
   focusQuestions = [],
   preferences,
+  customFocusBackgroundUrl,
   plan,
   seenResponseIds,
   showMessageTimestamps,
@@ -4845,6 +4863,9 @@ function FocusWorkspace({
     || previewInstrumentTabs?.length
     || previewCustomTabs?.length
   );
+  const focusBackgroundUrl = preferences.focusBackground === "custom"
+    ? customFocusBackgroundUrl || focusBackgroundDark
+    : FOCUS_BACKGROUND_BY_ID[preferences.focusBackground] || focusBackgroundDark;
 
   return (
     <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
@@ -4856,7 +4877,10 @@ function FocusWorkspace({
       data-question-active={focusQuestions.length > 0}
       data-task-rail={taskRailVisible}
       data-activity-panel={activityPanelOpen}
-      style={{ "--focus-background-image": `url(${focusBackgroundDark})` }}
+      style={{
+        "--focus-background-image": `url(${focusBackgroundUrl})`,
+        "--focus-background-blur": `${preferences.focusBackgroundBlur}px`
+      }}
     >
       <div className="focus-atmosphere" aria-hidden="true" />
       <header className="focus-chrome">
@@ -5818,6 +5842,70 @@ function SettingsGroup({ title, description, children }) {
       <header><h2>{title}</h2>{description && <p>{description}</p>}</header>
       <div className="settings-card">{children}</div>
     </section>
+  );
+}
+
+function FocusAppearanceSettings({ preferences, onPreferenceChange, customBackground }) {
+  const fileInputRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const selected = preferences.focusBackground;
+  const customImageError = selected === "custom" && !customBackground.loading && !customBackground.url
+    ? customBackground.error || "The custom image is missing on this device. Choose another image."
+    : "";
+
+  const upload = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await customBackground.save(file);
+      onPreferenceChange("focusBackground", "custom");
+    } catch (error) { setActionError(error.message || "Could not save this image."); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    setBusy(true);
+    setActionError("");
+    try {
+      await customBackground.remove();
+      if (selected === "custom") onPreferenceChange("focusBackground", "original");
+    } catch (error) { setActionError(error.message || "Could not remove this image."); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <SettingsGroup title="Focus mode" description="Choose the atmosphere behind your Focus conversation. These settings stay on this device.">
+      <div className="focus-appearance-picker">
+        <div className="focus-background-options" role="group" aria-label="Focus background">
+          {FOCUS_BACKGROUNDS.map((background) => (
+            <button type="button" className="focus-background-option" aria-pressed={selected === background.id} onClick={() => onPreferenceChange("focusBackground", background.id)} key={background.id}>
+              <img src={background.image} alt="" />
+              <span>{background.label}</span>
+            </button>
+          ))}
+          <button type="button" className="focus-background-option custom" aria-pressed={selected === "custom"} onClick={() => customBackground.url ? onPreferenceChange("focusBackground", "custom") : fileInputRef.current?.click()} disabled={busy || customBackground.loading}>
+            {customBackground.url ? <img src={customBackground.url} alt="" /> : <span className="focus-background-placeholder"><Plus size={20} /></span>}
+            <span>Custom image</span>
+          </button>
+        </div>
+        <div className="focus-background-upload">
+          <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/avif" aria-label="Choose custom Focus background" onChange={upload} hidden />
+          <button type="button" className="settings-action" onClick={() => fileInputRef.current?.click()} disabled={busy || customBackground.loading}>Choose image</button>
+          {customBackground.url && <button type="button" className="settings-action" onClick={remove} disabled={busy}>Remove image</button>}
+          <small>PNG, JPEG, WebP, or AVIF · up to 12 MB</small>
+        </div>
+        {(actionError || customImageError) && <p className="focus-background-error" role="alert">{actionError || customImageError}</p>}
+      </div>
+      <SettingsRow title="Background blur" description="Soften the image behind Focus without blurring your conversation.">
+        <div className="focus-background-blur">
+          <input type="range" aria-label="Focus background blur" min="0" max="24" step="1" value={preferences.focusBackgroundBlur} onChange={(event) => onPreferenceChange("focusBackgroundBlur", Number(event.target.value))} />
+          <span>{preferences.focusBackgroundBlur}px</span>
+        </div>
+      </SettingsRow>
+    </SettingsGroup>
   );
 }
 
@@ -6876,6 +6964,7 @@ function SettingsWorkspace({
   onWorkflowGenerationModelChange,
   preferences,
   onPreferenceChange,
+  customFocusBackground,
   transcription,
   attentionNotifications,
   onAttentionNotificationsChange,
@@ -7158,6 +7247,7 @@ function SettingsWorkspace({
             <SettingsToggle label="Reduce motion" checked={preferences.reduceMotion} onChange={(value) => onPreferenceChange("reduceMotion", value)} />
           </SettingsRow>
         </SettingsGroup>
+        <FocusAppearanceSettings preferences={preferences} onPreferenceChange={onPreferenceChange} customBackground={customFocusBackground} />
         <SettingsGroup title="Navigation">
           <SettingsRow title="Show shortcut hints" description="Display available keyboard shortcuts beside navigation actions.">
             <SettingsToggle label="Show shortcut hints" checked={preferences.showShortcutHints} onChange={(value) => onPreferenceChange("showShortcutHints", value)} />
@@ -7401,6 +7491,7 @@ export function App({ readOnly = false } = {}) {
   });
   const [permissionMode, setPermissionMode] = useState(defaultPermissionMode);
   const [preferences, setPreferences] = useState(() => loadPreferences(storage));
+  const customFocusBackground = useCustomFocusBackground();
   const preferencesRef = useRef(preferences);
   const [agentBehaviorCatalog, setAgentBehaviorCatalog] = useState(EMPTY_AGENT_BEHAVIORS);
   const [agentBehaviors, setAgentBehaviors] = useState({});
@@ -10606,6 +10697,7 @@ export function App({ readOnly = false } = {}) {
         onWorkflowGenerationModelChange={changeWorkflowGenerationModel}
         preferences={preferences}
         onPreferenceChange={changePreference}
+        customFocusBackground={customFocusBackground}
         attentionNotifications={attentionNotifications}
         onAttentionNotificationsChange={changeAttentionNotifications}
         completionNotifications={completionNotifications}
@@ -10807,6 +10899,7 @@ export function App({ readOnly = false } = {}) {
             attention={[]}
             focusQuestions={attention.filter((request) => isQuestionRequest(request) && request.params?.threadId === focusThreadId)}
             preferences={preferences}
+            customFocusBackgroundUrl={customFocusBackground.url}
             plan={plan}
             seenResponseIds={seenResponseIdsRef.current}
             showMessageTimestamps={preferences.showMessageTimestamps}

@@ -3073,6 +3073,22 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .settings-action.primary { color: #171717; background: var(--foreground); }
 .settings-action.primary:hover { background: white; }
 .settings-action:disabled { opacity: .48; cursor: default; }
+.focus-appearance-picker { padding: 14px; border-bottom: 1px solid color-mix(in oklab, var(--border) 76%, transparent); }
+.focus-background-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 10px; }
+.focus-background-option { min-width: 0; padding: 5px; display: grid; gap: 7px; color: var(--muted); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; text-align: left; font-size: 10.5px; }
+.focus-background-option:hover { color: var(--foreground); border-color: color-mix(in oklab, var(--foreground) 30%, var(--border)); }
+.focus-background-option[aria-pressed="true"] { color: var(--foreground); border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+.focus-background-option:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.focus-background-option:disabled { opacity: .55; cursor: default; }
+.focus-background-option img, .focus-background-placeholder { width: 100%; aspect-ratio: 16 / 9; display: grid; place-items: center; object-fit: cover; border-radius: 6px; }
+.focus-background-placeholder { color: var(--muted); background: linear-gradient(135deg, #35404e, #23262e 58%, #584758); }
+.focus-background-option > span:last-child { overflow: hidden; padding: 0 3px 3px; text-overflow: ellipsis; white-space: nowrap; }
+.focus-background-upload { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.focus-background-upload small { color: var(--quiet); font-size: 10px; }
+.focus-background-error { margin: 9px 0 0; color: var(--primary); font-size: 10.5px; }
+.focus-background-blur { display: flex; align-items: center; gap: 10px; }
+.focus-background-blur input { width: clamp(100px, 16vw, 170px); accent-color: var(--primary); }
+.focus-background-blur span { min-width: 30px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
 .update-progress { height: 4px; margin: -1px 14px 14px; overflow: hidden; background: rgba(255, 255, 255, .08); border-radius: 999px; }
 .update-progress span { height: 100%; display: block; background: var(--primary); border-radius: inherit; transition: width 240ms var(--ease); }
 .settings-footnote { margin: 12px 4px 0; color: var(--quiet); font-size: 9.5px; line-height: 1.45; }
@@ -3643,6 +3659,7 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   mask-image: linear-gradient(to bottom, #000 0%, #000 42%, rgba(0, 0, 0, .82) 57%, rgba(0, 0, 0, .28) 82%, transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 42%, rgba(0, 0, 0, .82) 57%, rgba(0, 0, 0, .28) 82%, transparent 100%);
   opacity: .88;
+  filter: blur(var(--focus-background-blur, 0px));
   pointer-events: none;
 }
 .focus-chrome {
