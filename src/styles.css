@@ -3986,8 +3986,8 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   transition: padding-right 300ms var(--ease), padding-left 300ms var(--ease);
 }
 .focus-workspace[data-has-conversation="true"] .focus-conversation-scroll {
-  bottom: calc(var(--focus-composer-clearance, 160px) + 68px);
-  padding-bottom: 32px;
+  bottom: var(--focus-composer-clearance, 160px);
+  padding-bottom: 16px;
 }
 .focus-workspace[data-has-conversation="false"] .focus-conversation-scroll {
   display: flex;
