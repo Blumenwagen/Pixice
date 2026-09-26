@@ -434,11 +434,16 @@ describe("Pixice app shell", () => {
       turns: [{ id: "turn-paused", status: "completed", items: [] }]
     };
     window.pixice = createApi([activeTask, pausedTask]);
+    window.pixice.focus.state = vi.fn(async () => ({ work: [], events: [], policy: null, unseenEvents: [] }));
     render(<StrictMode><App /></StrictMode>);
 
     fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
 
     expect(await screen.findByRole("heading", { name: "Talk to Aurora" })).toBeInTheDocument();
+    const activityButton = screen.getByRole("button", { name: "Open activity panel" });
+    fireEvent.click(activityButton);
+    expect(screen.getByRole("complementary", { name: "Coordinator activity" })).toBeInTheDocument();
+    fireEvent.click(activityButton);
     expect(window.pixice.focus.ensure).toHaveBeenCalledWith(expect.objectContaining({ projectId: project.id, permissionMode: "full-access" }));
     const focusPrompt = screen.getByRole("textbox", { name: "Project Focus prompt" });
     expect(focusPrompt).toBeInTheDocument();

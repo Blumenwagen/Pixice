@@ -59,6 +59,7 @@ import { ImageGeneration } from "./components/ImageGeneration.jsx";
 import { InspectablePicture } from "./components/PictureInspector.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
 import { FocusCoordinatorQuestions } from "./components/FocusCoordinatorQuestions.jsx";
+import { FocusCoordination } from "./components/FocusCoordination.jsx";
 import WidgetShelf from "./components/WidgetShelf.jsx";
 import { KanbanBoard } from "./components/KanbanBoard.jsx";
 import { ProjectCreationDialog, ProjectGlyph, ProjectSwitcher, projectTileStyle } from "./components/sidebar/ProjectSwitcher.jsx";
