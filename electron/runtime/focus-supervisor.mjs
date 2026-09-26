@@ -1,14 +1,9 @@
+import { FOCUS_WORKER_PERMISSION_MODE } from "./focus-permissions.mjs";
+
 const ACTIVE_STATUSES = new Set(["starting", "running", "cancelling"]);
 const TERMINAL_STATUSES = new Set(["done", "completed", "failed", "cancelled"]);
 const RECOVERABLE_STATUSES = new Set(["starting", "running", "cancelling"]);
 const DEFERRED_RECOVERY_PREFIX = "Worker recovery deferred until provider is ready:";
-const PERMISSION_RANK = new Map([
-  ["read-only", 0],
-  ["workspace-write", 1],
-  ["auto-approve", 2],
-  ["auto-review", 2],
-  ["full-access", 3]
-]);
 
 const bounded = (value, limit = 24_000) => String(value ?? "").slice(0, limit);
 const asArray = (value) => Array.isArray(value) ? value : [];
@@ -35,16 +30,6 @@ function completedAnswer(payload) {
     .map((item) => item.text ?? item.content ?? "")
     .filter(Boolean)
     .at(-1) ?? payload?.answer ?? "");
-}
-
-function permissionAtMost(requested, ceiling) {
-  if (requested === "auto-review") requested = "auto-approve";
-  if (ceiling === "auto-review") ceiling = "auto-approve";
-  const safeCeiling = PERMISSION_RANK.has(ceiling) ? ceiling : "workspace-write";
-  const safeRequested = PERMISSION_RANK.has(requested) ? requested : safeCeiling;
-  return PERMISSION_RANK.get(safeRequested) <= PERMISSION_RANK.get(safeCeiling)
-    ? safeRequested
-    : safeCeiling;
 }
 
 function normalizedResources(work) {
@@ -91,7 +76,7 @@ ${requested}${visualNote}
 Coordinator directions:
 ${decisionText}
 
-Before presenting a result, inspect current project context, apply every scoped direction, and acknowledge direction revision ${latest} through the Focus acknowledgement tool. Report a concrete result for coordinator review, including verification performed and reviewable artifacts. Completion submits the work for review; it does not grant authority to mark it done. Do not delegate or spawn unmanaged worker threads; delegation belongs to the Focus coordinator and supervisor. Do not broaden permissions, alter the coordinator's decisions, create durable automation, or take authority beyond this work item's permission mode (${work.permissionMode}).`;
+Before presenting a result, inspect current project context, apply every scoped direction, and acknowledge direction revision ${latest} through the Focus acknowledgement tool. Report a concrete result for coordinator review, including verification performed and reviewable artifacts. Completion submits the work for review; it does not grant authority to mark it done. Do not delegate or spawn unmanaged worker threads; delegation belongs to the Focus coordinator and supervisor. Your runtime has full access. The work item's access field (${work.access}) only defines behavioral scope and resource-conflict scheduling. Do not broaden the coordinator's decisions or task scope.`;
 }
 
 /**
@@ -171,10 +156,7 @@ export class FocusSupervisor {
     if (this.disposed) throw new Error("Focus supervisor is disposed");
     const context = await this.contextForProject(projectId);
     if (!context?.coordinatorThreadId) throw new Error("Focus mode requires a coordinator thread");
-    const policy = this.store.getPolicy(projectId);
     const access = input?.access === "read" ? "read" : "write";
-    const requestedPermission = access === "read" ? "read-only" : input?.permissionMode;
-    const permissionMode = permissionAtMost(requestedPermission, policy.permissionMode);
     const stagedVisuals = input?.visuals?.length
       ? await this.visuals?.stage(projectId, context.coordinatorThreadId, input.visuals) : [];
     if (input?.visuals?.length && stagedVisuals?.length !== input.visuals.length) throw new Error("Focus visual staging failed; no worker was queued.");
@@ -182,9 +164,9 @@ export class FocusSupervisor {
       coordinatorThreadId: context.coordinatorThreadId,
       title: bounded(input?.title || input?.prompt || "Focus work", 160),
       prompt: bounded(input?.prompt, 80_000),
-      model: input?.model || policy.workerModel,
+      model: input?.model || this.store.getPolicy(projectId).workerModel,
       effort: input?.effort ?? null,
-      permissionMode,
+      permissionMode: FOCUS_WORKER_PERMISSION_MODE,
       access,
       resources: normalizedResources({ access, resources: input?.resources }),
       visuals: stagedVisuals,
@@ -199,7 +181,10 @@ export class FocusSupervisor {
   }
 
   async followUp(projectId, id, { prompt, visuals = [] }) {
-    const work = this.#requiredWork(projectId, id);
+    let work = this.#requiredWork(projectId, id);
+    if (!TERMINAL_STATUSES.has(work.status) && work.permissionMode !== FOCUS_WORKER_PERMISSION_MODE) {
+      work = this.store.updateWork(projectId, id, { permissionMode: FOCUS_WORKER_PERMISSION_MODE });
+    }
     if (["cancelled", "cancelling"].includes(work.status)) throw new Error("Cancelled work cannot be continued");
     const nextPrompt = bounded(prompt, 80_000);
     const stagedVisuals = visuals.length ? await this.visuals?.stage(projectId, work.coordinatorThreadId, visuals) : [];
@@ -209,7 +194,7 @@ export class FocusSupervisor {
       const imageUrls = stagedVisuals.length ? await this.visuals.load(projectId, work.coordinatorThreadId, stagedVisuals) : [];
       const steered = await this.continueWorker({ projectId, workId: work.id, threadId: work.threadId, turnId: work.turnId,
         prompt: workerPrompt({ ...work, prompt: nextPrompt, visuals: stagedVisuals }, decisions, { continuation: true }), images: imageUrls,
-        model: work.model, effort: work.effort, permissionMode: work.permissionMode });
+        model: work.model, effort: work.effort, permissionMode: FOCUS_WORKER_PERMISSION_MODE });
       const updated = this.store.updateWork(projectId, id, {
         prompt: nextPrompt,
         visuals: stagedVisuals,
@@ -240,7 +225,10 @@ export class FocusSupervisor {
   }
 
   async control(projectId, id, { action }) {
-    const work = this.#requiredWork(projectId, id);
+    let work = this.#requiredWork(projectId, id);
+    if (!TERMINAL_STATUSES.has(work.status) && work.permissionMode !== FOCUS_WORKER_PERMISSION_MODE) {
+      work = this.store.updateWork(projectId, id, { permissionMode: FOCUS_WORKER_PERMISSION_MODE });
+    }
     if (action === "pause") {
       const updated = this.store.updateWork(projectId, id, { status: "paused" });
       if (ACTIVE_STATUSES.has(work.status) && work.threadId && work.turnId) {
@@ -300,7 +288,7 @@ export class FocusSupervisor {
       try {
         const next = await this.continueWorker({ projectId, threadId: work.threadId, turnId: work.turnId,
           prompt: workerPrompt(work, [decision], { continuation: true, direction: bounded(text, 20_000) }),
-          model: work.model, effort: work.effort, permissionMode: work.permissionMode });
+          model: work.model, effort: work.effort, permissionMode: FOCUS_WORKER_PERMISSION_MODE });
         const turnId = next?.turnId ?? next?.turn?.id;
         if (turnId) {
           const updated = this.store.updateWork(projectId, work.id, { turnId });
@@ -491,7 +479,10 @@ export class FocusSupervisor {
 
   async #drain(projectId) {
     if (this.disposed) return;
-    let work = asArray(this.store.listRecoverableWork()).filter((item) => item.projectId === projectId);
+    let work = asArray(this.store.listRecoverableWork()).filter((item) => item.projectId === projectId)
+      .map((item) => item.permissionMode === FOCUS_WORKER_PERMISSION_MODE
+        ? item
+        : this.store.updateWork(projectId, item.id, { permissionMode: FOCUS_WORKER_PERMISSION_MODE }));
     for (const queued of work.filter((item) => ["queued", "blocked"].includes(item.status))) {
       const dependencies = asArray(queued.dependsOn).map((id) => this.store.getWork(projectId, id));
       const failed = dependencies.find((item) => !item || ["failed", "cancelled", "needs-attention"].includes(item.status));
@@ -535,7 +526,7 @@ export class FocusSupervisor {
         images: asArray(current.visuals).length ? await this.visuals.load(work.projectId, current.coordinatorThreadId, current.visuals) : [],
         model: work.model,
         effort: work.effort,
-        permissionMode: work.permissionMode
+        permissionMode: FOCUS_WORKER_PERMISSION_MODE
       };
       const started = current.threadId
         ? await this.continueWorker({ ...request, threadId: current.threadId })
@@ -717,6 +708,9 @@ export class FocusSupervisor {
   async #recover(work) {
     let current = this.store.getWork(work.projectId, work.id);
     if (!current || !shouldRecover(current)) return current ?? work;
+    if (current.permissionMode !== FOCUS_WORKER_PERMISSION_MODE) {
+      current = this.store.updateWork(current.projectId, current.id, { permissionMode: FOCUS_WORKER_PERMISSION_MODE });
+    }
     this.#index(current);
     if (this.startReservations.has(current.id)) return current;
     if (!current.threadId || !current.turnId) {
@@ -726,6 +720,7 @@ export class FocusSupervisor {
       });
       this.store.appendEvent(current.projectId, { workId: current.id, kind: "needs-attention", message: attention.error });
       this.#changed(current.projectId);
+      this.#scheduleDelivery(current.projectId);
       return attention;
     }
     const expected = { revision: current.revision, status: current.status, threadId: current.threadId, turnId: current.turnId };
@@ -759,14 +754,23 @@ export class FocusSupervisor {
       });
       this.store.appendEvent(current.projectId, { workId: current.id, kind: "needs-attention", message: attention.error, recoverable: deferred });
       this.#changed(current.projectId);
+      this.#scheduleDelivery(current.projectId);
       return attention;
     }
   }
 
   #recordFailure(projectId, workId, kind, error) {
     try {
-      this.store.appendEvent(projectId, { workId, kind, message: errorMessage(error) });
+      const message = errorMessage(error);
+      const work = workId ? this.store.getWork(projectId, workId) : null;
+      if (work && !TERMINAL_STATUSES.has(work.status)) {
+        this.store.updateWork(projectId, workId, { status: "needs-attention", error: message });
+        this.store.appendEvent(projectId, { workId, kind: "needs-attention", message, source: kind });
+      } else {
+        this.store.appendEvent(projectId, { workId, kind, message });
+      }
       this.#changed(projectId);
+      this.#scheduleDelivery(projectId);
     } catch { /* Listener containment must remain best effort. */ }
   }
 }

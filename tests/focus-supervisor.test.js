@@ -124,18 +124,19 @@ describe("FocusSupervisor", () => {
     expect(store.getWork("project-1", "missing-image").error).toMatch(/reattach the image/);
     supervisor.dispose();
   });
-  it("durably returns dispatch before a worker starts and applies policy defaults and ceilings", async () => {
+  it("runs both write work and read-scoped reviewers full access despite lower requested modes", async () => {
     const gate = deferred();
     const startWorker = vi.fn(() => gate.promise);
     const { supervisor, store } = fixture({ startWorker });
-    const work = await supervisor.dispatch("project-1", { title: "Read it", prompt: "Inspect the code", access: "read", permissionMode: "full-access" });
+    const work = await supervisor.dispatch("project-1", { title: "Read it", prompt: "Inspect the code", access: "read", permissionMode: "read-only" });
 
-    expect(work).toMatchObject({ status: "queued", model: "codex:gpt-worker", permissionMode: "read-only", resources: [] });
+    expect(work).toMatchObject({ status: "queued", model: "codex:gpt-worker", permissionMode: "full-access", access: "read", resources: [] });
     await tick();
     expect(store.getWork("project-1", work.id).status).toBe("starting");
     gate.resolve({ threadId: "worker-thread", turnId: "worker-turn" });
     await tick();
     expect(store.getWork("project-1", work.id)).toMatchObject({ status: "running", threadId: "worker-thread", turnId: "worker-turn" });
+    expect(startWorker).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "full-access" }));
     supervisor.dispose();
   });
 
@@ -265,7 +266,7 @@ describe("FocusSupervisor", () => {
     const running = store.getWork("project-1", created.id);
     await supervisor.followUp("project-1", created.id, { prompt: "Include the edge case" });
     await tick();
-    expect(continueWorker).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project-1", threadId: running.threadId }));
+    expect(continueWorker).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project-1", threadId: running.threadId, permissionMode: "full-access" }));
     expect(store.getWork("project-1", created.id)).toMatchObject({ status: "running", prompt: "Include the edge case" });
     supervisor.dispose();
   });
@@ -334,11 +335,26 @@ describe("FocusSupervisor", () => {
     const store = new MemoryStore();
     store.createWork("project-1", { id: "running", coordinatorThreadId: "coordinator-1", title: "Running", prompt: "run", model: "m", effort: null, permissionMode: "workspace-write", access: "write", resources: ["a"], dependsOn: [], status: "running", threadId: "thread-r", turnId: "turn-r" });
     store.createWork("project-1", { id: "ambiguous", coordinatorThreadId: "coordinator-1", title: "Starting", prompt: "start", model: "m", effort: null, permissionMode: "workspace-write", access: "write", resources: ["b"], dependsOn: [], status: "starting" });
-    const { supervisor, startWorker } = fixture({ store, readThread: async () => ({ thread: { turns: [{ id: "turn-r", status: "completed", items: [{ type: "agentMessage", text: "Recovered answer" }] }] } }) });
+    const { supervisor, startWorker, deliver } = fixture({ store, readThread: async () => ({ thread: { turns: [{ id: "turn-r", status: "completed", items: [{ type: "agentMessage", text: "Recovered answer" }] }] } }) });
     await supervisor.recover("project-1");
-    expect(store.getWork("project-1", "running")).toMatchObject({ status: "review", answer: "Recovered answer" });
+    expect(store.getWork("project-1", "running")).toMatchObject({ status: "review", answer: "Recovered answer", permissionMode: "full-access" });
     expect(store.getWork("project-1", "ambiguous")).toMatchObject({ status: "needs-attention" });
     expect(startWorker).not.toHaveBeenCalled();
+    await tick();
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ events: expect.arrayContaining([expect.objectContaining({ workId: "ambiguous", kind: "needs-attention" })]) }));
+    supervisor.dispose();
+  });
+
+  it("normalizes a resumed legacy worker before launching its next turn", async () => {
+    const store = new MemoryStore();
+    store.createWork("project-1", { id: "legacy", title: "Legacy", prompt: "resume", status: "paused", permissionMode: "workspace-write", access: "write", resources: ["src"], threadId: "legacy-thread" });
+    const { supervisor, continueWorker } = fixture({ store });
+
+    await supervisor.control("project-1", "legacy", { action: "resume" });
+    await tick();
+
+    expect(store.getWork("project-1", "legacy")).toMatchObject({ status: "running", permissionMode: "full-access" });
+    expect(continueWorker).toHaveBeenCalledWith(expect.objectContaining({ threadId: "legacy-thread", permissionMode: "full-access" }));
     supervisor.dispose();
   });
 

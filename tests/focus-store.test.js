@@ -24,7 +24,7 @@ function fixture() {
 describe("FocusStore", () => {
   it("persists policy and work across a reopened Pixice database", () => {
     const { directory, database, store } = fixture();
-    expect(store.getPolicy("project-a")).toEqual({ coordinatorModel: null, workerModel: null, reviewModel: null, permissionMode: "workspace-write", executionHost: "current" });
+    expect(store.getPolicy("project-a")).toEqual({ coordinatorModel: null, workerModel: null, reviewModel: null, permissionMode: "full-access", executionHost: "current" });
     expect(store.updatePolicy("project-a", { workerModel: "gpt-5.6-luna" })).toMatchObject({ workerModel: "gpt-5.6-luna" });
     const created = store.createWork("project-a", { title: "Inspect persistence", prompt: "Keep the coordinator durable.", coordinatorThreadId: "focus-thread" });
     expect(created).toMatchObject({ projectId: "project-a", model: "gpt-5.6-luna", status: "queued", access: "write", revision: 1 });
@@ -89,6 +89,24 @@ describe("FocusStore", () => {
     store.updateWork("project-a", work.id, { status: "done", completionReported: true, artifacts: [{ kind: "diff", path: "src/app.jsx" }] });
     expect(store.listRecoverableWork().map((item) => item.id)).not.toContain(work.id);
     database.db.close();
+  });
+
+  it("normalizes legacy policies and nonterminal work on startup while preserving terminal audit records", () => {
+    const { directory, database, store } = fixture();
+    const active = store.createWork("project-a", { title: "Queued legacy worker" });
+    const terminal = store.createWork("project-a", { title: "Completed legacy worker", status: "done" });
+    database.db.prepare("INSERT INTO focus_policies (project_id, max_workers, permission_mode, execution_host, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run("project-a", 2, "read-only", "current", "2026-09-22T10:00:00.000Z");
+    database.db.prepare("UPDATE focus_work SET permission_mode = ? WHERE id IN (?, ?)")
+      .run("workspace-write", active.id, terminal.id);
+    database.db.close();
+
+    const reopenedDatabase = new PixiceDatabase(directory);
+    const reopened = new FocusStore(reopenedDatabase);
+    expect(reopened.getPolicy("project-a").permissionMode).toBe("full-access");
+    expect(reopened.getWork("project-a", active.id)?.permissionMode).toBe("full-access");
+    expect(reopened.getWork("project-a", terminal.id)?.permissionMode).toBe("workspace-write");
+    reopenedDatabase.db.close();
   });
 
   it("orders events, tracks delivery and persists monotonic seen state", () => {

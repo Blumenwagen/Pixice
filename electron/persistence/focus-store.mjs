@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { FOCUS_WORKER_PERMISSION_MODE } from "../runtime/focus-permissions.mjs";
 
 const DEFAULT_POLICY = Object.freeze({
   coordinatorModel: null,
   workerModel: null,
   reviewModel: null,
-  permissionMode: "workspace-write",
+  permissionMode: FOCUS_WORKER_PERMISSION_MODE,
   executionHost: "current"
 });
 
@@ -106,7 +107,7 @@ function mapPolicy(row) {
     coordinatorModel: row.coordinator_model,
     workerModel: row.worker_model,
     reviewModel: row.review_model,
-    permissionMode: row.permission_mode,
+    permissionMode: FOCUS_WORKER_PERMISSION_MODE,
     executionHost: row.execution_host
   } : { ...DEFAULT_POLICY };
 }
@@ -186,7 +187,7 @@ export class FocusStore {
         review_model TEXT,
         -- Retained for existing databases; legacy values no longer control scheduling.
         max_workers INTEGER NOT NULL DEFAULT 2,
-        permission_mode TEXT NOT NULL DEFAULT 'workspace-write',
+        permission_mode TEXT NOT NULL DEFAULT 'full-access',
         execution_host TEXT NOT NULL DEFAULT 'current',
         updated_at TEXT NOT NULL,
         FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -260,6 +261,13 @@ export class FocusStore {
     this.#ensureColumn("focus_work", "artifacts", "TEXT NOT NULL DEFAULT '[]'");
     this.#ensureColumn("focus_work", "visuals", "TEXT NOT NULL DEFAULT '[]'");
     this.#ensureColumn("focus_work", "review_of", "TEXT");
+    // Focus workers are always full access. Normalize resumable records during
+    // startup so stale policies cannot survive an application restart.
+    this.db.prepare("UPDATE focus_policies SET permission_mode = ? WHERE permission_mode <> ?")
+      .run(FOCUS_WORKER_PERMISSION_MODE, FOCUS_WORKER_PERMISSION_MODE);
+    this.db.prepare(`UPDATE focus_work SET permission_mode = ?
+      WHERE status NOT IN ('done', 'completed', 'failed', 'cancelled') AND permission_mode <> ?`)
+      .run(FOCUS_WORKER_PERMISSION_MODE, FOCUS_WORKER_PERMISSION_MODE);
   }
 
   #ensureColumn(table, column, definition) {
@@ -295,7 +303,8 @@ export class FocusStore {
     }
     if (Object.hasOwn(patch, "permissionMode")) {
       if (!PERMISSION_MODES.has(patch.permissionMode)) throw new Error("Unsupported permissionMode");
-      result.permissionMode = patch.permissionMode;
+      // Accept legacy callers without allowing them to lower worker runtime access.
+      result.permissionMode = FOCUS_WORKER_PERMISSION_MODE;
     }
     if (Object.hasOwn(patch, "executionHost")) {
       if (patch.executionHost !== "current") throw new Error("executionHost must be current");
@@ -358,7 +367,7 @@ export class FocusStore {
     const policy = this.getPolicy(projectId);
     const base = current ?? {
       coordinatorThreadId: null, title: "", prompt: "", model: policy.workerModel, effort: null,
-      permissionMode: policy.permissionMode, access: "write", resources: [], artifacts: [], visuals: [], dependsOn: [], reviewOf: null, status: "queued", threadId: null,
+      permissionMode: FOCUS_WORKER_PERMISSION_MODE, access: "write", resources: [], artifacts: [], visuals: [], dependsOn: [], reviewOf: null, status: "queued", threadId: null,
       turnId: null, answer: "", error: null, verification: null, decisionRevision: 0, acknowledgedDecisionRevision: 0, completionReported: false
     };
     const value = { ...base };
@@ -371,7 +380,9 @@ export class FocusStore {
     }
     if (Object.hasOwn(input, "permissionMode")) {
       if (!PERMISSION_MODES.has(input.permissionMode)) throw new Error("Unsupported permissionMode");
-      value.permissionMode = input.permissionMode;
+      // Preserve compatibility with older saved payloads, but never persist a
+      // downgraded runtime mode for managed Focus work.
+      value.permissionMode = FOCUS_WORKER_PERMISSION_MODE;
     }
     if (Object.hasOwn(input, "access")) {
       if (input.access !== "read" && input.access !== "write") throw new Error("access must be read or write");
@@ -386,6 +397,7 @@ export class FocusStore {
       if (!WORK_STATUSES.has(input.status)) throw new Error("Unsupported work status");
       value.status = input.status;
     }
+    if (!current || !TERMINAL_WORK_STATUSES.has(value.status)) value.permissionMode = FOCUS_WORKER_PERMISSION_MODE;
     if (Object.hasOwn(input, "verification")) {
       if (input.verification !== null) jsonValue(input.verification, "verification");
       value.verification = input.verification;

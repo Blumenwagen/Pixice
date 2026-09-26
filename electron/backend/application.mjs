@@ -41,6 +41,7 @@ import { BridgeParentContinuation } from "../runtime/bridge-parent-continuation.
 import { FocusStore } from "../persistence/focus-store.mjs";
 import { FocusSupervisor } from "../runtime/focus-supervisor.mjs";
 import { FocusVisuals } from "../runtime/focus-visuals.mjs";
+import { FOCUS_WORKER_PERMISSION_MODE } from "../runtime/focus-permissions.mjs";
 import { FocusCoordinationTools, focusFollowUpPayload } from "../runtime/focus-coordination-tools.mjs";
 import { FocusQuestionGroups } from "../runtime/focus-question-groups.mjs";
 import { bridgeEligibleModels, recommendBridgeModel } from "../runtime/model-capabilities.mjs";
@@ -158,7 +159,7 @@ const focusQuestionReviewInFlight = new Set();
 const focusQuestionInternalThreadIds = new Set();
 const focusQuestionReviewTimers = new Map();
 const focusQuestionGroups = new FocusQuestionGroups();
-const FOCUS_PERMISSION_MODE = "full-access";
+const FOCUS_PERMISSION_MODE = FOCUS_WORKER_PERMISSION_MODE;
 const pixiceDynamicTools = [
   ...browserDynamicTools,
   ...previewContextDynamicTools,
@@ -390,7 +391,7 @@ function focusAgentInstructions(project) {
     "Remain responsible for understanding worker results and explaining them to the user. Do not repeat a worker's raw status log.",
     "Preview is part of your role. You may open files or browser pages in your own Preview and use pixice_preview.present_thread to show a worker's Preview here without moving the user into that worker thread.",
     "Use the shared Board only when the user asks to track durable work or when a concrete follow-up must survive this conversation. Workspace threads, Board, Workflows, Review, Preview, and project files are shared.",
-    "The coordinator has full access. Workers use the project's separately configured worker permission policy and read-only work is enforced. Do not bypass that policy or delegate nested unmanaged workers. Execution is on the current project host; a sleeping or disconnected host cannot keep local work running.",
+    "The coordinator and every managed worker run full access. Access and resources only set behavioral scope and scheduling. Do not delegate nested unmanaged workers. Execution is on the current project host; a sleeping or disconnected host cannot keep local work running.",
     "Resolve worker questions from project context, prior user decisions, and reversible technical judgment. Ask the user only when the answer depends on an unstated preference, changes product direction, creates an external commitment, or carries meaningful irreversible risk.",
     "Worker questions appear inline in this conversation without blocking ordinary messages. When the user answers one in normal chat, use pixice_focus.list_questions to identify the current request and pixice_focus.answer_question to forward the explicit answer. Preserve question IDs, never infer credentials or irreversible approval, and do not answer a hidden question that is still under background review.",
     "Follow the project's own AGENTS.md or CLAUDE.md instructions. Full access removes approval prompts; it does not relax safety or expand the user's requested scope.",
@@ -3336,7 +3337,7 @@ function registerHandlers() {
         developerInstructions: currentAgentInstructions(),
         focusCoordinator: Boolean(focusContext && !focusContext.worker),
         managedFocusWork: Boolean(managedWork),
-        enforcedPermissionMode: managedWork?.permissionMode ?? (focusContext ? focusStore.getPolicy(project.id).permissionMode : null),
+        enforcedPermissionMode: managedWork || focusContext ? FOCUS_WORKER_PERMISSION_MODE : null,
         permissionMode: turnUsageMetadata.get(threadId)?.permissionMode
           ?? database.getAppSettings().defaultPermissionMode
           ?? "workspace-write",
@@ -3374,7 +3375,7 @@ function registerHandlers() {
       if (!acceptingWork) throw new Error("The host is stopping; queued work remains saved.");
       const selected = await focusModel(model, prompt);
       return pixiceBridge.startDetached({ threadId: coordinatorThreadId }, {
-        prompt, images, model: selected.id, ...(effort ? { effort } : {}), permissionMode
+        prompt, images, model: selected.id, ...(effort ? { effort } : {}), permissionMode: FOCUS_WORKER_PERMISSION_MODE
       }, { onCreated: (thread) => {
         if (workId) focusStore.updateWork(projectId, workId, { threadId: thread.id, model: selected.id });
       } });
@@ -3383,10 +3384,13 @@ function registerHandlers() {
       const project = getProject(projectId);
       await ensureThreadLoaded(project, threadId);
       if (turnId) {
-        await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(prompt, images ?? []) });
+        const permissions = permissionSettings(FOCUS_WORKER_PERMISSION_MODE, project);
+        await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(prompt, images ?? []),
+          permissionMode: FOCUS_WORKER_PERMISSION_MODE, approvalPolicy: permissions.approvalPolicy,
+          approvalsReviewer: permissions.approvalsReviewer, sandboxPolicy: permissions.sandboxPolicy });
         return { turnId };
       }
-      const response = await startTrackedTurn({ project, threadId, input: buildCodexUserInput(prompt, images ?? []), text: prompt, model: model ?? undefined, effort, permissionMode });
+      const response = await startTrackedTurn({ project, threadId, input: buildCodexUserInput(prompt, images ?? []), text: prompt, model: model ?? undefined, effort, permissionMode: FOCUS_WORKER_PERMISSION_MODE });
       return { turnId: response.turn.id };
     },
     interruptWorker: async ({ projectId, threadId, turnId }) => {
@@ -3602,7 +3606,7 @@ function registerHandlers() {
           model: collabItem.model ?? parentUsage.model ?? null,
           serviceTier: parentUsage.serviceTier ?? null,
           effort: collabItem.effort ?? parentUsage.effort ?? null,
-          permissionMode: managedFocusAncestor(parentThreadId)?.permissionMode ?? (parentFocusContext ? FOCUS_PERMISSION_MODE : parentUsage.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write"),
+          permissionMode: managedFocusAncestor(parentThreadId) || parentFocusContext ? FOCUS_WORKER_PERMISSION_MODE : parentUsage.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write",
           provider: event.payload?.provider ?? parentUsage.provider ?? "codex"
         });
       }
@@ -3775,8 +3779,7 @@ function registerHandlers() {
     }
     const threadId = request.params?.threadId;
     const focusContext = threadId ? projectFocusContextForThread(threadId) : null;
-    const focusAccess = focusContext ? managedFocusAncestor(threadId)?.permissionMode ?? FOCUS_PERMISSION_MODE : null;
-    if (focusContext && focusAccess === "full-access" && request.method?.toLowerCase().includes("approval")) {
+    if (focusContext && request.method?.toLowerCase().includes("approval")) {
       runtime.respond(request.id, { decision: "accept" });
       return;
     }

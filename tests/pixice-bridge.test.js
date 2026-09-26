@@ -314,6 +314,28 @@ describe("Pixice bridge", () => {
     await resultPromise;
   });
 
+  it("forces detached coordinator work to full access even when its caller requests read-only", async () => {
+    const { bridge, runtime, onThreadCreated } = createBridge(undefined, {
+      focusCoordinator: true,
+      permissionMode: "workspace-write",
+      permissionSettings: () => ({
+        approvalPolicy: "never", approvalsReviewer: "user", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" }
+      })
+    });
+    const resultPromise = bridge.startDetached({ threadId: "parent-1" }, {
+      prompt: "Review the implementation", model: "codex:gpt-5.6-luna", permissionMode: "read-only"
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(runtime.calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: "thread/start", params: expect.objectContaining({ permissionMode: "full-access", approvalPolicy: "never", sandbox: "danger-full-access" }) }),
+      expect.objectContaining({ method: "turn/start", params: expect.objectContaining({ permissionMode: "full-access", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } }) })
+    ]));
+    expect(onThreadCreated).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "full-access" }));
+    runtime.emit("event", { payload: { method: "turn/completed", threadId: "child-1", turn: { id: "turn-1", status: "completed", items: [] } } });
+    await resultPromise;
+  });
+
   it("falls back to workspace access when no permission mode is available", async () => {
     const { bridge, runtime } = createBridge();
     const resultPromise = bridge.handleToolCall({

@@ -465,6 +465,8 @@ describe("Pixice app shell", () => {
     const taskProgress = screen.getByRole("complementary", { name: "Task progress overview" });
     expect(within(taskProgress).getByRole("progressbar", { name: "Refactor authentication progress" })).toHaveAttribute("aria-valuenow", "2");
     expect(within(taskProgress).getByRole("progressbar", { name: "Document the handoff progress" })).toHaveAttribute("aria-valuenow", "1");
+    expect(screen.queryByRole("button", { name: "Activity" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Since you were away")).not.toBeInTheDocument();
 
     act(() => window.pixice.emit({
       type: "FilePreviewOpenRequested",
@@ -3835,6 +3837,43 @@ describe("Pixice app shell", () => {
 
     expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("");
     expect(localStorage.getItem("pixice.draft.project-1:new")).toBeNull();
+  });
+
+  it("does not restore a submitted new-task prompt or image after later replies", async () => {
+    const user = userEvent.setup();
+    render(<StrictMode><ConnectRoot><App /></ConnectRoot></StrictMode>);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    expect(screen.getByLabelText("Run on")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
+    await user.type(composer, "First submitted prompt");
+    const image = new File([new Uint8Array([137, 80, 78, 71])], "first.png", { type: "image/png" });
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [image] } });
+    expect(await screen.findByRole("img", { name: "first.png" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      text: "First submitted prompt",
+      attachments: [expect.objectContaining({ name: "first.png", type: "image/png" })]
+    })));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue(""));
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toBe(composer);
+
+    await user.type(composer, "First reply");
+    fireEvent.click(screen.getByRole("button", { name: "Steer task" }));
+    await waitFor(() => expect(window.pixice.turns.steer).toHaveBeenCalledWith(expect.objectContaining({ text: "First reply" })));
+    await waitFor(() => expect(composer).toHaveValue(""));
+    await user.type(composer, "Second reply");
+    fireEvent.click(screen.getByRole("button", { name: "Steer task" }));
+    await waitFor(() => expect(window.pixice.turns.steer).toHaveBeenCalledWith(expect.objectContaining({ text: "Second reply" })));
+    await waitFor(() => expect(composer).toHaveValue(""));
+
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("");
+    expect(screen.queryByRole("img", { name: "first.png" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("pixice.draft.project-1:new")).toBeNull();
+    expect(localStorage.getItem("pixice.draft.project-1:new.attachments")).toBeNull();
   });
 
   it("expands multiline prompts upward and caps the textarea height", async () => {

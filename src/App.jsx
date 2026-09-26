@@ -58,7 +58,6 @@ import { OperationCapsuleStack } from "./components/OperationCapsule.jsx";
 import { ImageGeneration } from "./components/ImageGeneration.jsx";
 import { InspectablePicture } from "./components/PictureInspector.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
-import { FocusCoordination } from "./components/FocusCoordination.jsx";
 import { FocusCoordinatorQuestions } from "./components/FocusCoordinatorQuestions.jsx";
 import WidgetShelf from "./components/WidgetShelf.jsx";
 import { KanbanBoard } from "./components/KanbanBoard.jsx";
@@ -5353,12 +5352,13 @@ export function ConversationWorkspace({
             </div>
           )}
         </div>
-        {project && !readOnly && (executionTargetControl ? (
-          <div className="composer-dock">
-            <div className="execution-preflight">{executionTargetControl}</div>
+        {project && !readOnly && (
+          // Keep Composer mounted when thread creation removes the preflight controls.
+          <div className={executionTargetControl ? "composer-dock" : undefined} style={executionTargetControl ? undefined : { display: "contents" }}>
+            {executionTargetControl && <div className="execution-preflight">{executionTargetControl}</div>}
             <Composer {...composerProps} />
           </div>
-        ) : <Composer {...composerProps} />)}
+        )}
       </main>
       {previewLayoutOpen && (
         <div
