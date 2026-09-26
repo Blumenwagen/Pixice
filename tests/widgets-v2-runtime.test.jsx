@@ -4,6 +4,7 @@ import { WidgetRenderer, isRenderableWidget } from '../src/widgets/widget-render
 import { dispatchWidgetAction, initialWidgetState } from '../src/widgets/widget-state.mjs';
 
 const bind = (path) => ({ path });
+const formatNumber = (value) => new Intl.NumberFormat('en-CH', { maximumFractionDigits: 2 }).format(value);
 const widget = (nodes, overrides = {}) => ({ id: 'v2-widget', projectId: 'project-a', revision: 1, spec: {
   version: 2, catalogVersion: 1, title: 'Live widget', size: 'large', root: 'root', nodes,
   state: { user: {}, view: {} }, sources: {}, derived: {}, actions: {}, ...overrides
@@ -29,12 +30,12 @@ describe('v2 widget runtime', () => {
     const persist = vi.fn();
     render(<WidgetRenderer widget={record} onStateChange={persist} />);
     expect(screen.getByLabelText('Total hours value')).toHaveTextContent('240');
-    expect(screen.getByLabelText('Budget CHF value')).toHaveTextContent('24’000');
+    expect(screen.getByLabelText('Budget CHF value')).toHaveTextContent(formatNumber(24_000));
     expect(screen.getByLabelText('Budget CHF value').compareDocumentPosition(screen.getByLabelText('Total hours value')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByLabelText('Budget CHF value').compareDocumentPosition(screen.getByRole('spinbutton', { name: 'people' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'people' }), { target: { value: '4' } });
     expect(screen.getByLabelText('Total hours value')).toHaveTextContent('320');
-    expect(screen.getByLabelText('Budget CHF value')).toHaveTextContent('32’000');
+    expect(screen.getByLabelText('Budget CHF value')).toHaveTextContent(formatNumber(32_000));
     await waitFor(() => expect(persist).toHaveBeenCalledWith({ people: 4, hours: 20, weeks: 4, rate: 100 }, { widgetId: 'v2-widget', revision: 1 }));
     fireEvent.change(screen.getByRole('spinbutton', { name: 'people' }), { target: { value: 'Infinity' } });
     expect(screen.getByLabelText('Total hours value')).toHaveTextContent('320');
