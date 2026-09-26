@@ -1085,8 +1085,8 @@ export function Sidebar({
               </IconButton>
             )}
           </div>
-          {onEnterFocus && <SidebarNavItem icon={Sparkle} label="Focus" onClick={onEnterFocus} disabled={!selectedProjectId} />}
           <SidebarNavItem icon={NewTaskIcon} label="New task" tone="new-task" shortcut={newTaskShortcut} active={Boolean(selectedProjectId) && activeView === "task" && !selectedThreadId} disabled={!selectedProjectId} onClick={onNewTask} />
+          {onEnterFocus && <SidebarNavItem icon={Sparkle} label="Focus" onClick={onEnterFocus} disabled={!selectedProjectId} />}
           <SidebarNavItem icon={BoardIcon} label="Board" active={activeView === "board"} disabled={!selectedProjectId} onClick={() => onView("board")} />
           <SidebarNavItem icon={AttentionIcon} label="Attention" active={activeView === "attention"} badge={attentionCount} badgeVisible={expanded} badgeTone="attention" onClick={() => onView("attention")} />
           <SidebarNavItem icon={ReviewIcon} label="Review" active={activeView === "review"} badge={changedCount} badgeVisible={expanded} disabled={!selectedProjectId} onClick={() => onView("review")} />
