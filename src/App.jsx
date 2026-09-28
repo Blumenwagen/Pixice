@@ -4867,6 +4867,17 @@ function FocusWorkspace({
     ? customFocusBackgroundUrl || focusBackgroundDark
     : FOCUS_BACKGROUND_BY_ID[preferences.focusBackground] || focusBackgroundDark;
 
+  useLayoutEffect(() => {
+    const root = workspaceRef.current?.closest(".connect-root");
+    if (!root) return;
+    root.style.setProperty("--focus-background-image", `url(${focusBackgroundUrl})`);
+    root.style.setProperty("--focus-background-blur", `${preferences.focusBackgroundBlur}px`);
+    return () => {
+      root.style.removeProperty("--focus-background-image");
+      root.style.removeProperty("--focus-background-blur");
+    };
+  }, [focusBackgroundUrl, preferences.focusBackgroundBlur]);
+
   return (
     <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
     <div className={`focus-layout${previewOpen ? " preview-open" : ""}`}>
