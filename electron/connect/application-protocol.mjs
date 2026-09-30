@@ -7,6 +7,9 @@ export const APPLICATION_CAPABILITIES = {
   app: { ...CAPABILITIES.app, saveSettings: 'app:settings:update' },
   git: { ...CAPABILITIES.git, installCommandLineTools: 'git:install-command-line-tools' },
   providers: { ...CAPABILITIES.providers, install: 'providers:install', locate: 'providers:locate', repair: 'providers:repair', checkUpdates: 'providers:check-updates', update: 'providers:update', login: 'providers:login', logout: 'providers:logout' },
+  chatgpt: { state: 'chatgpt:state', signIn: 'chatgpt:sign-in', cancel: 'chatgpt:cancel', select: 'chatgpt:select', signOut: 'chatgpt:sign-out', manage: 'chatgpt:manage' },
+  voice: { state: 'voice:state', context: 'voice:context', start: 'voice:start', stop: 'voice:stop' },
+  cloud: { state: 'cloud:state', saveEnvironment: 'cloud:environment:save', removeEnvironment: 'cloud:environment:remove', list: 'cloud:list', submit: 'cloud:submit', status: 'cloud:status', diff: 'cloud:diff', apply: 'cloud:apply', open: 'cloud:open' },
   github: { status: 'github:status', login: 'github:login', logout: 'github:logout' },
   browser: { ...CAPABILITIES.browser, setViewport: 'browser:viewport', adopt: 'browser:adopt', destroy: 'browser:destroy' },
   preview: { setContext: 'preview:context' },
@@ -22,4 +25,4 @@ export const APPLICATION_CAPABILITIES = {
 };
 export const APPLICATION_OPERATIONS = new Map(Object.entries(APPLICATION_CAPABILITIES).flatMap(([group, entries]) => Object.entries(entries).map(([name, channel]) => [`${group}.${name}`, channel])));
 export const APPLICATION_CHANNELS = new Map([...APPLICATION_OPERATIONS].map(([name, channel]) => [channel, name]));
-export const APPLICATION_READ_OPERATIONS = new Set([...READ_OPERATIONS, 'widgets.keyStatus', 'connect.status', 'github.status', 'workflowCredentials.list', 'extensions.list', 'ios.environment', 'ios.discover', 'ios.state', 'tray.state', 'tray.refresh', 'tray.thread', 'service.status', 'native.poll']);
+export const APPLICATION_READ_OPERATIONS = new Set([...READ_OPERATIONS, 'widgets.keyStatus', 'connect.status', 'github.status', 'workflowCredentials.list', 'extensions.list', 'ios.environment', 'ios.discover', 'ios.state', 'tray.state', 'tray.refresh', 'tray.thread', 'service.status', 'native.poll', 'chatgpt.state', 'voice.state', 'voice.context', 'cloud.state', 'cloud.list', 'cloud.status', 'cloud.diff']);

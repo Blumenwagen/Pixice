@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     login: invoke("providers:login"),
     logout: invoke("providers:logout")
   }),
+  chatgpt: Object.freeze({ state: invoke("chatgpt:state"), signIn: invoke("chatgpt:sign-in"), cancel: invoke("chatgpt:cancel"), select: invoke("chatgpt:select"), signOut: invoke("chatgpt:sign-out"), manage: invoke("chatgpt:manage") }),
+  voice: Object.freeze({ state: invoke("voice:state"), start: invoke("voice:start"), stop: invoke("voice:stop"), companion: Object.freeze({
+    open: invoke("voice:companion:open"), state: invoke("voice:companion:state"), mute: invoke("voice:companion:mute"), end: invoke("voice:companion:end"),
+    detach: invoke("voice:companion:detach"), attach: invoke("voice:companion:attach"), returnToPixice: invoke("voice:companion:return")
+  }) }),
+  cloud: Object.freeze({ state: invoke("cloud:state"), saveEnvironment: invoke("cloud:environment:save"), removeEnvironment: invoke("cloud:environment:remove"), list: invoke("cloud:list"), submit: invoke("cloud:submit"), status: invoke("cloud:status"), diff: invoke("cloud:diff"), apply: invoke("cloud:apply"), open: invoke("cloud:open") }),
   github: Object.freeze({ status: invoke("github:status"), login: invoke("github:login"), logout: invoke("github:logout") }),
   usage: Object.freeze({ summary: invoke("usage:summary"), limits: invoke("usage:limits") }),
   tasks: Object.freeze({

@@ -263,12 +263,15 @@ export class FocusSupervisor {
       if (work.threadId && work.turnId) {
         try { await this.interruptWorker({ projectId, threadId: work.threadId, turnId: work.turnId }); }
         catch (error) {
-          const attention = this.store.updateWork(projectId, id, { status: "needs-attention", error: errorMessage(error) });
-          this.#changed(projectId);
-          return attention;
+          // A deleted worker thread has nothing left to interrupt.
+          if (!/\bthread (?:was )?not found\b/i.test(errorMessage(error))) {
+            const attention = this.store.updateWork(projectId, id, { status: "needs-attention", error: errorMessage(error) });
+            this.#changed(projectId);
+            return attention;
+          }
         }
       }
-      const updated = this.store.updateWork(projectId, id, { status: "cancelled" });
+      const updated = this.store.updateWork(projectId, id, { status: "cancelled", error: null });
       this.store.appendEvent(projectId, { workId: id, kind: "cancelled", message: "Work cancelled by the coordinator." });
       this.#changed(projectId);
       this.#scheduleDrain(projectId);

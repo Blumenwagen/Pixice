@@ -17,6 +17,9 @@ import {
   stagePromptAttachmentsAsync
 } from "../runtime/prompt-attachments.mjs";
 import { AGENT_BEHAVIOR_IDS, agentBehaviorCatalog, composeAgentInstructions } from "../runtime/agent-behavior.mjs";
+import { ChatGPTAuth } from "../providers/chatgpt-auth.mjs";
+import { CodexCloud, cloudListSchema, cloudSubmitSchema, cloudTaskSchema, cloudEnvironmentSchema } from "../providers/codex-cloud.mjs";
+import { CodexVoice } from "../voice/codex-voice.mjs";
 import { CodexProvider } from "../providers/codex-provider.mjs";
 import { ClaudeProvider } from "../providers/claude-provider.mjs";
 import { ProviderRegistry } from "../providers/provider-registry.mjs";
@@ -114,6 +117,10 @@ let trayRefreshPromise;
 let runtime;
 let codexRuntime;
 let codexProvider;
+let codexVoice;
+let codexCloud;
+const cloudApplyingProjects = new Set();
+let authTransition = false;
 let claudeProvider;
 let threadNamer;
 const browserWorkspace = platform.browser;
@@ -135,6 +142,7 @@ let taskResults;
 const widgetStore = new WidgetStore(userDataPath);
 const widgetCredentials = new WidgetCredentials(userDataPath, platform.credentialCrypto);
 const widgetDrafts = new Map();
+const chatgptAuth = new ChatGPTAuth({ directory: userDataPath, crypto: platform.credentialCrypto, openExternal: (url) => platform.openExternal(url), onChange: (state) => send("ChatGPTState", { ...state, selectedProfileId: database?.getAppSettings().chatGPTProfileId ?? null }) });
 let runtimeStatus = { state: "starting" };
 const activeTurns = new Map();
 const focusCurrentUserInputs = new Map();
@@ -1031,6 +1039,10 @@ async function pickProjectFolders({ multiple = true } = {}) {
 }
 
 async function ensureThreadLoaded(project, threadId) {
+  if (runtime.providerForThread(threadId) === "codex") {
+    if (authTransition) throw new Error("The Codex account is changing. Retry in a moment.");
+    await codexRuntime.prepareAuthentication();
+  }
   const cwd = await threadSessions.ensure(threadId, async () => {
     const focus = database.getProjectFocusSessionByThread(threadId)?.projectId === project.id;
     const response = await runtime.request("thread/resume", {
@@ -1051,6 +1063,8 @@ async function ensureThreadLoaded(project, threadId) {
 
 async function startTrackedTurn({ project, threadId, input, text, model, effort, serviceTier, frozenAttachments, permissionMode = "workspace-write", trackTask = true }) {
   if (!acceptingWork) throw new Error("The Pixice service is stopping. Your task was not started.");
+  if (cloudApplyingProjects.has(project.id)) throw new Error("A Cloud patch is being applied. Retry after it finishes.");
+  if (authTransition && runtime.providerForThread(threadId) === "codex") throw new Error("The Codex account is changing. Retry in a moment.");
   if (activeTurns.has(threadId) || startingTurns.has(threadId)) throw new Error("This task is already running.");
   runtime.assertModelForThread(threadId, model);
   startingTurns.add(threadId);
@@ -2024,7 +2038,96 @@ async function steerBridgeParentTurn(parentThreadId, turnId, input) {
   });
 }
 
+function assertLocalIntegration(context) {
+  if (context?.remote) throw new Error("Manage Voice, Cloud, and ChatGPT app sign-in on the host desktop.");
+}
+function codexBusy() {
+  return [...activeTurns.keys(), ...startingTurns].some((id) => runtime.providerForThread(id) === "codex") || Boolean(codexVoice?.session);
+}
+async function switchChatGPTProfile(profileId) {
+  if (authTransition || codexBusy()) throw new Error("Finish active Codex work and end Voice before changing the ChatGPT account source.");
+  authTransition = true;
+  const previous = database.getAppSettings().chatGPTProfileId ?? null;
+  try {
+    if (profileId) await chatgptAuth.access(profileId);
+    if (profileId && !previous) {
+      const currentConfig = await codexRuntime.request("config/read", { includeLayers: false });
+      database.saveAppSettings({ codexOriginalModelProvider: currentConfig.config?.model_provider ?? "openai" });
+    }
+    await codexRuntime.stop();
+    database.saveAppSettings({ chatGPTProfileId: profileId });
+    if (!await codexProvider.start()) throw new Error("Codex could not start with this account.");
+  } catch (error) {
+    database.saveAppSettings({ chatGPTProfileId: previous });
+    await codexRuntime.stop();
+    await codexProvider.start();
+    throw error;
+  } finally {
+    authTransition = false;
+    void focusSupervisor?.recover().catch((error) => codexRuntime.emit("diagnostic", `Focus account recovery: ${error.message}`));
+  }
+  send("ChatGPTState", { ...await chatgptAuth.state(), selectedProfileId: profileId });
+  return { ...await chatgptAuth.state(), selectedProfileId: profileId };
+}
 function registerHandlers() {
+  handlers.handle("chatgpt:state", async (context) => {
+    assertLocalIntegration(context);
+    return { ...await chatgptAuth.state(), selectedProfileId: database.getAppSettings().chatGPTProfileId ?? null };
+  });
+  handlers.handle("chatgpt:sign-in", (context, payload) => {
+    assertLocalIntegration(context);
+    const value = z.object({ profileId: z.string().uuid().optional() }).strict().parse(payload ?? {});
+    return chatgptAuth.begin(value);
+  });
+  handlers.handle("chatgpt:cancel", (context) => { assertLocalIntegration(context); return chatgptAuth.cancel(); });
+  handlers.handle("chatgpt:select", (context, payload) => {
+    assertLocalIntegration(context);
+    const { profileId } = z.object({ profileId: z.string().uuid().nullable() }).strict().parse(payload);
+    return switchChatGPTProfile(profileId);
+  });
+  handlers.handle("chatgpt:sign-out", async (context, payload) => {
+    assertLocalIntegration(context);
+    const { profileId } = z.object({ profileId: z.string().uuid() }).strict().parse(payload);
+    if (database.getAppSettings().chatGPTProfileId === profileId) await switchChatGPTProfile(null);
+    return { ...await chatgptAuth.signOut(profileId), selectedProfileId: database.getAppSettings().chatGPTProfileId ?? null };
+  });
+  handlers.handle("chatgpt:manage", (context) => { assertLocalIntegration(context); return platform.openExternal("https://chatgpt.com/settings/usage"); });
+  handlers.handle("voice:state", (context) => { assertLocalIntegration(context); return codexVoice.state(); });
+  handlers.handle("voice:context", (context, payload) => {
+    assertLocalIntegration(context);
+    const { projectId, threadId } = threadPayload.strict().parse(payload);
+    const project = getProject(projectId);
+    const owner = authoritativeThreadProjectId(threadId);
+    if (owner && owner !== projectId) throw new Error("Voice thread belongs to another project.");
+    return { projectName: project.name, threadName: database.getThreadName(threadId) };
+  });
+  handlers.handle("voice:start", (context, payload) => {
+    assertLocalIntegration(context);
+    const value = threadPayload.extend({ sdp: z.string().min(1).max(128_000), voice: z.enum(["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]).optional(), model: z.string().max(128).optional(), effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(), permissionMode: permissionModeSchema.default("workspace-write") }).strict().parse(payload);
+    return codexVoice.start(value);
+  });
+  handlers.handle("voice:stop", (context, payload) => {
+    assertLocalIntegration(context);
+    return codexVoice.stop(z.object({ sessionId: z.string().uuid() }).strict().parse(payload));
+  });
+  handlers.handle("cloud:state", (context, payload) => { assertLocalIntegration(context); const { projectId } = idPayload.strict().parse(payload); getProject(projectId); return codexCloud.state(projectId); });
+  handlers.handle("cloud:environment:save", (context, payload) => { assertLocalIntegration(context); const { projectId, environment } = idPayload.extend({ environment: cloudEnvironmentSchema }).strict().parse(payload); getProject(projectId); return codexCloud.saveEnvironment(projectId, environment); });
+  handlers.handle("cloud:environment:remove", (context, payload) => { assertLocalIntegration(context); const { projectId, environmentId } = idPayload.extend({ environmentId: z.string() }).strict().parse(payload); getProject(projectId); return codexCloud.removeEnvironment(projectId, environmentId); });
+  handlers.handle("cloud:list", (context, payload) => { assertLocalIntegration(context); const { projectId, ...value } = idPayload.merge(cloudListSchema).strict().parse(payload); return codexCloud.list(value, projectPrimaryRoot(getProject(projectId))); });
+  handlers.handle("cloud:submit", (context, payload) => { assertLocalIntegration(context); const { projectId, ...value } = idPayload.merge(cloudSubmitSchema).strict().parse(payload); return codexCloud.submit(projectId, value, projectPrimaryRoot(getProject(projectId))); });
+  for (const operation of ["status", "diff"]) handlers.handle(`cloud:${operation}`, (context, payload) => { assertLocalIntegration(context); const { projectId, ...value } = idPayload.merge(cloudTaskSchema).strict().parse(payload); const cwd = projectPrimaryRoot(getProject(projectId)); return operation === "diff" ? codexCloud.review(projectId, value, cwd) : codexCloud.inspect(operation, value, cwd); });
+  handlers.handle("cloud:apply", async (context, payload) => {
+    assertLocalIntegration(context);
+    const { projectId, taskId, reviewId, expectedDiffHash } = idPayload.extend({ taskId: cloudTaskSchema.shape.taskId, reviewId: z.string().uuid(), expectedDiffHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(payload);
+    const cwd = projectPrimaryRoot(getProject(projectId));
+    if (cloudApplyingProjects.has(projectId)) throw new Error("A Cloud patch is already being applied to this project.");
+    if ([...activeTurns.keys(), ...startingTurns].some((id) => threadProjects.get(id) === projectId) || codexVoice?.session?.projectId === projectId) throw new Error("Finish this project's local work before applying a Cloud patch.");
+    cloudApplyingProjects.add(projectId);
+    try {
+      return await codexCloud.apply(projectId, { taskId, reviewId, expectedDiffHash }, cwd);
+    } finally { cloudApplyingProjects.delete(projectId); }
+  });
+  handlers.handle("cloud:open", (context) => { assertLocalIntegration(context); return platform.openExternal("https://chatgpt.com/codex"); });
   handlers.handle("tray:state", () => currentTrayState());
   handlers.handle("tray:refresh", () => refreshTrayState());
   handlers.handle("tray:thread", (_event, payload) => {
@@ -2108,6 +2211,7 @@ function registerHandlers() {
     return startProviderLogin(provider);
   });
   const providerActionSchema = z.object({ provider: z.enum(["codex", "claude"]) }).strict();
+  const assertVoiceRuntimeIdle = (provider) => { if (provider === "codex" && codexVoice?.session) throw new Error("End Voice before changing the Codex runtime."); };
   handlers.handle("providers:install", (_event, payload) => {
     const { provider } = providerActionSchema.parse(payload);
     return runtime.installProvider(provider);
@@ -2116,10 +2220,12 @@ function registerHandlers() {
     const { provider, executablePath } = providerActionSchema.extend({
       executablePath: z.string().trim().min(1).max(4_096).optional()
     }).parse(payload);
+    assertVoiceRuntimeIdle(provider);
     return locateProviderExecutable(provider, executablePath);
   });
   handlers.handle("providers:repair", (_event, payload) => {
     const { provider } = providerActionSchema.parse(payload);
+    assertVoiceRuntimeIdle(provider);
     return runtime.repairProvider(provider);
   });
   handlers.handle("providers:check-updates", (_event, payload) => {
@@ -2128,10 +2234,12 @@ function registerHandlers() {
   });
   handlers.handle("providers:update", (_event, payload) => {
     const { provider } = providerActionSchema.parse(payload);
+    assertVoiceRuntimeIdle(provider);
     return runtime.updateProvider(provider);
   });
   handlers.handle("providers:logout", (_event, payload) => {
     const { provider } = providerActionSchema.parse(payload);
+    assertVoiceRuntimeIdle(provider);
     return runtime.logoutProvider(provider);
   });
   handlers.handle("github:status", () => githubCli.status());
@@ -2831,6 +2939,7 @@ function registerHandlers() {
       permissionMode: permissionModeSchema.default("workspace-write"),
       parentThreadId: z.string().min(1).optional()
     }).parse(payload);
+    if (authTransition && runtime.providerForModel(value.model) === "codex") throw new Error("The Codex account is changing. Retry in a moment.");
     const project = getProject(value.projectId);
     const focusContext = value.parentThreadId ? projectFocusContextForThread(value.parentThreadId) : null;
     if (focusContext && focusContext.projectId !== project.id) throw new Error("Focus parent belongs to another project");
@@ -3276,10 +3385,32 @@ function registerHandlers() {
   const codexRuntimeLifecycle = new ProviderRuntimeLifecycle({ provider: "codex", database });
   codexRuntime = new CodexRuntime({
     executablePath: null,
-    clientVersion: version
+    clientVersion: version,
+    authentication: async () => { const profileId = database.getAppSettings().chatGPTProfileId; return profileId ? chatgptAuth.access(profileId) : null; },
+    canRestartAuthentication: () => ![...activeTurns.keys()].some((id) => runtime.providerForThread(id) === "codex") && !codexVoice?.session
   });
   runtime = new ProviderRegistry({ database });
-  codexProvider = runtime.register(providerFactories.codex?.({ database, codexRuntime }) ?? new CodexProvider(codexRuntime, { runtimeLifecycle: codexRuntimeLifecycle }));
+  codexProvider = runtime.register(providerFactories.codex?.({ database, codexRuntime }) ?? new CodexProvider(codexRuntime, { runtimeLifecycle: codexRuntimeLifecycle, chatgptAccount: async () => {
+    const profileId = database.getAppSettings().chatGPTProfileId;
+    return profileId ? (await chatgptAuth.state()).profiles.find((p) => p.id === profileId) ?? { planEnabled: false } : null;
+  }, originalModelProvider: () => database.getAppSettings().codexOriginalModelProvider ?? null }));
+  codexVoice = new CodexVoice({ runtime: codexRuntime, authSource: () => database.getAppSettings().chatGPTProfileId, onEvent: (payload) => send("VoiceEvent", payload), prepareThread: async (value) => {
+    if (!acceptingWork || authTransition) throw new Error("The Codex runtime is changing. Retry in a moment.");
+    const project = getProject(value.projectId);
+    if (focusStore.getWorkByThread(value.threadId)) throw new Error("Use Voice with the Focus coordinator, not a managed worker.");
+    if (cloudApplyingProjects.has(project.id)) throw new Error("Wait for the Cloud patch to finish before starting Voice.");
+    if (runtime.providerForThread(value.threadId) !== "codex") throw new Error("Conversational Voice currently needs a Codex thread.");
+    if (activeTurns.has(value.threadId) || startingTurns.has(value.threadId)) throw new Error("Wait for this turn to finish before starting Voice.");
+    if (focusSessionTransitions.has(project.id)) throw new Error("The Focus coordinator is changing. Retry in a moment.");
+    runtime.assertModelForThread(value.threadId, value.model);
+    const cwd = await ensureThreadLoaded(project, value.threadId);
+    const mode = database.getProjectFocusSessionByThread(value.threadId)?.projectId === project.id ? FOCUS_PERMISSION_MODE : value.permissionMode;
+    const permissions = permissionSettings(mode, project);
+    await runtime.request("thread/settings/update", { threadId: value.threadId, cwd, approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer, sandboxPolicy: permissions.sandboxPolicy, ...(value.model ? { model: value.model } : {}), ...(value.effort ? { effort: value.effort } : {}) });
+    turnUsageMetadata.set(value.threadId, { turnId: null, model: value.model ?? null, effort: value.effort ?? null, permissionMode: mode, provider: "codex" });
+  } });
+  codexRuntime.on("status", (status) => { if (!["ready", "connecting"].includes(status.state)) codexVoice.reset(); });
+  codexCloud = new CodexCloud({ executable: () => codexRuntime.executablePath, getEnvironments: (projectId) => database.getAppSettings().codexCloudEnvironments?.[projectId] ?? [], saveEnvironments: (projectId, environments) => database.saveAppSettings({ codexCloudEnvironments: { ...(database.getAppSettings().codexCloudEnvironments ?? {}), [projectId]: environments } }) });
   const boardThreadContext = previewThreadContext;
   pixiceBoard = new PixiceBoard({
     database,
@@ -3537,7 +3668,7 @@ function registerHandlers() {
     }
     runtimeStatus = status;
     send("RuntimeStatus", { ...status, connected: runtime.connected });
-    if (focusSupervisor && providerState === "ready") {
+    if (focusSupervisor && providerState === "ready" && !authTransition) {
       void focusSupervisor.recover().catch((error) => codexRuntime.emit("diagnostic", `Focus recovery: ${error.message}`));
     }
   });
@@ -3545,6 +3676,7 @@ function registerHandlers() {
     const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
     event.payload = { ...event.payload, receivedAt };
     const { method, threadId, turn } = event.payload ?? {};
+    if (method?.startsWith("thread/realtime/")) { codexVoice?.handle(event.payload); return; }
     if (event.payload?.thread?.source === "pixiceFocusMemory") {
       if (event.payload.thread.id) focusMemoryInternalThreadIds.add(event.payload.thread.id);
       return;
@@ -3779,7 +3911,7 @@ function registerHandlers() {
     }
     const threadId = request.params?.threadId;
     const focusContext = threadId ? projectFocusContextForThread(threadId) : null;
-    if (focusContext && request.method?.toLowerCase().includes("approval")) {
+    if (focusContext && request.method?.toLowerCase().includes("approval") && codexVoice?.session?.threadId !== threadId) {
       runtime.respond(request.id, { decision: "accept" });
       return;
     }
@@ -3852,6 +3984,8 @@ function registerHandlers() {
     await pixiceBridge?.workflowIntegration?.close();
     await iosRuntimeService?.destroy();
     if (force) await Promise.allSettled([...activeTurns].map(([threadId, turnId]) => runtime.request("turn/interrupt", { threadId, turnId })));
+    if (codexVoice?.session) await codexVoice.stop({ sessionId: codexVoice.session.id }).catch(() => {});
+    await chatgptAuth.close();
     await runtime?.stop();
     await Promise.allSettled([...(taskResults?.finishing.values() ?? [])]);
     pixiceInstruments?.close();

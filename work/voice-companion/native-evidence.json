@@ -1,0 +1,55 @@
+{
+  "platform": "darwin",
+  "syntheticMicrophone": true,
+  "backend": "fake, no account",
+  "checks": [
+    "sandbox and isolated narrow preload",
+    "no full Pixice API or tokens in renderer",
+    "main close detaches and keeps visible active voice",
+    "always-on-top companion",
+    "reattach keeps same native window and webContents",
+    "exactly one capture, peer, analysis owner across moves",
+    "mute disables actual synthetic microphone track",
+    "approval Return requests actual approval destination",
+    "display bounds clamp to work area",
+    "explicit End destroys media owner and stops backend",
+    "failed backend cleanup retains no media window",
+    "recovery-only controls never reacquire mic or peer",
+    "explicit retry confirms backend cleanup",
+    "companion close stops capture and backend",
+    "Quit stops backend and destroys media owner"
+  ],
+  "returnDestination": {
+    "projectId": "f53f8280-c934-4b8f-b812-57ef3daa89a8",
+    "threadId": "native-voice-harness",
+    "needsApproval": true
+  },
+  "media": {
+    "captures": 1,
+    "peers": 1,
+    "playback": 1,
+    "analysisContexts": 1,
+    "live": "live"
+  },
+  "calls": [
+    "voice.state",
+    "voice.start",
+    "voice.stop",
+    "voice.state",
+    "voice.start",
+    "voice.stop",
+    "voice.stop",
+    "voice.state",
+    "voice.start",
+    "voice.stop",
+    "voice.state",
+    "voice.start",
+    "voice.stop"
+  ],
+  "visual": {
+    "width": 600,
+    "height": 788,
+    "cornerAlpha": 0,
+    "source": "Historical 300 \u00d7 394 lifecycle capture before r34. Current screenshots were replaced by compact presentation capture."
+  }
+}

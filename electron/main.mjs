@@ -14,6 +14,8 @@ import { APPLICATION_CHANNELS } from './connect/application-protocol.mjs';
 import { backendBuildId, descriptorInstance, ensureService, readServiceDescriptor, serviceCall, stopService } from './backend/manager.mjs';
 import { BrowserSessions } from './native/browser-sessions.mjs';
 import { NativeHelperClient } from './native/helper-client.mjs';
+import { CompanionWindow } from './voice/companion-window.mjs';
+import { VoiceCompanionService, registerVoiceCompanionIpc } from './voice/companion-service.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const helperOnly = process.argv.includes('--pixice-native-helper');
@@ -23,6 +25,7 @@ const dataDirectory = app.getPath('userData');
 const browserSessions = new BrowserSessions(dataDirectory);
 let mainWindow, tray, trayWindow, trayIconDataUrl, browserWorkspace, appUpdater, client, nativeHelper;
 let quitting = false, desktopLoaded = false, connecting;
+let voiceCompanion, voicePresentation, voiceQuitPending;
 const loginSupported = process.platform === 'darwin' || process.platform === 'win32';
 let connectionState = { state: 'connecting' };
 let trayState = { items: [], activeCount: 0 };
@@ -60,6 +63,7 @@ async function connectService({ start = true } = {}) {
       onState: (value) => { updateConnection(value); }
     });
     client.subscribe((event) => {
+      voiceCompanion?.handle(event);
       if (event.type === 'ApplicationResync') recordConnection({ state: 'resync', reason: event.payload?.reason });
       if (event.type === 'TrayState') { trayState = event.payload; updateTrayMenu(); }
       send(event.type, event.payload);
@@ -110,14 +114,16 @@ async function openMainWindow(destination = null) {
   mainWindow.show(); mainWindow.focus();
   if (destination) send('TrayNavigate', destination);
 }
-function shutdownNative() {
+async function shutdownNative() {
   quitting = true;
+  await voiceCompanion?.end().catch(() => {});
   nativeHelper?.close(); client?.close(); appUpdater?.stop(); awake.stop();
   browserSessions.flush(); browserWorkspace?.destroy();
   for (const window of BrowserWindow.getAllWindows()) window.destroy();
   app.exit(0);
 }
 function detachDesktop() {
+  voiceCompanion?.detach();
   mainWindow?.hide(); trayWindow?.destroy(); trayWindow = null; tray?.destroy(); tray = null;
   browserWorkspace?.hideViewport();
   desktopLoaded = false; void mainWindow?.loadURL('about:blank'); app.dock?.hide();
@@ -264,12 +270,13 @@ async function openTerminal(target) {
 
 function registerIpc() {
   const handle = (channel, handler) => ipcMain.handle(channel, (event, payload) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted desktop sender');
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted desktop sender');
     return handler(payload);
   });
   for (const [channel, operation] of APPLICATION_CHANNELS) {
     if (operation.startsWith('native.') || operation.startsWith('service.') || operation.startsWith('tray.')) continue;
     handle(channel, async (payload) => {
+      if ((operation === 'voice.start' || operation === 'voice.stop') && voiceCompanion?.ownsMedia()) throw new Error('The native companion owns Voice. Use its controls.');
       if (!client) { if (!connecting) throw new Error('The backend is offline. Start it in Connections.'); await connecting; }
       return client.call(operation, payload);
     });
@@ -302,9 +309,19 @@ else {
   app.whenReady().then(async () => {
     // A window starts Electron's event loop before asynchronous service discovery.
     createWindow();
+    voicePresentation = new CompanionWindow({ BrowserWindow, screen, mainWindow,
+      load: (window) => isDev ? window.loadURL('http://127.0.0.1:5173/?voice-companion=1') : window.loadFile(path.join(__dirname, '../dist/client/index.html'), { query: { 'voice-companion': '1' } }) });
+    voiceCompanion = new VoiceCompanionService({ presentation: voicePresentation,
+      describeContext: (context) => client.call('voice.context', context),
+      call: async (operation, payload) => { if (connecting) await connecting; if (!client) throw new Error('The backend is offline.'); return client.call(operation, payload); },
+      publish: send, returnToMain: (context) => openMainWindow({ view: context.needsApproval ? 'attention' : 'task', projectId: context.projectId, threadId: context.threadId }),
+      notifyApproval: (onClick) => { if (!Notification.isSupported()) return; const notice = new Notification({ title: 'Voice needs approval in Pixice', body: 'Open Pixice to review the pending action. Speaking does not approve it.' }); notice.on('click', onClick); notice.show(); }
+    });
+    registerVoiceCompanionIpc({ ipcMain, service: voiceCompanion, mainWindow });
     browserWorkspace = new BrowserWorkspace({ window: mainWindow, WebContentsView, BrowserWindow, emit: (type, payload) => nativeHelper?.event({ type, payload }) });
     registerIpc();
     appUpdater = new PixiceAppUpdater({ updater: electronUpdater.autoUpdater, app, prepareInstall: async ({ currentVersion, availableVersion }) => {
+      await voiceCompanion.end();
       const descriptor = await readServiceDescriptor(dataDirectory);
       const backup = await serviceCall(descriptor, 'service.backup', { currentVersion, targetVersion: availableVersion });
       await stopService(dataDirectory, { update: true, keepDesktop: true });
@@ -317,7 +334,12 @@ else {
   }).catch((error) => { console.error(error); updateConnection({ state: 'error', error: error.message }); });
   app.on('activate', () => { if (mainWindow) void openMainWindow(); });
   app.on('before-quit', (event) => {
-    if (!quitting) { event.preventDefault(); detachDesktop(); return; }
+    if (!quitting) {
+      event.preventDefault();
+      // Quit interface keeps the backend helper alive, but never keeps Voice alive.
+      if (!voiceQuitPending) voiceQuitPending = Promise.resolve(voiceCompanion?.end()).catch(() => {}).finally(() => { detachDesktop(); voiceQuitPending = null; });
+      return;
+    }
     nativeHelper?.close(); client?.close(); appUpdater?.stop(); awake.stop(); browserWorkspace?.destroy();
   });
   for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, shutdownNative);

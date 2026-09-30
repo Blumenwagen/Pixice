@@ -1342,6 +1342,13 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   font-size: var(--conversation-font-size);
   line-height: 1.66;
 }
+.focus-update-notice {
+  margin: 4px 0;
+  color: var(--quiet);
+  font-size: calc(var(--conversation-font-size) - 2px);
+  font-weight: 500;
+  line-height: 1.4;
+}
 @container (max-width: 540px) {
   .proactive-suggestion { grid-template-columns: 28px minmax(0, 1fr); }
   .proactive-suggestion-actions { grid-column: 2; justify-self: start; }
@@ -1415,6 +1422,43 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 }
 .user-message-picture:hover img { transform: scale(1.008); }
 .assistant-message { max-width: 72ch; color: color-mix(in oklab, var(--foreground) 92%, var(--muted)); user-select: text; }
+/* Rich blocks may leave the prose column, but stay inside measured canvas and
+   rail bounds. Only these turns opt out of content-visibility's paint clip. */
+:is(.conversation-column, .focus-conversation-column) .conversation-turn:has(.message-rich-block) {
+  content-visibility: visible;
+  contain-intrinsic-size: none;
+}
+:is(.conversation-column, .focus-conversation-column) .assistant-message:has(.message-rich-block) {
+  width: 100%;
+  min-width: 0;
+}
+:is(.conversation-column, .focus-conversation-column) .assistant-message .markdown-body {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+:is(.conversation-column, .focus-conversation-column) .assistant-message .message-rich-block {
+  width: var(--chat-rich-width, 100%);
+  max-width: none;
+  min-width: 0;
+  margin-left: var(--chat-rich-offset, 0px);
+  overscroll-behavior-x: contain;
+}
+:is(.conversation-column, .focus-conversation-column) .assistant-message .message-visualization-wrap {
+  overflow-x: auto;
+}
+:is(.conversation-column, .focus-conversation-column) .message-visualization-wrap > .inline-visualization {
+  width: 100%;
+  min-width: 280px;
+}
+:is(.conversation-column, .focus-conversation-column) .message-table-wrap table {
+  width: max-content;
+  min-width: 100%;
+}
+:is(.conversation-column, .focus-conversation-column) .message-table-wrap .table-cell-text {
+  overflow: visible;
+  text-overflow: clip;
+}
+.message-rich-block:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .markdown-body { display: grid; gap: 14px; }
 .markdown-body > * { margin: 0; }
 .markdown-body h1,

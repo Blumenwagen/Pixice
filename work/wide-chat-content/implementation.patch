@@ -1,0 +1,171 @@
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -1964,9 +1964,76 @@
+   return line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+ }
+ 
++function ConversationColumn({ className, children }) {
++  const columnRef = useRef(null);
++  useLayoutEffect(() => {
++    const column = columnRef.current;
++    const canvas = column?.closest('.focus-conversation-scroll, .conversation-scroll');
++    const workspace = canvas?.closest('.pixice-app');
++    if (!column || !canvas || !workspace) return undefined;
++
++    // Size against this canvas, not the window. Prose and composer keep their
++    // existing geometry; only rich blocks inherit these measured bounds.
++    const overlaySelector = '.focus-task-rail, .widget-shelf, .inspector.open, [data-prompt-preview-rail], [data-prompt-preview-rail] div[aria-hidden="true"]';
++    let frame = 0;
++    const observed = new Set();
++    const measure = () => {
++      const bounds = canvas.getBoundingClientRect();
++      const columnBounds = column.getBoundingClientRect();
++      const canvasStyle = getComputedStyle(canvas);
++      const columnStyle = getComputedStyle(column);
++      // Preserve the column's gutters in small/split canvases.
++      const gutter = canvas.matches('.focus-conversation-scroll') ? 24 : 32;
++      const origin = columnBounds.left + parseFloat(columnStyle.paddingLeft);
++      const contentWidth = column.clientWidth - parseFloat(columnStyle.paddingLeft) - parseFloat(columnStyle.paddingRight);
++      const narrow = contentWidth >= canvas.clientWidth - 64;
++      let left = narrow ? origin : bounds.left + Math.min(gutter, parseFloat(canvasStyle.paddingLeft) || gutter);
++      let right = narrow ? origin + contentWidth : bounds.left + canvas.clientWidth - Math.min(gutter, parseFloat(canvasStyle.paddingRight) || gutter);
++      const overlays = workspace.querySelectorAll(overlaySelector);
++      for (const overlay of overlays) {
++        if (!observed.has(overlay)) { observer?.observe(overlay); observed.add(overlay); }
++        const rect = overlay.getBoundingClientRect();
++        if (!rect.width || !rect.height || getComputedStyle(overlay).visibility === 'hidden'
++          || rect.bottom <= bounds.top || rect.top >= bounds.bottom || rect.right <= left || rect.left >= right) continue;
++        if ((rect.left + rect.right) / 2 > bounds.left + canvas.clientWidth / 2) right = Math.min(right, rect.left - 12);
++        else left = Math.max(left, rect.right + 12);
++      }
++      for (const overlay of observed) {
++        if (!overlay.isConnected || !overlay.matches(overlaySelector)) { observer?.unobserve(overlay); observed.delete(overlay); }
++      }
++      const values = { '--chat-rich-width': `${Math.max(0, right - left)}px`, '--chat-rich-offset': `${left - origin}px` };
++      for (const [name, value] of Object.entries(values)) {
++        if (column.style.getPropertyValue(name) !== value) column.style.setProperty(name, value);
++      }
++    };
++    const schedule = () => {
++      cancelAnimationFrame(frame);
++      frame = requestAnimationFrame(measure);
++    };
++    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
++    observer?.observe(canvas);
++    observer?.observe(column);
++    const mutations = new MutationObserver((records) => {
++      if (records.some(({ target }) => !column.contains(target))) schedule();
++    });
++    mutations.observe(workspace, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'data-expanded'] });
++    window.addEventListener('resize', schedule);
++    workspace.addEventListener('transitionend', schedule);
++    measure();
++    return () => {
++      cancelAnimationFrame(frame);
++      observer?.disconnect();
++      mutations.disconnect();
++      window.removeEventListener('resize', schedule);
++      workspace.removeEventListener('transitionend', schedule);
++    };
++  }, []);
++  return <div className={className} ref={columnRef}>{children}</div>;
++}
++
+ function MarkdownTable({ headers, rows }) {
+   return (
+-    <div className="message-table-wrap">
++    <div className="message-table-wrap message-rich-block" role="region" aria-label="Table" tabIndex={0}>
+       <table>
+         <thead>
+           <tr>{headers.map((cell, cellIndex) => <th key={`head-${cellIndex}`}>{inlineMarkdown(cell, `head-${cellIndex}`)}</th>)}</tr>
+@@ -2105,7 +2172,7 @@
+ function FencedMessageBlock({ source, language }) {
+   const visualization = useMemo(() => parseVisualizationSpec(source, language), [language, source]);
+   return visualization
+-    ? <InlineVisualization spec={visualization} />
++    ? <div className="message-rich-block message-visualization-wrap" role="group" aria-label={`${visualization.title} scroll area`} tabIndex={0}><InlineVisualization spec={visualization} /></div>
+     : <pre className="message-code"><code data-language={language || undefined}>{source}</code></pre>;
+ }
+ 
+@@ -4981,7 +5048,7 @@
+         {loading ? (
+           <div className="focus-loading"><SpinnerGap className="spin-icon" size={17} />Opening {project?.displayName ?? "project"}…</div>
+         ) : hasConversation ? (
+-          <div className="focus-conversation-column">
++          <ConversationColumn className="focus-conversation-column">
+             {(thread.turns ?? []).map((turn, turnIndex) => (
+               <TurnConversation
+                 thread={thread}
+@@ -4994,7 +5061,7 @@
+                 key={turn.renderId ?? turn.id}
+               />
+             ))}
+-          </div>
++          </ConversationColumn>
+         ) : (
+           <div className="focus-intro" aria-live="polite">
+             <span className="focus-intro-mark"><Sparkle size={17} weight="fill" /></span>
+@@ -5365,7 +5432,7 @@
+           ) : !thread ? (
+             <EmptyConversation project={project} runtime={runtime} onOpenProject={onOpenProject} />
+           ) : (
+-            <div className="conversation-column">
++            <ConversationColumn className="conversation-column">
+               <div className="message-stream">
+                 {conversationProjection.itemCount === 0 && <p className="quiet-empty">This task has no messages yet.</p>}
+                 {(thread.turns ?? []).map((turn, turnIndex) => (
+@@ -5403,7 +5470,7 @@
+                   defaultExpanded={expandTaskProgress}
+                 />
+               )}
+-            </div>
++            </ConversationColumn>
+           )}
+         </div>
+         {project && !readOnly && (
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -1422,6 +1422,43 @@
+ }
+ .user-message-picture:hover img { transform: scale(1.008); }
+ .assistant-message { max-width: 72ch; color: color-mix(in oklab, var(--foreground) 92%, var(--muted)); user-select: text; }
++/* Rich blocks may leave the prose column, but stay inside measured canvas and
++   rail bounds. Only these turns opt out of content-visibility's paint clip. */
++:is(.conversation-column, .focus-conversation-column) .conversation-turn:has(.message-rich-block) {
++  content-visibility: visible;
++  contain-intrinsic-size: none;
++}
++:is(.conversation-column, .focus-conversation-column) .assistant-message:has(.message-rich-block) {
++  width: 100%;
++  min-width: 0;
++}
++:is(.conversation-column, .focus-conversation-column) .assistant-message .markdown-body {
++  min-width: 0;
++  grid-template-columns: minmax(0, 1fr);
++}
++:is(.conversation-column, .focus-conversation-column) .assistant-message .message-rich-block {
++  width: var(--chat-rich-width, 100%);
++  max-width: none;
++  min-width: 0;
++  margin-left: var(--chat-rich-offset, 0px);
++  overscroll-behavior-x: contain;
++}
++:is(.conversation-column, .focus-conversation-column) .assistant-message .message-visualization-wrap {
++  overflow-x: auto;
++}
++:is(.conversation-column, .focus-conversation-column) .message-visualization-wrap > .inline-visualization {
++  width: 100%;
++  min-width: 280px;
++}
++:is(.conversation-column, .focus-conversation-column) .message-table-wrap table {
++  width: max-content;
++  min-width: 100%;
++}
++:is(.conversation-column, .focus-conversation-column) .message-table-wrap .table-cell-text {
++  overflow: visible;
++  text-overflow: clip;
++}
++.message-rich-block:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+ .markdown-body { display: grid; gap: 14px; }
+ .markdown-body > * { margin: 0; }
+ .markdown-body h1,
