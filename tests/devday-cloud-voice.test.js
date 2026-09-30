@@ -28,7 +28,7 @@ describe('Native thread Voice', () => {
   function fixture() { const runtime = { connected: true, request: vi.fn(async () => ({})) }; const prepareThread = vi.fn(async () => {}); const onEvent = vi.fn(); const voice = new CodexVoice({ runtime, prepareThread, onEvent }); return { voice, runtime, prepareThread, onEvent }; }
   it('prepares the actual thread before negotiation and leaves handoffs with Codex', async () => {
     const { voice, runtime, prepareThread } = fixture(); const context = { projectId: 'p', threadId: 't', sdp: 'offer' }; const session = await voice.start(context);
-    expect(prepareThread).toHaveBeenCalledWith(context); expect(runtime.request).toHaveBeenCalledWith('thread/realtime/start', expect.objectContaining({ threadId: 't', transport: { type: 'webrtc', sdp: 'offer' }, clientManagedHandoffs: false }));
+    expect(prepareThread).toHaveBeenCalledWith(context); expect(runtime.request).toHaveBeenCalledWith('thread/realtime/start', expect.objectContaining({ threadId: 't', version: 'v3', transport: { type: 'webrtc', sdp: 'offer' }, clientManagedHandoffs: false }));
     expect(session.threadId).toBe('t'); await expect(voice.start(context)).rejects.toThrow('End the current'); await voice.stop({ sessionId: session.id });
   });
   it('refuses SIWC Voice and filters remote SDP to the active session', async () => {

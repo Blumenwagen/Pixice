@@ -616,7 +616,7 @@ declare global {
       };
       threads: {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
-        read(payload: ThreadScope): Promise<{ thread: any; plan?: any[] | null }>;
+        read(payload: ThreadScope & { historyCursor?: string }): Promise<{ thread: any; plan?: any[] | null }>;
         children(payload: ThreadScope): Promise<{ data: any[]; nextCursor: string | null }>;
         create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; parentThreadId?: string }): Promise<{ thread: any }>;
         fork(payload: ThreadScope & ({ lastTurnId: string } | { turnId: string }) & ({ lastItemId: string } | { itemId: string })): Promise<{ thread: any }>;

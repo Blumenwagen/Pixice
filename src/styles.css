@@ -1293,6 +1293,8 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   margin-left: var(--inspector-chat-left);
 }
 .message-stream { min-width: 0; display: grid; gap: 22px; }
+.earlier-messages { display: grid; justify-items: center; gap: 8px; padding: 12px 0; }
+.earlier-messages small { color: var(--muted); }
 .conversation-turn {
   --conversation-turn-gap: 22px;
   min-width: 0;

@@ -122,6 +122,7 @@ export function runtimeThreadRevision(thread) {
     thread?.preview ?? "",
     thread?.updatedAt ?? "",
     threadStatus(thread),
+    JSON.stringify(thread?.history ?? null),
     (thread?.turns ?? []).map(runtimeTurnRevision).join(";")
   ].join(":");
 }
@@ -256,7 +257,22 @@ export function mergeThreadSnapshot(current, incoming) {
     if (!incomingTurnIds.has(turn.id) && !consumedCurrentTurnIds.has(turn.id)) turns.push(turn);
   });
   const merged = { ...current, ...incoming, turns };
+  if (incoming.history?.paginated) {
+    const firstOverlap = (current.turns ?? []).findIndex((turn) => incomingTurnIds.has(turn.id));
+    if (firstOverlap > 0) {
+      const earlier = current.turns.slice(0, firstOverlap).filter((turn) => !consumedCurrentTurnIds.has(turn.id));
+      const earlierIds = new Set(earlier.map((turn) => turn.id));
+      merged.turns = [...earlier, ...turns.filter((turn) => !earlierIds.has(turn.id))];
+      merged.history = current.history ?? incoming.history;
+    }
+  }
   return runtimeThreadRevision(current) === runtimeThreadRevision(merged) ? current : merged;
+}
+
+export function prependThreadHistory(current, earlier) {
+  if (!current || current.id !== earlier?.id) return current;
+  const currentIds = new Set((current.turns ?? []).map((turn) => turn.id));
+  return { ...current, history: earlier.history, turns: [...(earlier.turns ?? []).filter((turn) => !currentIds.has(turn.id)), ...(current.turns ?? [])] };
 }
 
 function upsertItem(turn, item) {

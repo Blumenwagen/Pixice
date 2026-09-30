@@ -31,7 +31,7 @@ export class CodexVoice {
       await this.prepareThread(value);
       if (this.session !== session || session.phase === 'stopping') throw new Error('Voice was cancelled.');
       await this.runtime.request('thread/realtime/start', {
-        threadId: value.threadId, realtimeSessionId: session.id, outputModality: 'audio', transport: { type: 'webrtc', sdp: value.sdp },
+        threadId: value.threadId, realtimeSessionId: session.id, version: 'v3', outputModality: 'audio', transport: { type: 'webrtc', sdp: value.sdp },
         clientManagedHandoffs: false, includeStartupContext: true,
         realtimeStartInstructions: 'The user is speaking through Pixice Voice. Continue this existing thread and its project directions. Follow its tools, permission settings, and approval boundaries. Spoken discussion is not approval for a pending action. Request explicit approval in Pixice when required.',
         ...(value.voice ? { voice: value.voice } : {})

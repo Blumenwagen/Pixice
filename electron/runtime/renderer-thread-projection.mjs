@@ -19,6 +19,9 @@ function compactLine(value, depth = 0) {
 }
 
 export function projectRendererItem(item) {
+  if (item?.type === "commandExecution" && item.aggregatedOutput?.length > 8192) {
+    return { ...item, aggregatedOutput: `${item.aggregatedOutput.slice(0, 4096)}\n… Output shortened for display …\n${item.aggregatedOutput.slice(-4096)}`, outputTruncated: true };
+  }
   if (!TOOL_ITEM_TYPES.has(item?.type)) return item;
   if (/image(?:_gen|gen|generation)/i.test(item.tool ?? "")) return item;
   const {
@@ -29,17 +32,20 @@ export function projectRendererItem(item) {
     _meta,
     ...projected
   } = item;
+  if (JSON.stringify(projected.arguments ?? null).length > 8192) {
+    projected.arguments = { summary: "Large tool input omitted from the chat display." };
+  }
   const resultSummary = compactLine(result ?? structuredContent ?? contentItems ?? output);
   return resultSummary ? { ...projected, resultSummary } : projected;
 }
 
 function projectRendererTurn(turn) {
-  if (!turn?.items?.some((item) => TOOL_ITEM_TYPES.has(item?.type))) return turn;
+  if (!turn?.items?.some((item) => TOOL_ITEM_TYPES.has(item?.type) || item?.type === "commandExecution")) return turn;
   return { ...turn, items: turn.items.map(projectRendererItem) };
 }
 
 export function projectRendererThread(thread) {
-  if (!thread?.turns?.some((turn) => turn.items?.some((item) => TOOL_ITEM_TYPES.has(item?.type)))) return thread;
+  if (!thread?.turns?.some((turn) => turn.items?.some((item) => TOOL_ITEM_TYPES.has(item?.type) || item?.type === "commandExecution"))) return thread;
   return { ...thread, turns: thread.turns.map(projectRendererTurn) };
 }
 

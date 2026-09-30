@@ -72,6 +72,7 @@ import {
 import { inspectRepository, readDiff, readDiffManifest, readFileDiff } from "../git/worktrees.mjs";
 import { detectGitRuntime, requestCommandLineToolsInstall } from "../git/git-runtime.mjs";
 import { projectRendererThread, projectRuntimePayloadForRenderer } from "../runtime/renderer-thread-projection.mjs";
+import { readRendererThread } from "../runtime/renderer-thread-history.mjs";
 import { projectFolderDialogProperties } from "../projects/project-folder-dialog.mjs";
 import { TranscriptionService } from "../transcription/service.mjs";
 import { TRANSCRIPTION_MODEL_IDS } from "../transcription/catalog.mjs";
@@ -1047,6 +1048,7 @@ async function ensureThreadLoaded(project, threadId) {
     const focus = database.getProjectFocusSessionByThread(threadId)?.projectId === project.id;
     const response = await runtime.request("thread/resume", {
       threadId,
+      excludeTurns: true,
       developerInstructions: threadAgentInstructions(threadId, project),
       dynamicTools: focus ? focusDynamicTools : pixiceDynamicTools
     });
@@ -1161,7 +1163,7 @@ async function scheduleFocusMemoryReview(focusThreadId) {
   focusMemoryReviewInFlight.add(focusThreadId);
   try {
     const [threadResponse, memory] = await Promise.all([
-      runtime.request("thread/read", { threadId: focusThreadId, includeTurns: true }),
+      readRendererThread(runtime, focusThreadId),
       Promise.resolve(pixiceFocusMemory.read(project.id))
     ]);
     const permissions = permissionSettings("read-only", project);
@@ -1506,8 +1508,8 @@ async function scheduleFocusQuestionReview(requestKeyValue, focusContext) {
   let internalThreadId = null;
   try {
     const [focusResponse, workerResponse] = await Promise.all([
-      runtime.request("thread/read", { threadId: focusContext.focusThreadId, includeTurns: true }),
-      runtime.request("thread/read", { threadId: focusContext.sourceThreadId, includeTurns: true })
+      readRendererThread(runtime, focusContext.focusThreadId),
+      readRendererThread(runtime, focusContext.sourceThreadId)
     ]);
     const permissions = permissionSettings("read-only", project);
     const selectedModel = await focusQuestionReviewModel(focusContext);
@@ -1663,7 +1665,7 @@ async function ensureProjectFocusSession({ project, model, serviceTier, replaceE
   const existing = database.getProjectFocusSession(project.id);
   if (existing) {
     await ensureThreadLoaded(project, existing.threadId);
-    const response = await runtime.request("thread/read", { threadId: existing.threadId, includeTurns: true });
+    const response = await readRendererThread(runtime, existing.threadId);
     rememberThread(project, response.thread, { loaded: true });
     const provider = runtime.providerForThread(existing.threadId);
     const requestedProvider = model ? runtime.providerForModel(model) : provider;
@@ -2886,9 +2888,9 @@ function registerHandlers() {
     return { ...response, data };
   });
   handlers.handle("threads:read", async (context = {}, payload) => {
-    const { projectId, threadId } = threadPayload.parse(payload);
+    const { projectId, threadId, historyCursor } = threadPayload.extend({ historyCursor: z.string().min(1).max(4096).optional() }).parse(payload);
     const project = getProject(projectId);
-    const response = await runtime.request("thread/read", { threadId, includeTurns: true });
+    const response = await readRendererThread(runtime, threadId, { cursor: historyCursor });
     if (!isWithinProject(project, response.thread.cwd)) throw new Error("Thread is outside the selected project");
     const ownerProjectId = authoritativeThreadProjectId(threadId, response.thread.cwd);
     if (context.remote && context.access?.role === "observer" && ownerProjectId !== project.id) throw new Error("Thread is outside the selected project");

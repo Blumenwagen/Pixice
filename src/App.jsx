@@ -79,6 +79,7 @@ import {
   descendantsOf,
   isSidebarThread,
   mergeThreadSnapshot,
+  prependThreadHistory,
   projectCollabAgents,
   removeLocalUserMessage,
   reviewFiles,
@@ -1962,6 +1963,28 @@ function inlineMarkdown(text, keyPrefix) {
 
 function tableCells(line) {
   return line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+}
+
+function EarlierMessages({ thread, onLoad }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (!thread?.history?.nextCursor || !onLoad) return null;
+  const load = async (event) => {
+    const scroll = event.currentTarget.closest(".focus-conversation-scroll, .conversation-scroll, .side-thread-scroll");
+    const previousHeight = scroll?.scrollHeight ?? 0;
+    const previousTop = scroll?.scrollTop ?? 0;
+    setBusy(true);
+    setError("");
+    try {
+      await onLoad(thread.history.nextCursor);
+      requestAnimationFrame(() => { if (scroll) scroll.scrollTop = previousTop + scroll.scrollHeight - previousHeight; });
+    } catch (cause) { setError(cause.message); }
+    finally { setBusy(false); }
+  };
+  return <div className="earlier-messages">
+    <button type="button" className="settings-action" disabled={busy} onClick={load}>{busy ? "Loading earlier messages…" : "Load earlier messages"}</button>
+    {error && <small role="alert">{error}</small>}
+  </div>;
 }
 
 function ConversationColumn({ className, children }) {
@@ -4382,6 +4405,11 @@ function SideThreadSurface({
           <div className="side-thread-empty"><GitBranch size={22} /><strong>Start a side thread</strong><p>Ask a related question without leaving the main task.</p></div>
         ) : (
           <div className="side-thread-messages">
+            <EarlierMessages thread={snapshot} onLoad={async (historyCursor) => {
+              followLatestRef.current = false;
+              const response = await api.threads.read({ projectId, threadId, historyCursor });
+              if (mountedRef.current && threadIdRef.current === threadId) setSnapshot((current) => prependThreadHistory(current, response.thread));
+            }} />
             {(snapshot.turns ?? []).length === 0 && <p className="quiet-empty">This side thread has no messages yet.</p>}
             {(snapshot.turns ?? []).map((turn, turnIndex) => (
               <TurnConversation
@@ -4828,6 +4856,7 @@ function FocusWorkspace({
   project,
   projects,
   thread,
+  onLoadEarlier,
   threads,
   loading,
   runtime,
@@ -5050,6 +5079,7 @@ function FocusWorkspace({
           <div className="focus-loading"><SpinnerGap className="spin-icon" size={17} />Opening {project?.displayName ?? "project"}…</div>
         ) : hasConversation ? (
           <ConversationColumn className="focus-conversation-column">
+            <EarlierMessages thread={thread} onLoad={onLoadEarlier} />
             {(thread.turns ?? []).map((turn, turnIndex) => (
               <TurnConversation
                 thread={thread}
@@ -5212,6 +5242,7 @@ export function ConversationWorkspace({
   storage = localStorage,
   project,
   thread,
+  onLoadEarlier,
   threads,
   loading,
   runtime,
@@ -5436,6 +5467,7 @@ export function ConversationWorkspace({
           ) : (
             <ConversationColumn className="conversation-column">
               <div className="message-stream">
+                <EarlierMessages thread={thread} onLoad={onLoadEarlier} />
                 {conversationProjection.itemCount === 0 && <p className="quiet-empty">This task has no messages yet.</p>}
                 {(thread.turns ?? []).map((turn, turnIndex) => (
                   <TurnConversation
@@ -8146,7 +8178,7 @@ export function App({ readOnly = false } = {}) {
       markResponsesSeen(focusThread, seenResponseIdsRef.current);
       selectedThreadIdRef.current = focusThread.id;
       setSelectedThreadId(focusThread.id);
-      setThread(focusThread);
+      setThread((current) => mergeThreadSnapshot(current, focusThread));
       setPlan([]);
       setDraftMode(false);
       const saved = loadThreadConfiguration(focusThread.id, storage);
@@ -8185,6 +8217,15 @@ export function App({ readOnly = false } = {}) {
       if (requestId === focusEnsureRequestRef.current) setFocusLoading(false);
     }
   }, [api, defaultEffort, defaultFastMode, defaultModel, models, storage]);
+
+  const loadEarlierMessages = useCallback(async (historyCursor) => {
+    const projectId = selectedProjectIdRef.current;
+    const threadId = selectedThreadIdRef.current;
+    const response = await api.threads.read({ projectId, threadId, historyCursor });
+    if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === threadId) {
+      setThread((current) => prependThreadHistory(current, response.thread));
+    }
+  }, [api]);
 
   const refreshThread = useCallback(async (projectId, threadId) => {
     if (!api || !projectId || !threadId) return;
@@ -10931,6 +10972,7 @@ export function App({ readOnly = false } = {}) {
             storage={storage}
             project={selectedProject}
             thread={thread}
+            onLoadEarlier={loadEarlierMessages}
             threads={threads}
             loading={loading.app || loading.thread}
             runtime={runtime}
@@ -11058,6 +11100,7 @@ export function App({ readOnly = false } = {}) {
             project={selectedProject}
             projects={projects}
             thread={thread?.id === focusThreadId ? thread : null}
+            onLoadEarlier={loadEarlierMessages}
             threads={threads}
             loading={focusLoading || loading.app || (Boolean(focusThreadId) && loading.thread)}
             runtime={runtime}

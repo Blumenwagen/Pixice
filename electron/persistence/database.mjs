@@ -1513,14 +1513,12 @@ export class PixiceDatabase {
 
   saveProviderThreadSummary(threadId, summary) {
     const updatedAt = this.#nextProviderWriteTimestamp(threadId);
-    const existing = this.db.prepare("SELECT snapshot FROM provider_thread_snapshots WHERE thread_id = ?").get(threadId);
-    const snapshot = existing ? parsedJson(existing.snapshot, {}) : summary;
     this.db.prepare(`
       INSERT INTO provider_thread_snapshots (thread_id, snapshot, summary, updated_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(thread_id) DO UPDATE SET
         summary=excluded.summary
-    `).run(threadId, JSON.stringify(snapshot), JSON.stringify(providerThreadSummary(summary)), updatedAt);
+    `).run(threadId, JSON.stringify(summary), JSON.stringify(providerThreadSummary(summary)), updatedAt);
   }
 
   #indexFocusSnapshot(projectId, threadId, snapshot) {
