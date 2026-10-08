@@ -109,6 +109,7 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
   });
   remote.pushService = pushService;
   function publish(event) {
+    if (event.type === 'VoiceEvent') { local.publish({ at: new Date().toISOString(), ...event }); return; }
     if (event.type === 'VoiceSessionEvent' || event.payload?.method?.startsWith('thread/realtime/')) return;
     const envelope = { at: new Date().toISOString(), ...event };
     local.publish(envelope); remote.publish(envelope);

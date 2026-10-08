@@ -1,0 +1,307 @@
+[
+  {
+    "state": "closed",
+    "open": false,
+    "activity": {
+      "x": 1483.0799560546875,
+      "y": 118,
+      "width": 304.9200439453125,
+      "right": 1788,
+      "height": 334.6199951171875
+    },
+    "prose": {
+      "x": 494.5,
+      "y": 54.734375,
+      "width": 614.875,
+      "right": 1109.375,
+      "height": 69.703125
+    },
+    "composer": {
+      "x": 490,
+      "y": 940.5,
+      "width": 820,
+      "right": 1310,
+      "height": 129.5
+    },
+    "rich": [
+      {
+        "x": 24,
+        "y": 138.4375,
+        "width": 1468,
+        "right": 1492,
+        "height": 148.375
+      },
+      {
+        "x": 24,
+        "y": 361.28125,
+        "width": 1468,
+        "right": 1492,
+        "height": 474.03125
+      },
+      {
+        "x": 24,
+        "y": 886.546875,
+        "width": 1468,
+        "right": 1492,
+        "height": 207.7734375
+      },
+      {
+        "x": 24,
+        "y": 1108.3203125,
+        "width": 1468,
+        "right": 1492,
+        "height": 705.7734375
+      }
+    ],
+    "edgesVisible": [
+      true,
+      true
+    ],
+    "pageOverflow": 0,
+    "canvasOverflow": 0
+  },
+  {
+    "state": "open",
+    "open": true,
+    "activity": {
+      "x": 1472,
+      "y": 118,
+      "width": 308,
+      "right": 1780,
+      "height": 338
+    },
+    "prose": {
+      "x": 494.5,
+      "y": 54.734375,
+      "width": 614.875,
+      "right": 1109.375,
+      "height": 69.703125
+    },
+    "composer": {
+      "x": 490,
+      "y": 940.5,
+      "width": 820,
+      "right": 1310,
+      "height": 129.5
+    },
+    "rich": [
+      {
+        "x": 24,
+        "y": 138.4375,
+        "width": 1436,
+        "right": 1460,
+        "height": 148.375
+      },
+      {
+        "x": 24,
+        "y": 361.28125,
+        "width": 1436,
+        "right": 1460,
+        "height": 474.03125
+      },
+      {
+        "x": 24,
+        "y": 886.546875,
+        "width": 1436,
+        "right": 1460,
+        "height": 207.7734375
+      },
+      {
+        "x": 24,
+        "y": 1108.3203125,
+        "width": 1436,
+        "right": 1460,
+        "height": 705.7734375
+      }
+    ],
+    "edgesVisible": [
+      true,
+      true
+    ],
+    "pageOverflow": 0,
+    "canvasOverflow": 0
+  },
+  {
+    "state": "closed-again",
+    "open": false,
+    "activity": {
+      "x": 1483.0799560546875,
+      "y": 118,
+      "width": 304.9200439453125,
+      "right": 1788,
+      "height": 334.6199951171875
+    },
+    "prose": {
+      "x": 494.5,
+      "y": 54.734375,
+      "width": 614.875,
+      "right": 1109.375,
+      "height": 69.703125
+    },
+    "composer": {
+      "x": 490,
+      "y": 940.5,
+      "width": 820,
+      "right": 1310,
+      "height": 129.5
+    },
+    "rich": [
+      {
+        "x": 24,
+        "y": 138.4375,
+        "width": 1468,
+        "right": 1492,
+        "height": 148.375
+      },
+      {
+        "x": 24,
+        "y": 361.28125,
+        "width": 1468,
+        "right": 1492,
+        "height": 474.03125
+      },
+      {
+        "x": 24,
+        "y": 886.546875,
+        "width": 1468,
+        "right": 1492,
+        "height": 207.7734375
+      },
+      {
+        "x": 24,
+        "y": 1108.3203125,
+        "width": 1468,
+        "right": 1492,
+        "height": 705.7734375
+      }
+    ],
+    "edgesVisible": [
+      true,
+      true
+    ],
+    "pageOverflow": 0,
+    "canvasOverflow": 0
+  },
+  {
+    "state": "no-transition-open",
+    "open": true,
+    "activity": {
+      "x": 1472,
+      "y": 118,
+      "width": 308,
+      "right": 1780,
+      "height": 338
+    },
+    "prose": {
+      "x": 494.5,
+      "y": 54.734375,
+      "width": 614.875,
+      "right": 1109.375,
+      "height": 69.703125
+    },
+    "composer": {
+      "x": 490,
+      "y": 940.5,
+      "width": 820,
+      "right": 1310,
+      "height": 129.5
+    },
+    "rich": [
+      {
+        "x": 24,
+        "y": 138.4375,
+        "width": 1436,
+        "right": 1460,
+        "height": 148.375
+      },
+      {
+        "x": 24,
+        "y": 361.28125,
+        "width": 1436,
+        "right": 1460,
+        "height": 474.03125
+      },
+      {
+        "x": 24,
+        "y": 886.546875,
+        "width": 1436,
+        "right": 1460,
+        "height": 207.7734375
+      },
+      {
+        "x": 24,
+        "y": 1108.3203125,
+        "width": 1436,
+        "right": 1460,
+        "height": 705.7734375
+      }
+    ],
+    "edgesVisible": [
+      true,
+      true
+    ],
+    "pageOverflow": 0,
+    "canvasOverflow": 0
+  },
+  {
+    "state": "no-transition-closed",
+    "open": false,
+    "activity": {
+      "x": 1483.0799560546875,
+      "y": 118,
+      "width": 304.9200439453125,
+      "right": 1788,
+      "height": 334.6199951171875
+    },
+    "prose": {
+      "x": 494.5,
+      "y": 54.734375,
+      "width": 614.875,
+      "right": 1109.375,
+      "height": 69.703125
+    },
+    "composer": {
+      "x": 490,
+      "y": 940.5,
+      "width": 820,
+      "right": 1310,
+      "height": 129.5
+    },
+    "rich": [
+      {
+        "x": 24,
+        "y": 138.4375,
+        "width": 1468,
+        "right": 1492,
+        "height": 148.375
+      },
+      {
+        "x": 24,
+        "y": 361.28125,
+        "width": 1468,
+        "right": 1492,
+        "height": 474.03125
+      },
+      {
+        "x": 24,
+        "y": 886.546875,
+        "width": 1468,
+        "right": 1492,
+        "height": 207.7734375
+      },
+      {
+        "x": 24,
+        "y": 1108.3203125,
+        "width": 1468,
+        "right": 1492,
+        "height": 705.7734375
+      }
+    ],
+    "edgesVisible": [
+      true,
+      true
+    ],
+    "pageOverflow": 0,
+    "canvasOverflow": 0
+  }
+]

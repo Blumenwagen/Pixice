@@ -672,8 +672,7 @@ describe("Pixice app shell", () => {
     fireEvent.click(await screen.findByRole('button', { name: /^Appearance/ }));
     fireEvent.click(screen.getByRole('radio', { name: 'Green accent' }));
     expect(shell).toHaveAttribute('data-accent-color', 'green');
-    fireEvent.click(screen.getByRole('button', { name: 'Back to task' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Focus' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Focus' }));
     await screen.findByRole('article', { name: 'Saved timer' });
     expect(shell.querySelector('article[data-kind="timer"]')).toBeInTheDocument();
     expect(shell.querySelector('article[data-kind="v2"]')).toBeInTheDocument();
@@ -1494,12 +1493,12 @@ describe("Pixice app shell", () => {
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).not.toBeInTheDocument();
     const settingsSidebar = screen.getByRole("complementary", { name: "Settings navigation" });
     expect(settingsSidebar).toBeInTheDocument();
-    expect(within(settingsSidebar).getByRole("navigation").querySelectorAll("button")).toHaveLength(9);
+    expect(within(settingsSidebar).getByRole("navigation").querySelectorAll("button")).toHaveLength(10);
     expect(within(settingsSidebar).getByRole("button", { name: /^Voice/ })).toBeInTheDocument();
     expect(within(settingsSidebar).queryByRole("button", { name: /^Runtime/ })).not.toBeInTheDocument();
     expect(within(settingsSidebar).queryByRole("button", { name: /^Notifications/ })).not.toBeInTheDocument();
     expect(within(settingsSidebar).getByRole("button", { name: /^About Pixice/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back to task" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to Review" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Capabilities/ }));
     expect(screen.queryByRole("heading", { name: "General" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Capabilities" })).toBeInTheDocument();
@@ -2029,8 +2028,7 @@ describe("Pixice app shell", () => {
     expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Show third project row" }));
-    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
-    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Focus" }));
 
     const expandedShortcuts = await screen.findByRole("group", { name: "Projects" });
     expect(within(expandedShortcuts).getAllByRole("button")).toHaveLength(10);

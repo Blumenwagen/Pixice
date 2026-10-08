@@ -1,0 +1,48 @@
+{
+  "before": {
+    ".focus-conversation-scroll": {
+      "x": 0,
+      "y": 30,
+      "width": 1440,
+      "height": 815
+    },
+    ".focus-composer-wrap": {
+      "x": 310,
+      "y": 861,
+      "width": 820,
+      "height": 99
+    },
+    ".focus-composer-wrap textarea": {
+      "x": 328,
+      "y": 878,
+      "width": 784,
+      "height": 34
+    }
+  },
+  "after": {
+    ".focus-conversation-scroll": {
+      "x": 0,
+      "y": 30,
+      "width": 1440,
+      "height": 815
+    },
+    ".focus-composer-wrap": {
+      "x": 310,
+      "y": 861,
+      "width": 820,
+      "height": 99
+    },
+    ".focus-composer-wrap textarea": {
+      "x": 328,
+      "y": 878,
+      "width": 784,
+      "height": 34
+    }
+  },
+  "unchanged": true,
+  "viewport": {
+    "width": 1440,
+    "height": 1020
+  },
+  "fixture": true
+}

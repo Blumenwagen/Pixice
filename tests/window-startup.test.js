@@ -13,6 +13,6 @@ describe("desktop window startup", () => {
     const source = readFileSync(path.resolve("electron/main.mjs"), "utf8");
     const application = readFileSync(path.resolve("electron/backend/application.mjs"), "utf8");
     const forkHandler = application.slice(application.indexOf('handlers.handle("threads:fork"'), application.indexOf('handlers.handle("threads:archive"'));
-    expect(forkHandler).toMatch(/runtime\.request\("thread\/fork",\s*\{[\s\S]*deferGoalContinuation:\s*true/);
+    expect(forkHandler).toMatch(/(?:runtime\.)?request\("thread\/fork",\s*\{[\s\S]*deferGoalContinuation:\s*true/);
   });
 });

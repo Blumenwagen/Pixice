@@ -36,6 +36,9 @@ export function projectFocusUserItem(item, isInternalContext = () => false, turn
 
 export function projectRendererItem(item, isInternalContext, turnId) {
   if (item?.type === "userMessage") return projectFocusUserItem(item, isInternalContext, turnId);
+  if (item?.type === "commandExecution" && item.aggregatedOutput?.length > 8192) {
+    return { ...item, aggregatedOutput: `${item.aggregatedOutput.slice(0, 4096)}\n… Output shortened for display …\n${item.aggregatedOutput.slice(-4096)}`, outputTruncated: true };
+  }
   if (!TOOL_ITEM_TYPES.has(item?.type)) return item;
   if (/image(?:_gen|gen|generation)/i.test(item.tool ?? "")) return item;
   const {
@@ -46,6 +49,9 @@ export function projectRendererItem(item, isInternalContext, turnId) {
     _meta,
     ...projected
   } = item;
+  if (JSON.stringify(projected.arguments ?? null).length > 8192) {
+    projected.arguments = { summary: "Large tool input omitted from the chat display." };
+  }
   const resultSummary = compactLine(result ?? structuredContent ?? contentItems ?? output);
   return resultSummary ? { ...projected, resultSummary } : projected;
 }

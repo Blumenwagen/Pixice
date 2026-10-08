@@ -1,0 +1,44 @@
+Settings return navigation, Focus work fb3d1711-82bf-4928-b75a-5affaf90b5b5
+Project f53f8280-c934-4b8f-b812-57ef3daa89a8
+
+Directions and scope
+Read Focus work and its scoped directions before changes and again before handoff. Acknowledged direction revision 28. Work record specifies codex:gpt-6.1-sol, medium. Followed r26 targeted verification and r21 no Astra. No delegation, commits, pushes, installs, builds, suites or service/app restarts.
+Searched project, ancestor and affected-directory AGENTS.md locations; none found. Used supplied Pixice and Unslop instructions.
+Existing working tree includes accepted Voice/widgets/Cloud and wide-content work. Captured App.jsx at entry and reviewed change.patch against that working version, preserving its unrelated changes. Only App.jsx, the new focused test and this work directory changed in this work.
+
+Implementation and source
+src/App.jsx settingsOrigin and changeView near 7630/8037 remember the originating view and surface on first Settings entry. Repeated Settings entry preserves the first origin. Settings no longer closes execution or Preview. Back restores the previous view and uses a destination-specific label.
+TrayNavigate near 9222 routes Settings through changeView before its Workspace/project/thread resets. Non-Settings tray behavior remains unchanged.
+Focus dock, slash /settings and /usage, and Cloud setup all enter Settings without exitFocus. Workspace Sidebar uses the same changeView path.
+FocusWorkspace stays mounted inside a hidden/inert wrapper during Settings. Render layout uses focusVisible, including data-surface-mode, so Settings receives the normal two-column layout. Hidden Focus stops global composer file-drop handling and autofocus. BrowserPanel receives explicit visibility to hide the native viewport and disable hidden file editor shortcuts without closing Preview.
+Focus load effect near 8775 depends on surface/project/service changes, not activeView. Thread load and active-project/thread events depend on selected IDs, which Settings entry does not change. Voice launch adapter in src/components/VoiceConversation.jsx depends on API/project/provider/thread/enabled identity; retained Focus does not change those values during Settings. Native companion owns capture and lifetime.
+The second nearby Back callback belongs to ProjectToolsSidebar, not a Settings page. It remains unchanged.
+
+Regression evidence
+Existing local runtime used directly because pnpm and node were absent from shell PATH:
+/Users/tschlueter/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node node_modules/vitest/vitest.mjs run tests/settings-return-navigation.test.jsx --reporter=dot
+Initial focused run passed Focus dock, /settings, /usage and repeated tray Settings entries. Workspace test initially needed to await selected-thread hydration and fix ambiguous Preview close/Review button selectors. Those were test-fixture corrections.
+Targeted Workspace rerun with -t 'Workspace task': passed, 1 test, 4 skipped.
+After adding BrowserPanel visibility, targeted Focus rerun with -t 'Focus dock': passed, 1 test, 4 skipped. This verifies retained prompt/component/activity identities, Preview restoration and hidden/shown BrowserPanel accessibility flags. All five cases have passed; no broad rerun.
+git diff --check -- src/App.jsx tests/settings-return-navigation.test.jsx passed.
+
+Actual Preview evidence
+Used existing Vite server at http://127.0.0.1:5183/?focus-v2-preview=1 in this thread's Pixice browser, without starting or restarting anything.
+Entered Focus Settings from dock. Inspected Settings navigation and Back to Focus. Typed 'Settings return Preview check' into Focus, opened Settings and returned. Browser inspection showed the same draft text, Focus dock and current Pixice project.
+Exited Focus using Workspace, opened Settings there, inspected Back to task, returned and inspected Workspace navigation, Refactor authentication flow and Task prompt.
+Preview screenshot tool returned only an empty data URL, so no screenshot artifact is claimed. Preview inspection/interactions succeeded. The preview fixture displays an existing unsupported Connect-parameter notice.
+
+Remaining limits
+No real active native Voice session, native embedded browser viewport, remote execution session, packaged desktop app or Cloud-auth setup flow was exercised. Voice continuity and native viewport hiding are supported by source inspection, retained Focus component identity and BrowserPanel visibility assertions. Cloud setup uses the same entry path but was not separately clicked.
+No independent review was started; result is ready for coordinator review. Work is not marked done by this worker.
+
+r39 review correction, 2026-09-30
+Continued the same durable work and thread. Read current work/directions before the change and before handoff; acknowledged revision 39. No additional AGENTS.md appeared in the affected paths or ancestors.
+Changed only FileSurface's existing save-shortcut effect dependency list from [file, onSave] to [file, onSave, visible] in App.jsx near 1276. Existing cleanup already removes the exact installed listener, so no other lifecycle change was needed. Preserved all navigation work and the five existing tests.
+Added one rendered-App regression at tests/settings-return-navigation.test.jsx near 101. It opens a Focus Preview file, edits it, opens Settings, verifies neither Ctrl+S nor Cmd+S is intercepted or writes the hidden file, then returns to the same editor and verifies both shortcuts save exactly once per dirty edit. Unmount removes shortcut ownership too.
+Ran only that new case using the existing local node/Vitest runtime:
+/Users/tschlueter/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node node_modules/vitest/vitest.mjs run tests/settings-return-navigation.test.jsx -t 'hidden Preview save shortcut' --reporter=dot
+Before fix: failed at hidden Ctrl+S interception, confirming the reviewed defect.
+After fix: 1 passed, 5 skipped, duration 3.20 seconds. No navigation-case rerun, suite, build, install, restart, commit or delegation.
+Scoped source inspection and git diff --check passed. Reviewable follow-up patch is r39.patch. No visual layout changed, so the rendered-App shortcut regression is the verification for this follow-up; no new live Preview or packaged native keyboard check was performed.
+Ready for coordinator review; this worker has not marked the durable work done.

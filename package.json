@@ -36,6 +36,7 @@
     "@anthropic-ai/claude-agent-sdk": "0.3.234",
     "@xyflow/react": "^12.11.3",
     "electron-updater": "6.8.9",
+    "jose": "^6.2.9",
     "motion": "^13.1.0",
     "ms": "2.1.3",
     "qrcode": "1.5.4",

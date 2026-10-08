@@ -1,0 +1,310 @@
+[
+  {
+    "name": "before-focus-desktop",
+    "viewport": {
+      "width": 1800,
+      "height": 1098
+    },
+    "canvas": {
+      "x": 0,
+      "y": 30,
+      "width": 1800,
+      "height": 859,
+      "right": 1800
+    },
+    "prose": {
+      "x": 494.5,
+      "y": 274.734375,
+      "width": 614.875,
+      "height": 69.703125,
+      "right": 1109.375
+    },
+    "header": {
+      "x": 494.5,
+      "y": 238.234375,
+      "width": 614.875,
+      "height": 22.5,
+      "right": 1109.375
+    },
+    "table": {
+      "x": 494.5,
+      "y": 358.4375,
+      "width": 614.875,
+      "height": 163.375,
+      "right": 1109.375
+    },
+    "visuals": [
+      {
+        "x": 494.5,
+        "y": 596.28125,
+        "width": 614.875,
+        "height": 474.03125,
+        "right": 1109.375
+      },
+      {
+        "x": 494.5,
+        "y": 1121.546875,
+        "width": 614.875,
+        "height": 218.7734375,
+        "right": 1109.375
+      },
+      {
+        "x": 494.5,
+        "y": 1354.3203125,
+        "width": 614.875,
+        "height": 705.7734375,
+        "right": 1109.375
+      }
+    ],
+    "user": {
+      "x": 1030.4765625,
+      "y": 148,
+      "width": 264.0234375,
+      "height": 45.234375,
+      "right": 1294.5
+    },
+    "composer": {
+      "x": 490,
+      "y": 940.5,
+      "width": 820,
+      "height": 129.5,
+      "right": 1310
+    },
+    "scrollOverflow": 0,
+    "pageOverflow": 0,
+    "tableScrollWidth": 901,
+    "tableClientWidth": 613,
+    "containment": "visible"
+  },
+  {
+    "name": "before-focus-preview",
+    "viewport": {
+      "width": 1800,
+      "height": 1098
+    },
+    "canvas": {
+      "x": 0,
+      "y": 30,
+      "width": 480,
+      "height": 859,
+      "right": 480
+    },
+    "prose": {
+      "x": 22,
+      "y": 274.734375,
+      "width": 425,
+      "height": 92.9375,
+      "right": 447
+    },
+    "header": {
+      "x": 22,
+      "y": 238.234375,
+      "width": 425,
+      "height": 22.5,
+      "right": 447
+    },
+    "table": {
+      "x": 22,
+      "y": 381.671875,
+      "width": 425,
+      "height": 163.375,
+      "right": 447
+    },
+    "visuals": [
+      {
+        "x": 22,
+        "y": 619.515625,
+        "width": 425,
+        "height": 474.03125,
+        "right": 447
+      },
+      {
+        "x": 22,
+        "y": 1168.015625,
+        "width": 425,
+        "height": 218.7734375,
+        "right": 447
+      },
+      {
+        "x": 22,
+        "y": 1400.7890625,
+        "width": 425,
+        "height": 716.7734375,
+        "right": 447
+      }
+    ],
+    "user": {
+      "x": 182.9765625,
+      "y": 148,
+      "width": 264.0234375,
+      "height": 45.234375,
+      "right": 447
+    },
+    "composer": {
+      "x": 14,
+      "y": 940.5,
+      "width": 452,
+      "height": 129.5,
+      "right": 466
+    },
+    "scrollOverflow": 0,
+    "pageOverflow": 0,
+    "tableScrollWidth": 901,
+    "tableClientWidth": 423,
+    "containment": "visible"
+  },
+  {
+    "name": "before-task-desktop",
+    "viewport": {
+      "width": 1800,
+      "height": 1098
+    },
+    "canvas": {
+      "x": 264,
+      "y": 88,
+      "width": 1528,
+      "height": 1002,
+      "right": 1792
+    },
+    "prose": {
+      "x": 642.5,
+      "y": 270.734375,
+      "width": 614.875,
+      "height": 69.703125,
+      "right": 1257.375
+    },
+    "header": {
+      "x": 642.5,
+      "y": 234.234375,
+      "width": 614.875,
+      "height": 22.5,
+      "right": 1257.375
+    },
+    "table": {
+      "x": 642.5,
+      "y": 354.4375,
+      "width": 614.875,
+      "height": 163.375,
+      "right": 1257.375
+    },
+    "visuals": [
+      {
+        "x": 642.5,
+        "y": 592.28125,
+        "width": 614.875,
+        "height": 474.03125,
+        "right": 1257.375
+      },
+      {
+        "x": 642.5,
+        "y": 1117.546875,
+        "width": 614.875,
+        "height": 218.7734375,
+        "right": 1257.375
+      },
+      {
+        "x": 642.5,
+        "y": 1350.3203125,
+        "width": 614.875,
+        "height": 705.7734375,
+        "right": 1257.375
+      }
+    ],
+    "user": {
+      "x": 1138.4765625,
+      "y": 142,
+      "width": 264.0234375,
+      "height": 45.234375,
+      "right": 1402.5
+    },
+    "composer": {
+      "x": 648,
+      "y": 961.5,
+      "width": 760,
+      "height": 112.5,
+      "right": 1408
+    },
+    "scrollOverflow": 0,
+    "pageOverflow": 0,
+    "tableScrollWidth": 901,
+    "tableClientWidth": 613,
+    "containment": "auto"
+  },
+  {
+    "name": "before-task-preview",
+    "viewport": {
+      "width": 1800,
+      "height": 1098
+    },
+    "canvas": {
+      "x": 64,
+      "y": 82,
+      "width": 430,
+      "height": 1008,
+      "right": 494
+    },
+    "prose": {
+      "x": 81,
+      "y": 236.296875,
+      "width": 385,
+      "height": 83.1875,
+      "right": 466
+    },
+    "header": {
+      "x": 81,
+      "y": 199.796875,
+      "width": 385,
+      "height": 22.5,
+      "right": 466
+    },
+    "table": {
+      "x": 81,
+      "y": 333.484375,
+      "width": 385,
+      "height": 163.375,
+      "right": 466
+    },
+    "visuals": [
+      {
+        "x": 81,
+        "y": 566.453125,
+        "width": 385,
+        "height": 472.5390625,
+        "right": 466
+      },
+      {
+        "x": 81,
+        "y": 1108.5859375,
+        "width": 385,
+        "height": 218.296875,
+        "right": 466
+      },
+      {
+        "x": 81,
+        "y": 1340.8828125,
+        "width": 385,
+        "height": 716.296875,
+        "right": 466
+      }
+    ],
+    "user": {
+      "x": 222.6875,
+      "y": 116,
+      "width": 243.3125,
+      "height": 40.796875,
+      "right": 466
+    },
+    "composer": {
+      "x": 81,
+      "y": 967.5,
+      "width": 396,
+      "height": 110.5,
+      "right": 477
+    },
+    "scrollOverflow": 0,
+    "pageOverflow": 0,
+    "tableScrollWidth": 901,
+    "tableClientWidth": 383,
+    "containment": "auto"
+  }
+]

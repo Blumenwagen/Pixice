@@ -1,0 +1,1087 @@
+{
+  "workId": "8d25369f-4cd5-4798-9afd-d9a648b41499",
+  "source": "Pixice preview browser, real App rendered in iframe viewports through development fixture",
+  "nativeVoiceEvidence": false,
+  "screenshotStatus": "resolved: coordinator supplied isolated Electron captures and reported layout good; worker inspected existing task-empty and focus-cloud-menu captures",
+  "states": [
+    {
+      "name": "task-desktop-empty",
+      "state": {
+        "fixture": true,
+        "surface": "main",
+        "viewport": {
+          "width": 1320,
+          "height": 860
+        },
+        "primary": "Conversational Voice",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 278,
+          "y": 796,
+          "width": 1020,
+          "height": 30,
+          "left": 278,
+          "right": 1298,
+          "top": 796,
+          "bottom": 826
+        },
+        "primaryBounds": {
+          "x": 1268,
+          "y": 796,
+          "width": 30,
+          "height": 30,
+          "left": 1268,
+          "right": 1298,
+          "top": 796,
+          "bottom": 826
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 264,
+          "y": 754,
+          "width": 1048,
+          "height": 82,
+          "left": 264,
+          "right": 1312,
+          "top": 754,
+          "bottom": 836
+        },
+        "canvas": {
+          "x": 264,
+          "y": 30,
+          "width": 1048,
+          "height": 822,
+          "left": 264,
+          "right": 1312,
+          "top": 30,
+          "bottom": 852
+        },
+        "location": {
+          "x": 268,
+          "y": 718,
+          "width": 1040,
+          "height": 28,
+          "left": 268,
+          "right": 1308,
+          "top": 718,
+          "bottom": 746
+        },
+        "menu": null,
+        "rail": {
+          "x": 0,
+          "y": 30,
+          "width": 264,
+          "height": 830,
+          "left": 0,
+          "right": 264,
+          "top": 30,
+          "bottom": 860
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "task-desktop-typed",
+      "state": {
+        "fixture": true,
+        "surface": "main",
+        "viewport": {
+          "width": 1320,
+          "height": 860
+        },
+        "primary": "Send message",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 278,
+          "y": 796,
+          "width": 1020,
+          "height": 30,
+          "left": 278,
+          "right": 1298,
+          "top": 796,
+          "bottom": 826
+        },
+        "primaryBounds": {
+          "x": 1268,
+          "y": 796,
+          "width": 30,
+          "height": 30,
+          "left": 1268,
+          "right": 1298,
+          "top": 796,
+          "bottom": 826
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 264,
+          "y": 754,
+          "width": 1048,
+          "height": 82,
+          "left": 264,
+          "right": 1312,
+          "top": 754,
+          "bottom": 836
+        },
+        "canvas": {
+          "x": 264,
+          "y": 30,
+          "width": 1048,
+          "height": 822,
+          "left": 264,
+          "right": 1312,
+          "top": 30,
+          "bottom": 852
+        },
+        "location": {
+          "x": 268,
+          "y": 718,
+          "width": 1040,
+          "height": 28,
+          "left": 268,
+          "right": 1308,
+          "top": 718,
+          "bottom": 746
+        },
+        "menu": null,
+        "rail": {
+          "x": 0,
+          "y": 30,
+          "width": 264,
+          "height": 830,
+          "left": 0,
+          "right": 264,
+          "top": 30,
+          "bottom": 860
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "task-desktop-menu",
+      "state": {
+        "fixture": true,
+        "surface": "main",
+        "viewport": {
+          "width": 1320,
+          "height": 860
+        },
+        "primary": "Send message",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 278,
+          "y": 796,
+          "width": 1020,
+          "height": 30,
+          "left": 278,
+          "right": 1298,
+          "top": 796,
+          "bottom": 826
+        },
+        "primaryBounds": {
+          "x": 1268,
+          "y": 796,
+          "width": 30,
+          "height": 30,
+          "left": 1268,
+          "right": 1298,
+          "top": 796,
+          "bottom": 826
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 264,
+          "y": 754,
+          "width": 1048,
+          "height": 82,
+          "left": 264,
+          "right": 1312,
+          "top": 754,
+          "bottom": 836
+        },
+        "canvas": {
+          "x": 264,
+          "y": 30,
+          "width": 1048,
+          "height": 822,
+          "left": 264,
+          "right": 1312,
+          "top": 30,
+          "bottom": 852
+        },
+        "location": {
+          "x": 268,
+          "y": 718,
+          "width": 1040,
+          "height": 28,
+          "left": 268,
+          "right": 1308,
+          "top": 718,
+          "bottom": 746
+        },
+        "menu": {
+          "x": 268,
+          "y": 483,
+          "width": 300,
+          "height": 227,
+          "left": 268,
+          "right": 568,
+          "top": 483,
+          "bottom": 710
+        },
+        "rail": {
+          "x": 0,
+          "y": 30,
+          "width": 264,
+          "height": 830,
+          "left": 0,
+          "right": 264,
+          "top": 30,
+          "bottom": 860
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "task-narrow-empty",
+      "state": {
+        "fixture": true,
+        "surface": "main",
+        "viewport": {
+          "width": 1060,
+          "height": 720
+        },
+        "primary": "Conversational Voice",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 278,
+          "y": 656,
+          "width": 760,
+          "height": 30,
+          "left": 278,
+          "right": 1038,
+          "top": 656,
+          "bottom": 686
+        },
+        "primaryBounds": {
+          "x": 1008,
+          "y": 656,
+          "width": 30,
+          "height": 30,
+          "left": 1008,
+          "right": 1038,
+          "top": 656,
+          "bottom": 686
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 264,
+          "y": 614,
+          "width": 788,
+          "height": 82,
+          "left": 264,
+          "right": 1052,
+          "top": 614,
+          "bottom": 696
+        },
+        "canvas": {
+          "x": 264,
+          "y": 30,
+          "width": 788,
+          "height": 682,
+          "left": 264,
+          "right": 1052,
+          "top": 30,
+          "bottom": 712
+        },
+        "location": {
+          "x": 268,
+          "y": 578,
+          "width": 780,
+          "height": 28,
+          "left": 268,
+          "right": 1048,
+          "top": 578,
+          "bottom": 606
+        },
+        "menu": {
+          "x": 268,
+          "y": 343,
+          "width": 300,
+          "height": 227,
+          "left": 268,
+          "right": 568,
+          "top": 343,
+          "bottom": 570
+        },
+        "rail": {
+          "x": 0,
+          "y": 30,
+          "width": 264,
+          "height": 690,
+          "left": 0,
+          "right": 264,
+          "top": 30,
+          "bottom": 720
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "task-narrow-typed",
+      "state": {
+        "fixture": true,
+        "surface": "main",
+        "viewport": {
+          "width": 1060,
+          "height": 720
+        },
+        "primary": "Send message",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 278,
+          "y": 656,
+          "width": 760,
+          "height": 30,
+          "left": 278,
+          "right": 1038,
+          "top": 656,
+          "bottom": 686
+        },
+        "primaryBounds": {
+          "x": 1008,
+          "y": 656,
+          "width": 30,
+          "height": 30,
+          "left": 1008,
+          "right": 1038,
+          "top": 656,
+          "bottom": 686
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 264,
+          "y": 614,
+          "width": 788,
+          "height": 82,
+          "left": 264,
+          "right": 1052,
+          "top": 614,
+          "bottom": 696
+        },
+        "canvas": {
+          "x": 264,
+          "y": 30,
+          "width": 788,
+          "height": 682,
+          "left": 264,
+          "right": 1052,
+          "top": 30,
+          "bottom": 712
+        },
+        "location": {
+          "x": 268,
+          "y": 578,
+          "width": 780,
+          "height": 28,
+          "left": 268,
+          "right": 1048,
+          "top": 578,
+          "bottom": 606
+        },
+        "menu": {
+          "x": 268,
+          "y": 343,
+          "width": 300,
+          "height": 227,
+          "left": 268,
+          "right": 568,
+          "top": 343,
+          "bottom": 570
+        },
+        "rail": {
+          "x": 0,
+          "y": 30,
+          "width": 264,
+          "height": 690,
+          "left": 0,
+          "right": 264,
+          "top": 30,
+          "bottom": 720
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "focus-narrow-loaded",
+      "state": {
+        "fixture": true,
+        "surface": "focus",
+        "viewport": {
+          "width": 1060,
+          "height": 720
+        },
+        "primary": "Conversational Voice",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 143.88,
+          "y": 466.9,
+          "width": 772.24,
+          "height": 29.55,
+          "left": 143.88,
+          "right": 916.12,
+          "top": 466.9,
+          "bottom": 496.45
+        },
+        "primaryBounds": {
+          "x": 886.57,
+          "y": 466.9,
+          "width": 29.55,
+          "height": 29.55,
+          "left": 886.57,
+          "right": 916.12,
+          "top": 466.9,
+          "bottom": 496.45
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 126.15,
+          "y": 411.74,
+          "width": 807.7,
+          "height": 97.52,
+          "left": 126.15,
+          "right": 933.85,
+          "top": 411.74,
+          "bottom": 509.26
+        },
+        "canvas": {
+          "x": 0,
+          "y": 30,
+          "width": 1060,
+          "height": 690,
+          "left": 0,
+          "right": 1060,
+          "top": 30,
+          "bottom": 720
+        },
+        "location": {
+          "x": 131.07,
+          "y": 377.27,
+          "width": 797.85,
+          "height": 27.58,
+          "left": 131.07,
+          "right": 928.93,
+          "top": 377.27,
+          "bottom": 404.85
+        },
+        "menu": null,
+        "rail": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "focus-narrow-empty",
+      "state": {
+        "fixture": true,
+        "surface": "focus",
+        "viewport": {
+          "width": 1060,
+          "height": 720
+        },
+        "primary": "Conversational Voice",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 143.88,
+          "y": 466.9,
+          "width": 772.24,
+          "height": 29.55,
+          "left": 143.88,
+          "right": 916.12,
+          "top": 466.9,
+          "bottom": 496.45
+        },
+        "primaryBounds": {
+          "x": 886.57,
+          "y": 466.9,
+          "width": 29.55,
+          "height": 29.55,
+          "left": 886.57,
+          "right": 916.12,
+          "top": 466.9,
+          "bottom": 496.45
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 126.15,
+          "y": 411.74,
+          "width": 807.7,
+          "height": 97.52,
+          "left": 126.15,
+          "right": 933.85,
+          "top": 411.74,
+          "bottom": 509.26
+        },
+        "canvas": {
+          "x": 0,
+          "y": 30,
+          "width": 1060,
+          "height": 690,
+          "left": 0,
+          "right": 1060,
+          "top": 30,
+          "bottom": 720
+        },
+        "location": {
+          "x": 131.07,
+          "y": 377.27,
+          "width": 797.85,
+          "height": 27.58,
+          "left": 131.07,
+          "right": 928.93,
+          "top": 377.27,
+          "bottom": 404.85
+        },
+        "menu": null,
+        "rail": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "focus-narrow-typed",
+      "state": {
+        "fixture": true,
+        "surface": "focus",
+        "viewport": {
+          "width": 1060,
+          "height": 720
+        },
+        "primary": "Send message",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 143.88,
+          "y": 466.9,
+          "width": 772.24,
+          "height": 29.55,
+          "left": 143.88,
+          "right": 916.12,
+          "top": 466.9,
+          "bottom": 496.45
+        },
+        "primaryBounds": {
+          "x": 886.57,
+          "y": 466.9,
+          "width": 29.55,
+          "height": 29.55,
+          "left": 886.57,
+          "right": 916.12,
+          "top": 466.9,
+          "bottom": 496.45
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 126.15,
+          "y": 411.74,
+          "width": 807.7,
+          "height": 97.52,
+          "left": 126.15,
+          "right": 933.85,
+          "top": 411.74,
+          "bottom": 509.26
+        },
+        "canvas": {
+          "x": 0,
+          "y": 30,
+          "width": 1060,
+          "height": 690,
+          "left": 0,
+          "right": 1060,
+          "top": 30,
+          "bottom": 720
+        },
+        "location": {
+          "x": 131.07,
+          "y": 377.27,
+          "width": 797.85,
+          "height": 27.58,
+          "left": 131.07,
+          "right": 928.93,
+          "top": 377.27,
+          "bottom": 404.85
+        },
+        "menu": null,
+        "rail": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "focus-narrow-menu",
+      "state": {
+        "fixture": true,
+        "surface": "focus",
+        "viewport": {
+          "width": 1060,
+          "height": 720
+        },
+        "primary": "Send message",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 143.88,
+          "y": 466.9,
+          "width": 772.24,
+          "height": 29.55,
+          "left": 143.88,
+          "right": 916.12,
+          "top": 466.9,
+          "bottom": 496.45
+        },
+        "primaryBounds": {
+          "x": 886.57,
+          "y": 466.9,
+          "width": 29.55,
+          "height": 29.55,
+          "left": 886.57,
+          "right": 916.12,
+          "top": 466.9,
+          "bottom": 496.45
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 126.15,
+          "y": 411.74,
+          "width": 807.7,
+          "height": 97.52,
+          "left": 126.15,
+          "right": 933.85,
+          "top": 411.74,
+          "bottom": 509.26
+        },
+        "canvas": {
+          "x": 0,
+          "y": 30,
+          "width": 1060,
+          "height": 690,
+          "left": 0,
+          "right": 1060,
+          "top": 30,
+          "bottom": 720
+        },
+        "location": {
+          "x": 131.07,
+          "y": 377.27,
+          "width": 797.85,
+          "height": 27.58,
+          "left": 131.07,
+          "right": 928.93,
+          "top": 377.27,
+          "bottom": 404.85
+        },
+        "menu": {
+          "x": 131.07,
+          "y": 145.79,
+          "width": 295.5,
+          "height": 223.6,
+          "left": 131.07,
+          "right": 426.57,
+          "top": 145.79,
+          "bottom": 369.39
+        },
+        "rail": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "focus-desktop-menu",
+      "state": {
+        "fixture": true,
+        "surface": "focus",
+        "viewport": {
+          "width": 1320,
+          "height": 860
+        },
+        "primary": "Send message",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 273.88,
+          "y": 536.9,
+          "width": 772.24,
+          "height": 29.55,
+          "left": 273.88,
+          "right": 1046.12,
+          "top": 536.9,
+          "bottom": 566.45
+        },
+        "primaryBounds": {
+          "x": 1016.57,
+          "y": 536.9,
+          "width": 29.55,
+          "height": 29.55,
+          "left": 1016.57,
+          "right": 1046.12,
+          "top": 536.9,
+          "bottom": 566.45
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 256.15,
+          "y": 481.74,
+          "width": 807.7,
+          "height": 97.52,
+          "left": 256.15,
+          "right": 1063.85,
+          "top": 481.74,
+          "bottom": 579.26
+        },
+        "canvas": {
+          "x": 0,
+          "y": 30,
+          "width": 1320,
+          "height": 830,
+          "left": 0,
+          "right": 1320,
+          "top": 30,
+          "bottom": 860
+        },
+        "location": {
+          "x": 261.07,
+          "y": 447.27,
+          "width": 797.85,
+          "height": 27.58,
+          "left": 261.07,
+          "right": 1058.93,
+          "top": 447.27,
+          "bottom": 474.85
+        },
+        "menu": {
+          "x": 261.07,
+          "y": 215.79,
+          "width": 295.5,
+          "height": 223.6,
+          "left": 261.07,
+          "right": 556.58,
+          "top": 215.79,
+          "bottom": 439.39
+        },
+        "rail": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "focus-desktop-empty",
+      "state": {
+        "fixture": true,
+        "surface": "focus",
+        "viewport": {
+          "width": 1320,
+          "height": 860
+        },
+        "primary": "Conversational Voice",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 273.88,
+          "y": 536.9,
+          "width": 772.24,
+          "height": 29.55,
+          "left": 273.88,
+          "right": 1046.12,
+          "top": 536.9,
+          "bottom": 566.45
+        },
+        "primaryBounds": {
+          "x": 1016.57,
+          "y": 536.9,
+          "width": 29.55,
+          "height": 29.55,
+          "left": 1016.57,
+          "right": 1046.12,
+          "top": 536.9,
+          "bottom": 566.45
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 256.15,
+          "y": 481.74,
+          "width": 807.7,
+          "height": 97.52,
+          "left": 256.15,
+          "right": 1063.85,
+          "top": 481.74,
+          "bottom": 579.26
+        },
+        "canvas": {
+          "x": 0,
+          "y": 30,
+          "width": 1320,
+          "height": 830,
+          "left": 0,
+          "right": 1320,
+          "top": 30,
+          "bottom": 860
+        },
+        "location": {
+          "x": 261.07,
+          "y": 447.27,
+          "width": 797.85,
+          "height": 27.58,
+          "left": 261.07,
+          "right": 1058.93,
+          "top": 447.27,
+          "bottom": 474.85
+        },
+        "menu": {
+          "x": 261.07,
+          "y": 215.79,
+          "width": 295.5,
+          "height": 223.6,
+          "left": 261.07,
+          "right": 556.58,
+          "top": 215.79,
+          "bottom": 439.39
+        },
+        "rail": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    },
+    {
+      "name": "focus-desktop-typed",
+      "state": {
+        "fixture": true,
+        "surface": "focus",
+        "viewport": {
+          "width": 1320,
+          "height": 860
+        },
+        "primary": "Send message",
+        "primaryDisabled": false,
+        "composerWidthToken": "760px",
+        "controls": {
+          "x": 273.88,
+          "y": 536.9,
+          "width": 772.24,
+          "height": 29.55,
+          "left": 273.88,
+          "right": 1046.12,
+          "top": 536.9,
+          "bottom": 566.45
+        },
+        "primaryBounds": {
+          "x": 1016.57,
+          "y": 536.9,
+          "width": 29.55,
+          "height": 29.55,
+          "left": 1016.57,
+          "right": 1046.12,
+          "top": 536.9,
+          "bottom": 566.45
+        },
+        "primaryCount": 1,
+        "composer": {
+          "x": 256.15,
+          "y": 481.74,
+          "width": 807.7,
+          "height": 97.52,
+          "left": 256.15,
+          "right": 1063.85,
+          "top": 481.74,
+          "bottom": 579.26
+        },
+        "canvas": {
+          "x": 0,
+          "y": 30,
+          "width": 1320,
+          "height": 830,
+          "left": 0,
+          "right": 1320,
+          "top": 30,
+          "bottom": 860
+        },
+        "location": {
+          "x": 261.07,
+          "y": 447.27,
+          "width": 797.85,
+          "height": 27.58,
+          "left": 261.07,
+          "right": 1058.93,
+          "top": 447.27,
+          "bottom": 474.85
+        },
+        "menu": {
+          "x": 261.07,
+          "y": 215.79,
+          "width": 295.5,
+          "height": 223.6,
+          "left": 261.07,
+          "right": 556.58,
+          "top": 215.79,
+          "bottom": 439.39
+        },
+        "rail": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        },
+        "pageOverflow": false,
+        "railUnshifted": true,
+        "composerFits": true,
+        "primaryFits": true,
+        "centered": true,
+        "menuFits": true,
+        "locationAboveComposer": true,
+        "messages": []
+      }
+    }
+  ],
+  "screenshots": [
+    "work/voice-composer/task-empty.png",
+    "work/voice-composer/task-typed.png",
+    "work/voice-composer/focus-empty.png",
+    "work/voice-composer/focus-typed.png",
+    "work/voice-composer/focus-cloud-menu.png"
+  ],
+  "screenshotLimitations": "Development fixture App evidence only; no native media/window lifetime or Cloud CLI execution proof."
+}

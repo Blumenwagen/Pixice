@@ -44,8 +44,8 @@ describe("Connect preview fixture integration", () => {
     await screen.findByRole("complementary", { name: "Primary navigation" });
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
     const runOn = await screen.findByRole("combobox", { name: "Run on" });
-    expect(runOn.closest(".composer")).toBeNull();
-    expect(runOn.closest(".execution-preflight")).toBeInTheDocument();
+    expect(runOn.closest(".composer")).toBeInTheDocument();
+    expect(runOn.closest(".composer-location-row")).toBeInTheDocument();
     fireEvent.change(runOn, { target: { value: "host-b" } });
     const targetProject = await screen.findByRole("combobox", { name: "Target project" });
     fireEvent.change(targetProject, { target: { value: "project-b" } });

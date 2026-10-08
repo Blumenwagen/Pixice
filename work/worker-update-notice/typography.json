@@ -1,0 +1,71 @@
+{
+  "fixture": "Real App, synthetic completed Focus turn and persisted worker lifecycle message",
+  "viewport": {
+    "width": 1320,
+    "height": 828
+  },
+  "notice": {
+    "text": "Worker updates received",
+    "role": "status",
+    "fontFamily": "\"Manrope Variable\", system-ui, sans-serif",
+    "fontSize": "12px",
+    "fontWeight": "500",
+    "lineHeight": "16.8px",
+    "color": "rgb(135, 146, 154)",
+    "margin": "4px 0px",
+    "bounds": {
+      "x": 260,
+      "y": 364.71624755859375,
+      "width": 800,
+      "height": 16.796875
+    }
+  },
+  "thought": {
+    "text": "Thought for 2m 53s",
+    "role": null,
+    "fontFamily": "\"Manrope Variable\", system-ui, sans-serif",
+    "fontSize": "12px",
+    "fontWeight": "600",
+    "lineHeight": "normal",
+    "color": "rgb(170, 179, 186)",
+    "margin": "0px",
+    "bounds": {
+      "x": 283,
+      "y": 240.99749755859375,
+      "width": 110.3359375,
+      "height": 16.5
+    }
+  },
+  "ordinaryText": {
+    "text": "The worker results are ready for review. Ordinary conversation text keeps its existing typography.",
+    "role": null,
+    "fontFamily": "\"Manrope Variable\", system-ui, sans-serif",
+    "fontSize": "14px",
+    "fontWeight": "400",
+    "lineHeight": "23.24px",
+    "color": "rgb(232, 237, 239)",
+    "margin": "0px",
+    "bounds": {
+      "x": 260,
+      "y": 294.24749755859375,
+      "width": 614.875,
+      "height": 46.46875
+    }
+  },
+  "timestamp": {
+    "text": "13:00",
+    "role": null,
+    "fontFamily": "\"Manrope Variable\", system-ui, sans-serif",
+    "fontSize": "10px",
+    "fontWeight": "400",
+    "lineHeight": "12px",
+    "color": "oklab(0.653585 -0.00889975 -0.0150098 / 0.82)",
+    "margin": "0px",
+    "bounds": {
+      "x": 1026.203125,
+      "y": 198.24749755859375,
+      "width": 33.796875,
+      "height": 12
+    }
+  }
+}

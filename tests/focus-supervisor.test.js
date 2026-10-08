@@ -310,8 +310,39 @@ describe("FocusSupervisor", () => {
     supervisor.dispose();
   });
 
+  it("cancels attention-required work when its worker thread is missing", async () => {
+    const interruptWorker = vi.fn(async () => { throw new Error("thread not found: deleted-thread"); });
+    const { supervisor, store, startWorker, continueWorker } = fixture({ interruptWorker });
+    const work = store.createWork("project-1", { title: "Obsolete", prompt: "old", status: "needs-attention",
+      threadId: "deleted-thread", turnId: "old-turn", error: "thread not found: deleted-thread" });
+
+    const cancelled = await supervisor.control("project-1", work.id, { action: "cancel" });
+    expect(cancelled).toMatchObject({ status: "cancelled", error: null });
+    expect(interruptWorker).toHaveBeenCalledWith({ projectId: "project-1", threadId: "deleted-thread", turnId: "old-turn" });
+    expect(store.events).toEqual(expect.arrayContaining([expect.objectContaining({ workId: work.id, kind: "cancelled" })]));
+    await supervisor.recover("project-1");
+    await tick();
+    expect(store.getWork("project-1", work.id)).toMatchObject({ status: "cancelled", error: null });
+    expect(startWorker).not.toHaveBeenCalled();
+    expect(continueWorker).not.toHaveBeenCalled();
+    await expect(supervisor.followUp("project-1", work.id, { prompt: "restart" })).rejects.toThrow("Cancelled work cannot be continued");
+    supervisor.dispose();
+  });
+
+  it("preserves real interruption errors during cancellation", async () => {
+    const interruptWorker = vi.fn(async () => { throw new Error("runtime offline"); });
+    const { supervisor, store } = fixture({ interruptWorker });
+    const work = store.createWork("project-1", { title: "Active", prompt: "run", status: "running",
+      threadId: "active-thread", turnId: "active-turn" });
+
+    expect(await supervisor.control("project-1", work.id, { action: "cancel" }))
+      .toMatchObject({ status: "needs-attention", error: "runtime offline" });
+    expect(store.events.some((event) => event.kind === "cancelled")).toBe(false);
+    supervisor.dispose();
+  });
+
   it("does not resurrect paused or cancelled work from late runtime events", async () => {
-    const { supervisor, store, runtime } = fixture();
+    const { supervisor, store, runtime, interruptWorker } = fixture();
     const paused = await supervisor.dispatch("project-1", { title: "Pause", prompt: "pause" });
     await tick();
     const running = store.getWork("project-1", paused.id);
@@ -325,6 +356,7 @@ describe("FocusSupervisor", () => {
     await tick();
     const active = store.getWork("project-1", cancelled.id);
     await supervisor.control("project-1", cancelled.id, { action: "cancel" });
+    expect(interruptWorker).toHaveBeenLastCalledWith({ projectId: "project-1", threadId: active.threadId, turnId: active.turnId });
     runtime.emit("event", { method: "turn/completed", threadId: active.threadId, turn: { id: active.turnId, status: "completed", items: [{ type: "agentMessage", text: "late" }] } });
     await tick();
     expect(store.getWork("project-1", cancelled.id).status).toBe("cancelled");

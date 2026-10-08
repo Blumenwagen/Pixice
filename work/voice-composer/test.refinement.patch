@@ -1,0 +1,32 @@
+--- a/tests/voice-composer-integration.test.jsx
++++ b/tests/voice-composer-integration.test.jsx
+@@ -61,10 +61,26 @@
+     fireEvent.click(screen.getByRole('button', { name: 'Steer task' })); await waitFor(() => expect(props.onSubmit).toHaveBeenCalled());
+   });
+   it('explains unsupported providers and missing native companion APIs', async () => {
+-    const { props } = fixture(); const { rerender } = render(<Composer {...props} dictationApi={{}} />);
+-    expect(screen.getByRole('button', { name: 'Conversational Voice' })).toBeDisabled(); expect(screen.getByRole('status')).toHaveTextContent('does not offer the native Voice companion');
++    const { api, props } = fixture(); const { rerender } = render(<Composer {...props} dictationApi={{}} />);
++    const expectSendFallback = () => {
++      expect(screen.queryByRole('button', { name: 'Conversational Voice' })).not.toBeInTheDocument();
++      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
++    };
++    expectSendFallback(); expect(screen.getByRole('status')).toHaveTextContent('does not offer the native Voice companion');
+     rerender(<Composer {...props} models={[{ ...model, provider: 'claude' }]} />);
+-    expect(screen.getByRole('button', { name: 'Conversational Voice' })).toBeDisabled(); expect(screen.getByRole('status')).toHaveTextContent('available for Codex tasks');
++    expectSendFallback(); expect(screen.getByRole('status')).toHaveTextContent('available for Codex tasks');
++    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Ordinary Claude task' } });
++    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
++    await waitFor(() => expect(props.onSubmit).toHaveBeenCalledOnce());
++    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
++    rerender(<Composer {...props} workLocation={{ ...props.workLocation, remoteTarget: 'remote-device' }} />);
++    expectSendFallback(); expect(screen.getByRole('status')).toHaveTextContent('local Pixice host');
++    rerender(<Composer {...props} dictationApi={{ ...api, remote: true }} />);
++    expectSendFallback(); expect(screen.getByRole('status')).toHaveTextContent('local Pixice host');
++    api.voice.state.mockResolvedValue({ available: false, reason: 'Voice is unavailable for this account.' });
++    rerender(<Composer {...props} />);
++    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable for this account'));
++    expectSendFallback(); expect(api.voice.companion.open).not.toHaveBeenCalled();
+   });
+   it('routes Cloud directly before any Focus/widget/local callback and shows the returned status and diff', async () => {
+     const { api, props } = fixture({ disabled: true }); render(<Composer {...props} />); await chooseCloud();

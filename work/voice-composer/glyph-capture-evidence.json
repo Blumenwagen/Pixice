@@ -1,0 +1,19 @@
+{
+  "voice": true,
+  "mic": true,
+  "voiceGlyph": "<svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\" fill=\"none\" focusable=\"false\"><path d=\"M3 8v4M6.5 5.5v9M10 3v14M13.5 6v8M17 8v4\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"></path></svg>",
+  "micGlyph": "<svg fill=\"none\" height=\"17\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" viewBox=\"0 0 24 24\" width=\"17\" xmlns=\"http://www.w3.org/2000/svg\"><rect height=\"13\" rx=\"4\" width=\"8\" x=\"8\" y=\"2\"></rect><path d=\"M19 10v2a7 7 0 0 1-14 0v-2\"></path><path d=\"M12 19v3\"></path></svg>",
+  "fixture": true,
+  "nativeMediaEvidence": false,
+  "url": "http://127.0.0.1:5183/?task-progress-preview&devday-preview&composer-idle-preview&focus-idle-preview&dictation-ready-preview",
+  "buttons": [
+    "Work in: This computer",
+    "Attach files",
+    "Permissions: Workspace access",
+    "Run profile: GPT-5.6, High reasoning",
+    "Dictate a message",
+    "Conversational Voice"
+  ],
+  "stateApi": true,
+  "media": true
+}

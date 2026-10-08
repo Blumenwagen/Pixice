@@ -1,0 +1,20 @@
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -1974,7 +1974,7 @@
+ 
+     // Size against this canvas, not the window. Prose and composer keep their
+     // existing geometry; only rich blocks inherit these measured bounds.
+-    const overlaySelector = '.focus-task-rail, .widget-shelf, .inspector.open, [data-prompt-preview-rail], [data-prompt-preview-rail] div[aria-hidden="true"]';
++    const overlaySelector = '.focus-task-rail, .focus-coordination[data-open="true"], .widget-shelf, .inspector.open, [data-prompt-preview-rail], [data-prompt-preview-rail] div[aria-hidden="true"]';
+     let frame = 0;
+     const observed = new Set();
+     const measure = () => {
+@@ -2016,7 +2016,7 @@
+     const mutations = new MutationObserver((records) => {
+       if (records.some(({ target }) => !column.contains(target))) schedule();
+     });
+-    mutations.observe(workspace, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'data-expanded'] });
++    mutations.observe(workspace, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'data-expanded', 'data-open'] });
+     window.addEventListener('resize', schedule);
+     workspace.addEventListener('transitionend', schedule);
+     measure();

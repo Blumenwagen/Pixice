@@ -123,10 +123,12 @@ export class ProviderRegistry extends EventEmitter {
       let authenticated = false;
       let externallyManagedAuth = provider.externallyManagedAuth?.() === true;
       let accountError = null;
+      let authSource = null;
       const lifecycle = await provider.lifecycle?.() ?? {};
       try {
         const result = provider.account ? await provider.account() : null;
         account = result?.account ?? null;
+        authSource = result?.authSource ?? null;
         ({ requiresAuth, authenticated } = authenticationState(result));
         externallyManagedAuth ||= result?.externallyManagedAuth === true;
       } catch (error) {
@@ -150,6 +152,7 @@ export class ProviderRegistry extends EventEmitter {
         status: this.statuses.get(provider.id) ?? { state: provider.connected ? "ready" : "unavailable" },
         ...lifecycle,
         account,
+        authSource,
         authenticated,
         externallyManagedAuth,
         requiresAuth,

@@ -1,3 +1,8 @@
+import { useVoiceConversation } from "./components/VoiceConversation.jsx";
+import { ComposerPrimaryAction } from "./components/ComposerPrimaryAction.jsx";
+import { ComposerCloudFeedback, ComposerWorkLocation, useComposerWorkLocation } from "./components/ComposerWorkLocation.jsx";
+import { ChatGPTSettings } from "./components/ChatGPTSettings.jsx";
+import { CodexCloudSettings } from "./components/CodexCloudSettings.jsx";
 import { useUnifiedUsage } from "./connect/useUnifiedUsage.js";
 import { RemoteBrowserSurface } from "./connect/RemoteBrowserSurface.jsx";
 import { ConnectionsSettings } from "./connect/ConnectionsSettings.jsx";
@@ -74,6 +79,7 @@ import {
   descendantsOf,
   isSidebarThread,
   mergeThreadSnapshot,
+  prependThreadHistory,
   projectCollabAgents,
   removeLocalUserMessage,
   reviewFiles,
@@ -1216,7 +1222,7 @@ export function Sidebar({
   );
 }
 
-function AppToolbar({ icon: Icon = Folder, title, subtitle, inspectorOpen, onInspectorToggle, showInspector = false, previewOpen, onPreviewToggle, showPreview = false, executionStatus = null, executionAction = null }) {
+function AppToolbar({ icon: Icon = Folder, title, subtitle, inspectorOpen, onInspectorToggle, showInspector = false, previewOpen, onPreviewToggle, showPreview = false, executionStatus = null, executionAction = null, voiceControl = null }) {
   return (
     <header className="app-toolbar">
       <div className="toolbar-title">
@@ -1226,6 +1232,7 @@ function AppToolbar({ icon: Icon = Folder, title, subtitle, inspectorOpen, onIns
       <div className="toolbar-actions">
         {executionStatus}
         {executionAction}
+        {voiceControl}
         {showPreview && (
           <IconButton label={previewOpen ? "Close preview workspace" : "Open preview workspace"} className={previewOpen ? "active" : ""} onClick={onPreviewToggle}>
             <PreviewIcon size={18} />
@@ -1267,7 +1274,7 @@ function FileSurface({ file, onUpdate, onSave, onDownload = null, onDownloadCanc
     };
     window.addEventListener("keydown", saveShortcut);
     return () => window.removeEventListener("keydown", saveShortcut);
-  }, [file, onSave]);
+  }, [file, onSave, visible]);
 
   let content;
   if (file.editing) {
@@ -1958,9 +1965,98 @@ function tableCells(line) {
   return line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
 }
 
+function EarlierMessages({ thread, onLoad }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (!thread?.history?.nextCursor || !onLoad) return null;
+  const load = async (event) => {
+    const scroll = event.currentTarget.closest(".focus-conversation-scroll, .conversation-scroll, .side-thread-scroll");
+    const previousHeight = scroll?.scrollHeight ?? 0;
+    const previousTop = scroll?.scrollTop ?? 0;
+    setBusy(true);
+    setError("");
+    try {
+      await onLoad(thread.history.nextCursor);
+      requestAnimationFrame(() => { if (scroll) scroll.scrollTop = previousTop + scroll.scrollHeight - previousHeight; });
+    } catch (cause) { setError(cause.message); }
+    finally { setBusy(false); }
+  };
+  return <div className="earlier-messages">
+    <button type="button" className="settings-action" disabled={busy} onClick={load}>{busy ? "Loading earlier messages…" : "Load earlier messages"}</button>
+    {error && <small role="alert">{error}</small>}
+  </div>;
+}
+
+function ConversationColumn({ className, children }) {
+  const columnRef = useRef(null);
+  useLayoutEffect(() => {
+    const column = columnRef.current;
+    const canvas = column?.closest('.focus-conversation-scroll, .conversation-scroll');
+    const workspace = canvas?.closest('.pixice-app');
+    if (!column || !canvas || !workspace) return undefined;
+
+    // Size against this canvas, not the window. Prose and composer keep their
+    // existing geometry; only rich blocks inherit these measured bounds.
+    const overlaySelector = '.focus-task-rail, .focus-coordination[data-open="true"], .widget-shelf, .inspector.open, [data-prompt-preview-rail], [data-prompt-preview-rail] div[aria-hidden="true"]';
+    let frame = 0;
+    const observed = new Set();
+    const measure = () => {
+      const bounds = canvas.getBoundingClientRect();
+      const columnBounds = column.getBoundingClientRect();
+      const canvasStyle = getComputedStyle(canvas);
+      const columnStyle = getComputedStyle(column);
+      // Preserve the column's gutters in small/split canvases.
+      const gutter = canvas.matches('.focus-conversation-scroll') ? 24 : 32;
+      const origin = columnBounds.left + parseFloat(columnStyle.paddingLeft);
+      const contentWidth = column.clientWidth - parseFloat(columnStyle.paddingLeft) - parseFloat(columnStyle.paddingRight);
+      const narrow = contentWidth >= canvas.clientWidth - 64;
+      let left = narrow ? origin : bounds.left + Math.min(gutter, parseFloat(canvasStyle.paddingLeft) || gutter);
+      let right = narrow ? origin + contentWidth : bounds.left + canvas.clientWidth - Math.min(gutter, parseFloat(canvasStyle.paddingRight) || gutter);
+      const overlays = workspace.querySelectorAll(overlaySelector);
+      for (const overlay of overlays) {
+        if (!observed.has(overlay)) { observer?.observe(overlay); observed.add(overlay); }
+        const rect = overlay.getBoundingClientRect();
+        if (!rect.width || !rect.height || getComputedStyle(overlay).visibility === 'hidden'
+          || rect.bottom <= bounds.top || rect.top >= bounds.bottom || rect.right <= left || rect.left >= right) continue;
+        if ((rect.left + rect.right) / 2 > bounds.left + canvas.clientWidth / 2) right = Math.min(right, rect.left - 12);
+        else left = Math.max(left, rect.right + 12);
+      }
+      for (const overlay of observed) {
+        if (!overlay.isConnected || !overlay.matches(overlaySelector)) { observer?.unobserve(overlay); observed.delete(overlay); }
+      }
+      const values = { '--chat-rich-width': `${Math.max(0, right - left)}px`, '--chat-rich-offset': `${left - origin}px` };
+      for (const [name, value] of Object.entries(values)) {
+        if (column.style.getPropertyValue(name) !== value) column.style.setProperty(name, value);
+      }
+    };
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+    observer?.observe(canvas);
+    observer?.observe(column);
+    const mutations = new MutationObserver((records) => {
+      if (records.some(({ target }) => !column.contains(target))) schedule();
+    });
+    mutations.observe(workspace, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'data-expanded', 'data-open'] });
+    window.addEventListener('resize', schedule);
+    workspace.addEventListener('transitionend', schedule);
+    measure();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      mutations.disconnect();
+      window.removeEventListener('resize', schedule);
+      workspace.removeEventListener('transitionend', schedule);
+    };
+  }, []);
+  return <div className={className} ref={columnRef}>{children}</div>;
+}
+
 function MarkdownTable({ headers, rows }) {
   return (
-    <div className="message-table-wrap">
+    <div className="message-table-wrap message-rich-block" role="region" aria-label="Table" tabIndex={0}>
       <table>
         <thead>
           <tr>{headers.map((cell, cellIndex) => <th key={`head-${cellIndex}`}>{inlineMarkdown(cell, `head-${cellIndex}`)}</th>)}</tr>
@@ -2099,7 +2195,7 @@ export function MarkdownMessage({ text, trailing }) {
 function FencedMessageBlock({ source, language }) {
   const visualization = useMemo(() => parseVisualizationSpec(source, language), [language, source]);
   return visualization
-    ? <InlineVisualization spec={visualization} />
+    ? <div className="message-rich-block message-visualization-wrap" role="group" aria-label={`${visualization.title} scroll area`} tabIndex={0}><InlineVisualization spec={visualization} /></div>
     : <pre className="message-code"><code data-language={language || undefined}>{source}</code></pre>;
 }
 
@@ -3026,7 +3122,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, slashCommands, onCommand, focusCommands = false, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
+export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, slashCommands, onCommand, focusCommands = false, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral", voiceContext = null, resolveVoiceContext = null, workLocation = null, workLocationDeviceControl = null, reducedMotion = false }) {
   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
@@ -3103,12 +3199,31 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   const runProfileAriaLabel = selected
     ? `Run profile: ${fullModelLabel}, ${selectedEffort?.label ?? effort} reasoning${fastTier ? `, Fast ${fastMode ? "on" : "off"}` : ""}`
     : "Run profile: Choose model";
+  const provider = selected?.provider ?? (modelBrand(selected?.model)?.id === "anthropic" ? "claude" : "codex");
+  const location = useComposerWorkLocation({ ...workLocation, provider });
+  const cloudSelected = Boolean(workLocation && location.destination === "cloud");
+  const localVoiceHost = !workLocation?.remoteTarget && !dictationApi?.remote;
+  const voice = useVoiceConversation({ api: dictationApi, context: voiceContext, provider,
+    enabled: Boolean(voiceContext && !cloudSelected && localVoiceHost), resolveContext: resolveVoiceContext });
   const hasSteeringDraft = Boolean(text.trim() || attachments.length > 0);
-  const runActionState = running && !hasSteeringDraft ? "stop" : "send";
-  const runActionLabel = runActionState === "stop" ? "Stop task" : running ? "Steer task" : "Send message";
-  const runActionDisabled = runActionState === "stop"
-    ? disabled
-    : disabled || busy || submissionBusy || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || !hasSteeringDraft;
+  const voiceAvailable = Boolean(voiceContext && provider === "codex" && localVoiceHost && !cloudSelected && dictationApi?.voice?.companion?.open && voice.available);
+  const voiceFallbackReason = provider === "codex" && !localVoiceHost ? "Conversational Voice runs on the local Pixice host. Choose this computer as the execution device to use it." : voice.reason;
+  const runActionState = running && !hasSteeringDraft ? "stop" : !running && !hasSteeringDraft && voiceAvailable ? "voice" : "send";
+  const runActionLabel = runActionState === "stop" ? "Stop task" : runActionState === "voice" ? "Conversational Voice" : cloudSelected ? "Send to Cloud" : running ? "Steer task" : "Send message";
+  const cloudIssue = cloudSelected ? location.validate(attachments) : "";
+  const destinationDisabled = cloudSelected ? Boolean(workLocation?.disabled) : disabled;
+  const runActionDisabled = runActionState === "stop" ? disabled
+    : runActionState === "voice" ? disabled || busy || voice.opening || !voice.available
+      : destinationDisabled || busy || submissionBusy || location.busy || Boolean(cloudIssue) || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || !hasSteeringDraft;
+  useEffect(() => {
+    return () => {
+      if (submissionRef.current?.kind === "cloud") {
+        submissionRef.current.controller.abort(new DOMException("The Cloud destination changed.", "AbortError"));
+        submissionRef.current = null;
+        if (mountedRef.current) setSubmissionBusy(false);
+      }
+    };
+  }, [workLocation?.projectId, workLocation?.hostKey, provider]);
   useEffect(() => {
     const identityChanged = hydratedDraftIdentityRef.current !== storageKey;
     if (identityChanged) reselectAttemptsRef.current.clear();
@@ -3212,10 +3327,10 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   }, [attachments.length, onDraftStateChange, text]);
 
   useEffect(() => {
-    if (!autoFocusComposer || disabled || blockingQuestion) return undefined;
+    if (!autoFocusComposer || destinationDisabled || blockingQuestion) return undefined;
     const frame = window.requestAnimationFrame(() => textareaRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
-  }, [autoFocusComposer, disabled, draftKey, questionRequest]);
+  }, [autoFocusComposer, destinationDisabled, draftKey, questionRequest]);
 
   const addAttachmentFiles = useCallback(async (files) => {
     if (disabled) return;
@@ -3280,7 +3395,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   const matchingCommands = !slashToken ? [] : availableCommands.filter((command) => {
     return command.name.toLowerCase().includes(slashToken.query) || command.description.toLowerCase().includes(slashToken.query);
   });
-  const commandMenuOpen = !disabled && !commandsDismissed && matchingCommands.length > 0;
+  const commandMenuOpen = !cloudSelected && !disabled && !commandsDismissed && matchingCommands.length > 0;
   const activeCommandIndex = Math.min(commandSelection, Math.max(0, matchingCommands.length - 1));
   const activeCommand = matchingCommands[activeCommandIndex];
   const readDictationLevel = useCallback(() => dictationLevelRef.current, []);
@@ -3511,6 +3626,26 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     setAttachmentNotice("Upload cancelled. Send again to restart.");
   };
   const submit = async () => {
+    if (cloudSelected) {
+      if (destinationDisabled || busy || submissionBusy || submissionRef.current || location.busy) return;
+      const issue = location.validate(attachments);
+      if (issue) { setAttachmentNotice(issue); return; }
+      const prompt = text.trim();
+      if (!prompt) return;
+      const controller = new AbortController();
+      const attempt = { controller, storageKey, kind: "cloud", cancelled: false };
+      const submittedText = text;
+      submissionRef.current = attempt; setSubmissionBusy(true); setAttachmentNotice("");
+      try {
+        const accepted = await location.submit(prompt, attachments, controller.signal);
+        if (accepted && mountedRef.current && submissionRef.current === attempt && !controller.signal.aborted && textRef.current === submittedText) {
+          setText(""); storage.removeItem(storageKey);
+        }
+      } finally {
+        if (submissionRef.current === attempt) { submissionRef.current = null; if (mountedRef.current) setSubmissionBusy(false); }
+      }
+      return;
+    }
     const value = prepareSlashCommandPrompt(text, availableCommands);
     const nativeCommand = availableCommands.find((command) => command.source === "pixice" && (value === `/${command.name}` || value.startsWith(`/${command.name} `)));
     if (nativeCommand && attachments.length === 0 && !disabled) {
@@ -3613,6 +3748,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   }
   return (
     <div className="composer" data-question-present={Boolean(questionRequest)} data-dragging-files={draggingFiles} data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
+      {workLocation && <ComposerWorkLocation location={location} onSetup={workLocation.onSetup} disabled={Boolean(workLocation.disabled) || busy || submissionBusy} deviceControl={workLocationDeviceControl} />}
       {showDictationBeam && (
         <VoiceBeam
           className="composer-voice-beam"
@@ -3711,10 +3847,10 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
         aria-expanded={commandMenuOpen}
         aria-controls={commandMenuOpen ? commandListId : undefined}
         aria-activedescendant={commandMenuOpen && activeCommand ? `${commandListId}-${activeCommand.name}` : undefined}
-        placeholder={disabled ? "Connect a provider and select a project to begin" : running ? runningPlaceholder : placeholder}
+        placeholder={destinationDisabled ? "Connect a provider and select a project to begin" : cloudSelected ? "Describe a new Cloud task" : running ? runningPlaceholder : placeholder}
         spellCheck={spellCheckComposer}
         value={text}
-        disabled={disabled}
+        disabled={destinationDisabled}
         onPaste={(event) => {
           const files = attachmentFilesFromTransfer(event.clipboardData);
           if (files.length > 0) addAttachmentFiles(files);
@@ -3756,6 +3892,9 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
           }
         }}
       />
+      {!running && !hasSteeringDraft && voiceContext && !cloudSelected && (voiceFallbackReason || voice.error) && <p className="composer-integration-notice" role="status">{voice.error || voiceFallbackReason}</p>}
+      {cloudSelected && (cloudIssue || location.error) && <p className="composer-integration-notice" role="status">{location.error || cloudIssue}</p>}
+      {workLocation && <ComposerCloudFeedback location={location} />}
       {attachmentNotice && <div className="composer-image-notice" role="status">{attachmentNotice}</div>}
       {uploadState && (
         <div className="composer-upload-status" role="status" aria-label="Attachment upload progress">
@@ -3854,18 +3993,9 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
             onPhaseChange={handleDictationPhase}
             onLevelChange={handleDictationLevel}
           />
-          <button
-            type="button"
-            className="icon-button send composer-run-action"
-            data-state={runActionState}
-            aria-label={runActionLabel}
-            title={runActionLabel}
-            onClick={runActionState === "stop" ? onInterrupt : submit}
-            disabled={runActionDisabled}
-          >
-            <span className="composer-run-icon composer-run-icon-send"><PaperPlaneTilt size={17} weight="fill" /></span>
-            <span className="composer-run-icon composer-run-icon-stop" aria-hidden="true"><i /></span>
-          </button>
+          <ComposerPrimaryAction state={runActionState} label={runActionLabel} disabled={runActionDisabled}
+            reason={runActionState === "voice" ? voice.reason : cloudIssue} pending={runActionState === "voice" ? voice.opening : cloudSelected && location.busy}
+            reducedMotion={reducedMotion} onClick={runActionState === "stop" ? onInterrupt : runActionState === "voice" ? voice.open : submit} />
         </div>
       </div>
     </div>
@@ -4275,6 +4405,11 @@ function SideThreadSurface({
           <div className="side-thread-empty"><GitBranch size={22} /><strong>Start a side thread</strong><p>Ask a related question without leaving the main task.</p></div>
         ) : (
           <div className="side-thread-messages">
+            <EarlierMessages thread={snapshot} onLoad={async (historyCursor) => {
+              followLatestRef.current = false;
+              const response = await api.threads.read({ projectId, threadId, historyCursor });
+              if (mountedRef.current && threadIdRef.current === threadId) setSnapshot((current) => prependThreadHistory(current, response.thread));
+            }} />
             {(snapshot.turns ?? []).length === 0 && <p className="quiet-empty">This side thread has no messages yet.</p>}
             {(snapshot.turns ?? []).map((turn, turnIndex) => (
               <TurnConversation
@@ -4721,6 +4856,7 @@ function FocusWorkspace({
   project,
   projects,
   thread,
+  onLoadEarlier,
   threads,
   loading,
   runtime,
@@ -4744,6 +4880,7 @@ function FocusWorkspace({
   onMemoryChange,
   onExit,
   onOpenSettings,
+  visible = true,
   onSelectProject,
   previewOpen,
   onPreviewToggle,
@@ -4833,7 +4970,7 @@ function FocusWorkspace({
       const composerBounds = composer.getBoundingClientRect();
       const rail = workspace.querySelector('.focus-task-rail');
       const railBottom = rail && getComputedStyle(rail).display !== 'none' ? rail.getBoundingClientRect().bottom - bounds.top + 12 : 96;
-      const bottom = Math.max(24, Math.ceil(bounds.bottom - composerBounds.top + 16));
+      const bottom = Math.max(24, Math.ceil(bounds.bottom - Math.min(composerBounds.top, composer.querySelector(".composer-location")?.getBoundingClientRect().top ?? composerBounds.top) + 16));
       workspace.style.setProperty('--focus-composer-clearance', `${bottom}px`);
       workspace.style.setProperty('--widget-shelf-top-clearance', `${Math.ceil(railBottom)}px`);
       if ((followLatestRef.current || (previewOpen && focusQuestions.length > 0)) && scrollRef.current) {
@@ -4941,7 +5078,8 @@ function FocusWorkspace({
         {loading ? (
           <div className="focus-loading"><SpinnerGap className="spin-icon" size={17} />Opening {project?.displayName ?? "project"}…</div>
         ) : hasConversation ? (
-          <div className="focus-conversation-column">
+          <ConversationColumn className="focus-conversation-column">
+            <EarlierMessages thread={thread} onLoad={onLoadEarlier} />
             {(thread.turns ?? []).map((turn, turnIndex) => (
               <TurnConversation
                 thread={thread}
@@ -4954,7 +5092,7 @@ function FocusWorkspace({
                 key={turn.renderId ?? turn.id}
               />
             ))}
-          </div>
+          </ConversationColumn>
         ) : (
           <div className="focus-intro" aria-live="polite">
             <span className="focus-intro-mark"><Sparkle size={17} weight="fill" /></span>
@@ -4976,6 +5114,8 @@ function FocusWorkspace({
           <Composer
             {...composerProps}
             onSubmit={submitFocusPrompt}
+            voiceContext={{ ...composerProps.voiceContext, projectId: project?.id, threadId: thread?.id }}
+            resolveVoiceContext={null}
             questionRequest={null}
             disabled={composerProps.disabled || loading || !thread}
             draftKey={`${project.id}:focus`}
@@ -4998,6 +5138,7 @@ function FocusWorkspace({
     <AnimatePresence initial={false}>
       {previewOpen && (
         <BrowserPanel
+          visible={visible}
           api={api}
           workspaceId={previewWorkspaceId}
           apiWorkspaceId={previewApiWorkspaceId}
@@ -5101,6 +5242,7 @@ export function ConversationWorkspace({
   storage = localStorage,
   project,
   thread,
+  onLoadEarlier,
   threads,
   loading,
   runtime,
@@ -5323,8 +5465,9 @@ export function ConversationWorkspace({
           ) : !thread ? (
             <EmptyConversation project={project} runtime={runtime} onOpenProject={onOpenProject} />
           ) : (
-            <div className="conversation-column">
+            <ConversationColumn className="conversation-column">
               <div className="message-stream">
+                <EarlierMessages thread={thread} onLoad={onLoadEarlier} />
                 {conversationProjection.itemCount === 0 && <p className="quiet-empty">This task has no messages yet.</p>}
                 {(thread.turns ?? []).map((turn, turnIndex) => (
                   <TurnConversation
@@ -5361,14 +5504,13 @@ export function ConversationWorkspace({
                   defaultExpanded={expandTaskProgress}
                 />
               )}
-            </div>
+            </ConversationColumn>
           )}
         </div>
         {project && !readOnly && (
           // Keep Composer mounted when thread creation removes the preflight controls.
           <div className={executionTargetControl ? "composer-dock" : undefined} style={executionTargetControl ? undefined : { display: "contents" }}>
-            {executionTargetControl && <div className="execution-preflight">{executionTargetControl}</div>}
-            <Composer {...composerProps} />
+            <Composer {...composerProps} workLocationDeviceControl={executionTargetControl} />
           </div>
         )}
       </main>
@@ -6040,6 +6182,7 @@ function providerStatusLabel(provider, lifecycle, connected) {
   if (lifecycle.missing) return "Not installed";
   if (lifecycle.requiresRepair) return "Needs repair";
   if (lifecycle.updateAvailable) return "Update available";
+  if (provider.authSource === "chatgptApp") return "ChatGPT app account";
   if (provider.externallyManagedAuth) return "Managed externally";
   if (connected) return "Connected";
   if (provider.status?.state === "unavailable") return "Unavailable";
@@ -6244,7 +6387,7 @@ function ProvidersSettings({ providers, models, loading, onRefresh, onLogin, onA
                   <h2>{provider.label}</h2>
                   <span className={`settings-status ${statusTone}`}><i />{status}</span>
                 </div>
-                <p>{provider.externallyManagedAuth ? "Credentials are supplied by the environment." : providerAccountDetail(provider)}</p>
+                <p>{provider.authSource === "chatgptApp" ? "Using the ChatGPT profile selected above." : provider.externallyManagedAuth ? "Credentials are supplied by the environment." : providerAccountDetail(provider)}</p>
                 <div className="provider-meta">
                   {lifecycle.installed && <span>{provider.version ? `Version ${provider.version}` : "Version unknown"}</span>}
                   {lifecycle.updateAvailable && <span>Version {provider.updateState.availableVersion} available</span>}
@@ -6725,9 +6868,10 @@ function UsageSettings({ summary, loading, error, limits, limitsLoading, limitsE
 const SETTINGS_PAGES = [
   { id: "general", label: "General", description: "Defaults, safety, and alerts", icon: Gear, keywords: "permissions model reasoning thread names workflow generation title luna terra claude automatic delete drafts cleanup age days custom awake sleep system notifications alerts sound shortcuts keyboard" },
   { id: "conversation", label: "Conversation", description: "Writing, reading, and live output", icon: PencilSimple, keywords: "composer enter send shortcut drafts autofocus spellcheck slash commands timestamps work details expanded collapsed" },
-  { id: "voice", label: "Voice", description: "Dictation and transcription models", icon: Microphone, keywords: "voice dictation speech transcription microphone mic parakeet whisper moonshine sensevoice model download offline on-device audio input language threads" },
+  { id: "voice", label: "Voice", description: "Conversation and dictation", icon: Microphone, keywords: "voice dictation speech transcription microphone mic parakeet whisper moonshine sensevoice model download offline on-device audio input language threads" },
   { id: "agents", label: "Agents", description: "Behavior and orchestration", icon: Brain, keywords: "agent behavior instructions markdown skills planning delegation verification workflows board thread spawning orchestration tools instruments interactive progress task map approvals" },
   { id: "providers", label: "Providers", description: "Accounts, runtimes, and models", icon: Stack, keywords: "openai codex anthropic claude login sign in account models sessions runtime health status connected update install locate repair widgets jev typesafe api key" },
+  { id: "cloud", label: "Codex Cloud", description: "Environments, tasks, and patches", icon: Globe, keywords: "codex cloud environment remote tasks branch diff apply published" },
   { id: "connections", label: "Connections", description: "Remote instances and paired devices", icon: Globe, keywords: "connect remote network tunnel web https pairing devices host instance tailscale" },
   { id: "capabilities", label: "Capabilities", description: "GitHub, skills, apps, and MCP", icon: PlugsConnected, keywords: "extensions plugins tools servers github gh cli login pull request issues push fetch workflow" },
   { id: "appearance", label: "Appearance", description: "Layout, text, color, and motion", icon: Eye, keywords: "compact comfortable conversation width focused balanced wide text size small large accent coral rose amber green teal blue violet graphite transparency projects sidebar recent third row nine legacy old nested shortcuts animation" },
@@ -6737,14 +6881,14 @@ const SETTINGS_PAGES = [
 const SETTINGS_ABOUT_PAGE = { id: "about", label: "About Pixice", description: "Version and app updates", icon: Info, keywords: "about pixice version release download install github update" };
 const ALL_SETTINGS_PAGES = [...SETTINGS_PAGES, SETTINGS_ABOUT_PAGE];
 
-function SettingsSidebar({ page, onPageChange, onBack }) {
+function SettingsSidebar({ page, onPageChange, onBack, backLabel }) {
   const [query, setQuery] = useState("");
   const visiblePages = SETTINGS_PAGES.filter((candidate) => `${candidate.label} ${candidate.description} ${candidate.keywords}`.toLowerCase().includes(query.trim().toLowerCase()));
   const showAbout = `${SETTINGS_ABOUT_PAGE.label} ${SETTINGS_ABOUT_PAGE.description} ${SETTINGS_ABOUT_PAGE.keywords}`.toLowerCase().includes(query.trim().toLowerCase());
 
   return (
     <aside className="settings-sidebar" aria-label="Settings navigation">
-      <button className="settings-back" onClick={onBack}><CaretLeft size={16} />Back to task</button>
+      <button className="settings-back" onClick={onBack}><CaretLeft size={16} />{backLabel}</button>
       <label className="settings-search"><MagnifyingGlass size={16} /><input aria-label="Search settings" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search settings" /></label>
       <nav>
         {visiblePages.map(({ id, label, description, icon: Icon }) => (
@@ -6960,6 +7104,9 @@ function VoiceSettings({ transcription, micDeviceId, onMicDeviceChange }) {
 }
 
 function SettingsWorkspace({
+  api,
+  projects,
+  selectedProjectId,
   page,
   models,
   selectedModel,
@@ -7301,9 +7448,11 @@ function SettingsWorkspace({
       </>
     );
   } else if (page === "voice") {
-    pageContent = <VoiceSettings transcription={transcription} micDeviceId={preferences.micDeviceId} onMicDeviceChange={(value) => onPreferenceChange("micDeviceId", value)} />;
+    pageContent = <><SettingsGroup title="Conversational Voice" description="Speak and listen while Codex works in your existing conversation."><SettingsRow title="Start from your conversation" description="Use the main Voice button in an empty Focus or Codex task composer. The companion can detach into its own window. Native Codex Voice uses the existing CLI account and keeps approvals in Pixice. Availability depends on your Codex version and account. App-level ChatGPT sign-in currently grants Responses inference only." /></SettingsGroup><VoiceSettings transcription={transcription} micDeviceId={preferences.micDeviceId} onMicDeviceChange={(value) => onPreferenceChange("micDeviceId", value)} /></>;
   } else if (page === "providers") {
-    pageContent = <ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} updateChecksEnabled={providerUpdateChecksEnabled} onUpdateChecksEnabledChange={onProviderUpdateChecksEnabledChange} widgetCredentials={widgetCredentials} />;
+    pageContent = <><ChatGPTSettings api={api} /><ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} updateChecksEnabled={providerUpdateChecksEnabled} onUpdateChecksEnabledChange={onProviderUpdateChecksEnabledChange} widgetCredentials={widgetCredentials} /></>;
+  } else if (page === "cloud") {
+    pageContent = <CodexCloudSettings api={api} projects={projects} projectId={selectedProjectId} />;
   } else if (page === "connections") {
     pageContent = <ConnectionsSettings />;
   } else if (page === "usage") {
@@ -7512,6 +7661,7 @@ export function App({ readOnly = false } = {}) {
   const [runtime, setRuntime] = useState({ state: "starting", connected: false });
   const [activeView, setActiveView] = useState("task");
   const [settingsPage, setSettingsPage] = useState("general");
+  const [settingsOrigin, setSettingsOrigin] = useState(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [previewWorkspaces, setPreviewWorkspaces] = useState({});
   const previewWorkspaceSequenceRef = useRef(0);
@@ -7919,10 +8069,24 @@ export function App({ readOnly = false } = {}) {
   }, [savePersistentDefaults]);
 
   const changeView = useCallback((nextView) => {
-    if (nextView !== "task") connect?.closeExecution?.();
-    if (nextView !== "task") setPreviewOpen(false);
+    if (nextView === "settings") {
+      // Settings is a temporary view. Keep the coordinator, task and Preview
+      // context intact, including repeated entries from tray or slash commands.
+      if (activeView !== "settings") setSettingsOrigin({ view: activeView, surface: surfaceModeRef.current });
+    } else {
+      if (nextView !== "task") connect?.closeExecution?.();
+      if (nextView !== "task") setPreviewOpen(false);
+      setSettingsOrigin(null);
+    }
     setActiveView(nextView);
-  }, [connect, setPreviewOpen]);
+  }, [activeView, connect, setPreviewOpen]);
+
+  const returnFromSettings = () => {
+    setActiveView(settingsOrigin?.view ?? "task");
+    setSettingsOrigin(null);
+  };
+  const settingsBackLabel = settingsOrigin?.surface === "focus" ? "Back to Focus"
+    : `Back to ${{ task: "task", board: "Board", review: "Review", attention: "Attention", tools: "Tools", compare: "Compare models" }[settingsOrigin?.view] ?? "Workspace"}`;
 
   const loadModels = useCallback(async () => {
     if (!api) return;
@@ -8017,7 +8181,7 @@ export function App({ readOnly = false } = {}) {
       markResponsesSeen(focusThread, seenResponseIdsRef.current);
       selectedThreadIdRef.current = focusThread.id;
       setSelectedThreadId(focusThread.id);
-      setThread(focusThread);
+      setThread((current) => mergeThreadSnapshot(current, focusThread));
       setPlan([]);
       setDraftMode(false);
       const saved = loadThreadConfiguration(focusThread.id, storage);
@@ -8056,6 +8220,15 @@ export function App({ readOnly = false } = {}) {
       if (requestId === focusEnsureRequestRef.current) setFocusLoading(false);
     }
   }, [api, defaultEffort, defaultFastMode, defaultModel, models, storage]);
+
+  const loadEarlierMessages = useCallback(async (historyCursor) => {
+    const projectId = selectedProjectIdRef.current;
+    const threadId = selectedThreadIdRef.current;
+    const response = await api.threads.read({ projectId, threadId, historyCursor });
+    if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === threadId) {
+      setThread((current) => prependThreadHistory(current, response.thread));
+    }
+  }, [api]);
 
   const refreshThread = useCallback(async (projectId, threadId) => {
     if (!api || !projectId || !threadId) return;
@@ -9099,6 +9272,11 @@ export function App({ readOnly = false } = {}) {
         return;
       }
       if (event.type === "TrayNavigate") {
+        if (event.payload?.view === "settings") {
+          if (event.payload?.settingsPage) setSettingsPage(event.payload.settingsPage);
+          changeView("settings");
+          return;
+        }
         surfaceModeRef.current = "workspace";
         setSurfaceMode("workspace");
         focusEnsureRequestRef.current += 1;
@@ -9242,7 +9420,7 @@ export function App({ readOnly = false } = {}) {
         }
       }
     });
-  }, [api, commitRuntimePayload, loadFocusSession, defaultEffort, effort, fastMode, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadProactivity, loadReview, loadThreads, mirrorPreviewPresentations, models, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, storage, updatePreviewWorkspace]);
+  }, [api, changeView, commitRuntimePayload, loadFocusSession, defaultEffort, effort, fastMode, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadProactivity, loadReview, loadThreads, mirrorPreviewPresentations, models, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, storage, updatePreviewWorkspace]);
 
   const openProject = () => {
     if (!api?.projects) return;
@@ -10547,6 +10725,7 @@ export function App({ readOnly = false } = {}) {
   const comparisonSource = taskReceipts.find((receipt) => receipt.threadId === comparisonThreadId);
   const comparisonReceipts = comparisonSource ? taskReceipts.filter((receipt) => receipt.groupId === comparisonSource.groupId).sort((left, right) => left.startedAt.localeCompare(right.startedAt)) : [];
   const focusActive = surfaceMode === "focus" && Boolean(selectedProject) && !readOnly && Boolean(api?.focus?.ensure);
+  const focusVisible = focusActive && activeView !== "settings";
   const interventionCount = attention.filter(isApprovalRequest).length;
 
   const questionRequest = attention.find((request) => isQuestionRequest(request) && request.params?.threadId === selectedThreadId) ?? null;
@@ -10621,7 +10800,6 @@ export function App({ readOnly = false } = {}) {
   const openPixiceCommand = (name) => {
     if (name === "new" && focusActive) { void resetFocusSession(); return; }
     if (name !== "usage" && name !== "settings") return;
-    if (focusActive) exitFocus();
     setSettingsPage(name === "usage" ? "usage" : "general");
     changeView("settings");
   };
@@ -10669,7 +10847,23 @@ export function App({ readOnly = false } = {}) {
     dictationApi: api,
     transcription: transcription.state,
     micDeviceId: preferences.micDeviceId || null,
-    accentColor: preferences.accentColor
+    accentColor: preferences.accentColor,
+    reducedMotion: preferences.reduceMotion,
+    voiceContext: { projectId: selectedProjectId, threadId: selectedThreadId, model: targetModelName, effort: targetEffort,
+      permissionMode: targetPermissionMode, deviceId: preferences.micDeviceId || undefined, accent: preferences.accentColor },
+    resolveVoiceContext: targetIsOrigin ? async ({ isCurrent }) => {
+      const projectId = selectedProjectId;
+      const created = await api.threads.create({ projectId, model: targetModelName || undefined, permissionMode: targetPermissionMode });
+      if (!isCurrent() || selectedProjectIdRef.current !== projectId) return null;
+      saveThreadConfiguration(created.thread.id, { model: targetModelName, effort: targetEffort, fastMode: targetFastMode, permissionMode: targetPermissionMode }, storage);
+      setThreads((current) => current.some((item) => item.id === created.thread.id) ? current : [created.thread, ...current]);
+      selectedThreadIdRef.current = created.thread.id; setSelectedThreadId(created.thread.id); setThread(created.thread); setDraftMode(false);
+      return { projectId, threadId: created.thread.id, model: targetModelName, effort: targetEffort, permissionMode: targetPermissionMode,
+        deviceId: preferences.micDeviceId || undefined, accent: preferences.accentColor };
+    } : null,
+    workLocation: { api, projectId: selectedProjectId, hostKey: `${currentHostId}:${executionTarget.hostId}`, remoteTarget: !targetIsOrigin,
+      previewContext: currentPreviewContext, disabled: readOnly || loading.app || !selectedProjectId,
+      onSetup: () => { setSettingsPage("cloud"); changeView("settings"); } }
   };
   const activeProjectToolId = projectTools.some((tool) => tool.id === selectedProjectToolId)
     ? selectedProjectToolId
@@ -10729,6 +10923,9 @@ export function App({ readOnly = false } = {}) {
   } else if (activeView === "settings") {
     content = (
       <SettingsWorkspace
+        api={api}
+        projects={projects}
+        selectedProjectId={selectedProjectId}
         page={settingsPage}
         transcription={transcription}
         models={models}
@@ -10812,6 +11009,7 @@ export function App({ readOnly = false } = {}) {
             storage={storage}
             project={selectedProject}
             thread={thread}
+            onLoadEarlier={loadEarlierMessages}
             threads={threads}
             loading={loading.app || loading.thread}
             runtime={runtime}
@@ -10913,8 +11111,8 @@ export function App({ readOnly = false } = {}) {
   return (
     <div className="pixice-stage">
       <div
-        className={`pixice-app ${focusActive ? "view-focus" : `view-${activeView}`}`}
-        data-surface-mode={focusActive ? "focus" : "workspace"}
+        className={`pixice-app ${focusVisible ? "view-focus" : `view-${activeView}`}`}
+        data-surface-mode={focusVisible ? "focus" : "workspace"}
         data-sidebar-expanded={sidebarExpanded}
         data-mobile-navigation={mobileNavigationOpen}
         data-inspector-open={!focusActive && activeView === "task" && inspectorOpen && Boolean(thread) && !originPreviewOpen && !executionActive}
@@ -10930,13 +11128,16 @@ export function App({ readOnly = false } = {}) {
         style={{ "--sidebar-width": `${sidebarWidth}px` }}
       >
         <div className="window-drag-region" aria-hidden="true" />
-        {focusActive ? (
+        {focusActive && (
+          <div hidden={!focusVisible} inert={!focusVisible} style={{ display: focusVisible ? "contents" : "none" }}>
           <FocusWorkspace
+            visible={focusVisible}
             api={api}
             storage={storage}
             project={selectedProject}
             projects={projects}
             thread={thread?.id === focusThreadId ? thread : null}
+            onLoadEarlier={loadEarlierMessages}
             threads={threads}
             loading={focusLoading || loading.app || (Boolean(focusThreadId) && loading.thread)}
             runtime={runtime}
@@ -10953,7 +11154,7 @@ export function App({ readOnly = false } = {}) {
             seenResponseIds={seenResponseIdsRef.current}
             showMessageTimestamps={preferences.showMessageTimestamps}
             completedWorkDetails={preferences.completedWorkDetails}
-            composerProps={{ ...composerProps, globalFileDrop: true }}
+            composerProps={{ ...composerProps, globalFileDrop: focusVisible, autoFocusComposer: focusVisible && composerProps.autoFocusComposer }}
             connectionError={focusConnectionError}
             onRetry={() => loadFocusSession(selectedProjectId)}
             memory={focusMemory}
@@ -10961,10 +11162,7 @@ export function App({ readOnly = false } = {}) {
               if (next?.projectId === selectedProjectIdRef.current) setFocusMemory(next);
             }}
             onExit={exitFocus}
-            onOpenSettings={() => {
-              exitFocus();
-              changeView("settings");
-            }}
+            onOpenSettings={() => changeView("settings")}
             onSelectProject={selectFocusProject}
             previewOpen={previewOpen}
             onPreviewToggle={togglePreview}
@@ -11002,13 +11200,15 @@ export function App({ readOnly = false } = {}) {
             onError={setError}
             onResolveAttention={resolveAttention}
           />
-        ) : <>
+          </div>
+        )}
+        {!focusVisible && <>
         {api?.remote && <>
           <button className="connect-mobile-menu" aria-label={mobileNavigationOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileNavigationOpen} onClick={() => { setMobileNavigationOpen((value) => !value); setSidebarExpanded(true); }}><Stack size={18} /></button>
           {mobileNavigationOpen && <button className="connect-mobile-scrim" aria-label="Close navigation drawer" onClick={() => setMobileNavigationOpen(false)} />}
         </>}
         {activeView === "settings" ? (
-          <SettingsSidebar page={settingsPage} onPageChange={setSettingsPage} onBack={() => changeView("task")} />
+          <SettingsSidebar page={settingsPage} onPageChange={setSettingsPage} onBack={returnFromSettings} backLabel={settingsBackLabel} />
         ) : activeView === "tools" ? (
           <ProjectToolsSidebar
             tools={projectTools}

@@ -1,0 +1,27 @@
+@import '@fontsource-variable/manrope';
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; width: 100%; height: 100%; background: transparent !important; overflow: hidden; }
+body { font-family: 'Manrope Variable', system-ui, sans-serif; color: #f4eee9; color-scheme: dark; }
+.voice-companion { position: relative; width: 100%; height: 100%; background: transparent; display: flex; flex-direction: column; align-items: center; padding: 8px; }
+.voice-companion-orb { position: absolute; top: 18px; left: 24px; width: 176px; height: 176px; display: grid; place-items: center; -webkit-app-region: drag; cursor: grab; }
+.voice-companion-drag { position: absolute; top: 4px; max-width: 196px; height: 24px; padding: 4px 9px; border-radius: 20px; background: #1a1d22b8; -webkit-app-region: drag; user-select: none; cursor: grab; }
+.voice-companion-context { display: block; max-width: 176px; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.voice-companion-mode { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.voice-companion-status { position: absolute; top: 172px; max-width: 200px; margin: 0; min-height: 21px; padding: 3px 9px; display: flex; align-items: center; gap: 5px; border: 1px solid #ffffff13; border-radius: 20px; background: #1a1d22c9; font-size: 10px; font-weight: 500; }
+.voice-companion.is-muted .voice-companion-status { color: #e7caae; }
+.voice-companion-controls { position: absolute; bottom: 7px; display: flex; gap: 3px; padding: 4px; background: #171b21ce; border: 1px solid #ffffff1e; border-radius: 24px; box-shadow: 0 2px 9px #00000030; }
+.voice-companion button { -webkit-app-region: no-drag; display: inline-flex; align-items: center; justify-content: center; min-width: 27px; height: 27px; padding: 4px 6px; border: 0; border-radius: 16px; font: inherit; font-size: 10px; background: transparent; color: #eeeae6; cursor: pointer; }
+.voice-companion button:hover { background: #ffffff14; }
+.voice-companion button:disabled { color: #85898f; cursor: default; }
+.voice-companion button:focus-visible { outline: 2px solid var(--companion-accent); outline-offset: 1px; }
+.voice-companion .voice-companion-end { color: #ffb49d; }
+.voice-companion .voice-companion-end.retry { padding-inline: 8px; background: #e9826625; }
+.voice-companion-chrome { opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.voice-companion:hover .voice-companion-chrome, .voice-companion:focus-within .voice-companion-chrome, .voice-companion.needs-attention .voice-companion-chrome { opacity: 1; pointer-events: auto; }
+.voice-companion-attention { position: absolute; top: 159px; display: flex; flex-direction: column; align-items: center; gap: 3px; max-width: 206px; }
+.voice-companion.needs-attention .voice-companion-orb { top: 16px; height: 144px; }
+.voice-companion.needs-attention .voice-companion-status { top: 140px; }
+.voice-companion .voice-companion-approval, .voice-companion-attention > button { height: 22px; padding: 3px 10px; font-size: 9px; background: #352a20df; border: 1px solid #eac28c4a; color: #ffd5ae; }
+.voice-companion-notice { max-width: 200px; margin: 0; padding: 4px 8px; border-radius: 10px; background: #292026df; font-size: 9px; line-height: 12px; color: #ffc2ac; max-height: 34px; overflow-y: auto; }
+.voice-companion-notice.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
+@media (prefers-reduced-motion: reduce) { .voice-companion-chrome { transition: none; } }

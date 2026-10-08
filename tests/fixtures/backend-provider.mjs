@@ -25,6 +25,7 @@ export class BackendFixtureProvider extends EventEmitter {
       const thread = { id: randomUUID(), cwd: params.cwd, createdAt: Math.floor(Date.now()/1000), updatedAt: Math.floor(Date.now()/1000), turns: [], status: { type: 'idle' } };
       this.threads.set(thread.id, thread); return { thread };
     }
+    if (method === 'thread/turns/list') throw new Error('Unsupported method: thread/turns/list');
     const thread = this.threads.get(params.threadId);
     if (['thread/read', 'thread/resume'].includes(method)) { if (!thread) throw new Error('Fixture thread unavailable'); return { thread: structuredClone(thread) }; }
     if (method === 'turn/start') {

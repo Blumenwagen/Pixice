@@ -1,0 +1,302 @@
+{
+  "fixture": "presentation-only; no microphone, transport or account",
+  "platform": "darwin",
+  "checks": [
+    "224 \u00d7 240 native window",
+    "transparent root",
+    "all mini controls fit",
+    "native drag and click areas distinct",
+    "Tab reveals controls and reaches all actions",
+    "muted/approval/recovery status visible",
+    "PNG surround alpha zero at five edge points",
+    "all action button rectangles are distinct, including blocked audio retry"
+  ],
+  "layouts": {
+    "native-detached.png": {
+      "width": 224,
+      "height": 240,
+      "background": "rgba(0, 0, 0, 0)",
+      "overflow": false,
+      "controlsOpacity": "0",
+      "dragRegion": "drag",
+      "buttons": [
+        {
+          "label": "Mute microphone",
+          "x": 53.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "End Voice conversation",
+          "x": 83.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Return to pinned conversation in Pixice",
+          "x": 113.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Attach to Pixice",
+          "x": 143.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        }
+      ]
+    },
+    "native-compact-controls.png": {
+      "width": 224,
+      "height": 240,
+      "background": "rgba(0, 0, 0, 0)",
+      "overflow": false,
+      "controlsOpacity": "1",
+      "dragRegion": "drag",
+      "buttons": [
+        {
+          "label": "Mute microphone",
+          "x": 53.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "End Voice conversation",
+          "x": 83.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Return to pinned conversation in Pixice",
+          "x": 113.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Attach to Pixice",
+          "x": 143.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        }
+      ]
+    },
+    "native-attached.png": {
+      "width": 224,
+      "height": 240,
+      "background": "rgba(0, 0, 0, 0)",
+      "overflow": false,
+      "controlsOpacity": "0",
+      "dragRegion": "drag",
+      "buttons": [
+        {
+          "label": "Mute microphone",
+          "x": 53.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "End Voice conversation",
+          "x": 83.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Return to pinned conversation in Pixice",
+          "x": 113.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Detach companion",
+          "x": 143.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        }
+      ]
+    },
+    "native-approval.png": {
+      "width": 224,
+      "height": 240,
+      "background": "rgba(0, 0, 0, 0)",
+      "overflow": false,
+      "controlsOpacity": "1",
+      "dragRegion": "drag",
+      "buttons": [
+        {
+          "label": "Review approval in Pixice",
+          "x": 49.9375,
+          "y": 159,
+          "width": 124.1171875,
+          "height": 22,
+          "region": "no-drag"
+        },
+        {
+          "label": "Unmute microphone",
+          "x": 53.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "End Voice conversation",
+          "x": 83.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Return to pinned conversation in Pixice",
+          "x": 113.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Attach to Pixice",
+          "x": 143.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        }
+      ]
+    },
+    "native-playback-recovery.png": {
+      "width": 224,
+      "height": 240,
+      "background": "rgba(0, 0, 0, 0)",
+      "overflow": false,
+      "controlsOpacity": "1",
+      "dragRegion": "drag",
+      "buttons": [
+        {
+          "label": "Enable audio",
+          "x": 74.4609375,
+          "y": 159,
+          "width": 75.0703125,
+          "height": 22,
+          "region": "no-drag"
+        },
+        {
+          "label": "Mute microphone",
+          "x": 53.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "End Voice conversation",
+          "x": 83.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Return to pinned conversation in Pixice",
+          "x": 113.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Attach to Pixice",
+          "x": 143.5,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        }
+      ]
+    },
+    "native-cleanup-retry.png": {
+      "width": 224,
+      "height": 240,
+      "background": "rgba(0, 0, 0, 0)",
+      "overflow": false,
+      "controlsOpacity": "1",
+      "dragRegion": "drag",
+      "buttons": [
+        {
+          "label": "Retry ending Voice",
+          "x": 66.7421875,
+          "y": 201,
+          "width": 60.5078125,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Return to pinned conversation in Pixice",
+          "x": 130.25,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        },
+        {
+          "label": "Attach to Pixice",
+          "x": 160.25,
+          "y": 201,
+          "width": 27,
+          "height": 27,
+          "region": "no-drag"
+        }
+      ]
+    }
+  },
+  "tabOrder": [
+    "Mute microphone",
+    "End Voice conversation",
+    "Return to pinned conversation in Pixice",
+    "Attach to Pixice"
+  ],
+  "bounds": {
+    "x": 1154,
+    "y": 667,
+    "width": 224,
+    "height": 240
+  },
+  "pixelEvidence": {
+    "pngSize": [
+      448,
+      480
+    ],
+    "surroundAlphaSamples": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "fullyTransparentFraction": 0.623
+  }
+}

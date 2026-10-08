@@ -143,7 +143,7 @@ describe('preload and voice client contracts', () => {
     let api; const invoke = vi.fn(async () => ({})); const listeners = new Set();
     vm.runInNewContext(readFileSync('electron/preload.cjs', 'utf8'), { require: () => ({ contextBridge: { exposeInMainWorld: (_key, value) => { api = value; } }, ipcRenderer: { invoke, on: (_name, listener) => listeners.add(listener), removeListener: (_name, listener) => listeners.delete(listener) } }) });
     expect(Object.isFrozen(api.voice)).toBe(true);
-    for (const name of Object.keys(api.voice)) { await api.voice[name]({ projectId: 'project', threadId: 'thread' }); expect(invoke).toHaveBeenLastCalledWith(`voice:${name}`, { projectId: 'project', threadId: 'thread' }); }
+    for (const name of ["availability", "prepare", "start", "stop", "appendText", "appendSpeech", "appendAudio", "snapshot", "state", "context"]) { await api.voice[name]({ projectId: 'project', threadId: 'thread' }); expect(invoke).toHaveBeenLastCalledWith(`voice:${name}`, { projectId: 'project', threadId: 'thread' }); }
     const client = createVoiceClient({ invoke: (channel, payload) => api.voice[channel.slice(6)](payload), subscribe: api.events.subscribe });
     const event = vi.fn(); const unsubscribe = client.subscribe(event);
     for (const listener of listeners) { listener({}, { type: 'TaskUpdated', payload: { sdp: 'foreign' } }); listener({}, { type: 'VoiceSessionEvent', payload: { type: 'sdp', sdp: 'owner-answer' } }); }

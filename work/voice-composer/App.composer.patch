@@ -1,0 +1,224 @@
+--- work/voice-composer/App.before.jsx	2026-09-30 11:11:39
++++ src/App.jsx	2026-09-30 11:37:47
+@@ -1,4 +1,6 @@
+-import { VoiceConversation } from "./components/VoiceConversation.jsx";
++import { useVoiceConversation } from "./components/VoiceConversation.jsx";
++import { ComposerPrimaryAction } from "./components/ComposerPrimaryAction.jsx";
++import { ComposerCloudFeedback, ComposerWorkLocation, useComposerWorkLocation } from "./components/ComposerWorkLocation.jsx";
+ import { ChatGPTSettings } from "./components/ChatGPTSettings.jsx";
+ import { CodexCloudSettings } from "./components/CodexCloudSettings.jsx";
+ import { useUnifiedUsage } from "./connect/useUnifiedUsage.js";
+@@ -3030,7 +3032,7 @@
+   );
+ }
+ 
+-export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, slashCommands, onCommand, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
++export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, slashCommands, onCommand, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral", voiceContext = null, resolveVoiceContext = null, workLocation = null, workLocationDeviceControl = null, reducedMotion = false }) {
+   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
+   const [text, setText] = useState("");
+   const [attachments, setAttachments] = useState([]);
+@@ -3107,12 +3109,28 @@
+   const runProfileAriaLabel = selected
+     ? `Run profile: ${fullModelLabel}, ${selectedEffort?.label ?? effort} reasoning${fastTier ? `, Fast ${fastMode ? "on" : "off"}` : ""}`
+     : "Run profile: Choose model";
++  const provider = selected?.provider ?? (modelBrand(selected?.model)?.id === "anthropic" ? "claude" : "codex");
++  const location = useComposerWorkLocation({ ...workLocation, provider });
++  const cloudSelected = Boolean(workLocation && location.destination === "cloud");
++  const voice = useVoiceConversation({ api: dictationApi, context: voiceContext, provider,
++    enabled: Boolean(voiceContext && !cloudSelected && !workLocation?.remoteTarget), resolveContext: resolveVoiceContext });
+   const hasSteeringDraft = Boolean(text.trim() || attachments.length > 0);
+-  const runActionState = running && !hasSteeringDraft ? "stop" : "send";
+-  const runActionLabel = runActionState === "stop" ? "Stop task" : running ? "Steer task" : "Send message";
+-  const runActionDisabled = runActionState === "stop"
+-    ? disabled
+-    : disabled || busy || submissionBusy || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || !hasSteeringDraft;
++  const runActionState = running && !hasSteeringDraft ? "stop" : !running && !hasSteeringDraft && voiceContext && !cloudSelected ? "voice" : "send";
++  const runActionLabel = runActionState === "stop" ? "Stop task" : runActionState === "voice" ? "Conversational Voice" : cloudSelected ? "Send to Cloud" : running ? "Steer task" : "Send message";
++  const cloudIssue = cloudSelected ? location.validate(attachments) : "";
++  const destinationDisabled = cloudSelected ? Boolean(workLocation?.disabled) : disabled;
++  const runActionDisabled = runActionState === "stop" ? disabled
++    : runActionState === "voice" ? disabled || busy || voice.opening || !voice.available
++      : destinationDisabled || busy || submissionBusy || location.busy || Boolean(cloudIssue) || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || !hasSteeringDraft;
++  useEffect(() => {
++    return () => {
++      if (submissionRef.current?.kind === "cloud") {
++        submissionRef.current.controller.abort(new DOMException("The Cloud destination changed.", "AbortError"));
++        submissionRef.current = null;
++        if (mountedRef.current) setSubmissionBusy(false);
++      }
++    };
++  }, [workLocation?.projectId, workLocation?.hostKey, provider]);
+   useEffect(() => {
+     const identityChanged = hydratedDraftIdentityRef.current !== storageKey;
+     if (identityChanged) reselectAttemptsRef.current.clear();
+@@ -3216,10 +3234,10 @@
+   }, [attachments.length, onDraftStateChange, text]);
+ 
+   useEffect(() => {
+-    if (!autoFocusComposer || disabled || blockingQuestion) return undefined;
++    if (!autoFocusComposer || destinationDisabled || blockingQuestion) return undefined;
+     const frame = window.requestAnimationFrame(() => textareaRef.current?.focus());
+     return () => window.cancelAnimationFrame(frame);
+-  }, [autoFocusComposer, disabled, draftKey, questionRequest]);
++  }, [autoFocusComposer, destinationDisabled, draftKey, questionRequest]);
+ 
+   const addAttachmentFiles = useCallback(async (files) => {
+     if (disabled) return;
+@@ -3284,7 +3302,7 @@
+   const matchingCommands = !slashToken ? [] : availableCommands.filter((command) => {
+     return command.name.toLowerCase().includes(slashToken.query) || command.description.toLowerCase().includes(slashToken.query);
+   });
+-  const commandMenuOpen = !disabled && !commandsDismissed && matchingCommands.length > 0;
++  const commandMenuOpen = !cloudSelected && !disabled && !commandsDismissed && matchingCommands.length > 0;
+   const activeCommandIndex = Math.min(commandSelection, Math.max(0, matchingCommands.length - 1));
+   const activeCommand = matchingCommands[activeCommandIndex];
+   const readDictationLevel = useCallback(() => dictationLevelRef.current, []);
+@@ -3515,6 +3533,26 @@
+     setAttachmentNotice("Upload cancelled. Send again to restart.");
+   };
+   const submit = async () => {
++    if (cloudSelected) {
++      if (destinationDisabled || busy || submissionBusy || submissionRef.current || location.busy) return;
++      const issue = location.validate(attachments);
++      if (issue) { setAttachmentNotice(issue); return; }
++      const prompt = text.trim();
++      if (!prompt) return;
++      const controller = new AbortController();
++      const attempt = { controller, storageKey, kind: "cloud", cancelled: false };
++      const submittedText = text;
++      submissionRef.current = attempt; setSubmissionBusy(true); setAttachmentNotice("");
++      try {
++        const accepted = await location.submit(prompt, attachments, controller.signal);
++        if (accepted && mountedRef.current && submissionRef.current === attempt && !controller.signal.aborted && textRef.current === submittedText) {
++          setText(""); storage.removeItem(storageKey);
++        }
++      } finally {
++        if (submissionRef.current === attempt) { submissionRef.current = null; if (mountedRef.current) setSubmissionBusy(false); }
++      }
++      return;
++    }
+     const value = prepareSlashCommandPrompt(text, availableCommands);
+     const nativeCommand = availableCommands.find((command) => command.source === "pixice" && (value === `/${command.name}` || value.startsWith(`/${command.name} `)));
+     if (nativeCommand && attachments.length === 0 && !disabled) {
+@@ -3617,6 +3655,7 @@
+   }
+   return (
+     <div className="composer" data-question-present={Boolean(questionRequest)} data-dragging-files={draggingFiles} data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
++      {workLocation && <ComposerWorkLocation location={location} onSetup={workLocation.onSetup} disabled={Boolean(workLocation.disabled) || busy || submissionBusy} deviceControl={workLocationDeviceControl} />}
+       {showDictationBeam && (
+         <VoiceBeam
+           className="composer-voice-beam"
+@@ -3715,10 +3754,10 @@
+         aria-expanded={commandMenuOpen}
+         aria-controls={commandMenuOpen ? commandListId : undefined}
+         aria-activedescendant={commandMenuOpen && activeCommand ? `${commandListId}-${activeCommand.name}` : undefined}
+-        placeholder={disabled ? "Connect a provider and select a project to begin" : running ? runningPlaceholder : placeholder}
++        placeholder={destinationDisabled ? "Connect a provider and select a project to begin" : cloudSelected ? "Describe a new Cloud task" : running ? runningPlaceholder : placeholder}
+         spellCheck={spellCheckComposer}
+         value={text}
+-        disabled={disabled}
++        disabled={destinationDisabled}
+         onPaste={(event) => {
+           const files = attachmentFilesFromTransfer(event.clipboardData);
+           if (files.length > 0) addAttachmentFiles(files);
+@@ -3760,6 +3799,9 @@
+           }
+         }}
+       />
++      {runActionState === "voice" && (voice.reason || voice.error) && <p className="composer-integration-notice" role="status">{voice.error || voice.reason}</p>}
++      {cloudSelected && (cloudIssue || location.error) && <p className="composer-integration-notice" role="status">{location.error || cloudIssue}</p>}
++      {workLocation && <ComposerCloudFeedback location={location} />}
+       {attachmentNotice && <div className="composer-image-notice" role="status">{attachmentNotice}</div>}
+       {uploadState && (
+         <div className="composer-upload-status" role="status" aria-label="Attachment upload progress">
+@@ -3858,18 +3900,9 @@
+             onPhaseChange={handleDictationPhase}
+             onLevelChange={handleDictationLevel}
+           />
+-          <button
+-            type="button"
+-            className="icon-button send composer-run-action"
+-            data-state={runActionState}
+-            aria-label={runActionLabel}
+-            title={runActionLabel}
+-            onClick={runActionState === "stop" ? onInterrupt : submit}
+-            disabled={runActionDisabled}
+-          >
+-            <span className="composer-run-icon composer-run-icon-send"><PaperPlaneTilt size={17} weight="fill" /></span>
+-            <span className="composer-run-icon composer-run-icon-stop" aria-hidden="true"><i /></span>
+-          </button>
++          <ComposerPrimaryAction state={runActionState} label={runActionLabel} disabled={runActionDisabled}
++            reason={runActionState === "voice" ? voice.reason : cloudIssue} pending={runActionState === "voice" ? voice.opening : cloudSelected && location.busy}
++            reducedMotion={reducedMotion} onClick={runActionState === "stop" ? onInterrupt : runActionState === "voice" ? voice.open : submit} />
+         </div>
+       </div>
+     </div>
+@@ -4837,7 +4870,7 @@
+       const composerBounds = composer.getBoundingClientRect();
+       const rail = workspace.querySelector('.focus-task-rail');
+       const railBottom = rail && getComputedStyle(rail).display !== 'none' ? rail.getBoundingClientRect().bottom - bounds.top + 12 : 96;
+-      const bottom = Math.max(24, Math.ceil(bounds.bottom - composerBounds.top + 16));
++      const bottom = Math.max(24, Math.ceil(bounds.bottom - Math.min(composerBounds.top, composer.querySelector(".composer-location")?.getBoundingClientRect().top ?? composerBounds.top) + 16));
+       workspace.style.setProperty('--focus-composer-clearance', `${bottom}px`);
+       workspace.style.setProperty('--widget-shelf-top-clearance', `${Math.ceil(railBottom)}px`);
+       if ((followLatestRef.current || (previewOpen && focusQuestions.length > 0)) && scrollRef.current) {
+@@ -4903,7 +4936,6 @@
+           <FocusProjectTiles project={project} projects={projects} visibleProjectLimit={preferences.showThirdProjectRow ? 9 : 6} onSelectProject={onSelectProject} />
+         </div>
+         <div className="focus-chrome-actions">
+-          <VoiceConversation api={api} projectId={project?.id} threadId={thread?.id} provider={thread?.provider ?? "codex"} model={composerProps.selectedModel} effort={composerProps.effort} permissionMode={composerProps.permissionMode} deviceId={preferences.micDeviceId} disabled={loading || composerProps.disabled || composerProps.running} />
+           {focusActivityAvailable && <IconButton
+             className={`focus-activity-button${activityPanelOpen ? " active" : ""}`}
+             label={activityPanelOpen ? "Close activity panel" : "Open activity panel"}
+@@ -4981,6 +5013,8 @@
+           <Composer
+             {...composerProps}
+             onSubmit={submitFocusPrompt}
++            voiceContext={{ ...composerProps.voiceContext, projectId: project?.id, threadId: thread?.id }}
++            resolveVoiceContext={null}
+             questionRequest={null}
+             disabled={composerProps.disabled || loading || !thread}
+             draftKey={`${project.id}:focus`}
+@@ -5314,7 +5348,6 @@
+           showPreview={Boolean(project) && !readOnly}
+           executionStatus={executionStatus}
+           executionAction={executionAction}
+-          voiceControl={!readOnly && <VoiceConversation api={composerProps.dictationApi} projectId={project?.id} threadId={thread?.id} provider={thread?.provider ?? "codex"} model={composerProps.selectedModel} effort={composerProps.effort} permissionMode={composerProps.permissionMode} deviceId={composerProps.micDeviceId} disabled={loading || composerProps.disabled || composerProps.running} />}
+         />
+         {!previewLayoutOpen && thread && (
+           <PromptPreviewRail
+@@ -5373,8 +5406,7 @@
+         {project && !readOnly && (
+           // Keep Composer mounted when thread creation removes the preflight controls.
+           <div className={executionTargetControl ? "composer-dock" : undefined} style={executionTargetControl ? undefined : { display: "contents" }}>
+-            {executionTargetControl && <div className="execution-preflight">{executionTargetControl}</div>}
+-            <Composer {...composerProps} />
++            <Composer {...composerProps} workLocationDeviceControl={executionTargetControl} />
+           </div>
+         )}
+       </main>
+@@ -10645,7 +10677,23 @@
+     dictationApi: api,
+     transcription: transcription.state,
+     micDeviceId: preferences.micDeviceId || null,
+-    accentColor: preferences.accentColor
++    accentColor: preferences.accentColor,
++    reducedMotion: preferences.reduceMotion,
++    voiceContext: { projectId: selectedProjectId, threadId: selectedThreadId, model: targetModelName, effort: targetEffort,
++      permissionMode: targetPermissionMode, deviceId: preferences.micDeviceId || undefined, accent: preferences.accentColor },
++    resolveVoiceContext: targetIsOrigin ? async ({ isCurrent }) => {
++      const projectId = selectedProjectId;
++      const created = await api.threads.create({ projectId, model: targetModelName || undefined, permissionMode: targetPermissionMode });
++      if (!isCurrent() || selectedProjectIdRef.current !== projectId) return null;
++      saveThreadConfiguration(created.thread.id, { model: targetModelName, effort: targetEffort, fastMode: targetFastMode, permissionMode: targetPermissionMode }, storage);
++      setThreads((current) => current.some((item) => item.id === created.thread.id) ? current : [created.thread, ...current]);
++      selectedThreadIdRef.current = created.thread.id; setSelectedThreadId(created.thread.id); setThread(created.thread); setDraftMode(false);
++      return { projectId, threadId: created.thread.id, model: targetModelName, effort: targetEffort, permissionMode: targetPermissionMode,
++        deviceId: preferences.micDeviceId || undefined, accent: preferences.accentColor };
++    } : null,
++    workLocation: { api, projectId: selectedProjectId, hostKey: `${currentHostId}:${executionTarget.hostId}`, remoteTarget: !targetIsOrigin,
++      previewContext: currentPreviewContext, disabled: readOnly || loading.app || !selectedProjectId,
++      onSetup: () => { if (focusActive) exitFocus(); setSettingsPage("cloud"); changeView("settings"); } }
+   };
+   const activeProjectToolId = projectTools.some((tool) => tool.id === selectedProjectToolId)
+     ? selectedProjectToolId

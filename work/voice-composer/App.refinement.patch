@@ -1,0 +1,36 @@
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -3112,10 +3112,13 @@
+   const provider = selected?.provider ?? (modelBrand(selected?.model)?.id === "anthropic" ? "claude" : "codex");
+   const location = useComposerWorkLocation({ ...workLocation, provider });
+   const cloudSelected = Boolean(workLocation && location.destination === "cloud");
++  const localVoiceHost = !workLocation?.remoteTarget && !dictationApi?.remote;
+   const voice = useVoiceConversation({ api: dictationApi, context: voiceContext, provider,
+-    enabled: Boolean(voiceContext && !cloudSelected && !workLocation?.remoteTarget), resolveContext: resolveVoiceContext });
++    enabled: Boolean(voiceContext && !cloudSelected && localVoiceHost), resolveContext: resolveVoiceContext });
+   const hasSteeringDraft = Boolean(text.trim() || attachments.length > 0);
+-  const runActionState = running && !hasSteeringDraft ? "stop" : !running && !hasSteeringDraft && voiceContext && !cloudSelected ? "voice" : "send";
++  const voiceAvailable = Boolean(voiceContext && provider === "codex" && localVoiceHost && !cloudSelected && dictationApi?.voice?.companion?.open && voice.available);
++  const voiceFallbackReason = provider === "codex" && !localVoiceHost ? "Conversational Voice runs on the local Pixice host. Choose this computer as the execution device to use it." : voice.reason;
++  const runActionState = running && !hasSteeringDraft ? "stop" : !running && !hasSteeringDraft && voiceAvailable ? "voice" : "send";
+   const runActionLabel = runActionState === "stop" ? "Stop task" : runActionState === "voice" ? "Conversational Voice" : cloudSelected ? "Send to Cloud" : running ? "Steer task" : "Send message";
+   const cloudIssue = cloudSelected ? location.validate(attachments) : "";
+   const destinationDisabled = cloudSelected ? Boolean(workLocation?.disabled) : disabled;
+@@ -3799,7 +3802,7 @@
+           }
+         }}
+       />
+-      {runActionState === "voice" && (voice.reason || voice.error) && <p className="composer-integration-notice" role="status">{voice.error || voice.reason}</p>}
++      {!running && !hasSteeringDraft && voiceContext && !cloudSelected && (voiceFallbackReason || voice.error) && <p className="composer-integration-notice" role="status">{voice.error || voiceFallbackReason}</p>}
+       {cloudSelected && (cloudIssue || location.error) && <p className="composer-integration-notice" role="status">{location.error || cloudIssue}</p>}
+       {workLocation && <ComposerCloudFeedback location={location} />}
+       {attachmentNotice && <div className="composer-image-notice" role="status">{attachmentNotice}</div>}
+@@ -7344,7 +7347,7 @@
+       </>
+     );
+   } else if (page === "voice") {
+-    pageContent = <><SettingsGroup title="Conversational Voice" description="Speak and listen while Codex works in your existing conversation."><SettingsRow title="Start from your conversation" description="Use the Voice button in Focus or a Codex task's toolbar. Native Codex Voice uses the existing CLI account and keeps approvals in Pixice. Availability depends on your Codex version and account. App-level ChatGPT sign-in currently grants Responses inference only." /></SettingsGroup><VoiceSettings transcription={transcription} micDeviceId={preferences.micDeviceId} onMicDeviceChange={(value) => onPreferenceChange("micDeviceId", value)} /></>;
++    pageContent = <><SettingsGroup title="Conversational Voice" description="Speak and listen while Codex works in your existing conversation."><SettingsRow title="Start from your conversation" description="Use the main Voice button in an empty Focus or Codex task composer. The companion can detach into its own window. Native Codex Voice uses the existing CLI account and keeps approvals in Pixice. Availability depends on your Codex version and account. App-level ChatGPT sign-in currently grants Responses inference only." /></SettingsGroup><VoiceSettings transcription={transcription} micDeviceId={preferences.micDeviceId} onMicDeviceChange={(value) => onPreferenceChange("micDeviceId", value)} /></>;
+   } else if (page === "providers") {
+     pageContent = <><ChatGPTSettings api={api} /><ProvidersSettings providers={providers} models={models} loading={providersLoading} onRefresh={onRefreshProviders} onLogin={onProviderLogin} onAction={onProviderAction} updateChecksEnabled={providerUpdateChecksEnabled} onUpdateChecksEnabledChange={onProviderUpdateChecksEnabledChange} widgetCredentials={widgetCredentials} /></>;
+   } else if (page === "cloud") {

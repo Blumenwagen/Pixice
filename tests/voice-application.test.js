@@ -65,6 +65,43 @@ async function fixture(providerId = 'codex', registerHelper = true) {
 }
 
 describe('production voice application integration with isolated native runtime', () => {
+  it('keeps companion and authenticated Voice calls distinct, forwards companion events locally, and guards Focus renewal for both', async () => {
+    const f = await fixture();
+    const request = f.provider.request.bind(f.provider);
+    f.provider.request = (method, params) => method === 'thread/settings/update' ? Promise.resolve({}) : request(method, params);
+    const localEvents = vi.spyOn(f.service.local, 'publish');
+    const remoteEvents = vi.spyOn(f.service.remote, 'publish');
+    expect(await f.client.call('voice.state')).toMatchObject({ available: true, session: null });
+    const companion = await f.client.call('voice.start', { projectId: f.project.id, threadId: f.scope.threadId, sdp: 'companion-offer' });
+    f.emit('sdp', { realtimeSessionId: companion.id, sdp: 'companion-answer' });
+    expect(localEvents).toHaveBeenCalledWith(expect.objectContaining({ type: 'VoiceEvent', payload: expect.objectContaining({ id: companion.id, sdp: 'companion-answer' }) }));
+    expect(remoteEvents.mock.calls.some(([event]) => event.type === 'VoiceEvent')).toBe(false);
+    await expect(f.refresh()).rejects.toThrow(/voice/);
+    await expect(f.prepare()).rejects.toThrow(/Focus is busy/);
+    await f.client.call('voice.stop', { sessionId: companion.id });
+    const native = await f.begin();
+    await expect(f.client.call('voice.start', { projectId: f.project.id, threadId: f.scope.threadId, sdp: 'companion-offer' })).rejects.toThrow(/native Voice/);
+    await expect(f.refresh()).rejects.toThrow(/voice/);
+    await f.call('stop', native);
+    expect((await f.refresh()).session.generation).toBe(2);
+  });
+  it('serializes companion starts behind pending authenticated Voice preparation', async () => {
+    const f = await fixture();
+    const metadata = deferred();
+    f.native.verifyVoiceSupport.mockImplementation(() => metadata.promise);
+    const preparing = f.prepare();
+    await vi.waitFor(() => expect(f.native.verifyVoiceSupport).toHaveBeenCalled());
+    let settled = false;
+    const companion = f.client.call('voice.start', { projectId: f.project.id, threadId: f.scope.threadId, sdp: 'companion-offer' });
+    const rejected = expect(companion).rejects.toThrow(/native Voice/).then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(settled).toBe(false);
+    metadata.resolve(CODEX_0159_VOICE_CAPABILITIES);
+    const native = await preparing;
+    await rejected;
+    expect(f.native.request).not.toHaveBeenCalledWith('thread/realtime/start', expect.anything());
+    await f.call('stop', native);
+  });
   it('denies ordinary registration voice with no desktop helper, including public ID replay and recovery', async () => {
     const f = await fixture('codex', false); const clientId = randomUUID();
     const issued = []; f.client.onCommandIssued = (value) => issued.push(value);

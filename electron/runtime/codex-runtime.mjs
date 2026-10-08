@@ -6,9 +6,20 @@ import { JsonlClient } from "./jsonl-client.mjs";
 import { CapabilityAdapter, normalizeCodexEvent } from "./capability-adapter.mjs";
 import { inspectVoiceProtocol } from "./voice-protocol.mjs";
 
-export function codexAppServerArgs(developerInstructions = "") {
+export function codexAppServerArgs(developerInstructions = "", chatGPTPlan = false) {
   const instructions = String(developerInstructions).trim();
   const args = instructions ? ["--config", `developer_instructions=${JSON.stringify(instructions)}`] : [];
+  if (chatGPTPlan) {
+    for (const setting of [
+      'model_provider="openai_chatgpt_plan"',
+      'model_providers.openai_chatgpt_plan.name="ChatGPT plan"',
+      'model_providers.openai_chatgpt_plan.base_url="https://api.openai.com/v1"',
+      'model_providers.openai_chatgpt_plan.env_key="ACCESS_TOKEN"',
+      'model_providers.openai_chatgpt_plan.wire_api="responses"',
+      'model_providers.openai_chatgpt_plan.requires_openai_auth=false',
+      'model_providers.openai_chatgpt_plan.supports_websockets=false'
+    ]) args.push("--config", setting);
+  }
   args.push("app-server");
   return args;
 }
@@ -25,8 +36,10 @@ export class CodexRuntime extends EventEmitter {
   #voiceVerification = null;
   #voicePrivate = false;
   #executableIdentity = null;
+  #authentication = null;
+  #authPreparation = null;
 
-  constructor({ executablePath = null, clientVersion, developerInstructionsPath = null, environment = process.env, spawnProcess = spawn, inspectVoiceSupport = inspectVoiceProtocol }) {
+  constructor({ executablePath = null, clientVersion, developerInstructionsPath = null, environment = process.env, spawnProcess = spawn, inspectVoiceSupport = inspectVoiceProtocol, authentication = null, canRestartAuthentication = () => true }) {
     super();
     this.executablePath = executablePath;
     this.clientVersion = clientVersion;
@@ -34,6 +47,8 @@ export class CodexRuntime extends EventEmitter {
     this.environment = environment;
     this.spawnProcess = spawnProcess;
     this.inspectVoiceSupport = inspectVoiceSupport;
+    this.authentication = authentication;
+    this.canRestartAuthentication = canRestartAuthentication;
   }
 
   get connected() { return this.#initialized; }
@@ -71,11 +86,13 @@ export class CodexRuntime extends EventEmitter {
 
     let args;
     try {
+      this.#authentication = await this.authentication?.() ?? null;
       args = codexAppServerArgs(
-        this.developerInstructionsPath ? readFileSync(this.developerInstructionsPath, "utf8") : ""
+        this.developerInstructionsPath ? readFileSync(this.developerInstructionsPath, "utf8") : "",
+        Boolean(this.#authentication)
       );
     } catch (error) {
-      const message = `Pixice runtime instructions are unavailable: ${error.message}`;
+      const message = `Pixice runtime setup is unavailable: ${error.message}`;
       this.emit("status", { state: "error", message });
       this.emit("recoverable-error", { code: "developer_instructions_unavailable", message });
       return false;
@@ -90,6 +107,9 @@ export class CodexRuntime extends EventEmitter {
     const childEnvironment = { ...this.environment };
     delete childEnvironment.Path;
     delete childEnvironment.path;
+    // App OAuth credentials exist only in this child environment.
+    if (this.#authentication) childEnvironment.ACCESS_TOKEN = this.#authentication.accessToken;
+    else delete childEnvironment.ACCESS_TOKEN;
     childEnvironment.PATH = [executableDirectory, inheritedPath].filter(Boolean).join(path.delimiter);
     this.#executableIdentity = this.#binaryIdentity();
     const child = this.spawnProcess(executablePath, args, {
@@ -107,7 +127,7 @@ export class CodexRuntime extends EventEmitter {
     });
     this.#client.on("server-request", (event) => this.emit("server-request", event));
     this.#client.on("protocol-error", () => this.emit("recoverable-error", { code: "protocol_error", message: 'Codex returned an invalid protocol message' }));
-    child.stderr.on("data", (chunk) => { if (!this.#voicePrivate) this.emit("diagnostic", chunk.toString()); });
+    child.stderr.on("data", (chunk) => { if (!this.#voicePrivate && !this.#authentication) this.emit("diagnostic", chunk.toString()); });
     child.once("error", (error) => this.#handleSpawnError(child, error));
     child.once("exit", (code, signal) => this.#handleExit(child, code, signal));
 
@@ -133,7 +153,27 @@ export class CodexRuntime extends EventEmitter {
     }
   }
 
-  request(method, params) {
+  async prepareAuthentication() {
+    if (!this.authentication) return false;
+    if (this.#authPreparation) return this.#authPreparation;
+    this.#authPreparation = (async () => {
+      const next = await this.authentication();
+      if ((next?.accessToken ?? null) === (this.#authentication?.accessToken ?? null)) return false;
+      if (!this.canRestartAuthentication()) throw new Error("ChatGPT credentials changed or expired. Finish active Codex work and end Voice before renewing the runtime.");
+      await this.stop();
+      if (!await this.start()) throw new Error("Codex could not restart with the selected ChatGPT account.");
+      return true;
+    })();
+    try { return await this.#authPreparation; } finally { this.#authPreparation = null; }
+  }
+
+  async request(method, params) {
+    if (["thread/start", "thread/resume", "thread/fork", "turn/start"].includes(method)) {
+      const restarted = await this.prepareAuthentication();
+      if (restarted && method === "turn/start" && params?.threadId) {
+        throw new Error("ChatGPT credentials renewed. Retry this turn so Pixice restores its project tools and permissions.");
+      }
+    }
     if (!this.connected || !this.#client) throw new Error("Codex runtime is not connected");
     if (method?.startsWith('thread/realtime/')) {
       if (this.#voiceSupport.experimentalApi !== true) throw new Error('Native voice protocol has not been verified');

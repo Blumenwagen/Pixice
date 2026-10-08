@@ -1,0 +1,21 @@
+.voice-orb {
+  position: relative;
+  display: inline-block;
+  flex: 0 1 auto;
+  max-width: 100%;
+  aspect-ratio: 1;
+  color: var(--voice-orb-accent, var(--primary, #ff5364));
+  pointer-events: none;
+  vertical-align: middle;
+  isolation: isolate;
+}
+.voice-orb > canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.voice-orb__still { visibility: hidden; }
+.voice-orb[data-renderer="fallback"] .voice-orb__plasma { visibility: hidden; }
+.voice-orb[data-renderer="fallback"] .voice-orb__still { visibility: visible; }

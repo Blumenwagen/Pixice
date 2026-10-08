@@ -83,10 +83,13 @@ type PixiceEvent = {
     | "UsageUpdated"
     | "TaskReceiptUpdated"
     | "CodexLimitsUpdated"
-    | "ProjectDeleted";
+    | "ProjectDeleted"
+    | "VoiceEvent"
+    | "ChatGPTState";
   payload: any;
   at: string;
-} | { type: 'VoiceSessionEvent'; payload: VoiceSessionEvent | { type: 'owner_disconnected' }; at: string };
+} | { type: 'VoiceSessionEvent'; payload: VoiceSessionEvent | { type: 'owner_disconnected' }; at: string }
+| { type: "VoiceCompanionState"; payload: VoiceCompanionState; at: string };
 
 type ProjectScope = { projectId: string };
 type WidgetBlock =
@@ -144,6 +147,15 @@ type PixiceTranscriptionState = {
   settings: { numThreads: number; provider: "cpu" | "coreml"; language: string };
 };
 type ThreadScope = ProjectScope & { threadId: string };
+type PixiceChatGPTProfile = { id: string; email: string | null; name: string | null; subject: string; clientId: string; signedIn: boolean; planEnabled: boolean; scopes: string[]; expiresAt: number | null };
+type PixiceChatGPTState = { profiles: PixiceChatGPTProfile[]; selectedProfileId: string | null; pending: boolean; error: string | null; signOutResult?: { profileId: string; status: "confirmed" | "unconfirmed"; message: string } | null };
+type PixiceVoiceSession = ThreadScope & { id: string; phase: string };
+type PixiceVoiceState = { available: boolean; experimental?: boolean; reason?: string; voices?: { v1: string[]; v2: string[]; defaultV1: string; defaultV2: string }; session: PixiceVoiceSession | null };
+export type VoiceCompanionContext = ThreadScope & { model?: string; effort?: string; permissionMode?: string; deviceId?: string; accent?: string };
+export type VoiceCompanionState = { phase: "idle" | "connecting" | "connected" | "playback-blocked" | "stopping" | "ended" | "error" | "cleanup-failed"; projectId: string | null; threadId: string | null; muted: boolean; detached: boolean; micLevel: number; speakerLevel: number; error?: string; needsApproval?: boolean };
+type PixiceCloudEnvironment = { id: string; name: string };
+type PixiceCloudTask = { id: string; url?: string; title: string; status: string; environment_id?: string | null; environment_label?: string; updated_at?: string; summary?: { files_changed: number; lines_added: number; lines_removed: number }; attempt_total?: number };
+type PixiceCloudOutput = { output: string; warnings: string; diffHash?: string; reviewId?: string; attempt?: number };
 type PixiceTaskReceipt = ThreadScope & {
   groupId: string;
   sourceThreadId?: string;
@@ -181,6 +193,7 @@ type PixiceProvider = {
   status?: { state?: string; message?: string | null };
   authenticated?: boolean;
   externallyManagedAuth?: boolean;
+  authSource?: "chatgptApp" | null;
   requiresAuth?: boolean;
   account?: { email?: string | null; organization?: string | null; type?: string | null; planType?: string | null; subscriptionType?: string | null } | null;
   accountError?: string | null;
@@ -376,7 +389,6 @@ declare global {
   interface Window {
     pixiceRemote?: Window["pixice"];
     pixice?: {
-      voice?: VoiceApi;
       remote?: { hostId: string; name: string; endpoint: string };
       connect?: {
         status(): Promise<ConnectStatus>;
@@ -391,6 +403,39 @@ declare global {
         saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; defaultFastMode?: boolean; threadNamingModel?: "auto" | "off" | `codex:${string}` | `claude:${string}`; workflowGenerationModel?: "auto" | `codex:${string}` | `claude:${string}`; attentionNotifications?: boolean; completionNotifications?: boolean; notificationSound?: boolean; keepSystemAwake?: boolean; checkProviderUpdates?: boolean; threadCompletionsSeen?: Record<string, string | number>; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };
+      chatgpt?: {
+        state(): Promise<PixiceChatGPTState>;
+        signIn(payload?: { profileId?: string }): Promise<{ opened: boolean }>;
+        cancel(): Promise<{ cancelled: boolean }>;
+        select(payload: { profileId: string | null }): Promise<PixiceChatGPTState>;
+        signOut(payload: { profileId: string }): Promise<PixiceChatGPTState>;
+        manage(): Promise<unknown>;
+      };
+      voice?: VoiceApi & {
+        companion?: {
+          open(context: VoiceCompanionContext): Promise<VoiceCompanionState>;
+          state(): Promise<VoiceCompanionState>;
+          mute(payload: { muted: boolean }): Promise<VoiceCompanionState>;
+          end(): Promise<VoiceCompanionState>;
+          detach(): Promise<VoiceCompanionState>;
+          attach(): Promise<VoiceCompanionState>;
+          returnToPixice(): Promise<VoiceCompanionState>;
+        };
+        state(): Promise<PixiceVoiceState>;
+        start(payload: ThreadScope & { sdp: string; voice?: string; model?: string; effort?: string; permissionMode?: string }): Promise<PixiceVoiceSession>;
+        stop(payload: { sessionId: string }): Promise<{ stopped: boolean }>;
+      };
+      cloud?: {
+        state(payload: ProjectScope): Promise<{ available: boolean; experimental: boolean; environments: PixiceCloudEnvironment[]; environmentDiscovery: "manual"; reason: string; authentication: string }>;
+        saveEnvironment(payload: ProjectScope & { environment: PixiceCloudEnvironment }): Promise<{ environments: PixiceCloudEnvironment[] }>;
+        removeEnvironment(payload: ProjectScope & { environmentId: string }): Promise<{ environments: PixiceCloudEnvironment[] }>;
+        list(payload: ProjectScope & { environmentId?: string; cursor?: string; limit?: number }): Promise<{ data: { tasks: PixiceCloudTask[]; cursor?: string | null }; warnings: string }>;
+        submit(payload: ProjectScope & { environmentId: string; prompt: string; attempts?: number; branch?: string }): Promise<PixiceCloudOutput>;
+        status(payload: ProjectScope & { taskId: string }): Promise<PixiceCloudOutput>;
+        diff(payload: ProjectScope & { taskId: string; attempt?: number }): Promise<PixiceCloudOutput>;
+        apply(payload: ProjectScope & { taskId: string; reviewId: string; expectedDiffHash: string }): Promise<PixiceCloudOutput>;
+        open(): Promise<unknown>;
+      };
       providers: {
         list(): Promise<PixiceProvider[]>;
         install(payload: { provider: "codex" | "claude" }): Promise<PixiceProvider>;
@@ -617,7 +662,7 @@ declare global {
       };
       threads: {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
-        read(payload: ThreadScope): Promise<{ thread: any; plan?: any[] | null }>;
+        read(payload: ThreadScope & { historyCursor?: string }): Promise<{ thread: any; plan?: any[] | null }>;
         children(payload: ThreadScope): Promise<{ data: any[]; nextCursor: string | null }>;
         create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; parentThreadId?: string }): Promise<{ thread: any }>;
         fork(payload: ThreadScope & ({ lastTurnId: string } | { turnId: string }) & ({ lastItemId: string } | { itemId: string })): Promise<{ thread: any }>;

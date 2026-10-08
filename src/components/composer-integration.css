@@ -1,0 +1,40 @@
+.composer-primary-action .composer-action-symbol { position: absolute; inset: 0; display: grid; place-items: center; }
+.composer-primary-action .composer-stop-symbol { display: block; width: 8px; height: 8px; background: currentColor; border-radius: 2px; }
+.composer-location { position: absolute; bottom: calc(100% + 8px); left: 4px; right: 4px; }
+.composer-location-row { display: flex; align-items: center; gap: 9px; min-height: 28px; }
+.composer-location-trigger { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 9px; color: var(--foreground); background: var(--surface-raised); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.composer-location-trigger:hover, .composer-location-trigger[aria-expanded="true"] { background: var(--surface-hover, var(--stage)); }
+.composer-location-trigger:focus-visible, .composer-location-menu button:focus-visible, .composer-location-menu select:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.composer-location-trigger:disabled { opacity: .55; cursor: default; }
+.composer-location-environment { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+.composer-location .execution-target-control { display: flex; flex-wrap: wrap; min-width: 0; gap: 5px; }
+.composer-location .execution-target-control label { font-size: 10px; }
+.composer-location .execution-target-control select { max-width: 160px; background: var(--surface-raised); }
+.composer-location-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; width: min(300px, 100%); padding: 9px; border: 1px solid var(--border); border-radius: 15px; background: var(--surface-raised); color: var(--foreground); box-shadow: 0 15px 44px rgba(0,0,0,.32); }
+.composer-location-menu > small { display: block; padding: 4px 9px 7px; color: var(--muted); font-size: 11px; }
+.composer-location-option { display: flex; align-items: center; width: 100%; min-height: 38px; gap: 10px; padding: 8px 9px; border: 0; border-radius: 9px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.composer-location-option > span { flex: 1; }
+.composer-location-option:hover, .composer-location-option[aria-pressed="true"] { background: var(--stage); }
+.composer-location-option:disabled { opacity: .5; cursor: default; }
+.composer-location-menu p { margin: 6px 9px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.composer-environment-picker { display: grid; gap: 6px; margin: 10px 9px; color: var(--muted); font-size: 11px; }
+.composer-environment-picker select { width: 100%; min-height: 31px; padding: 4px 6px; color: var(--foreground); background: var(--stage); border: 1px solid var(--border); border-radius: 7px; }
+.composer-location-setup { margin: 3px 5px; padding: 6px 4px; color: var(--foreground); background: transparent; border: 0; font-size: 11px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.composer-cloud-scope { margin: 5px 4px 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.composer-integration-notice { margin: 7px 2px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.composer-cloud-receipt { margin: 8px 0; padding: 9px; border: 1px solid var(--border); border-radius: 10px; background: var(--stage); }
+.composer-cloud-receipt-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; }
+.composer-cloud-receipt pre { max-height: 100px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 5px 0; font: 10px/1.5 "JetBrains Mono Variable", monospace; }
+.composer-cloud-receipt p, .composer-cloud-inspection small { color: var(--muted); font-size: 10px; }
+.composer-cloud-receipt-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.composer-cloud-receipt .settings-action { min-height: 26px; padding: 4px 8px; font-size: 10px; }
+.focus-composer-wrap .composer-location-trigger { background: #262b2f; border-color: rgba(255,255,255,.1); color: #edf1f3; }
+.focus-composer-wrap .composer-location-menu { background: #262b2f; border-color: rgba(255,255,255,.12); color: #edf1f3; }
+.focus-composer-wrap .composer-cloud-scope { color: #a6b0b8; }
+.pixice-app[data-reduce-motion="true"] .composer-action-symbol { transform: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) { .composer-action-symbol { transform: none !important; transition: none !important; } }
+@media (max-width: 720px) {
+  .composer-location-row { flex-wrap: wrap; gap: 5px; }
+  .composer-location .execution-target-control select { max-width: 124px; }
+  .composer-location-menu { max-height: min(350px, 50vh); overflow-y: auto; }
+}

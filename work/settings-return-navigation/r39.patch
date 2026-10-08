@@ -1,0 +1,11 @@
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -1273,7 +1273,7 @@
+     };
+     window.addEventListener("keydown", saveShortcut);
+     return () => window.removeEventListener("keydown", saveShortcut);
+-  }, [file, onSave]);
++  }, [file, onSave, visible]);
+ 
+   let content;
+   if (file.editing) {
