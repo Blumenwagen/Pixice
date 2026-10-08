@@ -67,11 +67,14 @@ export class FocusVisuals {
     for (const selection of selections) {
       let bytes;
       let source;
+      let origin = coordinatorThreadId;
       if (selection.source === "conversation") {
         const message = selection.messageId
           ? (captured?.messageId === selection.messageId ? latest : messages.find((item) => item.id === selection.messageId))
           : latest;
         if (!message) throw new Error(`User message ${selection.messageId ?? "latest"} was not found in this coordinator conversation.`);
+        origin = message.focusOriginThreadId ?? coordinatorThreadId;
+        if (!/^[a-zA-Z0-9:_-]+$/.test(origin)) throw new Error("Invalid conversation visual origin.");
         const images = (message.content ?? []).filter((part) => part.type === "image");
         if (!images[selection.index]) throw new Error(`Image index ${selection.index} was not found in user message ${message.id}.`);
         bytes = dataBytes(images[selection.index].url);
@@ -91,26 +94,28 @@ export class FocusVisuals {
       } else throw new Error("Visual source must be conversation or file.");
       if (bytes.length > MAX_FOCUS_VISUAL_BYTES || (total += bytes.length) > MAX_TOTAL_BYTES) throw new Error("Visual attachments exceed the size limit.");
       const type = imageType(bytes);
-      staged.push({ bytes, type, source, label: safeLabel(selection.label) });
+      staged.push({ bytes, type, source, label: safeLabel(selection.label), origin });
     }
-    const directory = path.join(this.root, projectId, coordinatorThreadId);
-    await mkdir(directory, { recursive: true, mode: 0o700 });
     const result = [];
     for (const item of staged) {
+      const directory = path.join(this.root, projectId, item.origin);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
       const name = `${randomUUID()}.${item.type}`;
       const filename = path.join(directory, name);
       const handle = await open(filename, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       try { await handle.writeFile(item.bytes); } finally { await handle.close(); }
-      result.push({ path: filename, mimeType: types[item.type], bytes: item.bytes.length, source: item.source, label: item.label });
+      result.push({ path: filename, mimeType: types[item.type], bytes: item.bytes.length, source: item.source, label: item.label, originCoordinatorThreadId: item.origin });
     }
     return result;
   }
 
   async load(projectId, coordinatorThreadId, visuals = []) {
-    const directory = path.join(this.root, projectId, coordinatorThreadId);
-    const root = await realpath(directory).catch(() => { throw new Error("Staged Focus visuals are missing; reattach them in a follow-up."); });
     const urls = [];
     for (const visual of visuals) {
+      const origin = visual.originCoordinatorThreadId ?? coordinatorThreadId;
+      if (!/^[a-zA-Z0-9:_-]+$/.test(origin)) throw new Error("Invalid staged Focus visual origin.");
+      const directory = path.join(this.root, projectId, origin);
+      const root = await realpath(directory).catch(() => { throw new Error("Staged Focus visuals are missing; reattach them in a follow-up."); });
       if (path.dirname(visual.path) !== directory || path.dirname(await realpath(visual.path).catch(() => "")) !== root) throw new Error("Staged Focus visual path is invalid; reattach the image.");
       const handle = await open(visual.path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => { throw new Error("Staged Focus visual is missing; reattach the image."); });
       let bytes;

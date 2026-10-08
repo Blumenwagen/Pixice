@@ -5,6 +5,7 @@ import { readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { z } from 'zod';
 import { ApplicationRegistry } from './registry.mjs';
 import { acquireServiceOwnership } from './ownership.mjs';
+import { provisionDesktopAuthority } from './desktop-authority.mjs';
 import { createApplication } from './application.mjs';
 import { NativeBridge } from './native-bridge.mjs';
 import { createNativePlatform } from './platform.mjs';
@@ -19,18 +20,23 @@ import { canAccessProject, persistedDeviceAccess } from '../connect/access-polic
 
 export async function startService(options) {
   const ownership = await acquireServiceOwnership(options.dataDirectory);
-  try { return await startOwnedService({ ...options, ownership }); }
-  catch (error) { await ownership.release(); throw error; }
+  let desktopAuthority;
+  try {
+    desktopAuthority = await provisionDesktopAuthority(ownership.paths, ownership.owner.nonce);
+    return await startOwnedService({ ...options, ownership, desktopAuthority });
+  }
+  catch (error) { await desktopAuthority?.dispose(); await ownership.release(); throw error; }
 }
 async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory, version = 'development', buildId = version,
-  launchNative, nativeConfiguration, providerFactories, pushSender, pushWebPushImpl, ownership, platform: suppliedPlatform, environment = process.env, onStopped = () => {} }) {
+  launchNative, nativeConfiguration, providerFactories, pushSender, pushWebPushImpl, ownership, desktopAuthority, platform: suppliedPlatform, environment = process.env, onStopped = () => {} }) {
   const { paths, owner } = ownership;
   const registry = new ApplicationRegistry(); const control = new ApplicationRegistry();
-  const native = new NativeBridge({ launch: launchNative });
+  const native = new NativeBridge({ launch: launchNative, desktopAuthority: desktopAuthority.token });
   const platform = suppliedPlatform ?? createNativePlatform({ native, directory: paths.data, environment });
   let application;
   const transferStore = new TransferStore({ directory: path.join(paths.data, 'connect', 'transfers'), projectExists: (projectId) => application?.connectProjectExists?.(projectId) ?? true });
   application = createApplication({ userDataPath: paths.data, resourcesPath, version, platform, handlers: registry, providerFactories, transferStore,
+    voiceTransport: { isOwner: (owner) => native.isVoiceOwner(owner), publish: (owner, event) => native.publishVoice(owner, event) },
     nativeReadiness: () => {
       const status = native.status();
       return { available: status.connected === true, canStart: typeof launchNative === 'function', reason: status.connected ? null : "The Pixice native helper is unavailable." };
@@ -103,6 +109,7 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
   });
   remote.pushService = pushService;
   function publish(event) {
+    if (event.type === 'VoiceSessionEvent' || event.payload?.method?.startsWith('thread/realtime/')) return;
     const envelope = { at: new Date().toISOString(), ...event };
     local.publish(envelope); remote.publish(envelope);
     if (pushService && event.type === 'AttentionRequired') {
@@ -134,11 +141,19 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
     const oldPhase = phase; phase = 'stopping'; application.freeze(true);
     let state = application.state();
     if (!force && (state.activeTurns || state.startingTurns || state.activeWorkflows)) { phase = oldPhase; application.freeze(false); throw new Error('Active work is still running. Finish it first or explicitly interrupt it.'); }
-    if (force) await application.quiesce();
-    await registry.drain();
+    try {
+      if (force) await application.quiesce();
+      // Stop voice before closing dispatch. Failed native stop must reject the
+      // caller visibly and leave explicit cleanup and renewal protection live.
+      await application.stopVoiceSessions();
+      await registry.drain();
+    } catch (error) {
+      phase = oldPhase; registry.closed = false; application.freeze(false); application.allowVoiceStarts();
+      throw error;
+    }
     state = application.state();
     if (!force && (state.activeTurns || state.startingTurns || state.activeWorkflows)) {
-      phase = oldPhase; registry.closed = false; application.freeze(false);
+      phase = oldPhase; registry.closed = false; application.freeze(false); application.allowVoiceStarts();
       throw new Error('Active work is still running. Finish it first or explicitly interrupt it.');
     }
     setTimeout(() => { void stop({ force, reason, keepDesktop }).catch((error) => { console.error('Service shutdown failed:', error.message); }); }, 25);
@@ -154,17 +169,42 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
   control.handle('connect:tunnel:start', () => tunnel.start());
   control.handle('connect:tunnel:stop', () => tunnel.stop());
   for (const method of ['register', 'poll', 'respond', 'event', 'disconnect']) control.handle(`native:${method}`, (_context, payload) => native[method](payload));
+  const voiceOwnerSchema = z.object({ leaseId: z.string().uuid(), desktopAuthority: z.string().max(100).optional(), ownerHandle: z.string().uuid() }).strict();
+  control.handle('native:voiceAttach', (_context, payload) => native.attachVoice(z.object({ leaseId: z.string().uuid(), desktopAuthority: z.string().max(100).optional() }).strict().parse(payload)));
+  control.handle('native:voicePoll', (_context, payload) => native.pollVoice(voiceOwnerSchema.parse(payload)));
+  control.handle('native:voiceDisconnect', (_context, payload) => {
+    native.authorizeVoice(voiceOwnerSchema.parse(payload)); native.detachVoice(); return { disconnected: true };
+  });
+  control.handle('native:voiceCall', async (_context, payload) => {
+    const value = voiceOwnerSchema.extend({ operation: z.enum([...APPLICATION_OPERATIONS.keys()].filter((name) => name.startsWith('voice.'))), payload: z.unknown() }).parse(payload);
+    const owner = native.authorizeVoice(value);
+    await ready;
+    if (!native.isVoiceOwner(owner)) throw new Error('The voice renderer disconnected');
+    return registry.invoke(APPLICATION_OPERATIONS.get(value.operation), value.payload, { local: true, voiceOwner: owner });
+  });
+  native.on('voice-owner-disconnected', (owner) => {
+    void Promise.resolve(application.voiceOwnerDisconnected(owner)).catch(() => {
+      publish({ type: 'RuntimeError', payload: { code: 'voice_stop_failed', message: 'Voice stop failed after desktop disconnect. Focus renewal remains blocked until native cleanup succeeds or the runtime disconnects.' } });
+    });
+  });
   async function stop({ force = false, reason = 'user', keepDesktop = false } = {}) {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
       if (stopped) return;
       const current = application.state();
       if (!force && (current.activeTurns || current.startingTurns || current.activeWorkflows)) throw new Error('Active work is still running. Finish it first or explicitly interrupt it.');
+      const oldPhase = phase;
       phase = 'stopping'; application.freeze(true);
-      await pushService?.close().catch(() => {});
       if (startupTask) { if (!native.status().connected) native.close(); await startupTask.catch(() => {}); }
-      if (force) await application.quiesce();
-      await registry.drain();
+      try {
+        if (force) await application.quiesce();
+        await application.stopVoiceSessions();
+        await registry.drain();
+      } catch (error) {
+        phase = oldPhase; registry.closed = false; application.freeze(false); application.allowVoiceStarts();
+        throw error;
+      }
+      await pushService?.close().catch(() => {});
       try {
         await application.stop({ force });
         await transferStore.close().catch(() => {});
@@ -173,7 +213,7 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
         if (native.status().connected) {
           await native.invoke(reason === 'update' && !keepDesktop ? 'desktop.shutdown' : 'desktop.serviceStopped', [{ reason }], { timeoutMs: 3000 }).catch(() => {});
         }
-        native.close(); platform.credentialCrypto?.close?.();
+        native.close(); await desktopAuthority.dispose(); platform.credentialCrypto?.close?.();
         await local.stop(); stopped = true; phase = 'stopped';
         try { const saved = JSON.parse(await readFile(paths.descriptor, 'utf8')); if (saved.ownerNonce === owner.nonce) await unlink(paths.descriptor); }
         catch (error) { if (error.code !== 'ENOENT') throw error; }

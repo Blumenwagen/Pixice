@@ -49,7 +49,7 @@ module.exports = {
     target: ["dmg", "zip"],
     category: "public.app-category.developer-tools",
     extendInfo: {
-      NSMicrophoneUsageDescription: "Pixice records audio only while you are dictating a message, and transcribes it on this Mac."
+      NSMicrophoneUsageDescription: "Pixice uses the microphone when you start dictation or a voice conversation. Dictation is transcribed on this Mac. Voice conversation audio is sent to your signed-in Codex service."
     },
     entitlements: "build/entitlements.mac.plist",
     entitlementsInherit: "build/entitlements.mac.plist",

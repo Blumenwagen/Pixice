@@ -91,6 +91,7 @@ function normalizeVisuals(value) {
       source: boundedString(item.source, "visual source", { max: 240, required: true }),
       label: boundedString(item.label ?? "", "visual label", { max: 120 })
     };
+    if (item.originCoordinatorThreadId) result.originCoordinatorThreadId = boundedString(item.originCoordinatorThreadId, "visual origin coordinator", { max: 160, required: true });
     if (!new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]).has(result.mimeType) || !Number.isInteger(result.bytes) || result.bytes < 1 || result.bytes > 8 * 1024 * 1024) throw new Error("Invalid visual metadata");
     return result;
   });
@@ -414,6 +415,24 @@ export class FocusStore {
       value.completionReported = input.completionReported;
     }
     return value;
+  }
+
+  listCoordinatorWork(projectId) {
+    const id = this.#requireProject(projectId);
+    return this.db.prepare(`SELECT * FROM focus_work WHERE project_id = ? AND status != 'done'
+      ORDER BY CASE status WHEN 'review' THEN 0 WHEN 'needs-attention' THEN 1 WHEN 'running' THEN 2
+        WHEN 'starting' THEN 2 WHEN 'queued' THEN 3 WHEN 'paused' THEN 4 ELSE 5 END, updated_at DESC LIMIT 200`)
+      .all(id).map(mapWork);
+  }
+
+  coordinatorCounts(projectId) {
+    const id = this.#requireProject(projectId);
+    return {
+      work: this.db.prepare("SELECT COUNT(*) AS n FROM focus_work WHERE project_id = ? AND status != 'done'").get(id).n,
+      reviews: this.db.prepare("SELECT COUNT(*) AS n FROM focus_work WHERE project_id = ? AND status = 'review'").get(id).n,
+      decisions: this.db.prepare("SELECT COUNT(*) AS n FROM focus_decisions WHERE project_id = ?").get(id).n,
+      events: this.db.prepare("SELECT COUNT(*) AS n FROM focus_events WHERE project_id = ? AND delivered_at IS NULL").get(id).n
+    };
   }
 
   listWork(projectId, { query, limit = 40 } = {}) {

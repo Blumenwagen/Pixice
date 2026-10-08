@@ -10,7 +10,7 @@ export function defaultDataDirectory(environment = process.env, platform = proce
 }
 export function servicePaths(dataDirectory = defaultDataDirectory()) {
   const data = path.resolve(dataDirectory);
-  return { data, directory: path.join(data, 'service'), descriptor: path.join(data, 'service/instance.json'), lock: path.join(data, 'service/owner.lock'), log: path.join(data, 'service/service.log') };
+  return { data, directory: path.join(data, 'service'), descriptor: path.join(data, 'service/instance.json'), desktopAuthority: path.join(data, 'service/desktop-authority.json'), lock: path.join(data, 'service/owner.lock'), log: path.join(data, 'service/service.log') };
 }
 export function sourceConfiguration() {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');

@@ -1,0 +1,11 @@
+electron/backend/application.mjs: passed
+electron/runtime/focus-coordinator-context.mjs: passed
+electron/runtime/focus-session-renewal.mjs: passed
+electron/runtime/renderer-thread-projection.mjs: passed
+electron/persistence/database.mjs: passed
+electron/persistence/focus-store.mjs: passed
+electron/runtime/focus-supervisor.mjs: passed
+electron/runtime/focus-visuals.mjs: passed
+electron/preload.cjs: passed
+electron/connect/protocol.mjs: passed
+electron/providers/provider-registry.mjs: passed

@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
-import { constants, accessSync, readFileSync } from "node:fs";
+import { constants, accessSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { JsonlClient } from "./jsonl-client.mjs";
 import { CapabilityAdapter, normalizeCodexEvent } from "./capability-adapter.mjs";
+import { inspectVoiceProtocol } from "./voice-protocol.mjs";
 
 export function codexAppServerArgs(developerInstructions = "") {
   const instructions = String(developerInstructions).trim();
@@ -20,16 +21,34 @@ export class CodexRuntime extends EventEmitter {
   #restartTimer = null;
   #stopping = false;
   #capabilities = new CapabilityAdapter();
+  #voiceSupport = {};
+  #voiceVerification = null;
+  #voicePrivate = false;
+  #executableIdentity = null;
 
-  constructor({ executablePath = null, clientVersion, developerInstructionsPath = null, environment = process.env }) {
+  constructor({ executablePath = null, clientVersion, developerInstructionsPath = null, environment = process.env, spawnProcess = spawn, inspectVoiceSupport = inspectVoiceProtocol }) {
     super();
     this.executablePath = executablePath;
     this.clientVersion = clientVersion;
     this.developerInstructionsPath = developerInstructionsPath;
     this.environment = environment;
+    this.spawnProcess = spawnProcess;
+    this.inspectVoiceSupport = inspectVoiceSupport;
   }
 
   get connected() { return this.#initialized; }
+  get voiceCapabilities() { return this.#voiceSupport; }
+
+  async verifyVoiceSupport() {
+    if (!this.connected) throw Object.assign(new Error('The native Codex runtime is disconnected'), { code: 'voice_runtime_unavailable' });
+    const client = this.#client;
+    if (this.#binaryIdentity() !== this.#executableIdentity) throw Object.assign(new Error('The Codex executable changed. Restart its runtime explicitly before starting voice.'), { code: 'voice_runtime_changed' });
+    if (!this.#voiceVerification) this.#voiceVerification = this.inspectVoiceSupport(this.executablePath, this.environment);
+    const support = await this.#voiceVerification;
+    if (!this.connected || client !== this.#client || this.#binaryIdentity() !== this.#executableIdentity) throw Object.assign(new Error('Codex changed during voice protocol verification'), { code: 'voice_runtime_changed' });
+    this.#voiceSupport = support;
+    return support;
+  }
 
   setExecutablePath(executablePath) {
     if (this.#process) throw new Error("Stop Codex before changing its executable");
@@ -64,6 +83,7 @@ export class CodexRuntime extends EventEmitter {
 
     this.#stopping = false;
     this.#initialized = false;
+    this.#voiceSupport = {}; this.#voiceVerification = null; this.#voicePrivate = false;
     this.emit("status", { state: "connecting" });
     const executableDirectory = path.dirname(executablePath);
     const inheritedPath = this.environment.PATH ?? this.environment.Path ?? this.environment.path ?? "";
@@ -71,17 +91,23 @@ export class CodexRuntime extends EventEmitter {
     delete childEnvironment.Path;
     delete childEnvironment.path;
     childEnvironment.PATH = [executableDirectory, inheritedPath].filter(Boolean).join(path.delimiter);
-    const child = spawn(executablePath, args, {
+    this.#executableIdentity = this.#binaryIdentity();
+    const child = this.spawnProcess(executablePath, args, {
       env: childEnvironment,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
     });
     this.#process = child;
     this.#client = new JsonlClient({ input: child.stdin, output: child.stdout });
-    this.#client.on("notification", (event) => this.emit("event", normalizeCodexEvent(event)));
+    this.#client.on("notification", (event) => {
+      const normalized = normalizeCodexEvent(event);
+      // Realtime negotiation and transcripts never enter provider snapshots,
+      // project broadcasts, Connect replay, history or diagnostic listeners.
+      this.emit(event.method?.startsWith('thread/realtime/') ? 'voice-event' : 'event', normalized);
+    });
     this.#client.on("server-request", (event) => this.emit("server-request", event));
-    this.#client.on("protocol-error", (event) => this.emit("recoverable-error", { code: "protocol_error", message: event.error.message }));
-    child.stderr.on("data", (chunk) => this.emit("diagnostic", chunk.toString()));
+    this.#client.on("protocol-error", () => this.emit("recoverable-error", { code: "protocol_error", message: 'Codex returned an invalid protocol message' }));
+    child.stderr.on("data", (chunk) => { if (!this.#voicePrivate) this.emit("diagnostic", chunk.toString()); });
     child.once("error", (error) => this.#handleSpawnError(child, error));
     child.once("exit", (code, signal) => this.#handleExit(child, code, signal));
 
@@ -109,6 +135,12 @@ export class CodexRuntime extends EventEmitter {
 
   request(method, params) {
     if (!this.connected || !this.#client) throw new Error("Codex runtime is not connected");
+    if (method?.startsWith('thread/realtime/')) {
+      if (this.#voiceSupport.experimentalApi !== true) throw new Error('Native voice protocol has not been verified');
+      // Stderr may contain negotiation data. Keep it private for this process
+      // after voice starts, including late output after a successful stop.
+      if (method === 'thread/realtime/start') this.#voicePrivate = true;
+    }
     return this.#capabilities.request(this.#client, method, params);
   }
 
@@ -151,6 +183,14 @@ export class CodexRuntime extends EventEmitter {
     } catch {
       return null;
     }
+  }
+
+  #binaryIdentity() {
+    try {
+      const resolved = realpathSync(this.executablePath);
+      const stat = statSync(resolved, { bigint: true });
+      return [resolved, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+    } catch { return null; }
   }
 
   #handleSpawnError(child, error) {

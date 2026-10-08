@@ -3,6 +3,7 @@ import { CAPABILITIES, READ_OPERATIONS } from './protocol.mjs';
 // existing restricted capability set; the OS user's local client can administer it.
 export const APPLICATION_CAPABILITIES = {
   ...CAPABILITIES,
+  voice: { availability: 'voice:availability', prepare: 'voice:prepare', start: 'voice:start', stop: 'voice:stop', appendText: 'voice:appendText', appendSpeech: 'voice:appendSpeech', appendAudio: 'voice:appendAudio', snapshot: 'voice:snapshot' },
   connect: { status: 'connect:status', configure: 'connect:configure', pair: 'connect:pair', renew: 'connect:renew', revoke: 'connect:revoke', startTunnel: 'connect:tunnel:start', stopTunnel: 'connect:tunnel:stop' },
   app: { ...CAPABILITIES.app, saveSettings: 'app:settings:update' },
   git: { ...CAPABILITIES.git, installCommandLineTools: 'git:install-command-line-tools' },
@@ -18,8 +19,15 @@ export const APPLICATION_CAPABILITIES = {
   external: { openEditor: 'external:editor', openTerminal: 'external:terminal', reveal: 'external:reveal' },
   tray: { state: 'tray:state', refresh: 'tray:refresh', thread: 'tray:thread', followUp: 'tray:follow-up' },
   service: { backup: 'service:backup', status: 'service:status', stop: 'service:stop', prepareUpdate: 'service:prepare-update' },
-  native: { register: 'native:register', poll: 'native:poll', respond: 'native:respond', event: 'native:event', disconnect: 'native:disconnect' }
+  native: { register: 'native:register', poll: 'native:poll', respond: 'native:respond', event: 'native:event', disconnect: 'native:disconnect', voiceAttach: 'native:voiceAttach', voiceCall: 'native:voiceCall', voicePoll: 'native:voicePoll', voiceDisconnect: 'native:voiceDisconnect' }
 };
 export const APPLICATION_OPERATIONS = new Map(Object.entries(APPLICATION_CAPABILITIES).flatMap(([group, entries]) => Object.entries(entries).map(([name, channel]) => [`${group}.${name}`, channel])));
 export const APPLICATION_CHANNELS = new Map([...APPLICATION_OPERATIONS].map(([name, channel]) => [channel, name]));
 export const APPLICATION_READ_OPERATIONS = new Set([...READ_OPERATIONS, 'widgets.keyStatus', 'connect.status', 'github.status', 'workflowCredentials.list', 'extensions.list', 'ios.environment', 'ios.discover', 'ios.state', 'tray.state', 'tray.refresh', 'tray.thread', 'service.status', 'native.poll']);
+// Voice is ephemeral even when it changes session state. Never retain SDP,
+// owner tokens or native responses in the command recovery cache.
+// Every helper payload can carry bootstrap proof, so native registration and
+// nonvoice helper calls also bypass recovery records and cached responses.
+for (const group of ['voice', 'native']) for (const name of Object.keys(APPLICATION_CAPABILITIES[group])) {
+  APPLICATION_READ_OPERATIONS.add(`${group}.${name}`);
+}

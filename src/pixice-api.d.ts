@@ -1,4 +1,53 @@
-export {};
+export type { VoiceApi, VoiceScope, VoiceHandle, VoiceSnapshot, VoiceAvailability, VoiceSessionEvent, VoiceSettings, VoiceAudio };
+
+type VoiceScope = { projectId: string; threadId: string; generation?: number };
+type VoiceHandle = VoiceScope & { sessionHandle: string };
+type VoiceSnapshot = VoiceHandle & {
+  state: 'preparing' | 'starting' | 'active' | 'stopping' | 'stop_failed' | 'closed';
+  transport: 'webrtc' | 'websocket' | null; version: 'v1' | 'v2' | 'v3' | null;
+  realtimeSessionId: string | null; voice: string | null;
+};
+type VoiceAudio = { data: string; sampleRate: number; numChannels: number; samplesPerChannel?: number; itemId?: string };
+type VoiceAvailability = {
+  catalog: { v1: string[]; v2: string[]; defaultV1: string; defaultV2: string };
+  capabilities: { schemaVersion: string; experimentalApi: true; transports: Array<'webrtc' | 'websocket'>; versions: Array<'v1' | 'v2' | 'v3'>; outputModalities: Array<'audio' | 'text'> };
+  sessionAvailability: 'unverified';
+};
+type VoiceSettings = { voice: string | null; microphoneDeviceId: string; muted: boolean; outputVolume: number; outputDeviceId: string; captions: boolean };
+type VoiceSessionEvent = VoiceSnapshot & (
+  | { type: 'state' | 'started' }
+  | { type: 'sdp'; sdp: string }
+  | { type: 'closed'; reason: string }
+  | { type: 'error'; error: { code: string; message: string } }
+  | { type: 'transcript_delta'; role: string; delta: string }
+  | { type: 'transcript_done'; role: string; text: string }
+  | { type: 'item_transcript_delta'; itemId: string; delta: string }
+  | { type: 'item_started' | 'item_completed'; item: { id: string; realtimeSessionId: string; type: string; role?: string; text?: string; outcome?: string } }
+  | { type: 'audio_delta'; audio: VoiceAudio }
+);
+type VoiceApi = {
+  availability(scope: VoiceScope): Promise<VoiceAvailability>;
+  prepare(scope: VoiceScope): Promise<VoiceSnapshot>;
+  start(input: VoiceHandle & { transport: { type: 'webrtc'; sdp: string } | { type: 'websocket' }; outputModality?: 'audio' | 'text'; version?: 'v1' | 'v2' | 'v3'; voice?: string | null }): Promise<VoiceSnapshot>;
+  stop(input: VoiceHandle & { reason?: string }): Promise<{ stopped: true }>;
+  appendText(input: VoiceHandle & { text: string; role?: 'user' | 'developer' | 'assistant' }): Promise<{ appended: true }>;
+  appendSpeech(input: VoiceHandle & { text: string }): Promise<{ appended: true }>;
+  appendAudio(input: VoiceHandle & { audio: VoiceAudio }): Promise<{ appended: true }>;
+  snapshot(input: VoiceHandle): Promise<VoiceSnapshot | null>;
+};
+
+type FocusSession = {
+  projectId: string; threadId: string; generation: number; revision: number;
+  stopped: boolean; sessionTurnCount: number; userTurnCount: number;
+  lastMemoryReviewTurn: number; latestRequest: string; handoff: string;
+  renewalEvidence: Record<string, unknown>; createdAt: string; updatedAt: string;
+};
+type FocusSessionResult = {
+  created: boolean; session: FocusSession;
+  memory: { projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null; session?: FocusSession };
+  configuration: { provider: string; model: string | null };
+  thread: { id: string; cwd: string; provider?: string; turns?: Array<Record<string, unknown>>; [key: string]: unknown };
+};
 
 type PixiceEvent = {
   type:
@@ -37,7 +86,7 @@ type PixiceEvent = {
     | "ProjectDeleted";
   payload: any;
   at: string;
-};
+} | { type: 'VoiceSessionEvent'; payload: VoiceSessionEvent | { type: 'owner_disconnected' }; at: string };
 
 type ProjectScope = { projectId: string };
 type WidgetBlock =
@@ -327,6 +376,7 @@ declare global {
   interface Window {
     pixiceRemote?: Window["pixice"];
     pixice?: {
+      voice?: VoiceApi;
       remote?: { hostId: string; name: string; endpoint: string };
       connect?: {
         status(): Promise<ConnectStatus>;
@@ -483,18 +533,14 @@ declare global {
         keyRemove(): Promise<{ configured: boolean }>;
       };
       focus: {
-        state(payload: ProjectScope): Promise<{ work: Array<any>; decisions: Array<any>; policy: { coordinatorModel: string | null; workerModel: string | null; reviewModel: string | null; permissionMode: string; executionHost: "current" }; events: Array<any>; seenSequence: number; latestSequence: number; unseenEvents: Array<any> }>;
+        refresh(payload: ProjectScope & { expectedGeneration: number }): Promise<FocusSessionResult & { renewed: true; replacedThreadId: string; notificationError?: string }>;
+        history(payload: ProjectScope): Promise<{ generations: Array<{ threadId: string; generation: number; createdAt: string }>; session: FocusSession | null }>;
+        state(payload: ProjectScope): Promise<{ session: FocusSession | null; work: Array<any>; decisions: Array<any>; policy: { coordinatorModel: string | null; workerModel: string | null; reviewModel: string | null; permissionMode: string; executionHost: "current" }; events: Array<any>; seenSequence: number; latestSequence: number; unseenEvents: Array<any> }>;
         controlWork(payload: ProjectScope & { workId: string; action: "pause" | "resume" | "cancel" }): Promise<any>;
         followUp(payload: ProjectScope & { workId: string; prompt: string; visuals?: Array<{ source: "conversation"; messageId?: string; index: number; label?: string } | { source: "file"; path: string; label?: string }> }): Promise<any>;
         updatePolicy(payload: ProjectScope & { patch: { coordinatorModel?: string | null; workerModel?: string | null; reviewModel?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; executionHost?: "current" } }): Promise<any>;
         markSeen(payload: ProjectScope & { sequence: number }): Promise<{ seenSequence: number }>;
-        ensure(payload: ProjectScope & { model?: string; serviceTier?: string | null; replaceEmpty?: boolean; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{
-          created: boolean;
-          session: { projectId: string; threadId: string; userTurnCount: number; lastMemoryReviewTurn: number; createdAt: string; updatedAt: string };
-          memory: { projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null };
-          configuration: { provider: string; model: string | null };
-          thread: any;
-        }>;
+        ensure(payload: ProjectScope & { model?: string; serviceTier?: string | null; replaceEmpty?: boolean; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<FocusSessionResult>;
         readMemory(payload: ProjectScope): Promise<{ projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null }>;
         updateMemory(payload: ProjectScope & { expectedRevision: number; projectMemory: string; userMemory: string }): Promise<{ projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null }>;
         clearMemory(payload: ProjectScope & { expectedRevision: number }): Promise<{ projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null }>;

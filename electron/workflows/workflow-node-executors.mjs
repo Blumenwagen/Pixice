@@ -11,6 +11,7 @@ import {
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
+import { assertPublicFile } from "../backend/desktop-authority.mjs";
 import { buildTaskPlan } from "../runtime/task-scheduler.mjs";
 import { applyWorkflowCredential } from "./workflow-credential-store.mjs";
 import { normalizeWorkflowNodeConfig } from "./workflow-node-catalog.mjs";
@@ -271,6 +272,7 @@ async function executeFileNode({ config, context, projectRoot }) {
   if (config.operation === "writeText") {
     if (!config.allowWrite) throw new Error("Enable “Allow project writes” on this File node before it can write");
     await assertRealPathInside(resolved.root, resolved.candidate, true);
+    try { assertPublicFile(await stat(resolved.candidate)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (config.createDirectories) await mkdir(path.dirname(resolved.candidate), { recursive: true });
     const content = renderString(config.content, context);
     if (Buffer.byteLength(content, "utf8") > config.maxBytes) throw new Error(`File content exceeded ${config.maxBytes} bytes`);
@@ -280,6 +282,7 @@ async function executeFileNode({ config, context, projectRoot }) {
   const realCandidate = await assertRealPathInside(resolved.root, resolved.candidate);
   if (config.operation === "readText") {
     const info = await stat(realCandidate);
+    assertPublicFile(info);
     if (!info.isFile()) throw new Error("File node path is not a file");
     if (info.size > config.maxBytes) throw new Error(`File exceeded ${config.maxBytes} bytes`);
     return { path: resolved.relative, content: await readFile(realCandidate, "utf8"), bytes: info.size };
@@ -497,6 +500,12 @@ async function executeGitNode({ config, context, projectRoot }) {
   else args.push("--unified=3");
   args.push(target);
   if (pathspec) args.push("--", pathspec);
+  if (config.operation !== 'changedFiles') {
+    const names = await gitCommand(cwd, ['diff', '--no-ext-diff', '--name-only', '-z', ...(config.staged ? ['--cached'] : []), target, ...(pathspec ? ['--', pathspec] : [])]);
+    await Promise.all(names.stdout.split('\0').filter(Boolean).map(async (name) => {
+      try { assertPublicFile(await stat(path.resolve(cwd, name))); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }));
+  }
   const { stdout } = await gitCommand(cwd, args);
   return config.operation === "changedFiles"
     ? { target, staged: config.staged, files: parseNameStatus(stdout) }

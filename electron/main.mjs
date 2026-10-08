@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, screen, shell, Tray, WebContentsView } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, screen, shell, systemPreferences, Tray, WebContentsView } from 'electron';
 import { spawn } from 'node:child_process';
 import { appendFile, stat, rename } from 'node:fs/promises';
 import path from 'node:path';
@@ -14,8 +14,11 @@ import { APPLICATION_CHANNELS } from './connect/application-protocol.mjs';
 import { backendBuildId, descriptorInstance, ensureService, readServiceDescriptor, serviceCall, stopService } from './backend/manager.mjs';
 import { BrowserSessions } from './native/browser-sessions.mjs';
 import { NativeHelperClient } from './native/helper-client.mjs';
+import { readDesktopAuthority } from './backend/desktop-authority.mjs';
+import { isDesktopCaller, installDesktopMediaPermissions } from './native/desktop-permissions.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
+const desktopOrigin = { isDev, indexPath: path.join(__dirname, '../dist/client/index.html') };
 const helperOnly = process.argv.includes('--pixice-native-helper');
 const dataIndex = process.argv.indexOf('--pixice-data-dir');
 if (dataIndex >= 0 && process.argv[dataIndex + 1]) app.setPath('userData', path.resolve(process.argv[dataIndex + 1]));
@@ -64,7 +67,7 @@ async function connectService({ start = true } = {}) {
       if (event.type === 'TrayState') { trayState = event.payload; updateTrayMenu(); }
       send(event.type, event.payload);
     });
-    nativeHelper = new NativeHelperClient({ directory: dataDirectory, browser: browserWorkspace, sessions: browserSessions, invokeDesktop, crypto: safeStorage });
+    nativeHelper = new NativeHelperClient({ directory: dataDirectory, desktopAuthority: (descriptor) => readDesktopAuthority(dataDirectory, descriptor), browser: browserWorkspace, sessions: browserSessions, invokeDesktop, crypto: safeStorage });
     nativeHelper.start();
     await client.connect();
     if (replacingClient) send('ApplicationResync');
@@ -118,6 +121,7 @@ function shutdownNative() {
   app.exit(0);
 }
 function detachDesktop() {
+  nativeHelper?.closeVoice();
   mainWindow?.hide(); trayWindow?.destroy(); trayWindow = null; tray?.destroy(); tray = null;
   browserWorkspace?.hideViewport();
   desktopLoaded = false; void mainWindow?.loadURL('about:blank'); app.dock?.hide();
@@ -176,6 +180,12 @@ function createWindow() {
     if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
     return { action: "deny" };
   });
+  installDesktopMediaPermissions({ session: mainWindow.webContents.session, getWindow: () => mainWindow, options: desktopOrigin, systemPreferences });
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) nativeHelper?.closeVoice();
+  });
+  mainWindow.webContents.on('render-process-gone', () => nativeHelper?.closeVoice());
+  mainWindow.webContents.on('destroyed', () => nativeHelper?.closeVoice());
   mainWindow.webContents.on("will-navigate", (event, url) => {
     const destination = new URL(url);
     if (url === "about:blank") return;
@@ -264,11 +274,23 @@ async function openTerminal(target) {
 
 function registerIpc() {
   const handle = (channel, handler) => ipcMain.handle(channel, (event, payload) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted desktop sender');
+    if (!isDesktopCaller(event, mainWindow, desktopOrigin)) throw new Error('Untrusted desktop sender or origin');
     return handler(payload);
   });
   for (const [channel, operation] of APPLICATION_CHANNELS) {
     if (operation.startsWith('native.') || operation.startsWith('service.') || operation.startsWith('tray.')) continue;
+    if (operation.startsWith('voice.')) {
+      handle(channel, (payload) => {
+        if (!nativeHelper) throw new Error('The authenticated local desktop helper is unavailable');
+        const helper = nativeHelper;
+        const contents = mainWindow.webContents;
+        return helper.voiceCall(operation, payload, (event) => {
+          if (helper !== nativeHelper || mainWindow?.webContents !== contents || contents.isDestroyed()) return;
+          send('VoiceSessionEvent', event);
+        });
+      });
+      continue;
+    }
     handle(channel, async (payload) => {
       if (!client) { if (!connecting) throw new Error('The backend is offline. Start it in Connections.'); await connecting; }
       return client.call(operation, payload);

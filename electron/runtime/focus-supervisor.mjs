@@ -187,7 +187,8 @@ export class FocusSupervisor {
     }
     if (["cancelled", "cancelling"].includes(work.status)) throw new Error("Cancelled work cannot be continued");
     const nextPrompt = bounded(prompt, 80_000);
-    const stagedVisuals = visuals.length ? await this.visuals?.stage(projectId, work.coordinatorThreadId, visuals) : [];
+    const context = await this.contextForProject(projectId);
+    const stagedVisuals = visuals.length ? await this.visuals?.stage(projectId, context.coordinatorThreadId, visuals) : [];
     if (visuals.length && stagedVisuals?.length !== visuals.length) throw new Error("Focus visual staging failed; follow-up was not sent.");
     if (ACTIVE_STATUSES.has(work.status) && work.threadId && work.turnId) {
       const decisions = this.store.listDecisions(projectId, { workId: work.id, limit: 100 });
@@ -521,7 +522,7 @@ export class FocusSupervisor {
       const request = {
         projectId: work.projectId,
         workId: work.id,
-        coordinatorThreadId: work.coordinatorThreadId,
+        coordinatorThreadId: (await this.contextForProject(work.projectId)).coordinatorThreadId,
         prompt: workerPrompt(current, decisions, { continuation: Boolean(current.threadId) }),
         images: asArray(current.visuals).length ? await this.visuals.load(work.projectId, current.coordinatorThreadId, current.visuals) : [],
         model: work.model,

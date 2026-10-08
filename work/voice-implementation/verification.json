@@ -1,0 +1,15 @@
+{
+  "workId": "f0469fc2-a48f-49fc-9064-2cf385285354",
+  "directionAcknowledged": 5,
+  "command": "pnpm exec vitest run tests/voice-session.test.js tests/voice-controller.test.js",
+  "testFilesPassed": 2,
+  "testsPassed": 37,
+  "failed": 0,
+  "syntaxChecksPassed": 7,
+  "whitespaceChecksPassed": true,
+  "nativeReadOnlyCatalogProbe": "passed",
+  "liveVoiceSessionTested": false,
+  "microphoneTested": false,
+  "applicationWired": false,
+  "visualUiImplemented": false
+}

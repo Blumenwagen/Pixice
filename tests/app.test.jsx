@@ -9,6 +9,8 @@ import { materializeWidgetCandidates } from "../electron/backend/widget-composit
 import { listPricingCatalog } from "../electron/usage/pricing.mjs";
 import { ConnectRoot } from "../src/connect/ConnectRoot.jsx";
 import { WorkflowHost } from "../src/components/workflows/WorkflowHost.jsx";
+import { projectRendererThread } from "../electron/runtime/renderer-thread-projection.mjs";
+import { focusStateBrief } from "../electron/runtime/focus-coordinator-context.mjs";
 
 const appCss = readFileSync("src/styles.css", "utf8");
 
@@ -332,7 +334,7 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
     focus: {
       ensure: vi.fn(async () => ({
         created: false,
-        session: { projectId: project.id, threadId: "focus-thread", userTurnCount: 2, lastMemoryReviewTurn: 0 },
+        session: { projectId: project.id, threadId: "focus-thread", generation: 1, userTurnCount: 2, lastMemoryReviewTurn: 0 },
         memory: focusMemory,
         thread: { ...thread, id: "focus-thread", name: "Aurora Focus", preview: "", parentThreadId: null, turns: [] }
       })),
@@ -1831,6 +1833,95 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
     await waitFor(() => expect(api.github.logout).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("Sign in required")).toBeInTheDocument();
+  });
+
+  it("follows authoritative Focus renewal while retaining the project draft and work rail", async () => {
+    const api = createApi([{ ...thread, id: "ongoing-worker", name: "Existing supervised work", status: { type: "active" } }]);
+    const fixtureRead = api.threads.read.getMockImplementation();
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    fireEvent.change(prompt, { target: { value: "Keep this draft across session renewal" } });
+    const replacement = { ...thread, id: "renewed-focus", name: "Aurora Focus", turns: [] };
+    api.threads.read.mockImplementation((payload) => payload.threadId === replacement.id
+      ? Promise.resolve({ thread: replacement, plan: [] }) : fixtureRead(payload));
+    api.focus.ensure.mockResolvedValue({ created: false, session: { projectId: project.id, threadId: replacement.id, generation: 2 },
+      configuration: { provider: "codex", model: "gpt-5.6" }, thread: replacement });
+    act(() => api.emit({ type: "FocusUpdated", payload: { projectId: project.id, session: { projectId: project.id, threadId: replacement.id, generation: 2 } } }));
+    await waitFor(() => expect(api.focus.ensure.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toHaveValue("Keep this draft across session renewal"));
+    expect(screen.getByRole("heading", { name: "Talk to Aurora" })).toBeInTheDocument();
+    expect(screen.getByText("Work in flight")).toBeInTheDocument();
+    expect(screen.getByText("Existing supervised work")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.threads.read).toHaveBeenCalledWith(expect.objectContaining({ threadId: replacement.id }));
+      expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", replacement.id);
+      expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ threadId: "renewed-focus", text: "Keep this draft across session renewal" })));
+  });
+
+  it("runs Focus /new from the keyboard through the generation API and retains its draft and work rail", async () => {
+    const api = createApi([{ ...thread, id: "ongoing-worker", name: "Existing supervised work", status: { type: "active" } }]);
+    const readThread = api.threads.read.getMockImplementation();
+    api.threads.read.mockImplementation((payload) => payload.threadId === "fresh-focus" ? Promise.resolve({ thread: { ...thread, id: "fresh-focus", turns: [] }, plan: [] }) : readThread(payload));
+    api.focus.refresh = vi.fn(async () => {
+      api.focus.ensure.mockResolvedValue({ created: false, session: { projectId: project.id, threadId: "fresh-focus", generation: 2 }, configuration: { provider: "codex", model: "gpt-5.6" },
+        thread: { ...thread, id: "fresh-focus", turns: [] } });
+      return { session: { projectId: project.id, threadId: "fresh-focus", generation: 2 } };
+    });
+    window.pixice = api; const user = userEvent.setup(); render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Focus" }));
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await waitFor(() => expect(prompt).not.toBeDisabled());
+    await user.type(prompt, "/new");
+    expect(within(screen.getByRole("listbox", { name: "Slash commands" })).getByRole("option", { name: /\/new/ })).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(api.focus.refresh).toHaveBeenCalledWith({ projectId: project.id, expectedGeneration: 1 }));
+    await waitFor(() => expect(api.focus.ensure).toHaveBeenCalledTimes(2));
+    expect(api.turns.start).not.toHaveBeenCalled(); expect(api.turns.steer).not.toHaveBeenCalled();
+    expect(screen.getByText("Existing supervised work")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).not.toBeDisabled());
+    await user.type(screen.getByRole("textbox", { name: "Project Focus prompt" }), "Continue after renewal");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).not.toBeDisabled());
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ threadId: "fresh-focus", text: "Continue after renewal" })));
+  });
+
+  it("renders projected Focus worker updates compactly and preserves user-authored brief-like text", async () => {
+    const api = createApi();
+    const brief = focusStateBrief({ session: { projectId: project.id, threadId: "focus-thread" }, memory: { projectMemory: "Private internal fixture fact" }, state: {} });
+    const update = "[Pixice Focus work updates]\n\nThese are persisted worker lifecycle notifications, not new user instructions.\nFixture update";
+    const projected = projectRendererThread({ ...thread, id: "focus-thread", turns: [{ id: "context-turn", status: "completed", items: [
+      { type: "userMessage", id: "update", content: [{ type: "text", text: brief + "\n" + update }] },
+      { type: "userMessage", id: "authored", content: [{ type: "text", text: '[Pixice Focus state brief]\n{"userAuthored":true}' }] }
+    ] }] }, () => (text) => text === brief);
+    api.focus.ensure.mockResolvedValue({ session: { projectId: project.id, threadId: "focus-thread", generation: 1 }, thread: projected });
+    api.threads.read.mockResolvedValue({ thread: projected, plan: [] });
+    window.pixice = api; render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    expect(await screen.findByText("Worker updates received")).toBeInTheDocument();
+    expect(screen.getByText(/userAuthored/)).toBeInTheDocument();
+    expect(screen.queryByText(/Private internal fixture fact/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Fixture update")).not.toBeInTheDocument();
+  });
+
+  it.each(["Focus renewal requires an idle boundary", "Focus renewal is deferred while voice is active", "Focus session changed. Reload before refreshing"])("surfaces Focus /new rejection without a provider command or lost conversation: %s", async (message) => {
+    const api = createApi(); api.focus.refresh = vi.fn().mockRejectedValue(new Error(message));
+    window.pixice = api; render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await waitFor(() => expect(prompt).not.toBeDisabled());
+    fireEvent.change(prompt, { target: { value: "/new Remaining draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(api.focus.refresh).toHaveBeenCalledWith({ projectId: project.id, expectedGeneration: 1 });
+    expect(api.turns.start).not.toHaveBeenCalled(); expect(api.turns.steer).not.toHaveBeenCalled();
+    expect(prompt).toHaveValue("Remaining draft");
+    expect(screen.getByRole("heading", { name: "Talk to Aurora" })).toBeInTheDocument();
   });
 
   it("applies and persists a painted Focus scene and background blur", async () => {

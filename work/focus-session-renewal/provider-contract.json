@@ -1,0 +1,44 @@
+{
+  "source": "Installed Codex app-server generate-json-schema, no provider connection",
+  "methods": {
+    "ThreadResumeParams": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "baseInstructions",
+      "config",
+      "cwd",
+      "developerInstructions",
+      "excludeTurns",
+      "model",
+      "modelProvider",
+      "personality",
+      "sandbox",
+      "serviceTier",
+      "threadId"
+    ],
+    "TurnStartParams": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "clientUserMessageId",
+      "cwd",
+      "disabledPluginIds",
+      "effort",
+      "input",
+      "model",
+      "outputSchema",
+      "personality",
+      "sandboxPolicy",
+      "serviceTier",
+      "serviceTierForTurn",
+      "summary",
+      "threadId",
+      "toolOutput",
+      "turnTrigger"
+    ],
+    "ThreadTokenUsageUpdatedNotification": [
+      "threadId",
+      "tokenUsage",
+      "turnId"
+    ]
+  }
+}

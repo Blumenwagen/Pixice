@@ -344,8 +344,8 @@ const PIXICE_SLASH_COMMANDS = [
   { name: "settings", description: "Open Settings in Pixice", source: "pixice" }
 ];
 
-function availableSlashCommands(provider, providerCommands, onCommand) {
-  const pixiceCommands = onCommand ? PIXICE_SLASH_COMMANDS : [];
+function availableSlashCommands(provider, providerCommands, onCommand, focusCommands = false) {
+  const pixiceCommands = onCommand ? [...PIXICE_SLASH_COMMANDS, ...(focusCommands ? [{ name: "new", description: "Start a fresh Focus session, keeping memory, work and history", source: "pixice" }] : [])] : [];
   if (provider !== "claude" || !Array.isArray(providerCommands)) return pixiceCommands;
   const nativeNames = new Set(pixiceCommands.map((command) => command.name));
   return [...pixiceCommands, ...providerCommands.filter((command) => !nativeNames.has(command.name))];
@@ -3026,7 +3026,7 @@ function ComposerQuestion({ request, onResolve }) {
   );
 }
 
-export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, slashCommands, onCommand, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
+export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, slashCommands, onCommand, focusCommands = false, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
@@ -3275,7 +3275,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     };
   }, [addAttachmentFiles, disabled, globalFileDrop, questionRequest]);
   const isClaude = modelProvider(selected) === "claude";
-  const availableCommands = availableSlashCommands(modelProvider(selected), slashCommands, onCommand);
+  const availableCommands = availableSlashCommands(modelProvider(selected), slashCommands, onCommand, focusCommands);
   const slashToken = showSlashCommands ? slashCommandAtCaret(text, caretPosition) : null;
   const matchingCommands = !slashToken ? [] : availableCommands.filter((command) => {
     return command.name.toLowerCase().includes(slashToken.query) || command.description.toLowerCase().includes(slashToken.query);
@@ -7435,6 +7435,8 @@ export function App({ readOnly = false } = {}) {
   const surfaceModeRef = useRef(surfaceMode);
   const [focusThreadId, setFocusThreadId] = useState(null);
   const focusThreadIdRef = useRef(null);
+  const focusSessionRef = useRef(null);
+  const focusResetBusyRef = useRef(false);
   const [focusLoading, setFocusLoading] = useState(false);
   const [focusConnectionError, setFocusConnectionError] = useState(null);
   const [focusMemory, setFocusMemory] = useState(null);
@@ -8010,6 +8012,7 @@ export function App({ readOnly = false } = {}) {
       if (requestId !== focusEnsureRequestRef.current || selectedProjectIdRef.current !== projectId || surfaceModeRef.current !== "focus") return;
       const focusThread = response.thread;
       focusThreadIdRef.current = focusThread.id;
+      focusSessionRef.current = response.session;
       setFocusThreadId(focusThread.id);
       markResponsesSeen(focusThread, seenResponseIdsRef.current);
       selectedThreadIdRef.current = focusThread.id;
@@ -8751,6 +8754,15 @@ export function App({ readOnly = false } = {}) {
   useEffect(() => {
     if (!api) return;
     return api.events.subscribe((event) => {
+      if (event.type === "FocusUpdated" && (event.payload?.session || event.payload?.renewalError)) {
+        if (event.payload.projectId !== selectedProjectIdRef.current) return;
+        if (event.payload.renewalError) setError(event.payload.renewalError.message);
+        const session = event.payload.session;
+        if (session && surfaceModeRef.current === "focus" && session.threadId !== focusThreadIdRef.current) {
+          void loadFocusSession(session.projectId);
+        }
+        return;
+      }
       if (event.type === "FocusPolicyUpdated") {
         const projectId = event.payload?.projectId;
         const coordinatorModel = event.payload?.policy?.coordinatorModel;
@@ -9230,7 +9242,7 @@ export function App({ readOnly = false } = {}) {
         }
       }
     });
-  }, [api, commitRuntimePayload, defaultEffort, effort, fastMode, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadProactivity, loadReview, loadThreads, mirrorPreviewPresentations, models, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, storage, updatePreviewWorkspace]);
+  }, [api, commitRuntimePayload, loadFocusSession, defaultEffort, effort, fastMode, loadAgents, loadBoard, loadGitHubStatus, loadModels, loadProactivity, loadReview, loadThreads, mirrorPreviewPresentations, models, normalizePlan, refreshEventInstrumentSources, refreshThread, selectedProjectId, storage, updatePreviewWorkspace]);
 
   const openProject = () => {
     if (!api?.projects) return;
@@ -10148,7 +10160,11 @@ export function App({ readOnly = false } = {}) {
   }, [api]);
 
   const submit = async (text, attachments = [], preparedAttachments = null, sourceAttachments = attachments, signal = null, draftLifecycle = null) => {
-    if (!api || !selectedProjectId || submittingRef.current) return false;
+    if (!api || !selectedProjectId || submittingRef.current || focusResetBusyRef.current) return false;
+    if (surfaceModeRef.current === "focus" && /^\s*\/new(?:\s|$)/.test(text)) {
+      if (attachments.length) { setError("Send attachments separately from the Focus /new command."); return false; }
+      return resetFocusSession();
+    }
     assertSubmissionActive(signal);
     const currentHostId = connect?.active ?? "local";
     const targetIsOrigin = executionTarget.hostId === currentHostId;
@@ -10583,7 +10599,27 @@ export function App({ readOnly = false } = {}) {
       return next;
     });
   };
+  const resetFocusSession = async () => {
+    const session = focusSessionRef.current;
+    const projectId = selectedProjectIdRef.current;
+    if (focusResetBusyRef.current || submittingRef.current) { setError("Focus is busy. Retry /new after the current submission finishes."); return false; }
+    if (!api?.focus?.refresh || !session?.generation || session.projectId !== projectId) { setError("Reload Focus before starting a fresh session."); return false; }
+    focusResetBusyRef.current = true;
+    setSubmitting(true);
+    try {
+      await api.focus.refresh({ projectId, expectedGeneration: session.generation });
+      if (selectedProjectIdRef.current === projectId && surfaceModeRef.current === "focus") await loadFocusSession(projectId);
+      return true;
+    } catch (cause) {
+      if (selectedProjectIdRef.current === projectId) setError(cause.message);
+      return false;
+    } finally {
+      focusResetBusyRef.current = false;
+      setSubmitting(false);
+    }
+  };
   const openPixiceCommand = (name) => {
+    if (name === "new" && focusActive) { void resetFocusSession(); return; }
     if (name !== "usage" && name !== "settings") return;
     if (focusActive) exitFocus();
     setSettingsPage(name === "usage" ? "usage" : "general");
@@ -10600,6 +10636,7 @@ export function App({ readOnly = false } = {}) {
     showSlashCommands: preferences.showSlashCommands,
     slashCommands: targetIsOrigin ? thread?.slashCommands : undefined,
     onCommand: openPixiceCommand,
+    focusCommands: focusActive,
     showPermissionPicker: !focusActive,
     running: Boolean(activeTurn),
     questionRequest,

@@ -8,6 +8,7 @@ const onEvent = (listener) => {
 };
 
 contextBridge.exposeInMainWorld("pixice", Object.freeze({
+  voice: Object.freeze({ availability: invoke('voice:availability'), prepare: invoke('voice:prepare'), start: invoke('voice:start'), stop: invoke('voice:stop'), appendText: invoke('voice:appendText'), appendSpeech: invoke('voice:appendSpeech'), appendAudio: invoke('voice:appendAudio'), snapshot: invoke('voice:snapshot') }),
   connect: Object.freeze({ status: invoke("connect:status"), configure: invoke("connect:configure"), pair: invoke("connect:pair"), renew: invoke("connect:renew"), revoke: invoke("connect:revoke"), startTunnel: invoke("connect:tunnel:start"), stopTunnel: invoke("connect:tunnel:stop") }),
   app: Object.freeze({ bootstrap: invoke("app:bootstrap"), overview: invoke("app:overview"), saveSettings: invoke("app:settings:update") }),
   runtime: Object.freeze({ status: invoke("runtime:status") }),
@@ -72,6 +73,8 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     updatePolicy: invoke("focus:policy:update"),
     markSeen: invoke("focus:seen"),
     ensure: invoke("focus:ensure"),
+    refresh: invoke("focus:refresh"),
+    history: invoke("focus:history"),
     readMemory: invoke("focus:memory"),
     updateMemory: invoke("focus:memory:update"),
     clearMemory: invoke("focus:memory:clear")

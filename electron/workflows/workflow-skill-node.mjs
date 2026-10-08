@@ -1,5 +1,6 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { assertPublicFile } from "../backend/desktop-authority.mjs";
 import { normalizeWorkflowNodeConfig } from "./workflow-node-catalog.mjs";
 
 const DEFAULT_MAX_BYTES = 500_000;
@@ -77,6 +78,7 @@ async function ensureRealPathInside(root, candidate) {
 
 async function markdownFile(pathname, maximumBytes, label) {
   const info = await stat(pathname);
+  assertPublicFile(info);
   if (info.isDirectory()) return markdownFile(path.join(pathname, "SKILL.md"), maximumBytes, label);
   if (!info.isFile()) throw new Error(`${label} is not a file`);
   if (path.extname(pathname).toLowerCase() !== ".md") throw new Error(`${label} must be a .md file`);
