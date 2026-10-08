@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { FOCUS_WORKER_PERMISSION_MODE } from "./focus-permissions.mjs";
 import { buildCodexUserInput } from "./user-input.mjs";
-import { bridgeEligibleModels, recommendBridgeModel } from "./model-capabilities.mjs";
+import { advertisedReasoningEfforts, bridgeEligibleModels, recommendBridgeModel } from "./model-capabilities.mjs";
 import { pixiceWorkflowTools } from "../workflows/pixice-workflows.mjs";
 import { pixiceWorkflowToolShapes } from "../workflows/workflow-tool-shapes.mjs";
 import { BridgeJobStore, bridgeStableId } from "../persistence/bridge-job-store.mjs";
@@ -110,7 +111,7 @@ const bridgeTools = [
   {
     type: "function",
     name: "list_models",
-    description: "List only currently connected models available to the Pixice bridge, Pixice's internal 1-5 capability ratings, and a policy-based recommendation for the supplied task. GPT supports 6 Astra and 5.6 Luna, Terra, and Sol; every connected Claude model reported by Claude Code is eligible.",
+    description: "List agent models currently advertised by connected providers, any curated Pixice capability profile available for each model, and a policy-based recommendation for the supplied task. Newly discovered models remain usable with an unrated generic profile.",
     inputSchema: listModelsInputSchema
   },
   {
@@ -374,7 +375,7 @@ export class PixiceBridge {
   // Focus owns durable completion delivery; ordinary bridge callers retain the
   // original blocking contract.
   startDetached(params, input, { onCreated } = {}) {
-    return this.#spawnThread(params, z.object(spawnThreadShape).parse(input), { detached: true, onCreated });
+    return this.#spawnThread(params, z.object({ ...spawnThreadShape, images: z.array(z.string()).max(8).optional() }).parse(input), { detached: true, onCreated });
   }
 
   async #listModels(shape, input) {
@@ -389,6 +390,7 @@ export class PixiceBridge {
       availability: "connected",
       displayName: model.displayName ?? model.model,
       description: model.description,
+      defaultReasoningEffort: model.defaultReasoningEffort ?? model.defaultEffort ?? null,
       supportedReasoningEfforts: model.supportedReasoningEfforts ?? [],
       profile: model.bridge
     }));
@@ -397,18 +399,18 @@ export class PixiceBridge {
       connectedFamilies: [...new Set(models.map((model) => model.provider === "codex" ? "gpt" : model.provider))],
       recommendation,
       guidance: {
-        defaultPolicy: "Normally prefer a GPT model because GPT 5.6 is more cost-effective.",
+        defaultPolicy: "Use the current recommendation and provider-advertised metadata. Prefer a provider default when Pixice has no curated profile for a newly discovered model.",
         claudeExceptions: [
           "The user specifically asks for Claude.",
           "Claude is the only connected model family.",
           "The task is primarily about UI design or taste."
         ],
-        routineAndHighVolume: "Prefer GPT 5.6 Luna.",
-        balancedImplementation: "Prefer GPT 5.6 Terra.",
-        deepTechnicalWork: "Prefer GPT 6 Astra when connected, otherwise GPT 5.6 Sol.",
-        uiAndProductTaste: "Prefer Claude Sonnet or Opus when one is connected; GPT remains capable if Claude is unavailable.",
+        routineAndHighVolume: "Prefer a connected model whose advertised or curated profile favors speed and cost efficiency.",
+        balancedImplementation: "Prefer the provider default or a connected model with a balanced curated profile.",
+        deepTechnicalWork: "Prefer a connected model with strong reasoning metadata or a matching curated specialist profile.",
+        uiAndProductTaste: "Prefer a connected model with strong UI and product-taste metadata; Claude often has a strong curated profile here.",
         crossFamilyDirection: "A Claude bridge thread may direct or review a GPT bridge thread, and vice versa.",
-        note: "Only models from connected providers are returned. Ratings are Pixice routing heuristics on a 1-5 scale, not vendor benchmarks."
+        note: "Only models from connected providers are returned. Curated ratings are Pixice routing heuristics on a 1-5 scale, not vendor benchmarks. Unknown models are explicitly unrated."
       }
     };
   }
@@ -482,7 +484,7 @@ export class PixiceBridge {
       parentTurnId: params.turnId ?? null, projectId: context.projectId, prompt: input.prompt,
       model: input.model, effort: input.effort ?? null, deliveryOwner: detached ? "focus" : "bridge",
       blocking: !detached && input.mode !== "async", identity: { prompt: input.prompt, model: input.model,
-        effort: input.effort ?? null, permissionMode: input.permissionMode ?? null, detached } });
+        effort: input.effort ?? null, permissionMode: input.permissionMode ?? null, images: input.images ?? [], detached } });
     if (duplicate && !this.inFlight.has(job.id) && job.status === "accepted") {
       // An accepted intent has not crossed the provider boundary and is safe to admit.
     } else if (duplicate) {
@@ -509,9 +511,12 @@ export class PixiceBridge {
       const matches = catalog.filter((model) => model.id === input.model || model.model === input.model);
       if (matches.length !== 1) throw new Error(matches.length ? "Use the qualified model id returned by list_models" : `Model ${input.model} is not eligible or unavailable`);
       const selected = matches[0];
-      const effortValues = (selected.supportedReasoningEfforts ?? []).map((entry) => entry.reasoningEffort ?? entry.effort ?? entry);
-      if (input.effort && effortValues.length && !effortValues.includes(input.effort)) throw new Error(`${input.effort} is not supported by ${selected.displayName}`);
-      const permissionMode = (detached ? input.permissionMode : context.enforcedPermissionMode)
+      const effortValues = advertisedReasoningEfforts(selected);
+      const defaultIsOnlyAdvertisement = !effortValues.length && input.effort === selected.defaultReasoningEffort;
+      if (input.effort && !effortValues.includes(input.effort) && !defaultIsOnlyAdvertisement) throw new Error(`${input.effort} is not supported by ${selected.displayName}`);
+      const permissionMode = (context.managedFocusWork || context.focusCoordinator)
+        ? FOCUS_WORKER_PERMISSION_MODE
+        : (detached ? input.permissionMode : context.enforcedPermissionMode)
         ?? input.permissionMode ?? context.permissionMode ?? "workspace-write";
       const permissions = context.permissionSettings(permissionMode);
       const runtimeWorkspaceRoots = context.runtimeWorkspaceRoots?.length ? context.runtimeWorkspaceRoots : [context.cwd];
@@ -533,7 +538,7 @@ export class PixiceBridge {
         model: selected.id, effort: input.effort, status: "running", message: `Running on ${selected.displayName}` });
       // Persist intent before submitting any paid work. A lost response never causes another turn/start.
       this.jobStore.patch(job.id, { status: "turn_dispatching" });
-      const turn = await this.runtime.request("turn/start", { threadId: child.id, input: buildCodexUserInput(input.prompt, []),
+      const turn = await this.runtime.request("turn/start", { threadId: child.id, input: buildCodexUserInput(input.prompt, input.images ?? []),
         cwd: context.cwd, runtimeWorkspaceRoots, model: selected.id, effort: input.effort || null,
         permissionMode, approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer,
         sandboxPolicy: permissions.sandboxPolicy });

@@ -1,0 +1,46 @@
+.signal-ring-wrap {
+  position: relative;
+  width: min(70vh, 420px, 90%);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  color: var(--primary);
+  transition: opacity 200ms var(--ease);
+}
+
+.signal-ring-wrap svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.ring-static { color: inherit; opacity: 0.5; }
+.ring-faint { opacity: 0.32; }
+.ring-sweep { filter: drop-shadow(0 0 6px currentColor); }
+.ring-level { opacity: 0.9; filter: drop-shadow(0 0 4px currentColor); }
+.ring-core { opacity: 0.2; }
+.ring-core-rim { opacity: 0.8; }
+
+.signal-readout {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.readout-state {
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--foreground);
+}
+
+.readout-amp {
+  font-size: 20px;
+  font-weight: 600;
+  color: currentColor;
+}

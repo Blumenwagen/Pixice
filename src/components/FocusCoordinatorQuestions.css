@@ -10,3 +10,15 @@
 .focus-coordinator-question-custom { min-height: 32px; margin-top: 7px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; color: #aeb8be; background: transparent; border: 0; border-radius: 6px; font: 12px system-ui, sans-serif; cursor: pointer; }.focus-coordinator-question-custom:hover { color: #eef1f3; background: rgba(255,255,255,.05); }
 .focus-coordinator-question-text { min-height: 32px; height: 32px; }.focus-coordinator-question-text input { font-size: 14px; }.focus-coordinator-question-actions button { min-height: 32px; font-size: 12px; }.focus-coordinator-question-receipt header, .focus-coordinator-question-receipt header svg { color: #c3cbd0; }.focus-coordinator-question-receipt strong { font-size: 12px; }.focus-coordinator-question-receipt p span { font-size: 14px; white-space: pre-line; }.focus-coordinator-question-error { font-size: 12px; }
 @media (max-width: 600px) { .focus-coordinator-questions { width: calc(100% - 24px); } }
+
+/* Keep inline questions clear of Focus's right overlays without moving chat or composer. */
+@media (min-width: 1000px) {
+  .focus-layout:not(.preview-open) .focus-workspace:has(.focus-coordination[data-open="true"]) .focus-coordinator-questions {
+    width: min(800px, max(300px, calc(100% - 640px)));
+  }
+}
+@media (min-width: 1481px) {
+  .focus-layout:not(.preview-open) .focus-workspace[data-task-rail="true"] .focus-coordinator-questions {
+    width: min(800px, max(300px, calc(100% - 640px)));
+  }
+}

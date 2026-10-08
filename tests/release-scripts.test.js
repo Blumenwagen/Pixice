@@ -104,10 +104,13 @@ describe("release scripts", () => {
   });
 
   it.skipIf(process.platform !== "darwin")("accepts pnpm's argument separator before the Gatekeeper flag", async () => {
+    const releaseDirectory = await mkdtemp(path.join(os.tmpdir(), "pixice-empty-release-"));
+    temporaryDirectories.push(releaseDirectory);
     await expect(run(process.execPath, [
       path.resolve("scripts/verify-packaged-macos.mjs"),
       "--",
-      "--require-gatekeeper"
-    ])).rejects.not.toMatchObject({ stderr: expect.stringContaining("scandir") });
+      "--require-gatekeeper",
+      releaseDirectory
+    ])).rejects.toMatchObject({ stderr: expect.stringContaining("Expected exactly one packaged Pixice.app") });
   });
 });

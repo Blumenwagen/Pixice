@@ -1,4 +1,4 @@
-import { app, autoUpdater as nativeUpdater, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, screen, shell, Tray, WebContentsView } from 'electron';
+import { app, autoUpdater as nativeUpdater, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, screen, shell, systemPreferences, Tray, WebContentsView } from 'electron';
 import { spawn } from 'node:child_process';
 import { appendFile, stat, rename } from 'node:fs/promises';
 import path from 'node:path';
@@ -19,8 +19,13 @@ import { APPLICATION_CHANNELS } from './connect/application-protocol.mjs';
 import { backendBuildId, descriptorInstance, ensureService, inspectService, readServiceDescriptor, serviceCall, stopService } from './backend/manager.mjs';
 import { BrowserSessions } from './native/browser-sessions.mjs';
 import { NativeHelperClient } from './native/helper-client.mjs';
+import { readDesktopAuthority } from './backend/desktop-authority.mjs';
+import { isDesktopCaller, installDesktopMediaPermissions } from './native/desktop-permissions.mjs';
+import { CompanionWindow } from './voice/companion-window.mjs';
+import { VoiceCompanionService, registerVoiceCompanionIpc } from './voice/companion-service.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
+const desktopOrigin = { isDev, indexPath: path.join(__dirname, '../dist/client/index.html') };
 const helperOnly = process.argv.includes('--pixice-native-helper');
 const dataIndex = process.argv.indexOf('--pixice-data-dir');
 if (dataIndex >= 0 && process.argv[dataIndex + 1]) app.setPath('userData', path.resolve(process.argv[dataIndex + 1]));
@@ -30,6 +35,7 @@ let mainWindow, tray, trayWindow, trayIconDataUrl, browserWorkspace, appUpdater,
 let quitting = false, desktopLoaded = false, connecting;
 let serviceEnabled = true, reconnectTimer, reconnectAttempts = 0, lifecycle, recovering;
 let updateServiceWasEnabled = null;
+let voiceCompanion, voicePresentation, voiceQuitPending;
 const loginSupported = process.platform === 'darwin' || process.platform === 'win32';
 let connectionState = { state: 'connecting' };
 let trayState = { items: [], activeCount: 0 };
@@ -77,11 +83,12 @@ async function connectService({ start = true } = {}) {
     });
     client = nextClient;
     client.subscribe((event) => {
+      voiceCompanion?.handle(event);
       if (event.type === 'ApplicationResync') recordConnection({ state: 'resync', reason: event.payload?.reason });
       if (event.type === 'TrayState') { trayState = event.payload; updateTrayMenu(); }
       send(event.type, event.payload);
     });
-    nativeHelper = new NativeHelperClient({ directory: dataDirectory, browser: browserWorkspace, sessions: browserSessions, invokeDesktop, crypto: safeStorage });
+    nativeHelper = new NativeHelperClient({ directory: dataDirectory, desktopAuthority: (descriptor) => readDesktopAuthority(dataDirectory, descriptor), browser: browserWorkspace, sessions: browserSessions, invokeDesktop, crypto: safeStorage });
     nativeHelper.start();
     await client.connect();
     reconnectAttempts = 0;
@@ -168,15 +175,18 @@ async function openMainWindow(destination = null) {
   mainWindow.show(); mainWindow.focus();
   if (destination) send('TrayNavigate', destination);
 }
-function shutdownNative() {
+async function shutdownNative() {
   quitting = true;
   serviceEnabled = false; clearTimeout(reconnectTimer);
+  await voiceCompanion?.end().catch(() => {});
   nativeHelper?.close(); client?.close(); appUpdater?.stop(); awake.stop();
   browserSessions.flush(); browserWorkspace?.destroy();
   for (const window of BrowserWindow.getAllWindows()) window.destroy();
   app.exit(0);
 }
 function detachDesktop() {
+  nativeHelper?.closeVoice();
+  voiceCompanion?.detach();
   mainWindow?.hide(); trayWindow?.destroy(); trayWindow = null; tray?.destroy(); tray = null;
   browserWorkspace?.hideViewport();
   desktopLoaded = false; void mainWindow?.loadURL('about:blank'); app.dock?.hide();
@@ -236,6 +246,12 @@ function createWindow() {
     if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
     return { action: "deny" };
   });
+  installDesktopMediaPermissions({ session: mainWindow.webContents.session, getWindow: () => mainWindow, options: desktopOrigin, systemPreferences });
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) nativeHelper?.closeVoice();
+  });
+  mainWindow.webContents.on('render-process-gone', () => nativeHelper?.closeVoice());
+  mainWindow.webContents.on('destroyed', () => nativeHelper?.closeVoice());
   mainWindow.webContents.on("will-navigate", (event, url) => {
     const destination = new URL(url);
     if (url === "about:blank") return;
@@ -324,12 +340,30 @@ async function openTerminal(target) {
 
 function registerIpc() {
   const handle = (channel, handler) => ipcMain.handle(channel, (event, payload) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted desktop sender');
+    if (!isDesktopCaller(event, mainWindow, desktopOrigin)) throw new Error('Untrusted desktop sender or origin');
     return handler(payload);
   });
   for (const [channel, operation] of APPLICATION_CHANNELS) {
     if (operation.startsWith('native.') || operation.startsWith('service.') || operation.startsWith('tray.')) continue;
+    if (operation.startsWith('voice.') && !['voice.state', 'voice.context'].includes(operation)) {
+      handle(channel, async (payload) => {
+        if ((operation === 'voice.start' && !payload?.sessionHandle) || (operation === 'voice.stop' && payload?.sessionId)) {
+          if (voiceCompanion?.ownsMedia()) throw new Error('The native companion owns Voice. Use its controls.');
+          if (!client) { if (!connecting) throw new Error('The backend is offline. Start it in Connections.'); await connecting; }
+          return client.call(operation, payload);
+        }
+        if (!nativeHelper) throw new Error('The authenticated local desktop helper is unavailable');
+        const helper = nativeHelper;
+        const contents = mainWindow.webContents;
+        return helper.voiceCall(operation, payload, (event) => {
+          if (helper !== nativeHelper || mainWindow?.webContents !== contents || contents.isDestroyed()) return;
+          send('VoiceSessionEvent', event);
+        });
+      });
+      continue;
+    }
     handle(channel, async (payload) => {
+      if ((operation === 'voice.start' || operation === 'voice.stop') && voiceCompanion?.ownsMedia()) throw new Error('The native companion owns Voice. Use its controls.');
       if (connecting) await connecting;
       if (!client) throw new Error('The backend is offline. Start it in Connections.');
       return client.call(operation, payload);
@@ -361,6 +395,15 @@ else {
   app.whenReady().then(async () => {
     // A window starts Electron's event loop before asynchronous service discovery.
     createWindow();
+    voicePresentation = new CompanionWindow({ BrowserWindow, screen, mainWindow,
+      load: (window) => isDev ? window.loadURL('http://127.0.0.1:5173/?voice-companion=1') : window.loadFile(path.join(__dirname, '../dist/client/index.html'), { query: { 'voice-companion': '1' } }) });
+    voiceCompanion = new VoiceCompanionService({ presentation: voicePresentation,
+      describeContext: (context) => client.call('voice.context', context),
+      call: async (operation, payload) => { if (connecting) await connecting; if (!client) throw new Error('The backend is offline.'); return client.call(operation, payload); },
+      publish: send, returnToMain: (context) => openMainWindow({ view: context.needsApproval ? 'attention' : 'task', projectId: context.projectId, threadId: context.threadId }),
+      notifyApproval: (onClick) => { if (!Notification.isSupported()) return; const notice = new Notification({ title: 'Voice needs approval in Pixice', body: 'Open Pixice to review the pending action. Speaking does not approve it.' }); notice.on('click', onClick); notice.show(); }
+    });
+    registerVoiceCompanionIpc({ ipcMain, service: voiceCompanion, mainWindow });
     browserWorkspace = new BrowserWorkspace({ window: mainWindow, WebContentsView, BrowserWindow, emit: (type, payload) => nativeHelper?.event({ type, payload }) });
     registerIpc();
     appUpdater = new PixiceAppUpdater({
@@ -368,6 +411,7 @@ else {
       journal: new UpdateJournal(path.join(dataDirectory, 'updates')),
       assertInstallable: process.platform === 'darwin' ? () => assertMacUpdateEligible(process.execPath) : null,
       prepareInstall: async ({ currentVersion, availableVersion }) => {
+        await voiceCompanion.end();
         if (lifecycle) throw new Error('Wait for the current backend action to finish before updating.');
         updateServiceWasEnabled = serviceEnabled;
         // Pause every recovery path before stopping the old executable. Otherwise
@@ -406,7 +450,12 @@ else {
   }).catch((error) => { console.error(error); updateConnection({ state: 'error', error: error.message }); });
   app.on('activate', () => { if (mainWindow) void openMainWindow(); });
   app.on('before-quit', (event) => {
-    if (!quitting) { event.preventDefault(); detachDesktop(); return; }
+    if (!quitting) {
+      event.preventDefault();
+      // Quit interface keeps the backend helper alive, but never keeps Voice alive.
+      if (!voiceQuitPending) voiceQuitPending = Promise.resolve(voiceCompanion?.end()).catch(() => {}).finally(() => { detachDesktop(); voiceQuitPending = null; });
+      return;
+    }
     nativeHelper?.close(); client?.close(); appUpdater?.stop(); awake.stop(); browserWorkspace?.destroy();
   });
   for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, shutdownNative);

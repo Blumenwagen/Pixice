@@ -1,0 +1,29 @@
+
+ RUN  v3.2.4 /Users/blumenwagen/Developer/Loom
+
+(node:66102) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:66104) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/focus-coordination-tools.test.js (9 tests) 12ms
+ ✓ tests/provider-registry.test.js (16 tests) 10ms
+ ✓ tests/focus-visuals.test.js (4 tests) 26ms
+(node:66106) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/focus-supervisor.test.js (27 tests) 127ms
+ ✓ tests/focus-store.test.js (9 tests) 249ms
+ ✓ tests/database.test.js (20 tests) 368ms
+(node:66105) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/claude-provider.test.js (25 tests) 326ms
+ ✓ tests/bridge-parent-continuation.test.js (7 tests) 6ms
+ ✓ tests/codex-provider.test.js (6 tests) 6ms
+ ✓ tests/pixice-focus-memory.test.js (2 tests) 4ms
+ ✓ tests/thread-session-registry.test.js (5 tests) 21ms
+ ✓ tests/renderer-thread-projection.test.js (2 tests) 13ms
+
+ Test Files  12 passed (12)
+      Tests  132 passed (132)
+   Start at  00:59:28
+   Duration  2.81s (transform 539ms, setup 2.39s, collect 1.68s, tests 1.17s, environment 7.86s, prepare 1.05s)
+

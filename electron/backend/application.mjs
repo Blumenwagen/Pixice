@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { CodexRuntime } from "../runtime/codex-runtime.mjs";
+import { installVoiceApplication } from "../runtime/voice-application.mjs";
+import { VoiceSessionError } from "../runtime/voice-session.mjs";
 import { ThreadSessionRegistry } from "../runtime/thread-session-registry.mjs";
 import { ThreadNamer } from "../runtime/thread-namer.mjs";
 import { TaskResults } from "../runtime/task-results.mjs";
@@ -31,6 +33,9 @@ import {
   stagePromptAttachmentsAsync
 } from "../runtime/prompt-attachments.mjs";
 import { AGENT_BEHAVIOR_IDS, agentBehaviorCatalog, composeAgentInstructions } from "../runtime/agent-behavior.mjs";
+import { ChatGPTAuth } from "../providers/chatgpt-auth.mjs";
+import { CodexCloud, cloudListSchema, cloudSubmitSchema, cloudTaskSchema, cloudEnvironmentSchema } from "../providers/codex-cloud.mjs";
+import { CodexVoice } from "../voice/codex-voice.mjs";
 import { CodexProvider } from "../providers/codex-provider.mjs";
 import { ClaudeProvider } from "../providers/claude-provider.mjs";
 import { ProviderRegistry } from "../providers/provider-registry.mjs";
@@ -53,9 +58,13 @@ import {
 import { PixiceBridge, PIXICE_BRIDGE_NAMESPACE, pixiceBridgeDynamicTools } from "../runtime/pixice-bridge.mjs";
 import { BridgeParentContinuation } from "../runtime/bridge-parent-continuation.mjs";
 import { BridgeJobStore } from "../persistence/bridge-job-store.mjs";
+import { managedFocusRole, focusStateBrief, resolveFocusContext } from "../runtime/focus-coordinator-context.mjs";
+import { FocusSessionRenewal, renewalEvidence } from "../runtime/focus-session-renewal.mjs";
 import { FocusStore } from "../persistence/focus-store.mjs";
 import { FocusSupervisor } from "../runtime/focus-supervisor.mjs";
-import { FocusCoordinationTools } from "../runtime/focus-coordination-tools.mjs";
+import { FocusVisuals } from "../runtime/focus-visuals.mjs";
+import { FOCUS_WORKER_PERMISSION_MODE } from "../runtime/focus-permissions.mjs";
+import { FocusCoordinationTools, focusFollowUpPayload } from "../runtime/focus-coordination-tools.mjs";
 import { FocusQuestionGroups } from "../runtime/focus-question-groups.mjs";
 import { bridgeEligibleModels, recommendBridgeModel } from "../runtime/model-capabilities.mjs";
 import { PixiceBoard, PIXICE_BOARD_NAMESPACE, pixiceBoardDynamicTools } from "../runtime/pixice-board.mjs";
@@ -82,6 +91,7 @@ import {
 import { inspectRepository, readDiff, readDiffManifest, readFileDiff } from "../git/worktrees.mjs";
 import { detectGitRuntime, requestCommandLineToolsInstall } from "../git/git-runtime.mjs";
 import { projectRendererThread, projectRuntimePayloadForRenderer } from "../runtime/renderer-thread-projection.mjs";
+import { readRendererThread } from "../runtime/renderer-thread-history.mjs";
 import { projectFolderDialogProperties } from "../projects/project-folder-dialog.mjs";
 import { TranscriptionService } from "../transcription/service.mjs";
 import { TRANSCRIPTION_MODEL_IDS } from "../transcription/catalog.mjs";
@@ -102,10 +112,15 @@ import { IosTools, PIXICE_IOS_NAMESPACE, iosDynamicTools, iosToolSchemas } from 
 import { createRemoteInvoker, createRemoteThreadValidator } from "../connect/remote-operations.mjs";
 import { EventEmitter } from "node:events";
 import { installWorkflowRuntimeHost } from "../workflows/workflow-runtime-host.mjs";
+import { WidgetStore, widgetSpecSchema } from "./widgets.mjs";
+import { draftFocusWidget } from "./widget-draft-router.mjs";
+import { refreshWidgetSource } from "./widget-sources.mjs";
+import { widgetV2Schema } from "../../src/widgets/widget-schema.mjs";
+import { WidgetCredentials } from "./widget-credentials.mjs";
 
 // Application state lives in this service instance. Native UI and network transports
 // are adapters; neither owns provider execution, projects, approvals, or workflows.
-export function createApplication({ userDataPath, resourcesPath, version, platform, handlers, providerFactories = {}, nativeReadiness = () => ({ available: false, reason: "The Pixice native helper is unavailable." }), transferStore = null, onCoreReady = () => {} }) {
+export function createApplication({ userDataPath, resourcesPath, version, platform, handlers, providerFactories = {}, voiceTransport = {}, nativeReadiness = () => ({ available: false, reason: "The Pixice native helper is unavailable." }), transferStore = null, onCoreReady = () => {} }) {
   const events = new EventEmitter();
   let stopped = false;
   let started = false;
@@ -121,7 +136,13 @@ let trayLimits;
 let trayRefreshPromise;
 let runtime;
 let codexRuntime;
+let voiceApplication;
+const nativeVoiceHandlers = new Map();
 let codexProvider;
+let codexVoice;
+let codexCloud;
+const cloudApplyingProjects = new Set();
+let authTransition = false;
 let claudeProvider;
 let threadNamer;
 const browserWorkspace = platform.browser;
@@ -133,6 +154,8 @@ let pixiceBoard;
 let pixiceFocusMemory;
 let focusStore;
 let focusSupervisor;
+let focusRenewal;
+const focusContextUsage = new Map();
 let pixiceInstruments;
 let iosRuntimeService;
 let iosTools;
@@ -152,8 +175,13 @@ let pullRequestWatches;
 let taskWorkspaces;
 let threadHistory;
 const archivedThreadIds = new Set();
+const widgetStore = new WidgetStore(userDataPath);
+const widgetCredentials = new WidgetCredentials(userDataPath, platform.credentialCrypto);
+const widgetDrafts = new Map();
+const chatgptAuth = new ChatGPTAuth({ directory: userDataPath, crypto: platform.credentialCrypto, openExternal: (url) => platform.openExternal(url), onChange: (state) => send("ChatGPTState", { ...state, selectedProfileId: database?.getAppSettings().chatGPTProfileId ?? null }) });
 let runtimeStatus = { state: "starting" };
 const activeTurns = new Map();
+const focusCurrentUserInputs = new Map();
 const startingTurns = new Set();
 const earlyTerminalTiming = new Map();
 const turnUsageMetadata = new Map();
@@ -178,7 +206,7 @@ const focusQuestionReviewInFlight = new Set();
 const focusQuestionInternalThreadIds = new Set();
 const focusQuestionReviewTimers = new Map();
 const focusQuestionGroups = new FocusQuestionGroups();
-const FOCUS_PERMISSION_MODE = "full-access";
+const FOCUS_PERMISSION_MODE = FOCUS_WORKER_PERMISSION_MODE;
 const pixiceDynamicTools = [
   ...browserDynamicTools,
   ...previewContextDynamicTools,
@@ -369,7 +397,9 @@ function flushRendererDeltas() {
 }
 
 function sendRuntimeEvent(type, payload = {}) {
-  payload = projectRuntimePayloadForRenderer(payload);
+  const threadId = payload.threadId ?? payload.thread?.id;
+  if (threadId && database.getFocusForkCandidate(threadId)) return;
+  payload = projectRuntimePayloadForRenderer(payload, focusContextProjection);
   if (payload.method === "item/agentMessage/delta" && payload.threadId && payload.turnId && payload.itemId) {
     const key = `${type}\u0000${payload.projectId ?? ""}\u0000${payload.threadId}\u0000${payload.turnId}\u0000${payload.itemId}`;
     const pending = pendingRendererDeltas.get(key);
@@ -395,37 +425,62 @@ function currentAgentInstructions() {
 }
 
 function focusAgentInstructions(project) {
-  const memory = pixiceFocusMemory?.read(project.id) ?? {
-    projectMemory: "",
-    userMemory: "",
-    capacity: null
-  };
-  return [
-    "# Pixice Focus coordinator",
-    `You are the single persistent Focus coordinator for the Pixice project \"${project.displayName}\".`,
-    "The user is talking directly to the project. This conversation has no permanent goal, completion state, or fixed task boundary.",
-    "Keep the conversation calm and direct. Answer small questions yourself. Do not manufacture plans, completion reports, or Board work for ordinary conversation.",
-    "Use pixice_focus.list_work and read_work to resolve follow-ups against existing outcomes and artifacts. Interpret references using the conversation and selected Preview. Continue or redirect matching work with follow_up instead of creating duplicate tasks. Ask briefly if an ambiguous reference would materially change the work.",
-    "Delegate bounded implementation, research, design, review, and debugging with pixice_focus.dispatch_work. It returns immediately; acknowledge the intended outcome and remain available. Completion events will bring results back. Do not wait in polling loops or leave a turn running solely to wait for workers. Give each worker one objective and relevant project skills. Use pixice_bridge.list_models for qualified available models.",
-    "Declare access and overlapping file or directory resources accurately. Unknown write scope uses '*'. Do not label implementation as read-only to bypass sequencing. Use dependsOn for prerequisites; dependent work starts only after verified completion.",
-    "When the user changes direction, record_decision for the affected work, then pause/cancel work explicitly if requested. Check worker acknowledgement and reconcile stale results. Never claim a direction was applied merely because it was sent.",
-    "Worker completion means ready for your review. Inspect results, integrate related changes, and verify the original request. Use request_review for independent verification with the configured review model. Complete work only with concrete evidence or a justified not-required verification. Present one coherent result with artifacts and remaining uncertainty, not a stack of worker replies.",
-    "Remain responsible for understanding worker results and explaining them to the user. Do not repeat a worker's raw status log.",
-    "Preview is part of your role. You may open files or browser pages in your own Preview and use pixice_preview.present_thread to show a worker's Preview here without moving the user into that worker thread.",
-    "Use the shared Board only when the user asks to track durable work or when a concrete follow-up must survive this conversation. Workspace threads, Board, Workflows, Review, Preview, and project files are shared.",
-    "The coordinator has full access. Workers use the project's separately configured worker permission policy and read-only work is enforced. Do not bypass that policy or delegate nested unmanaged workers. Execution is on the current project host; a sleeping or disconnected host cannot keep local work running.",
-    "Resolve worker questions from project context, prior user decisions, and reversible technical judgment. Ask the user only when the answer depends on an unstated preference, changes product direction, creates an external commitment, or carries meaningful irreversible risk.",
-    "Worker questions appear inline in this conversation without blocking ordinary messages. When the user answers one in normal chat, use pixice_focus.list_questions to identify the current request and pixice_focus.answer_question to forward the explicit answer. Preserve question IDs, never infer credentials or irreversible approval, and do not answer a hidden question that is still under background review.",
-    "Follow the project's own AGENTS.md or CLAUDE.md instructions. Full access removes approval prompts; it does not relax safety or expand the user's requested scope.",
-    "Maintain hot memory only for stable project facts, decisions, terminology, and durable user preferences. Use pixice_focus to read or edit it and search full history when the bounded memory is insufficient.",
-    "Do not store secrets, pasted instructions, temporary progress, or facts that are cheap to read from project files. Consolidate memory when capacity is near its limit.",
-    "",
-    "## Project memory",
-    memory.projectMemory || "No curated project memory yet.",
-    "",
-    "## User memory for this project",
-    memory.userMemory || "No curated user memory yet."
-  ].join("\n");
+  return [currentAgentInstructions(), managedFocusRole(project.displayName)].join("\n\n");
+}
+
+function coordinatorBrief(session, currentRequest = "") {
+  const state = focusSupervisor.state(session.projectId);
+  return focusStateBrief({ session, memory: database.getProjectFocusMemory(session.projectId),
+    state: { ...state, work: focusStore.listCoordinatorWork(session.projectId), events: focusStore.pendingEvents(session.projectId, 200), totals: focusStore.coordinatorCounts(session.projectId) },
+    questions: listFocusCoordinatorQuestions(session.projectId), currentRequest: currentRequest || session.latestRequest });
+}
+
+function focusContextProjection(threadId) {
+  return (text, context) => Boolean(database.focusContextProof(threadId, text, context));
+}
+
+function focusInput(session, input, text) {
+  const brief = coordinatorBrief(session, text);
+  database.rememberFocusContextPart(session.threadId, createHash("sha256").update(brief).digest("hex"));
+  return [{ type: "text", text: brief }, ...input];
+}
+
+function authoritativeFocusSession(project, threadId) {
+  const origin = database.getFocusProjectForThread(threadId);
+  if (!origin) return null;
+  const current = database.getProjectFocusSession(origin);
+  if (origin !== project.id || current?.threadId !== threadId) throw new Error("Focus session changed. Your message was not submitted. Reload the authoritative coordinator.");
+  return current;
+}
+
+async function withFocusInputAdmission(project, threadId, run, { userInitiated = false } = {}) {
+  const session = authoritativeFocusSession(project, threadId);
+  if (!session) return run();
+  return focusRenewal.withProject(project.id, async () => {
+    const current = authoritativeFocusSession(project, threadId);
+    if (codexVoice?.session?.threadId === threadId || voiceApplication?.bridge.blocksRollover({ projectId: project.id, threadId })) throw new Error('Stop voice before sending a text turn to Focus.');
+    if (focusSessionTransitions.has(project.id)) throw new Error("Focus is switching providers. Retry in a moment.");
+    if (current.stopped && !userInitiated) throw new Error("Focus is stopped. Updates remain pending until the user continues.");
+    if (current.stopped) database.setProjectFocusStopped(project.id, false);
+    try { return await run(); }
+    catch (error) { if (current.stopped) database.setProjectFocusStopped(project.id, true); throw error; }
+  });
+}
+
+function focusRendererThread(thread) {
+  const session = database.getProjectFocusSessionByThread(thread.id);
+  if (!session) return projectRendererThread(withPersistedThreadName(thread), focusContextProjection);
+  const trustedOrigins = new Map();
+  const history = database.listProjectFocusGenerations(session.projectId)
+    .filter((generation) => generation.threadId !== thread.id)
+    .flatMap((generation) => (database.getProviderThreadSnapshot(generation.threadId)?.turns ?? [])
+      .map((turn) => {
+        const copied = { ...turn, focusOriginThreadId: generation.threadId };
+        trustedOrigins.set(copied, generation.threadId);
+        return copied;
+      }));
+  return withPersistedThreadName(projectRendererThread({ ...thread, turns: [...history, ...(thread.turns ?? [])] }, focusContextProjection,
+    (turn) => trustedOrigins.get(turn) ?? thread.id));
 }
 
 function threadAgentInstructions(threadId, project) {
@@ -602,7 +657,7 @@ function authoritativeThreadProjectId(threadId, cwd = null) {
   if (!threadId || !database) return null;
   const workspace = taskWorkspaces?.getSync(threadId);
   if (workspace && database.getProject(workspace.projectId)) return workspace.projectId;
-  const focusProjectId = database.getProjectFocusSessionByThread(threadId)?.projectId;
+  const focusProjectId = database.focusHistoryProjectForThread(threadId);
   if (focusProjectId && database.getProject(focusProjectId)) return focusProjectId;
   const receiptProjectId = taskResults?.get(threadId)?.projectId;
   if (receiptProjectId && database.getProject(receiptProjectId)) return receiptProjectId;
@@ -774,21 +829,15 @@ function managedFocusAncestor(threadId) {
 }
 
 function projectFocusContextForThread(threadId) {
-  let currentThreadId = threadId;
+  const direct = resolveFocusContext(database, focusStore, threadId);
+  if (direct) return direct;
   const visited = new Set();
-  while (currentThreadId && !visited.has(currentThreadId)) {
-    visited.add(currentThreadId);
-    const session = database.getProjectFocusSessionByThread(currentThreadId);
-    if (session) {
-      return {
-        session,
-        projectId: session.projectId,
-        focusThreadId: currentThreadId,
-        sourceThreadId: threadId,
-        worker: currentThreadId !== threadId
-      };
-    }
-    currentThreadId = database.getThreadLink(currentThreadId)?.parentThreadId ?? null;
+  let ancestor = database.getThreadLink(threadId)?.parentThreadId;
+  while (ancestor && !visited.has(ancestor)) {
+    visited.add(ancestor);
+    const context = resolveFocusContext(database, focusStore, ancestor);
+    if (context) return { ...context, sourceThreadId: threadId, worker: true };
+    ancestor = database.getThreadLink(ancestor)?.parentThreadId;
   }
   return null;
 }
@@ -1114,10 +1163,15 @@ async function pickProjectFolders({ multiple = true } = {}) {
 
 async function ensureThreadLoaded(project, threadId) {
   await taskWorkspaces?.ensure(threadId);
+  if (runtime.providerForThread(threadId) === "codex") {
+    if (authTransition) throw new Error("The Codex account is changing. Retry in a moment.");
+    await codexRuntime.prepareAuthentication();
+  }
   const cwd = await threadSessions.ensure(threadId, async () => {
     const focus = database.getProjectFocusSessionByThread(threadId)?.projectId === project.id;
     const response = await runtime.request("thread/resume", {
       threadId,
+      excludeTurns: true,
       developerInstructions: threadAgentInstructions(threadId, project),
       dynamicTools: focus ? focusDynamicTools : pixiceDynamicTools
     });
@@ -1178,6 +1232,9 @@ async function startTrackedTurnLocked({ project, threadId, input, text, checkpoi
     }
     throw Object.assign(new Error(previous.error ?? "This request was already accepted. Its provider state must be reconciled before continuing."), { uncertain: true });
   }
+  authoritativeFocusSession(project, threadId);
+  if (cloudApplyingProjects.has(project.id)) throw new Error("A Cloud patch is being applied. Retry after it finishes.");
+  if (authTransition && runtime.providerForThread(threadId) === "codex") throw new Error("The Codex account is changing. Retry in a moment.");
   if (!acceptingWork) throw new Error("The Pixice service is stopping. Your task was not started.");
   if (archivedThreadIds.has(threadId)) throw new Error("This chat has been archived.");
   const reservation = executionJournal.getActive(threadId);
@@ -1188,6 +1245,11 @@ async function startTrackedTurnLocked({ project, threadId, input, text, checkpoi
   try {
     const cwd = await ensureThreadLoaded(project, threadId);
     project = workspaceProject(project, threadId);
+    const focusSession = database.getProjectFocusSessionByThread(threadId);
+    if (focusSession) {
+      await runtime.request("thread/resume", { threadId, developerInstructions: focusAgentInstructions(project) });
+      input = focusInput(focusSession, input, text);
+    }
     const permissions = permissionSettings(permissionMode, project);
     executionJournal.accept({ commandId, threadId, metadata: { projectId: project.id, provider: runtime.providerForThread(threadId), ...(deliveryId ? { deliveryId } : {}), ...(messageId ? { messageId } : {}) } });
     let checkpoint;
@@ -1223,13 +1285,14 @@ async function startTrackedTurnLocked({ project, threadId, input, text, checkpoi
       try { if (trackTask) taskResults.started(threadId, response.turn.id); await threadHistory.started(checkpoint.id, response.turn.id); }
       catch (error) { send("NativeError", { message: `Task history could not be saved: ${error.message}` }); }
       if (terminal && trackTask) void taskResults.complete(threadId, { ...response.turn, status: receipt?.status ?? response.turn.status }, threadPlans.get(threadId) ?? []).catch(error => codexRuntime.emit("diagnostic", `Task receipt: ${error.message}`));
+      if (focusSession) database.incrementProjectFocusSessionTurn(project.id, threadId);
       const metadata = turnUsageMetadata.get(threadId);
       if (metadata) metadata.turnId = response.turn.id;
       const acceptedTurn = terminal ? { ...response.turn, status: receipt?.status ?? response.turn.status } : response.turn;
       if (terminal) runtime.emit("event", { reconciled: true, type: "TaskUpdated", payload: { method: "turn/completed", threadId, turn: { ...acceptedTurn, completedAt: completedTiming ?? acceptedTurn.completedAt }, provider: runtime.providerForThread(threadId) } });
       else sendRuntimeEvent("TaskUpdated", { method: "turn/started", threadId, turn: acceptedTurn, projectId: project.id });
       updateTrayMenu();
-      return { ...response, turn: acceptedTurn };
+      return { ...response, turn: projectRuntimePayloadForRenderer({ threadId, turn: acceptedTurn }, focusContextProjection).turn };
     } catch (error) {
       if (providerRequested && !(error.definitelyNotSent || error.providerRejected || error.executionDisposition === "rejected")) error.uncertain = true;
       if (!error.uncertain) error.executionDisposition = "rejected";
@@ -1306,7 +1369,7 @@ async function scheduleFocusMemoryReview(focusThreadId) {
   focusMemoryReviewInFlight.add(focusThreadId);
   try {
     const [threadResponse, memory] = await Promise.all([
-      runtime.request("thread/read", { threadId: focusThreadId, includeTurns: true }),
+      readRendererThread(runtime, focusThreadId),
       Promise.resolve(pixiceFocusMemory.read(project.id))
     ]);
     const permissions = permissionSettings("read-only", project);
@@ -1509,6 +1572,11 @@ function removeFocusQuestionMember(key, generation) {
 }
 
 function showFocusCoordinatorQuestion(pending, focusContext, escalation = "") {
+  // A reviewer may finish after the coordinator was renewed. Its captured
+  // ancestry is not authority for where the question should be displayed.
+  const session = database.getProjectFocusSession(focusContext.projectId);
+  if (session) focusContext = { ...focusContext, session, focusThreadId: session.threadId };
+  pending.focusContext = focusContext;
   const detail = typeof escalation === "string" ? { reason: escalation } : escalation ?? {};
   const memberCount = focusQuestionGroups.members(requestKey(pending.request.id, pending.request.provider)).length;
   const taskTitle = memberCount > 1 ? `${memberCount} workers need this decision` : focusContext.worker ? database.getThreadName(focusContext.sourceThreadId) : null;
@@ -1648,8 +1716,8 @@ async function scheduleFocusQuestionReview(requestKeyValue, focusContext) {
   let internalThreadId = null;
   try {
     const [focusResponse, workerResponse] = await Promise.all([
-      runtime.request("thread/read", { threadId: focusContext.focusThreadId, includeTurns: true }),
-      runtime.request("thread/read", { threadId: focusContext.sourceThreadId, includeTurns: true })
+      readRendererThread(runtime, focusContext.focusThreadId),
+      readRendererThread(runtime, focusContext.sourceThreadId)
     ]);
     const permissions = permissionSettings("read-only", project);
     const selectedModel = await focusQuestionReviewModel(focusContext);
@@ -1765,7 +1833,7 @@ async function scheduleFocusQuestionReview(requestKeyValue, focusContext) {
   }
 }
 
-async function createProjectFocusSession({ project, model, serviceTier }) {
+async function createProjectFocusSession({ project, model, serviceTier, publish = true }) {
   const focusPermissionMode = FOCUS_PERMISSION_MODE;
   const permissions = permissionSettings(focusPermissionMode, project);
   const response = await runtime.request("thread/start", {
@@ -1781,9 +1849,10 @@ async function createProjectFocusSession({ project, model, serviceTier }) {
     dynamicTools: focusDynamicTools,
     threadSource: "pixice"
   });
+  if (!response.thread?.id || !isWithinProject(project, response.thread.cwd)) throw new Error("Provider returned an invalid Focus session.");
   rememberThread(project, response.thread, { loaded: true });
-  const session = database.saveProjectFocusSession({ projectId: project.id, threadId: response.thread.id });
-  focusStore?.updatePolicy(project.id, { coordinatorModel: model || null });
+  const session = publish ? database.saveProjectFocusSession({ projectId: project.id, threadId: response.thread.id }) : null;
+  if (publish) focusStore?.updatePolicy(project.id, { coordinatorModel: model || null });
   const name = `${project.displayName} Focus`;
   database.saveThreadName(response.thread.id, name);
   try {
@@ -1805,7 +1874,7 @@ async function ensureProjectFocusSession({ project, model, serviceTier, replaceE
   const existing = database.getProjectFocusSession(project.id);
   if (existing) {
     await ensureThreadLoaded(project, existing.threadId);
-    const response = await runtime.request("thread/read", { threadId: existing.threadId, includeTurns: true });
+    const response = await readRendererThread(runtime, existing.threadId);
     rememberThread(project, response.thread, { loaded: true });
     const provider = runtime.providerForThread(existing.threadId);
     const requestedProvider = model ? runtime.providerForModel(model) : provider;
@@ -1816,15 +1885,7 @@ async function ensureProjectFocusSession({ project, model, serviceTier, replaceE
       && !activeTurns.has(existing.threadId)
       && !startingTurns.has(existing.threadId);
     if (requestedProvider !== provider && canReplace) {
-      const replacement = await createProjectFocusSession({ project, model, serviceTier });
-      threadSessions.delete(existing.threadId);
-      threadProjects.delete(existing.threadId);
-      turnUsageMetadata.delete(existing.threadId);
-      try {
-        await runtime.request("thread/archive", { threadId: existing.threadId, provider });
-      } catch (error) {
-        codexRuntime.emit("diagnostic", `Unused Focus thread cleanup failed: ${error.message}`);
-      }
+      const replacement = await focusRenewal.rotate(project.id, { expectedGeneration: existing.generation, evidence: { reason: "empty-provider-change", model, serviceTier } });
       return { ...replacement, replacedThreadId: existing.threadId };
     }
     return {
@@ -1832,7 +1893,7 @@ async function ensureProjectFocusSession({ project, model, serviceTier, replaceE
       session: existing,
       memory: pixiceFocusMemory.read(project.id),
       configuration: { provider, model: requestedProvider === provider ? model || null : null },
-      thread: projectRendererThread(withPersistedThreadName(response.thread))
+      thread: focusRendererThread(response.thread)
     };
   }
   return createProjectFocusSession({ project, model, serviceTier });
@@ -1848,9 +1909,33 @@ async function focusModel(model, task = "", { bridgeOnly = true } = {}) {
   return selected;
 }
 
+async function renewFocusAtBoundary(projectId, completedTurnId) {
+  return focusRenewal.withProject(projectId, async () => {
+    const session = database.getProjectFocusSession(projectId);
+    if (!session || session.stopped || activeTurns.has(session.threadId) || startingTurns.has(session.threadId)) return;
+    const lastUsage = focusContextUsage.get(session.threadId);
+    const usage = lastUsage?.turnId === completedTurnId ? lastUsage : null;
+    const measured = Number(usage?.last?.inputTokens) > 0 && Number(usage?.modelContextWindow) > 0;
+    if (!measured && session.sessionTurnCount < 24) return;
+    const transcript = measured ? null : await runtime.request("thread/read", { threadId: session.threadId, includeTurns: true });
+    const evidence = renewalEvidence({ session, usage, transcript: transcript?.thread });
+    if (evidence) {
+      try { await focusRenewal.rotate(projectId, { expectedGeneration: session.generation, evidence }); }
+      catch (error) {
+        if (error.code === "focus_renewal_deferred") return;
+        send("FocusUpdated", { projectId, renewalError: { message: `Focus session renewal failed: ${error.message}` } });
+        codexRuntime.emit("diagnostic", `Focus session renewal failed: ${error.message}`);
+      }
+    }
+  });
+}
+
 async function deliverFocusEvents({ projectId, coordinatorThreadId, events: updates, metadata = {} }) {
   const project = getProject(projectId);
   if (!acceptingWork) throw Object.assign(new Error("The host is stopping; Focus updates remain saved."), { definitelyNotSent: true });
+  const authoritative = database.getProjectFocusSession(projectId);
+  coordinatorThreadId = authoritative?.threadId ?? coordinatorThreadId;
+  if (!coordinatorThreadId || authoritative?.stopped) throw Object.assign(new Error("Focus is stopped; updates remain saved until the next user message."), { definitelyNotSent: true });
   if (startingTurns.has(coordinatorThreadId)) throw Object.assign(new Error("Coordinator is starting a turn; delivery remains pending."), { definitelyNotSent: true });
   const prompt = [
     "[Pixice Focus work updates]",
@@ -1866,7 +1951,11 @@ async function deliverFocusEvents({ projectId, coordinatorThreadId, events: upda
   }
   const previous = turnUsageMetadata.get(coordinatorThreadId) ?? {};
   const model = previous.model ?? focusStore.getPolicy(projectId).coordinatorModel ?? undefined;
-  const response = await startTrackedTurn({ project, threadId: coordinatorThreadId, input, text: prompt, model, effort: previous.effort, permissionMode: FOCUS_PERMISSION_MODE, trackTask: false, commandId: metadata.deliveryId, ...metadata });
+  const response = await focusRenewal.withProject(projectId, async () => {
+    const current = database.getProjectFocusSession(projectId);
+    if (current?.stopped || current && current.threadId !== coordinatorThreadId) throw Object.assign(new Error("Focus changed before update delivery; updates remain pending."), { definitelyNotSent: true });
+    return startTrackedTurn({ project, threadId: coordinatorThreadId, input, text: prompt, model, effort: previous.effort, permissionMode: FOCUS_PERMISSION_MODE, trackTask: false, commandId: metadata.deliveryId, ...metadata });
+  });
   return { accepted: true, turnId: response.turn.id, messageId: metadata.messageId };
 }
 
@@ -2104,28 +2193,38 @@ async function deliverInstrumentAgentEvent(options) {
 }
 async function deliverInstrumentAgentEventLocked({ instrument, event, runtimeOptions }) {
   const project = getProject(instrument.projectId);
+  if (focusStore.getWorkByThread(instrument.threadId)) throw new Error("Redirect this managed worker through Focus.");
   const prompt = instrumentEventPrompt(instrument, event);
-  const activeTurnId = activeTurns.get(instrument.threadId);
-  if (activeTurnId) {
-    await ensureThreadLoaded(project, instrument.threadId);
-    return runtime.request("turn/steer", { threadId: instrument.threadId, expectedTurnId: activeTurnId, input: buildCodexUserInput(prompt, []) });
-  }
-  const defaults = database.getAppSettings();
-  return startTrackedTurnLocked({ project, threadId: instrument.threadId, input: buildCodexUserInput(prompt, []), text: prompt,
-    checkpointInput: { text: prompt, images: [], attachments: [] }, model: runtimeOptions.model ?? defaults.defaultModel ?? null,
-    effort: runtimeOptions.effort ?? defaults.defaultEffort ?? null, serviceTier: runtimeOptions.serviceTier,
-    permissionMode: runtimeOptions.permissionMode ?? defaults.defaultPermissionMode ?? "workspace-write" });
+  return withFocusInputAdmission(project, instrument.threadId, async () => {
+    const activeTurnId = activeTurns.get(instrument.threadId);
+    if (activeTurnId) return steerTrackedTurn(project, instrument.threadId, activeTurnId, buildCodexUserInput(prompt, []), prompt);
+    const defaults = database.getAppSettings();
+    const isFocus = Boolean(authoritativeFocusSession(project, instrument.threadId));
+    return startTrackedTurnLocked({ project, threadId: instrument.threadId, input: buildCodexUserInput(prompt, []), text: prompt, checkpointInput: { text: prompt, images: [], attachments: [] },
+      model: runtimeOptions.model ?? defaults.defaultModel ?? undefined,
+      effort: runtimeOptions.effort ?? defaults.defaultEffort ?? undefined,
+      serviceTier: runtimeOptions.serviceTier,
+      permissionMode: isFocus ? FOCUS_PERMISSION_MODE : runtimeOptions.permissionMode ?? defaults.defaultPermissionMode,
+      trackTask: !isFocus });
+  }, { userInitiated: true });
 }
 
 async function startBridgeParentTurn(parentThreadId, input, metadata = {}) {
   const project = trayProjectForThread(parentThreadId);
   if (!project) throw new Error("The bridge parent is not linked to a Pixice project");
-  const defaults = database.getAppSettings(), previous = turnUsageMetadata.get(parentThreadId) ?? {};
-  const response = await startTrackedTurn({ project, threadId: parentThreadId, input,
-    text: input.filter(part => part.type === "text").map(part => part.text).join("\n"),
-    model: previous.model ?? defaults.defaultModel ?? null, effort: previous.effort ?? defaults.defaultEffort ?? null,
-    serviceTier: previous.serviceTier, permissionMode: previous.permissionMode ?? defaults.defaultPermissionMode ?? "workspace-write", commandId: metadata.deliveryId, ...metadata });
-  return response.turn;
+  if (focusStore.getWorkByThread(parentThreadId)) throw new Error("Continue this managed worker through Focus.");
+  return withFocusInputAdmission(project, parentThreadId, async () => {
+    const defaults = database.getAppSettings();
+    const previous = turnUsageMetadata.get(parentThreadId) ?? {};
+    const isFocus = Boolean(authoritativeFocusSession(project, parentThreadId));
+    const response = await startTrackedTurn({ project, threadId: parentThreadId, input,
+      text: input.filter((part) => part.type === "text").map((part) => part.text).join("\n"),
+      model: previous.model ?? defaults.defaultModel ?? undefined, effort: previous.effort ?? defaults.defaultEffort,
+      serviceTier: previous.serviceTier,
+      permissionMode: isFocus ? FOCUS_PERMISSION_MODE : previous.permissionMode ?? defaults.defaultPermissionMode,
+      trackTask: !isFocus, commandId: metadata.deliveryId, ...metadata });
+    return response.turn;
+  });
 }
 
 function recoverExecutionState() {
@@ -2155,11 +2254,25 @@ function recoverExecutionState() {
   return recoveryPromise;
 }
 
+// Active Claude queries must not be resumed or disposed to refresh their role.
+// The stable role is refreshed at start; only mutable data travels with a steer.
+async function steerTrackedTurn(project, threadId, turnId, input, text) {
+  const session = authoritativeFocusSession(project, threadId);
+  if (!acceptingWork || startingTurns.has(threadId) || activeTurns.get(threadId) !== turnId) throw new Error("This turn is no longer active. Your follow-up was not submitted.");
+  if (session?.stopped) throw new Error("Focus is stopped. Your follow-up was not submitted.");
+  // A live turn is already loaded. Calling ensure/resume here can dispose it.
+  taskResults.stopReplay(threadId, true);
+  const response = await runtime.request("turn/steer", { threadId, expectedTurnId: turnId,
+    input: session ? focusInput(session, input, text) : input });
+  if (session) database.incrementProjectFocusSessionTurn(project.id, threadId);
+  return response;
+}
+
 async function steerBridgeParentTurn(parentThreadId, turnId, input, metadata = {}) {
   return threadHistory.withThreadLock(parentThreadId, async () => {
     const project = trayProjectForThread(parentThreadId);
     if (!project) throw new Error("The bridge parent is not linked to a Pixice project");
-    await ensureThreadLoaded(project, parentThreadId);
+    authoritativeFocusSession(project, parentThreadId);
     const commandId = metadata.deliveryId ?? randomUUID();
     let receipt = executionJournal.accept({ commandId, threadId: parentThreadId, kind: "turn-steer", turnId, metadata: { projectId: project.id, provider: runtime.providerForThread(parentThreadId), ...metadata } });
     if (receipt.duplicate && receipt.status === "failed") {
@@ -2172,7 +2285,8 @@ async function steerBridgeParentTurn(parentThreadId, turnId, input, metadata = {
     }
     if (!executionJournal.beforeDispatch(commandId)) throw Object.assign(new Error("This delivery could not claim its execution receipt."), { executionDisposition: "rejected", definitelyNotSent: true });
     try {
-      const response = await runtime.request("turn/steer", { threadId: parentThreadId, expectedTurnId: turnId, input });
+      const text = input.filter(part => part.type === "text").map(part => part.text).join("\n");
+      const response = await withFocusInputAdmission(project, parentThreadId, () => steerTrackedTurn(project, parentThreadId, turnId, input, text));
       executionJournal.acknowledge(commandId, { turnId });
       return response;
     } catch (error) {
@@ -2184,7 +2298,99 @@ async function steerBridgeParentTurn(parentThreadId, turnId, input, metadata = {
   });
 }
 
+function assertLocalIntegration(context) {
+  if (context?.remote) throw new Error("Manage Voice, Cloud, and ChatGPT app sign-in on the host desktop.");
+}
+function codexBusy() {
+  return [...activeTurns.keys(), ...startingTurns].some((id) => runtime.providerForThread(id) === "codex") || Boolean(codexVoice?.session) || Boolean(voiceApplication?.bridge.blocksRollover());
+}
+async function switchChatGPTProfile(profileId) {
+  if (authTransition || codexBusy()) throw new Error("Finish active Codex work and end Voice before changing the ChatGPT account source.");
+  authTransition = true;
+  const previous = database.getAppSettings().chatGPTProfileId ?? null;
+  try {
+    if (profileId) await chatgptAuth.access(profileId);
+    if (profileId && !previous) {
+      const currentConfig = await codexRuntime.request("config/read", { includeLayers: false });
+      database.saveAppSettings({ codexOriginalModelProvider: currentConfig.config?.model_provider ?? "openai" });
+    }
+    await codexRuntime.stop();
+    database.saveAppSettings({ chatGPTProfileId: profileId });
+    if (!await codexProvider.start()) throw new Error("Codex could not start with this account.");
+  } catch (error) {
+    database.saveAppSettings({ chatGPTProfileId: previous });
+    await codexRuntime.stop();
+    await codexProvider.start();
+    throw error;
+  } finally {
+    authTransition = false;
+    void focusSupervisor?.recover().catch((error) => codexRuntime.emit("diagnostic", `Focus account recovery: ${error.message}`));
+  }
+  send("ChatGPTState", { ...await chatgptAuth.state(), selectedProfileId: profileId });
+  return { ...await chatgptAuth.state(), selectedProfileId: profileId };
+}
 function registerHandlers() {
+  handlers.handle("chatgpt:state", async (context) => {
+    assertLocalIntegration(context);
+    return { ...await chatgptAuth.state(), selectedProfileId: database.getAppSettings().chatGPTProfileId ?? null };
+  });
+  handlers.handle("chatgpt:sign-in", (context, payload) => {
+    assertLocalIntegration(context);
+    const value = z.object({ profileId: z.string().uuid().optional() }).strict().parse(payload ?? {});
+    return chatgptAuth.begin(value);
+  });
+  handlers.handle("chatgpt:cancel", (context) => { assertLocalIntegration(context); return chatgptAuth.cancel(); });
+  handlers.handle("chatgpt:select", (context, payload) => {
+    assertLocalIntegration(context);
+    const { profileId } = z.object({ profileId: z.string().uuid().nullable() }).strict().parse(payload);
+    return switchChatGPTProfile(profileId);
+  });
+  handlers.handle("chatgpt:sign-out", async (context, payload) => {
+    assertLocalIntegration(context);
+    const { profileId } = z.object({ profileId: z.string().uuid() }).strict().parse(payload);
+    if (database.getAppSettings().chatGPTProfileId === profileId) await switchChatGPTProfile(null);
+    return { ...await chatgptAuth.signOut(profileId), selectedProfileId: database.getAppSettings().chatGPTProfileId ?? null };
+  });
+  handlers.handle("chatgpt:manage", (context) => { assertLocalIntegration(context); return platform.openExternal("https://chatgpt.com/settings/usage"); });
+  handlers.handle("voice:state", (context) => { assertLocalIntegration(context); return codexVoice.state(); });
+  handlers.handle("voice:context", (context, payload) => {
+    assertLocalIntegration(context);
+    const { projectId, threadId } = threadPayload.strict().parse(payload);
+    const project = getProject(projectId);
+    const owner = authoritativeThreadProjectId(threadId);
+    if (owner && owner !== projectId) throw new Error("Voice thread belongs to another project.");
+    return { projectName: project.name, threadName: database.getThreadName(threadId) };
+  });
+  handlers.handle("voice:start", (context, payload) => {
+    if (context?.voiceOwner || payload?.sessionHandle) return nativeVoiceHandlers.get("voice:start")(context, payload);
+    assertLocalIntegration(context);
+    if (voiceApplication?.bridge.blocksRollover(payload)) throw new Error("End the current native Voice session first.");
+    const value = threadPayload.extend({ sdp: z.string().min(1).max(128_000), voice: z.enum(["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]).optional(), model: z.string().max(128).optional(), effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(), permissionMode: permissionModeSchema.default("workspace-write") }).strict().parse(payload);
+    return focusRenewal.withProject(value.projectId, () => codexVoice.start(value));
+  });
+  handlers.handle("voice:stop", (context, payload) => {
+    if (context?.voiceOwner || payload?.sessionHandle) return nativeVoiceHandlers.get("voice:stop")(context, payload);
+    assertLocalIntegration(context);
+    return codexVoice.stop(z.object({ sessionId: z.string().uuid() }).strict().parse(payload));
+  });
+  handlers.handle("cloud:state", (context, payload) => { assertLocalIntegration(context); const { projectId } = idPayload.strict().parse(payload); getProject(projectId); return codexCloud.state(projectId); });
+  handlers.handle("cloud:environment:save", (context, payload) => { assertLocalIntegration(context); const { projectId, environment } = idPayload.extend({ environment: cloudEnvironmentSchema }).strict().parse(payload); getProject(projectId); return codexCloud.saveEnvironment(projectId, environment); });
+  handlers.handle("cloud:environment:remove", (context, payload) => { assertLocalIntegration(context); const { projectId, environmentId } = idPayload.extend({ environmentId: z.string() }).strict().parse(payload); getProject(projectId); return codexCloud.removeEnvironment(projectId, environmentId); });
+  handlers.handle("cloud:list", (context, payload) => { assertLocalIntegration(context); const { projectId, ...value } = idPayload.merge(cloudListSchema).strict().parse(payload); return codexCloud.list(value, projectPrimaryRoot(getProject(projectId))); });
+  handlers.handle("cloud:submit", (context, payload) => { assertLocalIntegration(context); const { projectId, ...value } = idPayload.merge(cloudSubmitSchema).strict().parse(payload); return codexCloud.submit(projectId, value, projectPrimaryRoot(getProject(projectId))); });
+  for (const operation of ["status", "diff"]) handlers.handle(`cloud:${operation}`, (context, payload) => { assertLocalIntegration(context); const { projectId, ...value } = idPayload.merge(cloudTaskSchema).strict().parse(payload); const cwd = projectPrimaryRoot(getProject(projectId)); return operation === "diff" ? codexCloud.review(projectId, value, cwd) : codexCloud.inspect(operation, value, cwd); });
+  handlers.handle("cloud:apply", async (context, payload) => {
+    assertLocalIntegration(context);
+    const { projectId, taskId, reviewId, expectedDiffHash } = idPayload.extend({ taskId: cloudTaskSchema.shape.taskId, reviewId: z.string().uuid(), expectedDiffHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(payload);
+    const cwd = projectPrimaryRoot(getProject(projectId));
+    if (cloudApplyingProjects.has(projectId)) throw new Error("A Cloud patch is already being applied to this project.");
+    if ([...activeTurns.keys(), ...startingTurns].some((id) => threadProjects.get(id) === projectId) || codexVoice?.session?.projectId === projectId) throw new Error("Finish this project's local work before applying a Cloud patch.");
+    cloudApplyingProjects.add(projectId);
+    try {
+      return await codexCloud.apply(projectId, { taskId, reviewId, expectedDiffHash }, cwd);
+    } finally { cloudApplyingProjects.delete(projectId); }
+  });
+  handlers.handle("cloud:open", (context) => { assertLocalIntegration(context); return platform.openExternal("https://chatgpt.com/codex"); });
   handlers.handle("tray:state", () => currentTrayState());
   handlers.handle("tray:refresh", () => refreshTrayState());
   handlers.handle("tray:thread", (_event, payload) => {
@@ -2199,9 +2405,7 @@ function registerHandlers() {
     if (!turnId) throw new Error("This turn finished before the follow-up could be queued.");
     const project = trayProjectForThread(threadId);
     if (!project) throw new Error("This thread is not linked to a Pixice project");
-    await ensureThreadLoaded(project, threadId);
-    taskResults.stopReplay(threadId, true);
-    await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(text, []) });
+    await withFocusInputAdmission(project, threadId, () => steerTrackedTurn(project, threadId, turnId, buildCodexUserInput(text, []), text));
     return { queued: true, threadId, turnId };
   }));
   handlers.handle("app:bootstrap", async (context = {}, _payload) => {
@@ -2265,22 +2469,22 @@ function registerHandlers() {
   }));
   handlers.handle("providers:login", (_event, payload) => {
     const { provider } = z.object({ provider: z.string().trim().min(1).max(64) }).parse(payload);
-    return startProviderLogin(provider);
+    return withVoiceProviderChange(provider, () => startProviderLogin(provider));
   });
   const providerActionSchema = z.object({ provider: z.enum(["codex", "claude"]) }).strict();
   handlers.handle("providers:install", (_event, payload) => {
     const { provider } = providerActionSchema.parse(payload);
-    return runtime.installProvider(provider);
+    return withVoiceProviderChange(provider, () => runtime.installProvider(provider));
   });
   handlers.handle("providers:locate", (_event, payload) => {
     const { provider, executablePath } = providerActionSchema.extend({
       executablePath: z.string().trim().min(1).max(4_096).optional()
     }).parse(payload);
-    return locateProviderExecutable(provider, executablePath);
+    return withVoiceProviderChange(provider, () => locateProviderExecutable(provider, executablePath));
   });
   handlers.handle("providers:repair", (_event, payload) => {
     const { provider } = providerActionSchema.parse(payload);
-    return runtime.repairProvider(provider);
+    return withVoiceProviderChange(provider, () => runtime.repairProvider(provider));
   });
   handlers.handle("providers:check-updates", (_event, payload) => {
     const { provider } = z.object({ provider: z.enum(["codex", "claude"]).optional() }).strict().parse(payload ?? {});
@@ -2288,11 +2492,11 @@ function registerHandlers() {
   });
   handlers.handle("providers:update", (_event, payload) => {
     const { provider } = providerActionSchema.parse(payload);
-    return runtime.updateProvider(provider);
+    return withVoiceProviderChange(provider, () => runtime.updateProvider(provider));
   });
   handlers.handle("providers:logout", (_event, payload) => {
     const { provider } = providerActionSchema.parse(payload);
-    return runtime.logoutProvider(provider);
+    return withVoiceProviderChange(provider, () => runtime.logoutProvider(provider));
   });
   handlers.handle("github:status", () => githubCli.status());
   handlers.handle("github:login", () => githubCli.login());
@@ -2520,6 +2724,7 @@ function registerHandlers() {
     const { projectId } = idPayload.parse(payload);
     const project = getProject(projectId);
     projectDeletionTombstones.set(projectId, { projectId, expiresAt: Date.now() + 60 * 60_000 });
+    await voiceApplication?.stopProject(projectId, 'project_deleted');
     const integration = pixiceBridge.workflowIntegration ?? await pixiceBridge.workflowReady;
     integration.workflows.deleteProject(projectId);
     integration.credentialStore.deleteProject(projectId);
@@ -2530,6 +2735,8 @@ function registerHandlers() {
       messageQueue.clear(projectId, binding.threadId);
       await htmlReplies.deleteThread(binding.threadId);
     }
+    for (const [requestId, draft] of widgetDrafts) if (draft.projectId === projectId) { draft.controller.abort(); widgetDrafts.delete(requestId); }
+    widgetStore.deleteProject(projectId);
     database.deleteProject(projectId);
     for (const [threadId, knownProjectId] of threadProjects) {
       if (knownProjectId === projectId) threadProjects.delete(threadId);
@@ -2553,6 +2760,28 @@ function registerHandlers() {
     });
     return projectWithRepository(project);
   });
+
+  handlers.handle("widgets:list", (_event, payload) => { const { projectId } = idPayload.parse(payload); getProject(projectId); return { data: widgetStore.list(projectId) }; });
+  handlers.handle("widgets:draft", async (_event, payload) => {
+    const value = z.object({ projectId: z.string().min(1), text: z.string().min(3).max(4000), requestId: z.string().uuid().optional(), context: z.object({ projectName: z.string().max(160).optional() }).strict().optional() }).strict().parse(payload);
+    const project = getProject(value.projectId);
+    const controller = new AbortController();
+    if (value.requestId) {
+      if (widgetDrafts.has(value.requestId)) throw new Error("Widget draft request is already active");
+      widgetDrafts.set(value.requestId, { projectId: value.projectId, controller });
+    }
+    try { return await draftFocusWidget({ projectId: value.projectId, text: value.text, projectName: project.displayName }, { resolveKey: () => widgetCredentials.resolve(), signal: controller.signal }); }
+    finally { if (value.requestId) widgetDrafts.delete(value.requestId); }
+  });
+  handlers.handle("widgets:cancel-draft", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), requestId: z.string().uuid() }).strict().parse(payload); getProject(value.projectId); const draft = widgetDrafts.get(value.requestId); if (draft?.projectId === value.projectId) draft.controller.abort(); return { cancelled: Boolean(draft && draft.projectId === value.projectId) }; });
+  handlers.handle("widgets:commit", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), spec: z.union([widgetSpecSchema, widgetV2Schema]) }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.commit(value.projectId, value.spec); send("WidgetUpdated", { projectId: value.projectId, widgetId: widget.id, action: "committed" }); return widget; });
+  handlers.handle("widgets:update", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), widgetId: z.string().uuid(), spec: z.union([widgetSpecSchema, widgetV2Schema]), expectedRevision: z.number().int().positive() }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.update(value.projectId, value.widgetId, value.spec, value.expectedRevision); send("WidgetUpdated", { projectId: value.projectId, widgetId: widget.id, action: "updated" }); return widget; });
+  handlers.handle("widgets:update-user-state", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), widgetId: z.string().uuid(), userState: z.record(z.union([z.string(), z.number().finite(), z.boolean()])), expectedRevision: z.number().int().positive() }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.updateUserState(value.projectId, value.widgetId, value.userState, value.expectedRevision); send("WidgetUpdated", { projectId: value.projectId, widgetId: widget.id, action: "updated" }); return widget; });
+  handlers.handle("widgets:read-source", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), widgetId: z.string().uuid(), source: z.string().min(1).max(80) }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.list(value.projectId).find((item) => item.id === value.widgetId); if (!widget || widget.spec.version !== 2) throw new Error("Widget source not found in this project"); const declaration = widget.spec.sources[value.source]; if (!declaration) throw new Error("Widget source is not declared"); return { data: refreshWidgetSource(declaration, { projectId: value.projectId, listBoardTasks: (projectId) => database.listBoardTasks(projectId) }) }; });
+  handlers.handle("widgets:delete", (_event, payload) => { const value = z.object({ projectId: z.string().min(1), widgetId: z.string().uuid() }).strict().parse(payload); getProject(value.projectId); const widget = widgetStore.delete(value.projectId, value.widgetId); send("WidgetUpdated", { projectId: value.projectId, widgetId: widget.id, action: "deleted" }); return widget; });
+  handlers.handle("widgets:key-status", () => widgetCredentials.status());
+  handlers.handle("widgets:key-save", async (_event, payload) => widgetCredentials.save(z.object({ key: z.string().min(1).max(4096) }).strict().parse(payload).key));
+  handlers.handle("widgets:key-remove", () => widgetCredentials.remove());
 
   handlers.handle("board:list", (_event, payload) => {
     const { projectId } = idPayload.parse(payload);
@@ -2844,13 +3073,23 @@ function registerHandlers() {
     if (pending) return pending;
     if (value.replaceEmpty && focusSessionTransitions.has(project.id)) throw new Error("The Focus coordinator is already switching providers.");
     if (value.replaceEmpty) focusSessionTransitions.add(project.id);
-    const promise = ensureProjectFocusSession({ project, ...value })
+    const promise = focusRenewal.withProject(project.id, () => ensureProjectFocusSession({ project, ...value }))
       .finally(() => {
         if (focusSessionEnsures.get(project.id) === promise) focusSessionEnsures.delete(project.id);
         if (value.replaceEmpty) focusSessionTransitions.delete(project.id);
       });
     focusSessionEnsures.set(project.id, promise);
     return promise;
+  });
+  handlers.handle("focus:refresh", async (_event, payload) => {
+    const value = idPayload.extend({ expectedGeneration: z.number().int().positive() }).strict().parse(payload);
+    getProject(value.projectId);
+    return focusRenewal.refresh(value.projectId, value);
+  });
+  handlers.handle("focus:history", (_event, payload) => {
+    const { projectId } = idPayload.strict().parse(payload);
+    getProject(projectId);
+    return { generations: database.listProjectFocusGenerations(projectId), session: database.getProjectFocusSession(projectId) };
   });
   handlers.handle("focus:memory", (_event, payload) => {
     const { projectId } = idPayload.strict().parse(payload);
@@ -2874,7 +3113,7 @@ function registerHandlers() {
   handlers.handle("focus:state", (_event, payload) => {
     const { projectId } = idPayload.strict().parse(payload);
     getProject(projectId);
-    return focusSupervisor.state(projectId);
+    return { ...focusSupervisor.state(projectId), session: database.getProjectFocusSession(projectId) };
   });
   handlers.handle("focus:work:control", (_event, payload) => {
     const value = idPayload.extend({ workId: z.string().min(1), action: z.enum(["pause", "resume", "cancel"]) }).strict().parse(payload);
@@ -2882,7 +3121,7 @@ function registerHandlers() {
     return focusSupervisor.control(value.projectId, value.workId, value);
   });
   handlers.handle("focus:work:follow-up", (_event, payload) => {
-    const value = idPayload.extend({ workId: z.string().min(1), prompt: z.string().trim().min(1).max(100_000) }).strict().parse(payload);
+    const value = focusFollowUpPayload.parse(payload);
     getProject(value.projectId);
     return focusSupervisor.followUp(value.projectId, value.workId, value);
   });
@@ -2898,7 +3137,6 @@ function registerHandlers() {
       coordinatorModel: z.string().min(1).max(160).nullable().optional(),
       workerModel: z.string().min(1).max(160).nullable().optional(),
       reviewModel: z.string().min(1).max(160).nullable().optional(),
-      maxWorkers: z.number().int().min(1).max(8).optional(),
       permissionMode: permissionModeSchema.optional(), executionHost: z.literal("current").optional()
     }).strict() }).strict().parse(payload);
     getProject(value.projectId);
@@ -2934,16 +3172,17 @@ function registerHandlers() {
       rememberThread(project, thread);
       const plan = threadPlans.get(thread.id) ?? database.getThreadPlan(thread.id);
       return {
-        ...reconcileThreadActivity(withPersistedThreadName(thread), activeTurns.get(thread.id)),
+        ...reconcileThreadActivity(focusRendererThread(thread), activeTurns.get(thread.id)),
         planProgress: summarizeThreadPlan(plan)
       };
     }).filter(Boolean);
     return { ...response, data };
   });
   handlers.handle("threads:read", async (context = {}, payload) => {
-    const { projectId, threadId } = threadPayload.parse(payload);
+    const { projectId, threadId, historyCursor } = threadPayload.extend({ historyCursor: z.string().min(1).max(4096).optional() }).parse(payload);
     const project = getProject(projectId);
-    const response = await runtime.request("thread/read", { threadId, includeTurns: true });
+    if (database.getFocusForkCandidate(threadId)) throw new Error("This Focus fork candidate is quarantined. Its provider session is retained for diagnosis.");
+    const response = await readRendererThread(runtime, threadId, { cursor: historyCursor });
     if (!isWithinProject(project, response.thread.cwd, threadId)) throw new Error("Thread is outside the selected project");
     const ownerProjectId = authoritativeThreadProjectId(threadId, response.thread.cwd);
     if (context.remote && context.access?.role === "observer" && ownerProjectId !== project.id) throw new Error("Thread is outside the selected project");
@@ -2951,7 +3190,7 @@ function registerHandlers() {
       await taskResults.observeThread(project, response.thread);
       rememberThread(project, response.thread);
     }
-    const thread = { ...projectRendererThread(withPersistedThreadName(response.thread)), workspace: taskWorkspaces.getSync(threadId), checkpoints: await threadHistory.list(threadId, response.thread), htmlReplySourceThreadIds: [...new Set((await htmlReplies.list({ projectId, threadId })).flatMap(reply => reply.copiedFromThreadIds ?? []))] };
+    const thread = { ...focusRendererThread(response.thread), workspace: taskWorkspaces.getSync(threadId), checkpoints: await threadHistory.list(threadId, response.thread), htmlReplySourceThreadIds: [...new Set((await htmlReplies.list({ projectId, threadId })).flatMap(reply => reply.copiedFromThreadIds ?? []))] };
     return { ...response, thread, plan: threadPlans.get(threadId) ?? database.getThreadPlan(threadId) };
   });
   handlers.handle("task-workspaces:read", async (_event, payload) => {
@@ -3038,6 +3277,7 @@ function registerHandlers() {
       parentThreadId: z.string().min(1).optional(),
       workspace: z.object({ mode: z.enum(["project", "worktree"]), startingState: z.discriminatedUnion("type", [z.object({ type: z.literal("working-tree") }).strict(), z.object({ type: z.literal("ref"), ref: z.string().trim().min(1).max(1000) }).strict()]).optional(), branch: z.string().trim().max(1000).optional() }).strict().optional()
     }).parse(payload);
+    if (authTransition && runtime.providerForModel(value.model) === "codex") throw new Error("The Codex account is changing. Retry in a moment.");
     const project = getProject(value.projectId);
     const focusContext = value.parentThreadId ? projectFocusContextForThread(value.parentThreadId) : null;
     if (focusContext && focusContext.projectId !== project.id) throw new Error("Focus parent belongs to another project");
@@ -3082,41 +3322,48 @@ function registerHandlers() {
     const project = getProject(value.projectId);
     await ensureThreadLoaded(project, value.threadId);
     const sourceResponse = await runtime.request("thread/read", { threadId: value.threadId, includeTurns: true });
-    if (!isWithinProject(project, sourceResponse.thread?.cwd)) throw new Error("Thread is outside the selected project");
+    if (sourceResponse.thread?.id !== value.threadId || !isWithinProject(project, sourceResponse.thread?.cwd)) throw new Error("Thread is outside the selected project");
     const sourceThread = withPersistedThreadName(sourceResponse.thread);
     validatedForkAnswer(sourceThread, lastTurnId, lastItemId);
 
-    const response = await runtime.request("thread/fork", {
-      threadId: value.threadId,
-      lastTurnId,
-      lastItemId,
-      deferGoalContinuation: true
-    });
-    if (!response.thread?.id || !response.thread.cwd) throw new Error("Runtime returned an invalid forked thread");
-    if (!isWithinProject(project, response.thread.cwd)) throw new Error("Forked thread is outside the selected project");
+    const copyPlan = database.focusForkCopyPlan(project.id, sourceThread, lastTurnId, lastItemId);
+    if (copyPlan?.copies.length) runtime.assertProtectedFocusForkSupported(sourceThread.id);
+    const publishFork = async (request) => {
+      const response = await request("thread/fork", {
+        threadId: value.threadId,
+        lastTurnId,
+        lastItemId,
+        deferGoalContinuation: true
+      });
+      if (!response.thread?.id || !response.thread.cwd) throw new Error("Runtime returned an invalid forked thread");
+      if (!isWithinProject(project, response.thread.cwd)) throw new Error("Forked thread is outside the selected project");
+      const forkProjectId = authoritativeThreadProjectId(response.thread.id, response.thread.cwd);
+      if (forkProjectId && forkProjectId !== project.id) throw new Error("Forked thread belongs to another project.");
+      let thread = independentForkThread(response.thread, sourceThread.id);
+      database.inheritFocusForkContext(copyPlan, thread);
+      rememberThread(project, thread, { loaded: true });
+      const binding = database.getThreadProviderBinding(thread.id);
+      if (binding) database.saveThreadProviderBinding({ ...binding, forkedFromId: sourceThread.id });
 
-    let thread = independentForkThread(response.thread, sourceThread.id);
-    await htmlReplies.copyThread({ projectId: project.id, sourceThreadId: sourceThread.id, threadId: thread.id });
-    rememberThread(project, thread, { loaded: true });
-    const binding = database.getThreadProviderBinding(thread.id);
-    if (binding) database.saveThreadProviderBinding({ ...binding, forkedFromId: sourceThread.id });
-
-    const sourceName = stripPreviewContextHint(sourceThread.name ?? sourceThread.preview ?? "Untitled task").trim() || "Untitled task";
-    const providerName = String(thread.name ?? "").trim();
-    const providerPreservedForkName = providerName && providerName !== sourceName;
-    const name = providerPreservedForkName ? providerName : `${sourceName} (fork)`;
-    database.saveThreadName(thread.id, name);
-    thread = { ...thread, name };
-    const providerSnapshot = database.getProviderThreadSnapshot?.(thread.id);
-    database.saveProviderThreadSnapshot?.(thread.id, { ...(providerSnapshot ?? {}), ...thread });
-    if (!providerPreservedForkName) {
-      try {
-        await runtime.request("thread/name/set", { threadId: thread.id, name });
-      } catch (error) {
-        codexRuntime.emit("diagnostic", `Fork name could not be saved to the provider: ${error.message}`);
+      await htmlReplies.copyThread({ projectId: project.id, sourceThreadId: sourceThread.id, threadId: thread.id });
+      const sourceName = stripPreviewContextHint(sourceThread.name ?? sourceThread.preview ?? "Untitled task").trim() || "Untitled task";
+      const providerName = String(thread.name ?? "").trim();
+      const providerPreservedForkName = providerName && providerName !== sourceName;
+      const name = providerPreservedForkName ? providerName : `${sourceName} (fork)`;
+      database.saveThreadName(thread.id, name);
+      thread = { ...thread, name };
+      const providerSnapshot = database.getProviderThreadSnapshot?.(thread.id);
+      database.saveProviderThreadSnapshot?.(thread.id, { ...(providerSnapshot ?? {}), ...thread });
+      if (!providerPreservedForkName) {
+        try {
+          await request("thread/name/set", { threadId: thread.id, name });
+        } catch (error) {
+          codexRuntime.emit("diagnostic", `Fork name could not be saved to the provider: ${error.message}`);
+        }
       }
-    }
-    return { ...response, thread: { ...projectRendererThread(withPersistedThreadName(thread)), htmlReplySourceThreadIds: [...new Set((await htmlReplies.list({ projectId: project.id, threadId: thread.id })).flatMap(reply => reply.copiedFromThreadIds ?? []))] } };
+      return { ...response, thread: { ...projectRendererThread(withPersistedThreadName(thread), focusContextProjection), htmlReplySourceThreadIds: [...new Set((await htmlReplies.list({ projectId: project.id, threadId: thread.id })).flatMap(reply => reply.copiedFromThreadIds ?? []))] } };
+    };
+    return publishFork((method, params) => runtime.request(method, params));
   });
   handlers.handle("threads:archive", async (_event, payload) => threadHistory.withThreadLock(payload?.threadId, async () => {
     const { projectId, threadId } = threadPayload.parse(payload);
@@ -3136,6 +3383,7 @@ function registerHandlers() {
     threadProjects.delete(threadId);
     composerThreadReferences.delete(threadId);
     turnUsageMetadata.delete(threadId);
+    focusCurrentUserInputs.delete(threadId);
     await browserWorkspace.destroyWorkspace(threadId);
     previewContextRegistry.clear(threadId);
     await iosRuntimeService.stop(threadId, "Thread archived");
@@ -3156,6 +3404,8 @@ function registerHandlers() {
     }).superRefine(requirePromptInput).parse(payload);
     const project = getProject(value.projectId);
     if (focusStore.getWorkByThread(value.threadId)) throw new Error("Continue this managed worker through Focus's Redirect control so its work stays supervised.");
+    const originProject = database.getFocusProjectForThread(value.threadId);
+    if (originProject && database.getProjectFocusSession(originProject)?.threadId !== value.threadId) throw new Error("Focus session changed. Your message was not submitted. Reload the authoritative coordinator.");
     const focusSession = database.getProjectFocusSessionByThread(value.threadId);
     const isFocus = focusSession?.projectId === project.id;
     if (isFocus && focusSessionTransitions.has(project.id)) {
@@ -3166,15 +3416,26 @@ function registerHandlers() {
     if (isFocus && (focusSessionTransitions.has(project.id) || database.getProjectFocusSession(project.id)?.threadId !== value.threadId)) {
       throw new Error("The Focus coordinator changed while preparing your message. Your message was not submitted; retry now.");
     }
-    const response = await startTrackedTurn({
-      commandId: value.commandId,
-      project, threadId: value.threadId, input: buildCodexUserInput(prompt.text, prompt.images),
-      text: value.text, model: value.model, effort: value.effort, serviceTier: value.serviceTier,
-      checkpointInput: { text: value.text, images: prompt.images, attachments: prompt.files, contextRecords: value.contextRecords },
-      permissionMode: focusStore.getWorkByThread(value.threadId)?.permissionMode ?? (focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode), trackTask: !isFocus
-    });
+    const admit = () => {
+      if (isFocus && database.getProjectFocusSession(project.id)?.threadId !== value.threadId) throw new Error("Focus session changed. Your message was not submitted.");
+      return startTrackedTurn({
+        commandId: value.commandId, checkpointInput: { text: value.text, images: prompt.images, attachments: prompt.files, contextRecords: value.contextRecords },
+        project, threadId: value.threadId, input: buildCodexUserInput(prompt.text, prompt.images),
+        text: value.text, model: value.model, effort: value.effort, serviceTier: value.serviceTier,
+        permissionMode: focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode, trackTask: !isFocus
+      });
+    };
+    const response = await withFocusInputAdmission(project, value.threadId, async () => {
+      const result = await admit();
+      if (isFocus) database.incrementProjectFocusTurn(project.id, value.threadId, value.text);
+      return result;
+    }, { userInitiated: true });
     if (isFocus) {
-      database.incrementProjectFocusTurn(project.id, value.threadId);
+      if (activeTurns.get(value.threadId) === response.turn.id) focusCurrentUserInputs.set(value.threadId, {
+        turnId: response.turn.id,
+        messageId: response.turn.items?.find((item) => item.type === "userMessage")?.id ?? null,
+        images: prompt.images
+      });
     }
     if (pendingTaskNames.delete(value.threadId)) {
       const attachmentCount = value.images.length + value.attachments.length + value.attachmentIds.length;
@@ -3265,13 +3526,14 @@ function registerHandlers() {
       if (value.images.length || value.attachments.length || value.attachmentIds.length) throw new Error("Send attachments to the Focus coordinator so it can include them in the worker's brief.");
       return focusSupervisor.followUp(project.id, managed.id, { prompt: value.text });
     }
-    await ensureThreadLoaded(project, value.threadId);
+    authoritativeFocusSession(project, value.threadId);
     const prompt = await preparePromptInput(value, project, value.threadId, context);
     taskResults.stopReplay(value.threadId, true);
     if (activeTurns.get(value.threadId) !== value.turnId) throw new Error("That turn is no longer active.");
     const response = await withComposerThreadReferences(value.threadId, value.turnId, value.text, value.contextRecords, () => steerBridgeParentTurn(value.threadId, value.turnId, buildCodexUserInput(prompt.text, prompt.images)));
     if (database.getProjectFocusSessionByThread(value.threadId)?.projectId === project.id) {
-      database.incrementProjectFocusTurn(project.id, value.threadId);
+      if (activeTurns.get(value.threadId) === value.turnId) focusCurrentUserInputs.set(value.threadId, { turnId: value.turnId, messageId: null, images: prompt.images });
+      database.incrementProjectFocusTurn(project.id, value.threadId, value.text);
     }
     return response;
   });
@@ -3290,6 +3552,7 @@ function registerHandlers() {
     messageQueue.cancelSource(value.projectId, value.threadId, "watch");
     pullRequests?.stopThread(value.threadId, "Task stopped");
     taskResults.stopReplay(value.threadId);
+    if (database.getProjectFocusSessionByThread(value.threadId)) database.setProjectFocusStopped(value.projectId, true);
     const response = await runtime.request("turn/interrupt", { threadId: value.threadId, turnId: value.turnId });
     updateTrayMenu();
     return { ...response, stopping: activeTurns.get(value.threadId) === value.turnId };
@@ -3653,10 +3916,35 @@ function registerHandlers() {
   const codexRuntimeLifecycle = new ProviderRuntimeLifecycle({ provider: "codex", database });
   codexRuntime = new CodexRuntime({
     executablePath: null,
-    clientVersion: version
+    clientVersion: version,
+    authentication: async () => { const profileId = database.getAppSettings().chatGPTProfileId; return profileId ? chatgptAuth.access(profileId) : null; },
+    canRestartAuthentication: () => ![...activeTurns.keys()].some((id) => runtime.providerForThread(id) === "codex") && !codexVoice?.session && !voiceApplication?.bridge.blocksRollover()
   });
   runtime = new ProviderRegistry({ database });
-  codexProvider = runtime.register(providerFactories.codex?.({ database, codexRuntime }) ?? new CodexProvider(codexRuntime, { runtimeLifecycle: codexRuntimeLifecycle }));
+  codexProvider = runtime.register(providerFactories.codex?.({ database, codexRuntime }) ?? new CodexProvider(codexRuntime, { runtimeLifecycle: codexRuntimeLifecycle, chatgptAccount: async () => {
+    const profileId = database.getAppSettings().chatGPTProfileId;
+    return profileId ? (await chatgptAuth.state()).profiles.find((p) => p.id === profileId) ?? { planEnabled: false } : null;
+  }, originalModelProvider: () => database.getAppSettings().codexOriginalModelProvider ?? null }));
+  codexVoice = new CodexVoice({ runtime: codexRuntime, authSource: () => database.getAppSettings().chatGPTProfileId, onEvent: (payload) => send("VoiceEvent", payload), prepareThread: async (value) => {
+    if (!acceptingWork || authTransition) throw new Error("The Codex runtime is changing. Retry in a moment.");
+    const project = getProject(value.projectId);
+    if (voiceApplication?.bridge.blocksRollover()) throw new Error("End the current native Voice session first.");
+    authoritativeFocusSession(project, value.threadId);
+    if (focusStore.getWorkByThread(value.threadId)) throw new Error("Use Voice with the Focus coordinator, not a managed worker.");
+    if (cloudApplyingProjects.has(project.id)) throw new Error("Wait for the Cloud patch to finish before starting Voice.");
+    if (runtime.providerForThread(value.threadId) !== "codex") throw new Error("Conversational Voice currently needs a Codex thread.");
+    if (activeTurns.has(value.threadId) || startingTurns.has(value.threadId)) throw new Error("Wait for this turn to finish before starting Voice.");
+    if (focusSessionTransitions.has(project.id)) throw new Error("The Focus coordinator is changing. Retry in a moment.");
+    runtime.assertModelForThread(value.threadId, value.model);
+    const cwd = await ensureThreadLoaded(project, value.threadId);
+    const mode = database.getProjectFocusSessionByThread(value.threadId)?.projectId === project.id ? FOCUS_PERMISSION_MODE : value.permissionMode;
+    const permissions = permissionSettings(mode, project);
+    await runtime.request("thread/settings/update", { threadId: value.threadId, cwd, approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer, sandboxPolicy: permissions.sandboxPolicy, ...(value.model ? { model: value.model } : {}), ...(value.effort ? { effort: value.effort } : {}) });
+    turnUsageMetadata.set(value.threadId, { turnId: null, model: value.model ?? null, effort: value.effort ?? null, permissionMode: mode, provider: "codex" });
+  } });
+  codexRuntime.on("voice-event", (event) => codexVoice.handle(event.payload));
+  codexRuntime.on("status", (status) => { if (!["ready", "connecting"].includes(status.state)) codexVoice.reset(); });
+  codexCloud = new CodexCloud({ executable: () => codexRuntime.executablePath, getEnvironments: (projectId) => database.getAppSettings().codexCloudEnvironments?.[projectId] ?? [], saveEnvironments: (projectId, environments) => database.saveAppSettings({ codexCloudEnvironments: { ...(database.getAppSettings().codexCloudEnvironments ?? {}), [projectId]: environments } }) });
   const boardThreadContext = previewThreadContext;
   pixiceBoard = new PixiceBoard({
     database,
@@ -3725,7 +4013,7 @@ function registerHandlers() {
         developerInstructions: currentAgentInstructions(),
         focusCoordinator: Boolean(focusContext && !focusContext.worker),
         managedFocusWork: Boolean(managedWork),
-        enforcedPermissionMode: managedWork?.permissionMode ?? (focusContext ? focusStore.getPolicy(project.id).permissionMode : null),
+        enforcedPermissionMode: managedWork || focusContext ? FOCUS_WORKER_PERMISSION_MODE : null,
         permissionMode: turnUsageMetadata.get(threadId)?.permissionMode
           ?? database.getAppSettings().defaultPermissionMode
           ?? "workspace-write",
@@ -3746,30 +4034,49 @@ function registerHandlers() {
     })
   });
   focusSupervisor = new FocusSupervisor({
-    store: focusStore, runtime,
+    store: focusStore, runtime, visuals: new FocusVisuals({ userDataPath, readThread: async ({ projectId, threadId }) => {
+      if (database.getProjectFocusSession(projectId)?.threadId !== threadId) throw new Error("Selected visual is outside the current project coordinator thread.");
+      const response = await runtime.request("thread/read", { threadId, includeTurns: true });
+      if (database.getProjectFocusSession(projectId)?.threadId !== threadId || response?.thread?.id !== threadId) throw new Error("Coordinator thread changed while selecting visuals.");
+      const generations = database.listProjectFocusGenerations(projectId);
+      const historical = generations.filter((generation) => generation.threadId !== threadId).flatMap((generation) => {
+        if (database.getFocusProjectForThread(generation.threadId) !== projectId) throw new Error("Historical visual is outside this project.");
+        const snapshot = database.getProviderThreadSnapshot(generation.threadId);
+        if (snapshot && snapshot.id !== generation.threadId) throw new Error("Historical visual origin does not match its session.");
+        return (snapshot?.turns ?? []).map((turn) => ({ ...turn,
+          items: (turn.items ?? []).map((item) => ({ ...item, focusOriginThreadId: generation.threadId })) }));
+      });
+      const current = (response.thread.turns ?? []).map((turn) => ({ ...turn,
+        items: (turn.items ?? []).map((item) => ({ ...item, focusOriginThreadId: threadId })) }));
+      const capture = focusCurrentUserInputs.get(threadId);
+      return { projectId, thread: { ...response.thread, turns: [...historical, ...current] }, currentUserInput: capture?.turnId === activeTurns.get(threadId) ? capture : null };
+    } }),
     contextForProject: (projectId) => {
       const project = getProject(projectId);
       const session = database.getProjectFocusSession(projectId);
       if (!session) throw new Error("Open the project's Focus coordinator before delegating work.");
       return { coordinatorThreadId: session.threadId, cwd: projectPrimaryRoot(project) };
     },
-    startWorker: async ({ projectId, workId, coordinatorThreadId, prompt, model, effort, permissionMode }) => {
+    startWorker: async ({ projectId, workId, coordinatorThreadId, prompt, images, model, effort, permissionMode }) => {
       if (!acceptingWork) throw new Error("The host is stopping; queued work remains saved.");
       const selected = await focusModel(model, prompt);
       return pixiceBridge.startDetached({ threadId: coordinatorThreadId }, {
-        prompt, model: selected.id, ...(effort ? { effort } : {}), permissionMode
+        prompt, images, model: selected.id, ...(effort ? { effort } : {}), permissionMode: FOCUS_WORKER_PERMISSION_MODE
       }, { onCreated: (thread) => {
         if (workId) focusStore.transitionWork(projectId, workId, { threadId: thread.id, model: selected.id }, { id: `focus:${workId}:thread:${thread.id}:created`, kind: "worker-created", message: "Worker thread created before turn dispatch." });
       } });
     },
-    continueWorker: async ({ projectId, threadId, turnId, prompt, model, effort, permissionMode }) => {
+    continueWorker: async ({ projectId, threadId, turnId, prompt, images, model, effort, permissionMode }) => {
       const project = getProject(projectId);
       await ensureThreadLoaded(project, threadId);
       if (turnId) {
-        await steerBridgeParentTurn(threadId, turnId, buildCodexUserInput(prompt, []));
+        const permissions = permissionSettings(FOCUS_WORKER_PERMISSION_MODE, project);
+        await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(prompt, images ?? []),
+          permissionMode: FOCUS_WORKER_PERMISSION_MODE, approvalPolicy: permissions.approvalPolicy,
+          approvalsReviewer: permissions.approvalsReviewer, sandboxPolicy: permissions.sandboxPolicy });
         return { turnId };
       }
-      const response = await startTrackedTurn({ project, threadId, input: buildCodexUserInput(prompt, []), text: prompt, model: model ?? undefined, effort, permissionMode });
+      const response = await startTrackedTurn({ project, threadId, input: buildCodexUserInput(prompt, images ?? []), text: prompt, model: model ?? undefined, effort, permissionMode: FOCUS_WORKER_PERMISSION_MODE });
       return { turnId: response.turn.id };
     },
     interruptWorker: async ({ projectId, threadId, turnId }) => {
@@ -3784,6 +4091,32 @@ function registerHandlers() {
     database, store: focusStore, supervisor: focusSupervisor, validateModel: focusModel,
     listQuestions: listFocusCoordinatorQuestions,
     answerQuestion: answerFocusCoordinatorQuestion
+  });
+  focusRenewal = new FocusSessionRenewal({
+    database,
+    safeBoundary: (session) => acceptingWork
+      && !activeTurns.has(session.threadId) && !startingTurns.has(session.threadId)
+      && ![...pendingRequests.values()].some((pending) => pending.request?.params?.threadId === session.threadId),
+    handoff: (session) => coordinatorBrief(session),
+    createSession: async (projectId, before, evidence) => {
+      const previous = await runtime.request("thread/read", { threadId: before.threadId, includeTurns: true });
+      database.saveProviderThreadSnapshot(before.threadId, previous.thread);
+      return createProjectFocusSession({ project: getProject(projectId),
+        model: evidence.model ?? turnUsageMetadata.get(before.threadId)?.model ?? focusStore.getPolicy(projectId).coordinatorModel,
+        serviceTier: evidence.serviceTier, publish: false });
+    },
+    onChange: ({ projectId, session, previousThreadId, evidence }) => {
+      if (evidence.reason === "empty-provider-change") focusStore.updatePolicy(projectId, { coordinatorModel: evidence.model });
+      for (const pending of pendingRequests.values()) {
+        if (pending.focusContext?.projectId !== projectId) continue;
+        pending.focusContext = { ...pending.focusContext, session, focusThreadId: session.threadId };
+        if (pending.displayRequest?.focusCoordinatorQuestion) pending.displayRequest.params.threadId = session.threadId;
+      }
+      for (const review of focusQuestionReviews.values()) {
+        if (review.focusContext?.projectId === projectId) review.focusContext = { ...review.focusContext, session, focusThreadId: session.threadId };
+      }
+      send("FocusUpdated", { projectId, session, previousThreadId, renewed: true });
+    }
   });
   proactiveStewardship = new ProactiveStewardship({
     database,
@@ -3931,14 +4264,16 @@ function registerHandlers() {
     }
     runtimeStatus = status;
     send("RuntimeStatus", { ...status, connected: runtime.connected });
-    if (focusSupervisor && providerState === "ready") {
+    if (focusSupervisor && providerState === "ready" && !authTransition) {
       void recoverExecutionState().catch((error) => codexRuntime.emit("diagnostic", `Runtime recovery: ${error.message}`));
     }
   });
   runtime.on("event", containListenerErrors((event) => {
+    if (event.payload?.method?.startsWith('thread/realtime/')) return;
     const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
     event.payload = { ...event.payload, receivedAt };
     const { method, threadId, turn } = event.payload ?? {};
+    if (method?.startsWith("thread/realtime/")) { codexVoice?.handle(event.payload); return; }
     const eventTurnId = turn?.id ?? event.payload.turnId;
     const ownedTurnId = threadId && (activeTurns.get(threadId) ?? executionJournal.getActive(threadId)?.turnId);
     if (eventTurnId && ownedTurnId && eventTurnId !== ownedTurnId && !["turn/completed", "turn/started", "serverRequest/resolved"].includes(method)) return;
@@ -4024,7 +4359,7 @@ function registerHandlers() {
           model: collabItem.model ?? parentUsage.model ?? null,
           serviceTier: parentUsage.serviceTier ?? null,
           effort: collabItem.effort ?? parentUsage.effort ?? null,
-          permissionMode: managedFocusAncestor(parentThreadId)?.permissionMode ?? (parentFocusContext ? FOCUS_PERMISSION_MODE : parentUsage.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write"),
+          permissionMode: managedFocusAncestor(parentThreadId) || parentFocusContext ? FOCUS_WORKER_PERMISSION_MODE : parentUsage.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write",
           provider: event.payload?.provider ?? parentUsage.provider ?? "codex"
         });
       }
@@ -4127,6 +4462,7 @@ function registerHandlers() {
       previewContextRegistry?.clear(threadId);
       if (method === "thread/deleted") database.deleteThreadName(threadId);
     }
+    if (method === "thread/tokenUsage/updated" && threadId) focusContextUsage.set(threadId, { ...event.payload.tokenUsage, turnId: event.payload.turnId });
     if (threadId && (method === "turn/started" || method === "turn/completed" || method === "thread/status/changed")) {
       threadMonitorCache.delete(threadId);
     }
@@ -4143,13 +4479,17 @@ function registerHandlers() {
       requestDelivery.terminal(threadId, turn?.id);
       queueMicrotask(() => void messageQueue?.drain(threadId));
       queueMicrotask(() => void pixiceBridge?.drainCompletions().catch(error => codexRuntime.emit("diagnostic", `Bridge delivery: ${error.message}`)));
+      focusCurrentUserInputs.delete(threadId);
       trayCompletionRevisions.set(threadId, {
         completionRevision: `turn:${turn?.id ?? event.payload?.turnId ?? receivedAt}`,
         updatedAt: turn?.completedAt ?? receivedAt
       });
       if (focusSession) {
         void scheduleFocusMemoryReview(threadId);
-        void focusSupervisor?.flush(focusSession.projectId).catch((error) => codexRuntime.emit("diagnostic", `Focus delivery: ${error.message}`));
+        void renewFocusAtBoundary(focusSession.projectId, turn?.id).then(() => focusSupervisor?.flush(focusSession.projectId)).catch((error) => {
+          send("FocusUpdated", { projectId: focusSession.projectId, renewalError: { message: `Focus boundary failed: ${error.message}` } });
+          codexRuntime.emit("diagnostic", `Focus boundary: ${error.message}`);
+        });
       }
     }
     if (method === "turn/started" || method === "turn/completed") updateTrayMenu();
@@ -4197,7 +4537,7 @@ function registerHandlers() {
     const threadId = request.params?.threadId;
     const focusContext = threadId ? projectFocusContextForThread(threadId) : null;
     const focusAccess = focusContext ? managedFocusAncestor(threadId)?.permissionMode ?? FOCUS_PERMISSION_MODE : null;
-    if (focusContext && focusAccess === "full-access" && request.method?.toLowerCase().includes("approval")) {
+    if (focusContext && codexVoice?.session?.threadId !== threadId && focusAccess === "full-access" && request.method?.toLowerCase().includes("approval")) {
       respondNativeTool(request, () => ({ decision: "accept" }));
       return;
     }
@@ -4244,6 +4584,36 @@ function registerHandlers() {
   runtime.on("recoverable-error", (error) => send("RuntimeError", error));
   runtime.on("provider-lifecycle", (state) => send("ProviderLifecycleState", state));
 
+  voiceApplication = installVoiceApplication({
+    application: { setFocusVoiceGuard, withFocusSessionAdmission, isFrozen: () => !acceptingWork }, runtime: codexRuntime, handlers: { handle(channel, handler) {
+      if (["voice:start", "voice:stop"].includes(channel)) nativeVoiceHandlers.set(channel, handler);
+      else handlers.handle(channel, handler);
+    } },
+    resolveScope: (scope) => {
+      const project = getProject(scope.projectId);
+      const session = database.getProjectFocusSession(project.id);
+      const binding = session && database.getThreadProviderBinding(session.threadId);
+      if (!session || session.threadId !== scope.threadId || binding?.provider !== runtime.providerForThread(session.threadId)
+        || authoritativeThreadProjectId(session.threadId) !== project.id || database.getFocusForkCandidate(scope.threadId)) {
+        throw new VoiceSessionError('voice_thread_changed', 'The current Focus thread ownership could not be verified.');
+      }
+      return { projectId: project.id, threadId: session.threadId, provider: binding.provider, generation: session.generation };
+    },
+    authorizeOwner: (context) => {
+      if (context?.local !== true || context?.remote || !voiceTransport.isOwner?.(context.voiceOwner)) {
+        throw new VoiceSessionError('voice_local_owner_required', 'Voice requires the authenticated local desktop renderer. Remote Connect and CLI voice are unsupported.');
+      }
+      return context.voiceOwner;
+    },
+    deliverEvent: (owner, event) => voiceTransport.publish?.(owner, event)
+  });
+  codexRuntime.on('event', (event) => {
+    if (event.payload?.method === 'account/updated') {
+      void voiceApplication.stopAll('account_changed').then(() => voiceApplication.allowStarts()).catch(() => {
+        send('RuntimeError', { code: 'voice_stop_failed', message: 'Voice stop failed after the Codex account changed. Focus renewal remains blocked.' });
+      });
+    }
+  });
   registerHandlers();
   // The registry and its project context are usable before external providers
   // finish connecting. Workflow storage must not inherit that startup dependency.
@@ -4261,6 +4631,7 @@ function registerHandlers() {
     acceptingWork = false;
     messageQueue?.close();
     pullRequestWatches?.stop();
+    await voiceApplication?.stopAll('host_quiescing');
     const workflows = pixiceBridge?.workflowIntegration?.workflows;
     if (workflows) await workflows.close();
     await Promise.allSettled([...activeTurns].map(([threadId, turnId]) => runtime.request("turn/interrupt", { threadId, turnId })));
@@ -4272,6 +4643,9 @@ function registerHandlers() {
     acceptingWork = false;
     messageQueue?.close();
     pullRequestWatches?.stop();
+    await voiceApplication?.dispose();
+    for (const draft of widgetDrafts.values()) draft.controller.abort();
+    widgetDrafts.clear();
     focusSupervisor?.dispose();
     requestDelivery?.dispose();
     pixiceBridge?.dispose();
@@ -4279,6 +4653,8 @@ function registerHandlers() {
     await pixiceBridge?.workflowIntegration?.close();
     await iosRuntimeService?.destroy();
     if (force) await Promise.allSettled([...activeTurns].map(([threadId, turnId]) => runtime.request("turn/interrupt", { threadId, turnId })));
+    if (codexVoice?.session) await codexVoice.stop({ sessionId: codexVoice.session.id }).catch(() => {});
+    await chatgptAuth.close();
     await runtime?.stop();
     await recoveryPromise?.catch(() => {});
     await Promise.allSettled([...(taskResults?.finishing.values() ?? [])]);
@@ -4287,8 +4663,25 @@ function registerHandlers() {
     database?.db.close();
     events.removeAllListeners();
   }
+  function setFocusVoiceGuard(guard) { focusRenewal.setVoiceGuard((projectId, threadId) => codexVoice?.session?.threadId === threadId || guard(projectId, threadId)); }
+  function withFocusSessionAdmission(scope, operation) { return focusRenewal.withProject(scope.projectId, async () => {
+      const project = getProject(scope.projectId);
+      const session = database.getProjectFocusSession(project.id);
+      if (!acceptingWork || projectDeletionTombstones.has(project.id) || !session || session.threadId !== scope.threadId || focusSessionTransitions.has(project.id)) throw new VoiceSessionError('voice_thread_changed', "The authoritative Focus session changed or the host is stopping.");
+      if (codexVoice?.session || activeTurns.has(session.threadId) || startingTurns.has(session.threadId)) throw new VoiceSessionError('voice_focus_busy', "Focus is busy; wait for its active turn before starting voice.");
+      return operation({ projectId: project.id, threadId: session.threadId, provider: runtime.providerForThread(session.threadId), generation: session.generation });
+    }); }
+  async function withVoiceProviderChange(provider, operation) {
+    if (provider === "codex" && codexVoice?.session) throw new Error("End Voice before changing the Codex runtime.");
+    if (provider !== 'codex' || !voiceApplication) return operation();
+    try { await voiceApplication.stopAll('provider_changed'); return await operation(); }
+    finally { voiceApplication.allowStarts(); }
+  }
   return {
-    handlers, events, start, stop, quiesce,
+    handlers, events, start, stop, quiesce, setFocusVoiceGuard, withFocusSessionAdmission,
+    voiceOwnerDisconnected: (owner) => voiceApplication?.ownerDisconnected(owner),
+    stopVoiceSessions: () => voiceApplication?.stopAll('host_stopping'),
+    allowVoiceStarts: () => voiceApplication?.allowStarts(),
     backup: ({ currentVersion, targetVersion }) => createUpdateDataBackup({ userDataPath, currentVersion, targetVersion, reason: "app-update" }),
     freeze: (value) => { acceptingWork = !value; if (pixiceBridge?.workflowIntegration) pixiceBridge.workflowIntegration.workflows.acceptingRuns = !value; },
     state: () => ({ activeTurns: activeExecutionCount(), startingTurns: startingTurns.size, activeWorkflows: pixiceBridge?.workflowIntegration?.workflows.activeRuns.size ?? 0, runtime: { ...runtimeStatus, connected: Boolean(runtime?.connected) }, workflowError: pixiceBridge?.workflowError?.message ?? null }),

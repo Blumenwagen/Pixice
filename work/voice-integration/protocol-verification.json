@@ -1,0 +1,49 @@
+{
+  "date": "2026-09-30",
+  "executable": "/Users/blumenwagen/.local/bin/codex",
+  "installedVersion": "0.159.0",
+  "officialDocumentation": "https://developers.openai.com/codex/app-server",
+  "skill": "/Users/blumenwagen/.codex/skills/.system/openai-docs/SKILL.md",
+  "acceptedArtifact": "work/voice-implementation/protocol-0.159.0.json",
+  "acceptedArtifactRawSha256": "259f95fb8307a7cded13d646fabfbae5cbe518af0db09c4a9d72d866dda95c00",
+  "generatedDirectory": "/tmp/pixice-voice-integration-schema-0159",
+  "commands": [
+    "codex --version",
+    "codex app-server generate-json-schema --experimental --out /tmp/pixice-voice-integration-schema-0159"
+  ],
+  "comparison": {
+    "schemaCount": 23,
+    "requestDescriptorCount": 6,
+    "notificationDescriptorCount": 11,
+    "allMatched": true,
+    "canonicalization": "Recursive object key sorting, preserving array order, JSON.stringify, SHA-256",
+    "schemasSha256": "10bcac171348fd2d975256588cf4d53630c9b40540015718e1ca319c18c9aaee",
+    "requestsSha256": "af8ca9201acafdf40cdffb1c04654c446eb86075588a2c78d52f1b0b9501a6e0",
+    "notificationsSha256": "5fa969c7229b1c82373073fa7c3c0bcb5684d4bf44b37108917e9ae9e117e575"
+  },
+  "productionMetadataInspector": {
+    "called": true,
+    "passed": true,
+    "authenticatedAppServerStarted": false
+  },
+  "protocolContract": {
+    "experimentalApi": true,
+    "transports": [
+      "webrtc",
+      "websocket"
+    ],
+    "versions": [
+      "v1",
+      "v2",
+      "v3"
+    ],
+    "outputModalities": [
+      "audio",
+      "text"
+    ],
+    "sessionAvailability": "unverified",
+    "entitlementInferredFromCatalogOrModel": false,
+    "unsupportedVersionsFailClosed": true
+  },
+  "liveEntitlementOrMediaEstablished": false
+}

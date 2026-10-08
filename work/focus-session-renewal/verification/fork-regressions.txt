@@ -1,0 +1,15 @@
+
+ RUN  v3.2.4 /Users/blumenwagen/Developer/Loom
+
+(node:64592) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/focus-coordinator-context.test.js (5 tests) 11ms
+ ✓ tests/focus-session-renewal.test.js (24 tests) 2754ms
+   ✓ Focus session replacement behavior > protects current and retired Focus forks, copied updates and search with remapped IDs=false  387ms
+   ✓ Focus session replacement behavior > protects current and retired Focus forks, copied updates and search with remapped IDs=true  400ms
+
+ Test Files  2 passed (2)
+      Tests  29 passed (29)
+   Start at  00:33:03
+   Duration  3.39s (transform 263ms, setup 0ms, collect 496ms, tests 2.77s, environment 0ms, prepare 75ms)
+

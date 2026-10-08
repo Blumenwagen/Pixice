@@ -21,14 +21,14 @@ function composerProps(overrides = {}) {
 
 describe('T3-reference composer workflows', () => {
   it('keeps slash-command keyboard selection while completing into the rich editor', async () => {
-    render(<Composer {...composerProps()} />);
+    render(<Composer {...composerProps({ models: [{ model: 'model', displayName: 'Model', provider: 'claude' }], slashCommands: [{ name: 'review', description: 'Review code' }, { name: 'compact', description: 'Compact context' }] })} />);
     const prompt = screen.getByRole('textbox', { name: 'Task prompt' });
     changeEditable(prompt, { target: { value: '/' } });
-    expect(screen.getByRole('option', { name: /\/model/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('option', { name: /\/review/ })).toHaveAttribute('aria-selected', 'true');
     fireEvent.keyDown(prompt, { key: 'ArrowDown' });
-    expect(screen.getByRole('option', { name: /\/fast/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('option', { name: /\/compact/ })).toHaveAttribute('aria-selected', 'true');
     fireEvent.keyDown(prompt, { key: 'Enter' });
-    await waitFor(() => expect(prompt).toHaveEditableValue('/fast '));
+    await waitFor(() => expect(prompt).toHaveEditableValue('/compact '));
   });
   it('stashes text with its context, clears only after durable save, and restores from the empty composer', async () => {
     const props = composerProps();

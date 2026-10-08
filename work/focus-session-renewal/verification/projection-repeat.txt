@@ -1,0 +1,13 @@
+
+ RUN  v3.2.4 /Users/blumenwagen/Developer/Loom
+
+(node:63176) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/renderer-thread-projection.test.js (2 tests) 2ms
+ ✓ tests/database.test.js (20 tests) 186ms
+
+ Test Files  2 passed (2)
+      Tests  22 passed (22)
+   Start at  00:03:32
+   Duration  717ms (transform 43ms, setup 159ms, collect 60ms, tests 188ms, environment 421ms, prepare 83ms)
+

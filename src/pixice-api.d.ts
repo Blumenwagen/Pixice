@@ -1,4 +1,53 @@
-export {};
+export type { VoiceApi, VoiceScope, VoiceHandle, VoiceSnapshot, VoiceAvailability, VoiceSessionEvent, VoiceSettings, VoiceAudio };
+
+type VoiceScope = { projectId: string; threadId: string; generation?: number };
+type VoiceHandle = VoiceScope & { sessionHandle: string };
+type VoiceSnapshot = VoiceHandle & {
+  state: 'preparing' | 'starting' | 'active' | 'stopping' | 'stop_failed' | 'closed';
+  transport: 'webrtc' | 'websocket' | null; version: 'v1' | 'v2' | 'v3' | null;
+  realtimeSessionId: string | null; voice: string | null;
+};
+type VoiceAudio = { data: string; sampleRate: number; numChannels: number; samplesPerChannel?: number; itemId?: string };
+type VoiceAvailability = {
+  catalog: { v1: string[]; v2: string[]; defaultV1: string; defaultV2: string };
+  capabilities: { schemaVersion: string; experimentalApi: true; transports: Array<'webrtc' | 'websocket'>; versions: Array<'v1' | 'v2' | 'v3'>; outputModalities: Array<'audio' | 'text'> };
+  sessionAvailability: 'unverified';
+};
+type VoiceSettings = { voice: string | null; microphoneDeviceId: string; muted: boolean; outputVolume: number; outputDeviceId: string; captions: boolean };
+type VoiceSessionEvent = VoiceSnapshot & (
+  | { type: 'state' | 'started' }
+  | { type: 'sdp'; sdp: string }
+  | { type: 'closed'; reason: string }
+  | { type: 'error'; error: { code: string; message: string } }
+  | { type: 'transcript_delta'; role: string; delta: string }
+  | { type: 'transcript_done'; role: string; text: string }
+  | { type: 'item_transcript_delta'; itemId: string; delta: string }
+  | { type: 'item_started' | 'item_completed'; item: { id: string; realtimeSessionId: string; type: string; role?: string; text?: string; outcome?: string } }
+  | { type: 'audio_delta'; audio: VoiceAudio }
+);
+type VoiceApi = {
+  availability(scope: VoiceScope): Promise<VoiceAvailability>;
+  prepare(scope: VoiceScope): Promise<VoiceSnapshot>;
+  start(input: VoiceHandle & { transport: { type: 'webrtc'; sdp: string } | { type: 'websocket' }; outputModality?: 'audio' | 'text'; version?: 'v1' | 'v2' | 'v3'; voice?: string | null }): Promise<VoiceSnapshot>;
+  stop(input: VoiceHandle & { reason?: string }): Promise<{ stopped: true }>;
+  appendText(input: VoiceHandle & { text: string; role?: 'user' | 'developer' | 'assistant' }): Promise<{ appended: true }>;
+  appendSpeech(input: VoiceHandle & { text: string }): Promise<{ appended: true }>;
+  appendAudio(input: VoiceHandle & { audio: VoiceAudio }): Promise<{ appended: true }>;
+  snapshot(input: VoiceHandle): Promise<VoiceSnapshot | null>;
+};
+
+type FocusSession = {
+  projectId: string; threadId: string; generation: number; revision: number;
+  stopped: boolean; sessionTurnCount: number; userTurnCount: number;
+  lastMemoryReviewTurn: number; latestRequest: string; handoff: string;
+  renewalEvidence: Record<string, unknown>; createdAt: string; updatedAt: string;
+};
+type FocusSessionResult = {
+  created: boolean; session: FocusSession;
+  memory: { projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null; session?: FocusSession };
+  configuration: { provider: string; model: string | null };
+  thread: { id: string; cwd: string; provider?: string; turns?: Array<Record<string, unknown>>; [key: string]: unknown };
+};
 
 type PixiceEvent = {
   type:
@@ -15,6 +64,7 @@ type PixiceEvent = {
     | "BrowserOpenRequested"
     | "PreviewWorkspacePresentRequested"
     | "BoardUpdated"
+    | "WidgetUpdated"
     | "InstrumentUpdated"
     | "InstrumentOpenRequested"
     | "InstrumentInteractionUpdated"
@@ -38,12 +88,39 @@ type PixiceEvent = {
     | "MessageQueueUpdated"
     | "TaskWorkspacesUpdated"
     | "ThreadHistoryUpdated"
-    | "ProjectDeleted";
+
+    | "ProjectDeleted"
+    | "VoiceEvent"
+    | "ChatGPTState";
   payload: any;
   at: string;
-};
+} | { type: 'VoiceSessionEvent'; payload: VoiceSessionEvent | { type: 'owner_disconnected' }; at: string }
+| { type: "VoiceCompanionState"; payload: VoiceCompanionState; at: string };
 
 type ProjectScope = { projectId: string };
+type WidgetBlock =
+  | { type: 'timer'; label: string; durationSeconds: number; endAt: string | null }
+  | { type: 'checklist'; label: string; items: Array<{ id: string; text: string; done: boolean }> }
+  | { type: 'counter'; label: string; value: number; step: number };
+type WidgetSpec = { version: 1; title: string; size?: 'small' | 'medium' | 'large'; blocks: WidgetBlock[] };
+// Pixice-owned composable widget document.
+type WidgetV2Path = `/user/${string}` | `/view/${string}` | `/data/${string}` | `/derived/${string}`;
+type WidgetV2Binding = { path: WidgetV2Path };
+type WidgetV2Scalar = string | number | boolean;
+type WidgetV2Candidate = { type: string; description: string; cues: string[]; recipe: 'catalog-node-v1' };
+type WidgetV2Node = { id: string; type: string; props?: Record<string, WidgetV2Scalar | WidgetV2Binding | WidgetV2Scalar[] | Array<{ field: 'id' | 'title' | 'description' | 'column' | 'threadId' | 'updatedAt'; label: string }> | Array<{ label: string; value: number }> | Array<{ id: string; text: string; done: boolean }>>; slots?: Record<string, string[]>; on?: Record<string, string> };
+type WidgetV2Action =
+  | { type: 'set'; target: WidgetV2Path; value: WidgetV2Scalar }
+  | { type: 'assign'; target: WidgetV2Path; input: 'value' | 'checked' | 'number' }
+  | { type: 'toggle'; target: WidgetV2Path }
+  | { type: 'increment'; target: WidgetV2Path; amount: number }
+  | { type: 'refresh'; source: string };
+type WidgetV2Derived =
+  | { op: 'add' | 'subtract' | 'multiply' | 'divide'; left: number | WidgetV2Binding; right: number | WidgetV2Binding }
+  | { op: 'filterRows'; input: WidgetV2Binding; field: 'id' | 'title' | 'description' | 'column' | 'threadId' | 'updatedAt'; equals: WidgetV2Scalar | WidgetV2Binding };
+type WidgetV2Document = { version: 2; catalogVersion: 1; title: string; size?: 'small' | 'medium' | 'large'; root: string; nodes: WidgetV2Node[]; state: { user: Record<string, WidgetV2Scalar>; view: Record<string, WidgetV2Scalar> }; sources: Record<string, { capability: 'board.list'; arguments: {}; refresh: 'manual' | 'onOpen' | 'event' }>; derived: Record<string, WidgetV2Derived>; actions: Record<string, WidgetV2Action> };
+type ProjectWidget = { id: string; projectId: string; spec: WidgetSpec | WidgetV2Document; revision: number; createdAt: string; updatedAt: string };
+type WidgetDraftResult = { status: 'draft'; projectId: string; spec: WidgetSpec | WidgetV2Document; candidate: string } | { status: 'fallback'; reason: 'key_missing' | 'credential_error' | 'no_candidate' | 'low_confidence' | 'service_error' | 'timeout' | 'cancelled' };
 
 type PixiceTranscriptionModel = {
   id: string;
@@ -153,6 +230,15 @@ type PixicePullRequestWorkspace = ThreadScope & {
   repository: { nameWithOwner: string; url: string; defaultBranchRef: { name: string } | null } | null;
   githubError: string | null; canWrite: boolean; canWatch: boolean; links: PixicePullRequestLink[];
 };
+type PixiceChatGPTProfile = { id: string; email: string | null; name: string | null; subject: string; clientId: string; signedIn: boolean; planEnabled: boolean; scopes: string[]; expiresAt: number | null };
+type PixiceChatGPTState = { profiles: PixiceChatGPTProfile[]; selectedProfileId: string | null; pending: boolean; error: string | null; signOutResult?: { profileId: string; status: "confirmed" | "unconfirmed"; message: string } | null };
+type PixiceVoiceSession = ThreadScope & { id: string; phase: string };
+type PixiceVoiceState = { available: boolean; experimental?: boolean; reason?: string; voices?: { v1: string[]; v2: string[]; defaultV1: string; defaultV2: string }; session: PixiceVoiceSession | null };
+export type VoiceCompanionContext = ThreadScope & { model?: string; effort?: string; permissionMode?: string; deviceId?: string; accent?: string };
+export type VoiceCompanionState = { phase: "idle" | "connecting" | "connected" | "playback-blocked" | "stopping" | "ended" | "error" | "cleanup-failed"; projectId: string | null; threadId: string | null; muted: boolean; detached: boolean; micLevel: number; speakerLevel: number; error?: string; needsApproval?: boolean };
+type PixiceCloudEnvironment = { id: string; name: string };
+type PixiceCloudTask = { id: string; url?: string; title: string; status: string; environment_id?: string | null; environment_label?: string; updated_at?: string; summary?: { files_changed: number; lines_added: number; lines_removed: number }; attempt_total?: number };
+type PixiceCloudOutput = { output: string; warnings: string; diffHash?: string; reviewId?: string; attempt?: number };
 type PixiceTaskReceipt = ThreadScope & {
   groupId: string;
   sourceThreadId?: string;
@@ -190,6 +276,7 @@ type PixiceProvider = {
   status?: { state?: string; message?: string | null };
   authenticated?: boolean;
   externallyManagedAuth?: boolean;
+  authSource?: "chatgptApp" | null;
   requiresAuth?: boolean;
   account?: { email?: string | null; organization?: string | null; type?: string | null; planType?: string | null; subscriptionType?: string | null } | null;
   accountError?: string | null;
@@ -399,6 +486,39 @@ declare global {
         saveSettings(payload: { defaultModel?: string; defaultEffort?: string; defaultPermissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; defaultFastMode?: boolean; threadNamingModel?: "auto" | "off" | `codex:${string}` | `claude:${string}`; workflowGenerationModel?: "auto" | `codex:${string}` | `claude:${string}`; attentionNotifications?: boolean; completionNotifications?: boolean; notificationSound?: boolean; keepSystemAwake?: boolean; checkProviderUpdates?: boolean; threadCompletionsSeen?: Record<string, string | number>; agentBehaviors?: Record<string, boolean> }): Promise<any>;
       };
       runtime: { status(): Promise<any> };
+      chatgpt?: {
+        state(): Promise<PixiceChatGPTState>;
+        signIn(payload?: { profileId?: string }): Promise<{ opened: boolean }>;
+        cancel(): Promise<{ cancelled: boolean }>;
+        select(payload: { profileId: string | null }): Promise<PixiceChatGPTState>;
+        signOut(payload: { profileId: string }): Promise<PixiceChatGPTState>;
+        manage(): Promise<unknown>;
+      };
+      voice?: VoiceApi & {
+        companion?: {
+          open(context: VoiceCompanionContext): Promise<VoiceCompanionState>;
+          state(): Promise<VoiceCompanionState>;
+          mute(payload: { muted: boolean }): Promise<VoiceCompanionState>;
+          end(): Promise<VoiceCompanionState>;
+          detach(): Promise<VoiceCompanionState>;
+          attach(): Promise<VoiceCompanionState>;
+          returnToPixice(): Promise<VoiceCompanionState>;
+        };
+        state(): Promise<PixiceVoiceState>;
+        start(payload: ThreadScope & { sdp: string; voice?: string; model?: string; effort?: string; permissionMode?: string }): Promise<PixiceVoiceSession>;
+        stop(payload: { sessionId: string }): Promise<{ stopped: boolean }>;
+      };
+      cloud?: {
+        state(payload: ProjectScope): Promise<{ available: boolean; experimental: boolean; environments: PixiceCloudEnvironment[]; environmentDiscovery: "manual"; reason: string; authentication: string }>;
+        saveEnvironment(payload: ProjectScope & { environment: PixiceCloudEnvironment }): Promise<{ environments: PixiceCloudEnvironment[] }>;
+        removeEnvironment(payload: ProjectScope & { environmentId: string }): Promise<{ environments: PixiceCloudEnvironment[] }>;
+        list(payload: ProjectScope & { environmentId?: string; cursor?: string; limit?: number }): Promise<{ data: { tasks: PixiceCloudTask[]; cursor?: string | null }; warnings: string }>;
+        submit(payload: ProjectScope & { environmentId: string; prompt: string; attempts?: number; branch?: string }): Promise<PixiceCloudOutput>;
+        status(payload: ProjectScope & { taskId: string }): Promise<PixiceCloudOutput>;
+        diff(payload: ProjectScope & { taskId: string; attempt?: number }): Promise<PixiceCloudOutput>;
+        apply(payload: ProjectScope & { taskId: string; reviewId: string; expectedDiffHash: string }): Promise<PixiceCloudOutput>;
+        open(): Promise<unknown>;
+      };
       providers: {
         list(): Promise<PixiceProvider[]>;
         install(payload: { provider: "codex" | "claude" }): Promise<PixiceProvider>;
@@ -558,19 +678,28 @@ declare global {
         delete(payload: ProjectScope): Promise<PixiceProject>;
         open(): Promise<PixiceProject | null>;
       };
+      widgets: {
+        list(payload: ProjectScope): Promise<{ data: ProjectWidget[] }>;
+        draft(payload: ProjectScope & { text: string; requestId?: string; context?: { projectName?: string } }): Promise<WidgetDraftResult>;
+        cancelDraft(payload: ProjectScope & { requestId: string }): Promise<{ cancelled: boolean }>;
+        commit(payload: ProjectScope & { spec: WidgetSpec | WidgetV2Document }): Promise<ProjectWidget>;
+        update(payload: ProjectScope & { widgetId: string; spec: WidgetSpec | WidgetV2Document; expectedRevision: number }): Promise<ProjectWidget>;
+        updateUserState(payload: ProjectScope & { widgetId: string; userState: Record<string, WidgetV2Scalar>; expectedRevision: number }): Promise<ProjectWidget>;
+        readSource(payload: ProjectScope & { widgetId: string; source: string }): Promise<{ data: Array<Record<string, string | null>> }>;
+        delete(payload: ProjectScope & { widgetId: string }): Promise<ProjectWidget>;
+        keyStatus(): Promise<{ configured: boolean }>;
+        keySave(payload: { key: string }): Promise<{ configured: boolean }>;
+        keyRemove(): Promise<{ configured: boolean }>;
+      };
       focus: {
-        state(payload: ProjectScope): Promise<{ work: Array<any>; decisions: Array<any>; policy: { coordinatorModel: string | null; workerModel: string | null; reviewModel: string | null; maxWorkers: number; permissionMode: string; executionHost: "current" }; events: Array<any>; seenSequence: number; latestSequence: number; unseenEvents: Array<any> }>;
+        refresh(payload: ProjectScope & { expectedGeneration: number }): Promise<FocusSessionResult & { renewed: true; replacedThreadId: string; notificationError?: string }>;
+        history(payload: ProjectScope): Promise<{ generations: Array<{ threadId: string; generation: number; createdAt: string }>; session: FocusSession | null }>;
+        state(payload: ProjectScope): Promise<{ session: FocusSession | null; work: Array<any>; decisions: Array<any>; policy: { coordinatorModel: string | null; workerModel: string | null; reviewModel: string | null; permissionMode: string; executionHost: "current" }; events: Array<any>; seenSequence: number; latestSequence: number; unseenEvents: Array<any> }>;
         controlWork(payload: ProjectScope & { workId: string; action: "pause" | "resume" | "cancel" }): Promise<any>;
-        followUp(payload: ProjectScope & { workId: string; prompt: string }): Promise<any>;
-        updatePolicy(payload: ProjectScope & { patch: { coordinatorModel?: string | null; workerModel?: string | null; reviewModel?: string | null; maxWorkers?: number; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; executionHost?: "current" } }): Promise<any>;
+        followUp(payload: ProjectScope & { workId: string; prompt: string; visuals?: Array<{ source: "conversation"; messageId?: string; index: number; label?: string } | { source: "file"; path: string; label?: string }> }): Promise<any>;
+        updatePolicy(payload: ProjectScope & { patch: { coordinatorModel?: string | null; workerModel?: string | null; reviewModel?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; executionHost?: "current" } }): Promise<any>;
         markSeen(payload: ProjectScope & { sequence: number }): Promise<{ seenSequence: number }>;
-        ensure(payload: ProjectScope & { model?: string; serviceTier?: string | null; replaceEmpty?: boolean; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{
-          created: boolean;
-          session: { projectId: string; threadId: string; userTurnCount: number; lastMemoryReviewTurn: number; createdAt: string; updatedAt: string };
-          memory: { projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null };
-          configuration: { provider: string; model: string | null };
-          thread: any;
-        }>;
+        ensure(payload: ProjectScope & { model?: string; serviceTier?: string | null; replaceEmpty?: boolean; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<FocusSessionResult>;
         readMemory(payload: ProjectScope): Promise<{ projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null }>;
         updateMemory(payload: ProjectScope & { expectedRevision: number; projectMemory: string; userMemory: string }): Promise<{ projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null }>;
         clearMemory(payload: ProjectScope & { expectedRevision: number }): Promise<{ projectId: string; projectMemory: string; userMemory: string; revision: number; updatedAt: string | null }>;
@@ -647,7 +776,7 @@ declare global {
       };
       threads: {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
-        read(payload: ThreadScope): Promise<{ thread: any; plan?: any[] | null }>;
+        read(payload: ThreadScope & { historyCursor?: string }): Promise<{ thread: any; plan?: any[] | null }>;
         children(payload: ThreadScope): Promise<{ data: any[]; nextCursor: string | null }>;
         create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: PixicePermissionMode; parentThreadId?: string; workspace?: { mode: "project" | "worktree"; startingState?: { type: "working-tree" } | { type: "ref"; ref: string }; branch?: string } }): Promise<{ thread: any }>;
         fork(payload: ThreadScope & ({ lastTurnId: string } | { turnId: string }) & ({ lastItemId: string } | { itemId: string })): Promise<{ thread: any }>;

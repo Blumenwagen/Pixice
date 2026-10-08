@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertPublicFile } from "../backend/desktop-authority.mjs";
 
 const IMAGE_MIME_TYPES = new Map([
   [".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"],
@@ -37,6 +38,7 @@ export function previewFileTarget({ reference, primaryRoot, roots, allowExternal
     .sort((left, right) => right.length - left.length)[0] ?? null;
   if (!folderPath && !allowExternal) throw new Error("File is outside the selected project");
   const metadata = statSync(resolved);
+  assertPublicFile(metadata);
   if (!metadata.isFile()) throw new Error("The selected path is not a file");
   return { resolved, metadata, folderPath: folderPath ?? path.dirname(resolved), external: !folderPath };
 }

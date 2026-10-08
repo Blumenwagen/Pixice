@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     login: invoke("providers:login"),
     logout: invoke("providers:logout")
   }),
+  chatgpt: Object.freeze({ state: invoke("chatgpt:state"), signIn: invoke("chatgpt:sign-in"), cancel: invoke("chatgpt:cancel"), select: invoke("chatgpt:select"), signOut: invoke("chatgpt:sign-out"), manage: invoke("chatgpt:manage") }),
+  voice: Object.freeze({ state: invoke("voice:state"), context: invoke("voice:context"), availability: invoke('voice:availability'), prepare: invoke('voice:prepare'), start: invoke('voice:start'), stop: invoke('voice:stop'), appendText: invoke('voice:appendText'), appendSpeech: invoke('voice:appendSpeech'), appendAudio: invoke('voice:appendAudio'), snapshot: invoke('voice:snapshot'), companion: Object.freeze({
+    open: invoke("voice:companion:open"), state: invoke("voice:companion:state"), mute: invoke("voice:companion:mute"), end: invoke("voice:companion:end"),
+    detach: invoke("voice:companion:detach"), attach: invoke("voice:companion:attach"), returnToPixice: invoke("voice:companion:return")
+  }) }),
+  cloud: Object.freeze({ state: invoke("cloud:state"), saveEnvironment: invoke("cloud:environment:save"), removeEnvironment: invoke("cloud:environment:remove"), list: invoke("cloud:list"), submit: invoke("cloud:submit"), status: invoke("cloud:status"), diff: invoke("cloud:diff"), apply: invoke("cloud:apply"), open: invoke("cloud:open") }),
   github: Object.freeze({ status: invoke("github:status"), login: invoke("github:login"), logout: invoke("github:logout") }),
   usage: Object.freeze({ summary: invoke("usage:summary"), limits: invoke("usage:limits") }),
   tasks: Object.freeze({
@@ -60,6 +66,11 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     delete: invoke("projects:delete"),
     open: invoke("projects:open")
   }),
+  widgets: Object.freeze({
+    list: invoke('widgets:list'), draft: invoke('widgets:draft'), cancelDraft: invoke('widgets:cancel-draft'), commit: invoke('widgets:commit'),
+    update: invoke('widgets:update'), updateUserState: invoke('widgets:update-user-state'), readSource: invoke('widgets:read-source'), delete: invoke('widgets:delete'),
+    keyStatus: invoke('widgets:key-status'), keySave: invoke('widgets:key-save'), keyRemove: invoke('widgets:key-remove')
+  }),
   focus: Object.freeze({
     state: invoke("focus:state"),
     controlWork: invoke("focus:work:control"),
@@ -67,6 +78,8 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     updatePolicy: invoke("focus:policy:update"),
     markSeen: invoke("focus:seen"),
     ensure: invoke("focus:ensure"),
+    refresh: invoke("focus:refresh"),
+    history: invoke("focus:history"),
     readMemory: invoke("focus:memory"),
     updateMemory: invoke("focus:memory:update"),
     clearMemory: invoke("focus:memory:clear")

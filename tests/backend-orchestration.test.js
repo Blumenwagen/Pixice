@@ -65,6 +65,7 @@ async function fixture() {
     return { service, client };
   };
   const { service, client } = await connect();
+  await client.call("app.saveSettings", { threadNamingModel: "off" });
   const project = await client.call("projects.create", { displayName: "Orchestration", icon: "folder", color: "gray", folders: [folder] });
   const { thread } = await client.call("threads.create", { projectId: project.id, model: "codex:fixture-model" });
   const input = { projectId: project.id, threadId: thread.id, text: "Perform the requested work", model: "codex:fixture-model" };
@@ -162,7 +163,7 @@ describe("Computer Use native per-app approvals", () => {
     await client.call("elicitations.respond", { requestId: pending.id, requestGeneration: pending.requestGeneration, decision: "acceptAlways" });
     expect(provider.responses).toContainEqual({ id: pending.id, response: { action: "accept", _meta: { persist: "always" }, content: { approval: "always" } } });
     const state = await client.call("focus.state", { projectId: project.id });
-    expect(state.work.find(entry => entry.id === work.id).permissionMode).toBe("read-only");
+    expect(state.work.find(entry => entry.id === work.id)).toMatchObject({ permissionMode: work.permissionMode, access: "read" });
     expect(service.application.attention()).toEqual([]);
   });
 });

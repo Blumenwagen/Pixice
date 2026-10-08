@@ -6,12 +6,14 @@ import { EventEmitter } from "node:events";
  * while Pixice migrates its callers to provider-neutral operations.
  */
 export class CodexProvider extends EventEmitter {
-  constructor(runtime, { runtimeLifecycle = null, environment = process.env } = {}) {
+  constructor(runtime, { runtimeLifecycle = null, environment = process.env, chatgptAccount = null, originalModelProvider = () => null } = {}) {
     super();
     this.id = "codex";
     this.runtime = runtime;
     this.runtimeLifecycle = runtimeLifecycle;
     this.environment = environment;
+    this.chatgptAccount = chatgptAccount;
+    this.originalModelProvider = originalModelProvider;
     this.forwarders = new Map();
     for (const eventName of ["status", "event", "server-request", "recoverable-error", "diagnostic", "ready"]) {
       const forward = (payload) => this.emit(eventName, payload);
@@ -41,7 +43,11 @@ export class CodexProvider extends EventEmitter {
     return this.runtime.stop();
   }
 
-  request(method, params) {
+  async request(method, params) {
+    if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
+      const modelProvider = await this.chatgptAccount?.() ? "openai_chatgpt_plan" : this.originalModelProvider();
+      if (modelProvider) params = { ...params, modelProvider };
+    }
     if (method !== "thread/fork") return this.runtime.request(method, params);
     const { lastItemId: _lastItemId, ...codexParams } = params ?? {};
     return this.runtime.request(method, codexParams);
@@ -52,11 +58,14 @@ export class CodexProvider extends EventEmitter {
   }
 
   async account() {
+    const appAccount = await this.chatgptAccount?.();
+    if (appAccount) return { account: { type: "chatgptApp", email: appAccount.email, name: appAccount.name }, requiresOpenaiAuth: false, authenticated: appAccount.planEnabled, externallyManagedAuth: true, authSource: "chatgptApp" };
     const result = await this.runtime.request("account/read", { refreshToken: false });
     return { ...result, externallyManagedAuth: this.#externallyManagedAuth(result) };
   }
 
-  login() {
+  async login() {
+    if (await this.chatgptAccount?.()) throw new Error("Choose the existing Codex account in ChatGPT app sign-in settings before using Codex sign-in.");
     return this.runtime.request("account/login/start", {
       type: "chatgpt",
       appBrand: "codex",

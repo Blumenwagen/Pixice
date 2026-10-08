@@ -45,7 +45,14 @@ export class ThreadNamer extends EventEmitter {
   constructor(runtime, {
     timeoutMs = 45_000,
     targetRuntime = runtime,
-    models = async () => [{ id: THREAD_NAMING_MODEL, model: "gpt-5.6-luna", provider: "codex", displayName: "GPT 5.6 Luna" }],
+    models = async () => [{
+      id: THREAD_NAMING_MODEL,
+      model: "gpt-5.6-luna",
+      provider: "codex",
+      displayName: "GPT 5.6 Luna",
+      defaultReasoningEffort: THREAD_NAMING_EFFORT,
+      supportedReasoningEfforts: [{ reasoningEffort: THREAD_NAMING_EFFORT }]
+    }],
     selection = () => THREAD_NAMING_AUTO
   } = {}) {
     super();

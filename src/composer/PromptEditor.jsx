@@ -212,10 +212,10 @@ export const PromptEditor = forwardRef(function PromptEditor(props, ref) {
 const PromptEditorInner = forwardRef(function PromptEditorInner({
   value = "", onChange, records = [], onRecordsChange, richTextEnabled = true,
   disabled = false, ariaLabel = "Task prompt", placeholder = "", spellCheck = true,
-  onKeyDown, onPaste, onFocus, onBlur, onContextOpen, className = "", ...aria
+  onKeyDown, onPaste, onFocus, onBlur, onContextOpen, onSelectionChange, className = "", ...aria
 }, ref) {
-  const latest = useRef({ value, onChange, records, onRecordsChange, onKeyDown, onPaste, disabled, onContextOpen });
-  latest.current = { value, onChange, records, onRecordsChange, onKeyDown, onPaste, disabled, onContextOpen };
+  const latest = useRef({ value, onChange, records, onRecordsChange, onKeyDown, onPaste, disabled, onContextOpen, onSelectionChange });
+  latest.current = { value, onChange, records, onRecordsChange, onKeyDown, onPaste, disabled, onContextOpen, onSelectionChange };
   const applied = useRef(false);
   const valueRevision = useRef(0);
   const editor = useEditor({
@@ -286,6 +286,9 @@ const PromptEditorInner = forwardRef(function PromptEditorInner({
         return true;
       }
     },
+    onSelectionUpdate: ({ editor: updated }) => {
+      latest.current.onSelectionChange?.(sourceSelection(updated).start);
+    },
     onUpdate: ({ editor: updated }) => {
       if (applied.current) return;
       const text = serializeEditorDoc(updated.state.doc).value;
@@ -342,6 +345,11 @@ const PromptEditorInner = forwardRef(function PromptEditorInner({
     get style() { return editor?.view.dom.style; },
     get scrollHeight() { return editor?.view.dom.scrollHeight ?? 0; },
     setSelectionRange(start, end = start) { if (editor) setSourceSelection(editor, start, end); },
+    replaceText(text) {
+      if (!editor) return;
+      editor.commands.setContent(buildDocJson(String(text), skillLabelFor, { styling: richTextEnabled }), { emitUpdate: true });
+      setSourceSelection(editor, String(text).length);
+    },
     insertText(text) { if (!editor || latest.current.disabled) return; insertMarkdown(editor, String(text), richTextEnabled); editor.view.focus(); },
     insertContext(input) {
       if (!editor || latest.current.disabled) return;

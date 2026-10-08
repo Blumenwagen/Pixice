@@ -1,0 +1,37 @@
+vite v6.4.2 building for production...
+
+(!) outDir /tmp/pixice-focus-fork-fixes-build is not inside project root and will not be emptied.
+Use --emptyOutDir to override.
+
+transforming...
+✓ 801 modules transformed.
+rendering chunks...
+[plugin vite:reporter] 
+(!) /Users/blumenwagen/Developer/Loom/src/App.jsx is dynamically imported by /Users/blumenwagen/Developer/Loom/src/connect/ConnectRoot.jsx but also statically imported by /Users/blumenwagen/Developer/Loom/src/connect/execution-workspace.jsx, /Users/blumenwagen/Developer/Loom/src/connect/observer-workspace.jsx, /Users/blumenwagen/Developer/Loom/src/main.jsx, dynamic import will not move module into another chunk.
+
+computing gzip size...
+../../../../tmp/pixice-focus-fork-fixes-build/index.html                                                       0.81 kB │ gzip:   0.44 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/jetbrains-mono-vietnamese-wght-normal-Bt-aOZkq.woff2      7.50 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/manrope-vietnamese-wght-normal-usUDDRr7.woff2             8.52 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/jetbrains-mono-greek-wght-normal-Bw9x6K1M.woff2           9.00 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/manrope-greek-wght-normal-DL7QRZyv.woff2                  9.44 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/jetbrains-mono-cyrillic-wght-normal-D73BlboJ.woff2       12.11 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/manrope-cyrillic-wght-normal-Dvxsihut.woff2              14.50 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/manrope-latin-ext-wght-normal-Ch3YOpNY.woff2             15.12 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/jetbrains-mono-latin-ext-wght-normal-DBQx-q_a.woff2      15.20 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/manrope-latin-wght-normal-DHIcAJRg.woff2                 24.84 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/jetbrains-mono-latin-wght-normal-B9CIFXIH.woff2          40.40 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/focus-background-midnight-CVB3POtW.jpg                  408.59 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/focus-background-cozy-Df1xMmUc.jpg                      419.95 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/focus-background-golden-forest-D7fdtq1j.jpg             486.21 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/pixice-icon-DR-JakpI.png                              1,717.73 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/focus-background-dark-Ca9iNgre.png                    2,153.03 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/index-DG20Zg4-.css                                      420.76 kB │ gzip:  77.55 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/execution-workspace-C3FJfS_o.js                          30.23 kB │ gzip:   9.69 kB
+../../../../tmp/pixice-focus-fork-fixes-build/assets/index-Db3JzDJ0.js                                     1,580.66 kB │ gzip: 478.50 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 2.76s

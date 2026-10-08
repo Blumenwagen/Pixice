@@ -1,0 +1,16 @@
+
+ RUN  v3.2.4 /Users/blumenwagen/Developer/Loom
+
+ ✓ tests/focus-coordinator-context.test.js (5 tests) 31ms
+(node:66091) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/focus-session-renewal.test.js (32 tests) 3726ms
+   ✓ Focus session replacement behavior > exposes manual Focus reset through the real Connect API facade with authoritative events and stale CAS errors  409ms
+   ✓ Focus session replacement behavior > protects current and retired Focus forks, copied updates and search with remapped IDs=false  400ms
+   ✓ Focus session replacement behavior > protects current and retired Focus forks, copied updates and search with remapped IDs=true  404ms
+
+ Test Files  2 passed (2)
+      Tests  37 passed (37)
+   Start at  00:59:28
+   Duration  5.97s (transform 946ms, setup 0ms, collect 1.92s, tests 3.76s, environment 1ms, prepare 203ms)
+

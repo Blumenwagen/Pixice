@@ -84,6 +84,8 @@ export class ProviderRegistry extends EventEmitter {
     this.providers.set(provider.id, provider);
     provider.on("status", (status) => this.#handleStatus(provider, status));
     provider.on("event", (event) => {
+      const eventThreadId = event?.payload?.threadId ?? event?.payload?.thread?.id;
+      if (eventThreadId && this.database.getFocusForkCandidate?.(eventThreadId)) return;
       let providerRequestGeneration = event?.payload?.providerRequestGeneration;
       if (event?.payload?.method === "serverRequest/resolved") {
         const key = this.#requestKey(event.payload.requestId, provider.id);
@@ -140,10 +142,12 @@ export class ProviderRegistry extends EventEmitter {
       let authenticated = false;
       let externallyManagedAuth = provider.externallyManagedAuth?.() === true;
       let accountError = null;
+      let authSource = null;
       const lifecycle = await provider.lifecycle?.() ?? {};
       try {
         const result = provider.account ? await provider.account() : null;
         account = result?.account ?? null;
+        authSource = result?.authSource ?? null;
         ({ requiresAuth, authenticated } = authenticationState(result));
         externallyManagedAuth ||= result?.externallyManagedAuth === true;
       } catch (error) {
@@ -167,6 +171,7 @@ export class ProviderRegistry extends EventEmitter {
         status: this.statuses.get(provider.id) ?? { state: provider.connected ? "ready" : "unavailable" },
         ...lifecycle,
         account,
+        authSource,
         authenticated,
         externallyManagedAuth,
         requiresAuth,
@@ -261,9 +266,25 @@ export class ProviderRegistry extends EventEmitter {
     if (method === "thread/list" && !params.provider) return this.#listThreads(params);
 
     const provider = this.#providerForRequest(method, params);
+    if (params.threadId && this.database.getFocusForkCandidate?.(params.threadId)) {
+      throw new Error("This Focus fork candidate is quarantined. Its provider session is retained for diagnosis.");
+    }
     const prepared = this.#prepareParams(provider.id, params);
-    const response = await provider.request(method, prepared);
+    let response = await provider.request(method, prepared);
+    if (response?.thread?.id && this.database.getFocusForkCandidate?.(response.thread.id)) {
+      throw new Error("This Focus fork candidate is quarantined. Its provider session is retained for diagnosis.");
+    }
+    if (method === "thread/list") response = { ...response, data: (response?.data ?? []).filter((thread) => !this.database.getFocusForkCandidate?.(thread.id)) };
     return this.#rememberResponse(provider.id, method, prepared, response);
+  }
+
+  assertProtectedFocusForkSupported(threadId) {
+    // Neither current adapter guarantees creation identity when native fork
+    // fails. Do not start a protected copy until such a contract is verified.
+    // Ordinary forks do not call this gate. Existing candidate rows remain
+    // protected by exact identity, without extending old provider-wide guards.
+    const providerId = this.providerForThread(threadId);
+    throw new Error(`Forking protected Focus history is unsupported on ${providerId}: the provider cannot guarantee the created session identity if the fork fails. No fork was created. Continue in Focus, use /new to renew Focus, or create a normal task with the visible request.`);
   }
 
   respond(id, result, { provider: expectedProvider, generation: expectedGeneration } = {}) {
@@ -372,7 +393,7 @@ export class ProviderRegistry extends EventEmitter {
       if (params.provider && params.provider !== provider.id) return { providerId: provider.id, queried: false, data: [] };
       if (!provider.connected) return { providerId: provider.id, queried: false, data: [] };
       const response = await provider.request("thread/list", params);
-      const data = (response?.data ?? []).map((thread) => {
+      const data = (response?.data ?? []).filter((thread) => !this.database.getFocusForkCandidate?.(thread.id)).map((thread) => {
         this.#saveBinding(provider.id, { threadId: thread.id, providerThreadId: thread.providerThreadId, cwd: thread.cwd });
         const link = this.database.getThreadLink?.(thread.id);
         const linked = link ? { ...thread, parentThreadId: link.parentThreadId, bridge: link } : thread;
@@ -388,6 +409,7 @@ export class ProviderRegistry extends EventEmitter {
     const bindings = this.database.listThreadProviderBindings({ provider: params.provider, cwd: params.cwd });
     for (const binding of bindings) {
       if (queriedProviders.has(binding.provider)) continue;
+      if (this.database.getFocusForkCandidate?.(binding.threadId)) continue;
       if (byId.has(binding.threadId)) continue;
       const cached = persistedThread(this.database, binding);
       if (!cached) continue;

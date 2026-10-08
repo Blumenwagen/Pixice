@@ -1,19 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { bridgeEligibleModels, bridgeModelProfile, recommendBridgeModel } from "../electron/runtime/model-capabilities.mjs";
+import {
+  bridgeEligibleModels,
+  bridgeModelProfile,
+  recommendBridgeModel,
+  selectAdvertisedReasoningEffort
+} from "../electron/runtime/model-capabilities.mjs";
 
 describe("Pixice bridge model capabilities", () => {
-  it("allows only the Luna, Terra, and Sol members of the GPT 5.6 family", () => {
+  it("keeps curated GPT profiles and gives discovered future models an unrated profile", () => {
     const models = bridgeEligibleModels([
       { model: "gpt-5.6-luna", provider: "codex" },
       { model: "gpt-5.6-terra", provider: "codex" },
       { model: "gpt-5.6-sol", provider: "codex" },
-      { model: "gpt-5.6", provider: "codex" },
-      { model: "gpt-5.5", provider: "codex" }
+      { model: "gpt-7-nova", provider: "codex", isDefault: true },
+      { model: "gpt-7-hidden", provider: "codex", hidden: true },
+      { model: "gpt-7-image", provider: "codex", metadata: { type: "non-agent" } }
     ]);
 
-    expect(models.map((model) => model.model)).toEqual(["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]);
+    expect(models.map((model) => model.model)).toEqual(["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-7-nova"]);
     expect(models[0].bridge.ratings.costEfficiency).toBe(5);
     expect(models[2].bridge.ratings.reasoning).toBe(5);
+    expect(models[3].bridge).toMatchObject({ eligible: true, rated: false, ratings: null, label: "Discovered agent model" });
   });
 
   it("supports Astra and prefers it for demanding work with a Sol fallback", () => {
@@ -23,19 +30,44 @@ describe("Pixice bridge model capabilities", () => {
     expect(bridgeModelProfile(astra)).toMatchObject({ eligible: true, ratings: { reasoning: 5 } });
     expect(bridgeModelProfile("codex:gpt-6-astra").eligible).toBe(true);
     expect(bridgeModelProfile("gpt-6-astra-2026-09-01").eligible).toBe(true);
-    expect(bridgeModelProfile("gpt-6-astra-unknown").eligible).toBe(false);
+    expect(bridgeModelProfile("gpt-6-astra-unknown")).toMatchObject({ eligible: true, rated: true });
     expect(recommendBridgeModel([terra, sol, astra], "Review the architecture").modelId).toBe(astra.id);
     expect(recommendBridgeModel([terra, sol], "Review the architecture").modelId).toBe(sol.id);
     expect(recommendBridgeModel([terra, astra], "Implement an endpoint").modelId).toBe(terra.id);
     expect(recommendBridgeModel([astra], "Implement an endpoint")).toMatchObject({ modelId: astra.id, reason: expect.stringContaining("Astra") });
   });
 
-  it("keeps every Claude model and makes taste and UI strengths explicit", () => {
+  it("keeps future Claude models usable without fabricating taste or UI ratings", () => {
     expect(bridgeModelProfile({ model: "claude-opus-4-1", provider: "claude" })).toMatchObject({
       eligible: true,
       ratings: { ui: 5, taste: 5 }
     });
-    expect(bridgeModelProfile({ model: "future-claude-model", provider: "claude" }).eligible).toBe(true);
+    expect(bridgeModelProfile({ model: "claude-oracle-7", provider: "claude" })).toMatchObject({
+      eligible: true,
+      rated: false,
+      ratings: null
+    });
+  });
+
+  it("recommends an unfamiliar connected family and only selects advertised effort values", () => {
+    const future = {
+      id: "codex:gpt-7-nova",
+      model: "gpt-7-nova",
+      provider: "codex",
+      isDefault: true,
+      defaultReasoningEffort: "balanced",
+      supportedReasoningEfforts: [{ reasoningEffort: "balanced" }, { reasoningEffort: "low" }]
+    };
+    expect(recommendBridgeModel([future], "Implement the API")).toMatchObject({
+      modelId: future.id,
+      provider: "codex",
+      reason: expect.stringContaining("no curated capability rating")
+    });
+    expect(selectAdvertisedReasoningEffort(future, { preferLow: true })).toBe("low");
+    expect(selectAdvertisedReasoningEffort(future)).toBe("balanced");
+    expect(selectAdvertisedReasoningEffort({ ...future, defaultReasoningEffort: "unsupported" })).toBe("balanced");
+    expect(selectAdvertisedReasoningEffort({ model: "gpt-8", defaultReasoningEffort: "economy" })).toBe("economy");
+    expect(selectAdvertisedReasoningEffort({ model: "claude-oracle-7" })).toBeNull();
   });
 
   it("prefers GPT by default and reserves Claude preference for explicit, UI, taste, or availability cases", () => {

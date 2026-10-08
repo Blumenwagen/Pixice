@@ -1,0 +1,148 @@
+{
+  "workId": "74b6938b-8f0c-40a7-97b5-bc4775e6f533",
+  "directionRevision": 12,
+  "acknowledged": true,
+  "permissionFailures": [],
+  "date": "2026-09-30",
+  "acceptance": "Independent review required; no complete_work call.",
+  "probe": {
+    "path": "/tmp/pixice-voice-independent-probe.mjs",
+    "before": {
+      "disposableService": true,
+      "fakeNative": true,
+      "publicIdReacquiresLease": true,
+      "ordinaryRpcPreparedVoice": true,
+      "nativeStartWhileFrozen": 1,
+      "ordinaryRpcReceivedFakeSdp": true,
+      "registrationCached": true
+    },
+    "after": {
+      "ordinaryNonvoiceSameIdLeaseCompatibility": true,
+      "voiceAttachDenied": true,
+      "denial": "Voice requires the private desktop bootstrap authority.",
+      "exitCode": 1,
+      "note": "The original success-oriented probe aborts at the intended denial; finally closes service and deletes disposable data. No probe source edits."
+    }
+  },
+  "fixes": {
+    "p1": {
+      "provisioning": "Random per-service private OS file, mode 0600, service owner nonce binding, never in public descriptor or RPC response. Electron main reads it directly. Service restart rotates it; successful shutdown removes it.",
+      "verification": "Private proof is required for trusted registration and every trusted lease operation. Public ID cannot reacquire a trusted lease. Legacy nonvoice registration cannot mint voice ownership. Expiry, replacement and restart revoke previous lease/owner proofs.",
+      "recovery": "All native and voice operations bypass server recovery records/results. Public status, generic events, audit, descriptors and tested command records exclude proof, trusted lease, owner handle and fake SDP.",
+      "fileBoundary": "Protected inode rejects application preview/read/write, workflow File/Skill reads and Git diff reads, including tested hardlink/symlink aliases. Bootstrap excluded by existing backup whitelist.",
+      "limit": "Does not resist arbitrary same-OS-user private file/process access or authorized arbitrary command/code execution. No general user/account auth migration."
+    },
+    "p2": {
+      "permission": "speaker-selection checks and requests both validate owning desktop contents, top frame and trusted URL. Checks additionally validate requesting security origin; packaged file origin is distinct from full requestingUrl.",
+      "evidence": [
+        "node_modules/electron/electron.d.ts:12734",
+        "node_modules/electron/electron.d.ts:21743",
+        "https://github.com/electron/electron/blob/v38.7.2/shell/browser/electron_permission_manager.cc#L289",
+        "https://github.com/electron/electron/blob/v38.7.2/shell/common/gin_converters/content_converter.cc#L221"
+      ],
+      "tests": "Trusted/foreign/null contents, subframes, foreign origin, navigated owners and packaged origins. All device/OS APIs mocked."
+    },
+    "freeze": {
+      "contract": "Frozen host rejects prepare/start/appends. Stop/snapshot and lifecycle cleanup remain callable. Check repeats after async native start metadata before native start/input.",
+      "tests": "Prepared frozen session rejects start and all three append handlers with voice_host_frozen and zero native calls; pending start metadata cannot cross freeze; failed shutdown still permits explicit cleanup retry."
+    },
+    "renewalFixture": {
+      "test": "follows authoritative Focus renewal while retaining the project draft and work rail",
+      "priorSubmission": {
+        "test": "follows authoritative Focus renewal while retaining the project draft and work rail",
+        "location": "tests/app.test.jsx:1855",
+        "failedRun": {
+          "passed": 43,
+          "failed": 1,
+          "skipped": 142
+        },
+        "isolatedRerun": {
+          "passed": 1,
+          "skipped": 169
+        },
+        "fullFilteredRerun": {
+          "passed": 44,
+          "skipped": 142
+        },
+        "codeChangesBetweenAttempts": false,
+        "cause": "Unconfirmed. Existing loading-state readiness timing is a plausible explanation."
+      },
+      "instrumentedBeforeFix": {
+        "executions": 8,
+        "failed": 2,
+        "passed": 6,
+        "failedSendDisabled": true,
+        "failedPromptDisabled": true,
+        "failedLoadingIndicator": false,
+        "selectedThread": "renewed-focus",
+        "ensureCalls": 2
+      },
+      "readinessWaitOnly": {
+        "executions": 10,
+        "failed": 10,
+        "passed": 0
+      },
+      "readInstrumentation": {
+        "requestedThread": "renewed-focus",
+        "returnedThread": "ongoing-worker",
+        "failed": 1
+      },
+      "correction": "Scope the threads.read fixture to return the authoritative replacement thread and wait for its actual read, selected thread and enabled prompt/Send.",
+      "afterCompleteFix": {
+        "serialExecutions": 10,
+        "passed": 10,
+        "failed": 0,
+        "fullFilteredGroupPassed": 44,
+        "skipped": 142
+      },
+      "assertionPreserved": "turns.start receives renewed-focus and the exact retained draft."
+    }
+  },
+  "retainedTradeoffs": [
+    "Raw stderr stays suppressed after first attempted realtime start until process replacement.",
+    "No automatic voice attachment or media resume. General nonvoice helper reconnection remains existing behavior."
+  ],
+  "verification": {
+    "distinctTests": 265,
+    "files": 25,
+    "originalVoiceTests": 37,
+    "expandedFoundationTests": 41,
+    "syntaxFiles": 29,
+    "desktopBuildModules": 801,
+    "diffCheck": "passed",
+    "protocolMetadataInspector": "0.159.0 matched"
+  },
+  "changedPathsThisContinuation": [
+    "electron/backend/application.mjs",
+    "electron/backend/service.mjs",
+    "electron/backend/native-bridge.mjs",
+    "electron/backend/paths.mjs",
+    "electron/backend/desktop-authority.mjs",
+    "electron/main.mjs",
+    "electron/native/helper-client.mjs",
+    "electron/native/desktop-permissions.mjs",
+    "electron/runtime/voice-application.mjs",
+    "electron/runtime/voice-session.mjs",
+    "electron/runtime/preview-files.mjs",
+    "electron/connect/application-protocol.mjs",
+    "electron/workflows/workflow-node-executors.mjs",
+    "electron/workflows/workflow-skill-node.mjs",
+    "electron/git/worktrees.mjs",
+    "tests/voice-application.test.js",
+    "tests/voice-native-security.test.js",
+    "tests/app.test.jsx",
+    "work/voice-integration/HANDOFF.md",
+    "work/voice-integration/verification.json",
+    "work/voice-integration/review-fixes.json"
+  ],
+  "excluded": [
+    "src/App.jsx",
+    "voice prototypes",
+    "final visual/settings UI",
+    "live microphone/voice/provider turns/rotations",
+    "production DB",
+    "install/relaunch/commit/push",
+    "unmanaged workers",
+    "self acceptance"
+  ]
+}

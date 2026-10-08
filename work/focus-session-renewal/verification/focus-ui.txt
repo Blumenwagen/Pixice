@@ -1,0 +1,15 @@
+
+ RUN  v3.2.4 /Users/blumenwagen/Developer/Loom
+
+ ✓ tests/focus-coordinator-questions.test.jsx (6 tests) 241ms
+ ✓ tests/focus-coordination.test.jsx (9 tests) 325ms
+ ✓ tests/app.test.jsx (170 tests | 151 skipped) 3525ms
+   ✓ Pixice app shell > opens the project's single Focus coordinator without replacing Workspace  556ms
+   ✓ Pixice app shell > shows Focus project shortcuts up to the limit and puts remaining projects in an accessible overflow menu  581ms
+   ✓ Pixice app shell > runs typed /usage through Pixice and keeps unsupported commands sendable as text  569ms
+
+ Test Files  3 passed (3)
+      Tests  34 passed | 151 skipped (185)
+   Start at  00:03:01
+   Duration  5.67s (transform 1.32s, setup 518ms, collect 2.90s, tests 4.09s, environment 1.10s, prepare 178ms)
+

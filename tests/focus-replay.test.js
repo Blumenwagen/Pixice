@@ -162,7 +162,6 @@ describe('confirmed worker stopping', () => {
   it.each(['pause', 'cancel'])('reserves worker capacity and overlapping resources after %s RPC acceptance', async action => {
     let live;
     const f = fixture({ readThread: async () => ({ thread: { turns: [{ id: live.turnId, status: 'inProgress' }] } }) });
-    f.store.updatePolicy('project', { maxWorkers: 2 });
     const work = await f.supervisor.dispatch('project', { title: 'First', resources: ['src/shared'] });
     await tick(); live = f.store.getWork('project', work.id);
     await f.supervisor.control('project', work.id, { action }); await tick();
@@ -204,11 +203,11 @@ describe('confirmed worker stopping', () => {
   });
 
   it('retains an unconfirmed stop reservation when the exact turn cannot be read', async () => {
-    const f = fixture(); f.store.updatePolicy('project', { maxWorkers: 1 });
-    const work = await f.supervisor.dispatch('project', { title: 'Stop unavailable', access: 'read' }); await tick();
+    const f = fixture();
+    const work = await f.supervisor.dispatch('project', { title: 'Stop unavailable', resources: ['src/shared'] }); await tick();
     await f.supervisor.control('project', work.id, { action: 'pause' }); await tick();
     expect(f.store.getWork('project', work.id)).toMatchObject({ status: 'needs-attention', stopRequested: 'pause' });
-    await f.supervisor.dispatch('project', { title: 'Next', access: 'read' }); await tick();
+    await f.supervisor.dispatch('project', { title: 'Next', resources: ['src/shared'] }); await tick();
     expect(f.startWorker).toHaveBeenCalledTimes(1);
     await expect(f.supervisor.control('project', work.id, { action: 'resume' })).rejects.toThrow(/settle/);
   });

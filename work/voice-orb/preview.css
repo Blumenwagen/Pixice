@@ -1,0 +1,20 @@
+@import '@fontsource-variable/manrope';
+* { box-sizing: border-box; }
+body { margin: 0; background: #111113; font-family: 'Manrope Variable', sans-serif; }
+main { min-height: 100vh; padding: 40px 32px 28px; color: #f0eef2; background: #111113; }
+main.light { color: #29262c; background: #f1eeea; }
+header, footer { max-width: 980px; margin: auto; }
+header > p:first-child { font-size: 10px; letter-spacing: .16em; opacity: .5; }
+h1 { font-size: 30px; font-weight: 500; letter-spacing: -.04em; margin: 14px 0 8px; }
+.intro, footer { font-size: 12px; opacity: .56; }
+nav { display: flex; gap: 8px; flex-wrap: wrap; max-width: 980px; margin: 24px auto 0; align-items: center; }
+button { color: inherit; background: transparent; border: 1px solid #8884; padding: 8px 14px; border-radius: 24px; font: inherit; font-size: 11px; cursor: pointer; }
+label { font-size: 11px; display: flex; align-items: center; gap: 8px; margin-left: auto; }
+input { width: 100px; accent-color: #ff5364; }
+.hero { display: flex; flex-direction: column; align-items: center; padding: 12px 0 22px; }
+.hero p { font-size: 11px; margin: -8px 0 0; opacity: .6; }
+.phases { display: grid; grid-template-columns: repeat(6, 1fr); max-width: 1000px; margin: 0 auto 50px; }
+figure { margin: 0; text-align: center; min-width: 0; }
+figcaption { text-transform: capitalize; font-size: 11px; opacity: .65; }
+footer { border-top: 1px solid #8883; padding-top: 18px; line-height: 1.7; }
+@media(max-width: 650px) { main { padding: 24px 20px; } h1 { font-size: 25px; } label { margin: 10px 0 0; width: 100%; } .hero { padding: 4px 0 30px; } .phases { grid-template-columns: repeat(2, 1fr); gap: 16px 4px; margin-bottom: 28px; } }

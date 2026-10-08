@@ -84,6 +84,7 @@ async function fixture({ nested = false } = {}) {
   const client = new ApplicationClient({ id: service.descriptor.hostId, endpoint: service.descriptor.endpoint, token: service.descriptor.token }, { probe: "service.status" });
   cleanups.push(() => client.close());
   await client.connect();
+  await client.call("app.saveSettings", { threadNamingModel: "off" });
   const project = await client.call("projects.create", { displayName: "Feature project", icon: "folder", color: "gray", folders: [folder] });
   return { directory, repository, folder, git, provider, service, client, project };
 }

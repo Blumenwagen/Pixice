@@ -144,4 +144,3 @@ export const headingInputRule = new InputRule({
     return undefined;
   },
 });
-

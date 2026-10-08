@@ -1,0 +1,72 @@
+.stage-visual[data-concept="hybrid"] .hybrid-stage-inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 18px;
+  padding-bottom: 18px;
+}
+
+.hybrid-aura-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* VoiceBeam blooms upward from this host's bottom edge (its own native
+   behavior — "a beam along the bottom edge of the wrapped element"), so the
+   wrap is positioned with its bottom edge near the aura core's base rather
+   than centered in its own card. The wrap itself has no background/border:
+   only the aura canvas behind it and the real VoiceBeam glow are visible. */
+.hybrid-band-host-wrap {
+  position: absolute;
+  left: 50%;
+  bottom: 33%;
+  transform: translateX(-50%);
+  width: min(380px, 58%);
+  height: 176px;
+  pointer-events: none;
+}
+
+/* Mirrors src/styles.css's incumbent .composer-voice-beam / -host rules
+   (width/height explicitly set on the beam itself, not inferred from
+   inset alone) so sizing matches the real production usage exactly. */
+.hybrid-voice-beam { z-index: 2; width: 100%; height: 100%; }
+.hybrid-band-host { display: block; width: 100%; height: 100%; }
+
+.hybrid-transcribe-control {
+  position: relative;
+  z-index: 3;
+  width: min(420px, 82%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.hybrid-transcribe-toggle {
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.hybrid-transcribe-toggle[aria-pressed="true"] {
+  background: color-mix(in oklab, var(--surface) 55%, var(--primary) 20%);
+  border-color: color-mix(in oklab, var(--primary) 45%, var(--border));
+  color: var(--primary-bright);
+}
+
+.hybrid-transcribe-note {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--quiet);
+}

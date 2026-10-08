@@ -1,0 +1,20 @@
+
+ RUN  v3.2.4 /Users/blumenwagen/Developer/Loom
+
+ ✓ tests/focus-coordinator-questions.test.jsx (6 tests) 289ms
+ ✓ tests/focus-coordination.test.jsx (9 tests) 399ms
+stderr | tests/app.test.jsx > Pixice app shell > keeps a pending fork with its source project when the user switches projects
+You are trying to animate opacity from "undefined" to "1". "undefined" is not an animatable value.. For more information and steps for solving, visit https://motion.dev/troubleshooting/value-not-animatable
+You are trying to animate opacity from "undefined" to "1". "undefined" is not an animatable value.. For more information and steps for solving, visit https://motion.dev/troubleshooting/value-not-animatable
+
+ ✓ tests/app.test.jsx (170 tests | 142 skipped) 5012ms
+   ✓ Pixice app shell > opens the project's single Focus coordinator without replacing Workspace  618ms
+   ✓ Pixice app shell > shows Focus project shortcuts up to the limit and puts remaining projects in an accessible overflow menu  549ms
+   ✓ Pixice app shell > runs typed /usage through Pixice and keeps unsupported commands sendable as text  574ms
+   ✓ Pixice app shell > forks a Side Thread answer into the main task list instead of nesting another Preview chat  335ms
+
+ Test Files  3 passed (3)
+      Tests  43 passed | 142 skipped (185)
+   Start at  00:28:32
+   Duration  7.27s (transform 1.57s, setup 368ms, collect 3.37s, tests 5.70s, environment 711ms, prepare 147ms)
+

@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { projectRendererThread } from "../runtime/renderer-thread-projection.mjs";
 
 function localDayKey(value) {
   const date = new Date(value);
@@ -395,6 +396,47 @@ export class PixiceDatabase {
       }
 
       const projectColumns = new Set(this.db.prepare("PRAGMA table_info(projects)").all().map((column) => column.name));
+      const focusColumns = new Set(this.db.prepare("PRAGMA table_info(project_focus_sessions)").all().map((column) => column.name));
+      for (const [name, definition] of Object.entries({ generation: "INTEGER NOT NULL DEFAULT 1", revision: "INTEGER NOT NULL DEFAULT 1", session_turn_count: "INTEGER NOT NULL DEFAULT 0", stopped: "INTEGER NOT NULL DEFAULT 0", latest_request: "TEXT NOT NULL DEFAULT ''", handoff: "TEXT NOT NULL DEFAULT ''", renewal_evidence: "TEXT NOT NULL DEFAULT '{}'" })) {
+        if (!focusColumns.has(name)) this.db.exec(`ALTER TABLE project_focus_sessions ADD COLUMN ${name} ${definition}`);
+      }
+      if (!focusColumns.has("session_turn_count")) this.db.exec("UPDATE project_focus_sessions SET session_turn_count = user_turn_count");
+      this.db.exec(`CREATE TABLE IF NOT EXISTS project_focus_generations (
+        thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, generation INTEGER NOT NULL,
+        created_at TEXT NOT NULL, FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      INSERT OR IGNORE INTO project_focus_generations (thread_id, project_id, generation, created_at)
+        SELECT thread_id, project_id, generation, created_at FROM project_focus_sessions;`);
+      this.db.exec(`CREATE TABLE IF NOT EXISTS project_focus_context_parts (
+        thread_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        PRIMARY KEY(thread_id, fingerprint)
+      );`);
+      this.db.exec(`CREATE TABLE IF NOT EXISTS project_focus_fork_threads (
+        thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_thread_id TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS project_focus_copied_context (
+        thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, item_id TEXT NOT NULL,
+        message_fingerprint TEXT NOT NULL, context_fingerprint TEXT NOT NULL,
+        origin_thread_id TEXT NOT NULL,
+        PRIMARY KEY(thread_id, turn_id, item_id),
+        FOREIGN KEY(thread_id) REFERENCES project_focus_fork_threads(thread_id) ON DELETE CASCADE
+      );`);
+      this.db.exec(`CREATE TABLE IF NOT EXISTS project_focus_fork_candidates (
+        thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_thread_id TEXT NOT NULL,
+        provider TEXT NOT NULL, operation_id TEXT NOT NULL, identity TEXT NOT NULL,
+        disposition TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS project_focus_fork_operations (
+        operation_id TEXT PRIMARY KEY, provider TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL,
+        source_thread_id TEXT NOT NULL, disposition TEXT NOT NULL DEFAULT 'pending',
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS project_focus_fork_known_threads (
+        operation_id TEXT NOT NULL, thread_id TEXT NOT NULL, PRIMARY KEY(operation_id, thread_id),
+        FOREIGN KEY(operation_id) REFERENCES project_focus_fork_operations(operation_id) ON DELETE CASCADE
+      );`);
       if (!projectColumns.has("icon")) this.db.exec("ALTER TABLE projects ADD COLUMN icon TEXT NOT NULL DEFAULT 'folder'");
       if (!projectColumns.has("color")) this.db.exec("ALTER TABLE projects ADD COLUMN color TEXT NOT NULL DEFAULT 'blue'");
       if (!projectColumns.has("last_used_at")) this.db.exec("ALTER TABLE projects ADD COLUMN last_used_at TEXT");
@@ -621,6 +663,13 @@ export class PixiceDatabase {
     return row ? {
       projectId: row.project_id,
       threadId: row.thread_id,
+      generation: row.generation,
+      revision: row.revision,
+      sessionTurnCount: row.session_turn_count,
+      stopped: Boolean(row.stopped),
+      latestRequest: row.latest_request,
+      handoff: row.handoff,
+      renewalEvidence: parsedJson(row.renewal_evidence, {}),
       userTurnCount: row.user_turn_count,
       lastMemoryReviewTurn: row.last_memory_review_turn,
       createdAt: row.created_at,
@@ -635,11 +684,14 @@ export class PixiceDatabase {
 
   saveProjectFocusSession({ projectId, threadId }) {
     const now = new Date().toISOString();
-    this.db.prepare(`
+    const saved = this.db.prepare(`
       INSERT INTO project_focus_sessions (project_id, thread_id, created_at, updated_at)
       VALUES (?, ?, ?, ?)
-      ON CONFLICT(project_id) DO UPDATE SET thread_id=excluded.thread_id, updated_at=excluded.updated_at
+      ON CONFLICT(project_id) DO NOTHING
     `).run(projectId, threadId, now, now);
+    if (!saved.changes && this.getProjectFocusSession(projectId)?.threadId !== threadId) throw new Error("Focus coordinator already exists. Renew it with a generation check.");
+    this.db.prepare("INSERT OR IGNORE INTO project_focus_generations (thread_id, project_id, generation, created_at) VALUES (?, ?, ?, ?)")
+      .run(threadId, projectId, this.getProjectFocusSession(projectId).generation, now);
     this.db.prepare(`
       INSERT OR IGNORE INTO project_focus_memory (project_id, created_at, updated_at)
       VALUES (?, ?, ?)
@@ -649,13 +701,134 @@ export class PixiceDatabase {
     return this.getProjectFocusSession(projectId);
   }
 
-  incrementProjectFocusTurn(projectId, threadId) {
+  getFocusProjectForThread(threadId) {
+    return this.db.prepare("SELECT project_id FROM project_focus_generations WHERE thread_id = ?").get(threadId)?.project_id ?? null;
+  }
+
+  listProjectFocusGenerations(projectId) {
+    return this.db.prepare("SELECT thread_id AS threadId, generation, created_at AS createdAt FROM project_focus_generations WHERE project_id = ? ORDER BY generation").all(projectId);
+  }
+
+  rememberFocusContextPart(threadId, fingerprint) {
+    this.db.prepare("INSERT OR IGNORE INTO project_focus_context_parts (thread_id, fingerprint) VALUES (?, ?)").run(threadId, fingerprint);
+  }
+
+  hasFocusContextPart(threadId, fingerprint) {
+    return Boolean(this.db.prepare("SELECT 1 FROM project_focus_context_parts WHERE thread_id = ? AND fingerprint = ?").get(threadId, fingerprint));
+  }
+
+  focusHistoryProjectForThread(threadId) {
+    return this.getFocusProjectForThread(threadId) ?? this.db.prepare("SELECT project_id FROM project_focus_fork_threads WHERE thread_id = ?").get(threadId)?.project_id ?? null;
+  }
+
+  getFocusForkCandidate(threadId) {
+    return this.db.prepare("SELECT * FROM project_focus_fork_candidates WHERE thread_id = ?").get(threadId) ?? null;
+  }
+
+  // Legacy incident metadata is retained for diagnosis only. It never admits
+  // new candidate IDs or grants authority to release an existing quarantine.
+  getFocusForkOperation(provider) {
+    return this.db.prepare("SELECT * FROM project_focus_fork_operations WHERE provider = ?").get(provider) ?? null;
+  }
+
+  // Fork proof is per copied message, never a thread-wide inherited allowlist.
+  focusContextProof(threadId, text, { item, turnId } = {}) {
+    if (!threadId) return null;
+    const fingerprint = createHash("sha256").update(text).digest("hex");
+    if (this.getFocusProjectForThread(threadId) && this.hasFocusContextPart(threadId, fingerprint)) return { originThreadId: threadId, fingerprint };
+    if (item?.type !== "userMessage" || !item.id || !turnId) return null;
+    const messageFingerprint = createHash("sha256").update(JSON.stringify(item.content ?? [])).digest("hex");
+    const row = this.db.prepare(`SELECT copied.origin_thread_id FROM project_focus_copied_context AS copied
+      JOIN project_focus_fork_threads AS fork ON fork.thread_id = copied.thread_id
+      JOIN project_focus_generations AS origin ON origin.thread_id = copied.origin_thread_id AND origin.project_id = fork.project_id
+      WHERE copied.thread_id = ? AND copied.turn_id = ? AND copied.item_id = ?
+        AND copied.context_fingerprint = ? AND copied.message_fingerprint = ?`)
+      .get(threadId, turnId, item.id, fingerprint, messageFingerprint);
+    return row ? { originThreadId: row.origin_thread_id, fingerprint } : null;
+  }
+
+  focusForkCopyPlan(projectId, sourceThread, lastTurnId, lastItemId) {
+    const sourceProject = this.focusHistoryProjectForThread(sourceThread.id);
+    if (!sourceProject) return null;
+    if (sourceProject !== projectId) throw new Error("Focus fork source belongs to another project.");
+    const lastIndex = (sourceThread.turns ?? []).findIndex((turn) => turn.id === lastTurnId);
+    if (lastIndex < 0) throw new Error("Focus fork boundary was not found.");
+    const turns = sourceThread.turns.slice(0, lastIndex + 1).map((turn, index) => ({ ...turn,
+      items: index === lastIndex ? turn.items.slice(0, turn.items.findIndex((item) => item.id === lastItemId) + 1) : turn.items }));
+    const copies = [];
+    turns.forEach((turn, turnIndex) => {
+      (turn.items ?? []).filter((item) => item.type === "userMessage").forEach((item, userIndex) => {
+        // Use the exact same supported prefix/layout check as renderer projection.
+        projectRendererThread({ id: sourceThread.id, turns: [{ id: turn.id, items: [item] }] }, () => (text, context) => {
+          const proof = this.focusContextProof(sourceThread.id, text, context);
+          if (proof) copies.push({ turnIndex, userIndex, sourceItemId: item.id, contextText: text,
+            content: JSON.stringify(item.content ?? []), ...proof });
+          return Boolean(proof);
+        });
+      });
+    });
+    return { projectId, sourceThreadId: sourceThread.id, copies };
+  }
+
+  inheritFocusForkContext(plan, targetThread) {
+    if (!plan) return;
+    const candidate = this.getFocusForkCandidate(targetThread.id);
+    if (candidate) {
+      throw new Error("Focus fork candidate authority changed before publication.");
+    }
+    if (this.focusHistoryProjectForThread(plan.sourceThreadId) !== plan.projectId || targetThread.id === plan.sourceThreadId
+      || this.focusHistoryProjectForThread(targetThread.id)) throw new Error("Focus fork provenance changed or target is not independent.");
+    const rows = plan.copies.map((copy) => {
+      const turn = targetThread.turns?.[copy.turnIndex];
+      const item = (turn?.items ?? []).filter((candidate) => candidate.type === "userMessage")[copy.userIndex];
+      if (!turn?.id || !item?.id || JSON.stringify(item.content ?? []) !== copy.content
+        || this.getFocusProjectForThread(copy.originThreadId) !== plan.projectId) throw new Error("Cannot verify the copied Focus context in this fork.");
+      return { ...copy, turnId: turn.id, itemId: item.id, messageFingerprint: createHash("sha256").update(copy.content).digest("hex") };
+    });
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("INSERT INTO project_focus_fork_threads (thread_id, project_id, source_thread_id) VALUES (?, ?, ?)").run(targetThread.id, plan.projectId, plan.sourceThreadId);
+      const insert = this.db.prepare(`INSERT INTO project_focus_copied_context
+        (thread_id, turn_id, item_id, message_fingerprint, context_fingerprint, origin_thread_id) VALUES (?, ?, ?, ?, ?, ?)`);
+      for (const row of rows) insert.run(targetThread.id, row.turnId, row.itemId, row.messageFingerprint, row.fingerprint, row.originThreadId);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  replaceProjectFocusSession({ projectId, threadId, expectedGeneration, expectedRevision, handoff, evidence }) {
+    if (String(handoff).length > 24_500) throw new Error("Focus handoff exceeds its bounded capacity.");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.db.prepare(`UPDATE project_focus_sessions SET thread_id = ?, generation = generation + 1,
+        revision = revision + 1, session_turn_count = 0, handoff = ?, renewal_evidence = ?, updated_at = ?
+        WHERE project_id = ? AND generation = ? AND revision = ?`).run(threadId, handoff, JSON.stringify(evidence), new Date().toISOString(), projectId, expectedGeneration, expectedRevision);
+      if (!result.changes) throw new Error("Focus session changed during renewal. Reload before retrying.");
+      const session = this.getProjectFocusSession(projectId);
+      this.db.prepare("INSERT INTO project_focus_generations (thread_id, project_id, generation, created_at) VALUES (?, ?, ?, ?)")
+        .run(threadId, projectId, session.generation, session.updatedAt);
+      this.db.exec("COMMIT");
+      return session;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  setProjectFocusStopped(projectId, stopped) {
+    this.db.prepare("UPDATE project_focus_sessions SET stopped = ?, revision = revision + 1 WHERE project_id = ?")
+      .run(stopped ? 1 : 0, projectId);
+    return this.getProjectFocusSession(projectId);
+  }
+
+  incrementProjectFocusSessionTurn(projectId, threadId) {
+    this.db.prepare("UPDATE project_focus_sessions SET session_turn_count = session_turn_count + 1, revision = revision + 1 WHERE project_id = ? AND thread_id = ?")
+      .run(projectId, threadId);
+  }
+
+  incrementProjectFocusTurn(projectId, threadId, request = null) {
     const updatedAt = new Date().toISOString();
     this.db.prepare(`
       UPDATE project_focus_sessions
-      SET user_turn_count = user_turn_count + 1, updated_at = ?
+      SET user_turn_count = user_turn_count + 1, revision = revision + 1, updated_at = ?, latest_request = COALESCE(?, latest_request)
       WHERE project_id = ? AND thread_id = ?
-    `).run(updatedAt, projectId, threadId);
+    `).run(updatedAt, request === null ? null : String(request).slice(0, 2000), projectId, threadId);
     return this.getProjectFocusSession(projectId);
   }
 
@@ -717,6 +890,7 @@ export class PixiceDatabase {
           created_at
         FROM project_focus_history_fts
         WHERE project_id = ? AND project_focus_history_fts MATCH ?
+          AND NOT EXISTS (SELECT 1 FROM project_focus_fork_candidates WHERE thread_id = project_focus_history_fts.thread_id)
         ORDER BY rank LIMIT ?
       `).all(projectId, expression, boundedLimit).map((row) => ({
         threadId: row.thread_id,
@@ -731,6 +905,7 @@ export class PixiceDatabase {
       SELECT thread_id, item_id, role, content, created_at
       FROM project_focus_history
       WHERE project_id = ? AND content LIKE ?
+        AND NOT EXISTS (SELECT 1 FROM project_focus_fork_candidates WHERE thread_id = project_focus_history.thread_id)
       ORDER BY created_at DESC LIMIT ?
     `).all(projectId, pattern, boundedLimit).map((row) => ({
       threadId: row.thread_id,
@@ -1507,24 +1682,23 @@ export class PixiceDatabase {
         snapshot=excluded.snapshot, summary=excluded.summary, updated_at=excluded.updated_at
     `).run(threadId, JSON.stringify(snapshot), JSON.stringify(providerThreadSummary(snapshot)), updatedAt);
     this.db.prepare("DELETE FROM provider_thread_active_turns WHERE thread_id = ? AND updated_at <= ?").run(threadId, updatedAt);
-    const focus = this.getProjectFocusSessionByThread(threadId);
-    if (focus) this.#indexFocusSnapshot(focus.projectId, threadId, snapshot);
+    const focusProjectId = this.focusHistoryProjectForThread(threadId);
+    if (focusProjectId && !this.getFocusForkCandidate(threadId)) this.#indexFocusSnapshot(focusProjectId, threadId, snapshot);
   }
 
   saveProviderThreadSummary(threadId, summary) {
     const updatedAt = this.#nextProviderWriteTimestamp(threadId);
-    const existing = this.db.prepare("SELECT snapshot FROM provider_thread_snapshots WHERE thread_id = ?").get(threadId);
-    const snapshot = existing ? parsedJson(existing.snapshot, {}) : summary;
     this.db.prepare(`
       INSERT INTO provider_thread_snapshots (thread_id, snapshot, summary, updated_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(thread_id) DO UPDATE SET
         summary=excluded.summary
-    `).run(threadId, JSON.stringify(snapshot), JSON.stringify(providerThreadSummary(summary)), updatedAt);
+    `).run(threadId, JSON.stringify(summary), JSON.stringify(providerThreadSummary(summary)), updatedAt);
   }
 
   #indexFocusSnapshot(projectId, threadId, snapshot) {
-    const entries = focusHistoryItems(snapshot);
+    const entries = focusHistoryItems(projectRendererThread(snapshot, (origin) => (text, context) =>
+      Boolean(this.focusContextProof(origin, text, context))));
     const insert = this.db.prepare(`
       INSERT INTO project_focus_history (project_id, thread_id, item_id, role, content, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -1566,7 +1740,7 @@ export class PixiceDatabase {
   }
 
   listProviderThreadSummaries({ provider, cwd } = {}) {
-    const clauses = [];
+    const clauses = ["NOT EXISTS (SELECT 1 FROM project_focus_fork_candidates WHERE thread_id = bindings.thread_id)"];
     const values = [];
     if (provider) {
       clauses.push("bindings.provider = ?");
@@ -1619,6 +1793,7 @@ export class PixiceDatabase {
       SELECT bindings.*, snapshots.summary
       FROM thread_provider_bindings AS bindings
       JOIN provider_thread_snapshots AS snapshots ON snapshots.thread_id = bindings.thread_id
+      WHERE NOT EXISTS (SELECT 1 FROM project_focus_fork_candidates WHERE thread_id = bindings.thread_id)
       ORDER BY bindings.updated_at DESC LIMIT ?
     `).all(boundedLimit).map(mapThread);
     const pinnedThreads = pinned.length ? this.db.prepare(`
@@ -1626,6 +1801,7 @@ export class PixiceDatabase {
       FROM thread_provider_bindings AS bindings
       JOIN provider_thread_snapshots AS snapshots ON snapshots.thread_id = bindings.thread_id
       WHERE bindings.thread_id IN (${pinned.map(() => "?").join(",")})
+        AND NOT EXISTS (SELECT 1 FROM project_focus_fork_candidates WHERE thread_id = bindings.thread_id)
     `).all(...pinned).map(mapThread) : [];
     const recentResults = this.db.prepare("SELECT thread_id, data, updated_at FROM task_results ORDER BY updated_at DESC LIMIT ?").all(boundedLimit);
     const pinnedResults = pinned.length ? this.db.prepare(`
@@ -1634,11 +1810,12 @@ export class PixiceDatabase {
     `).all(...pinned) : [];
     const taskResults = [...new Map([...recentResults, ...pinnedResults].map((row) => [row.thread_id, row])).values()]
       .map((row) => ({ threadId: row.thread_id, updatedAt: row.updated_at, data: parsedJson(row.data, null) }))
-      .filter((row) => row.data && typeof row.data === "object");
+      .filter((row) => row.data && typeof row.data === "object" && !this.getFocusForkCandidate(row.threadId));
     return { providerThreads: [...new Map([...recentThreads, ...pinnedThreads].map((thread) => [thread.id, thread])).values()], taskResults };
   }
 
   getProviderThreadSummary(threadId) {
+    if (this.getFocusForkCandidate(threadId)) return null;
     const row = this.db.prepare(`
       SELECT snapshots.summary, bindings.forked_from_id
       FROM provider_thread_snapshots AS snapshots
@@ -1651,6 +1828,11 @@ export class PixiceDatabase {
   }
 
   getProviderThreadSnapshot(threadId) {
+    if (this.getFocusForkCandidate(threadId)) return null;
+    return this.getProviderThreadSnapshotForDiagnosis(threadId);
+  }
+
+  getProviderThreadSnapshotForDiagnosis(threadId) {
     const row = this.db.prepare(`
       SELECT snapshots.snapshot, snapshots.updated_at AS snapshot_updated_at, bindings.forked_from_id,
         active.turn, active.updated_at AS active_updated_at

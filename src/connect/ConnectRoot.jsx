@@ -703,7 +703,7 @@ export function ConnectRoot({ children }) {
     if (navigationHandledRef.current) return;
     navigationHandledRef.current = true;
     const previewParameters = new URLSearchParams(window.location.search);
-    if (import.meta.env.DEV && ["task-results-preview", "task-progress-preview", "git-setup-preview", "operation-capsule-preview"].some((key) => previewParameters.has(key))) return;
+    if (import.meta.env.DEV && ["task-results-preview", "task-progress-preview", "git-setup-preview", "operation-capsule-preview", "devday-preview"].some((key) => previewParameters.has(key))) return;
     let target;
     try { target = routeConnectDeepLink({ location: window.location }); }
     catch (cause) { setNavigationNotice(cause.message); return; }

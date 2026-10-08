@@ -164,7 +164,13 @@ describe("thread runtime persistence", () => {
       turns: [{ id: "turn-1", status: "completed", items: [{ id: "decision", type: "userMessage", content: [{ type: "text", text: "Use smoky charcoal surfaces." }] }] }]
     });
 
+    const snapshot = database.getProviderThreadSnapshot("focus-thread");
+    const storedBytes = JSON.stringify(snapshot, null, 2);
+    database.db.prepare("UPDATE provider_thread_snapshots SET snapshot = ? WHERE thread_id = ?").run(storedBytes, "focus-thread");
     database.saveProviderThreadSummary("focus-thread", { id: "focus-thread", cwd: "/workspace/focus", name: "Focus", status: { type: "idle" } });
+    // Summary refreshes must leave the existing snapshot bytes in SQLite,
+    // without reading/parsing/serializing hundreds of megabytes again.
+    expect(database.db.prepare("SELECT snapshot FROM provider_thread_snapshots WHERE thread_id = ?").get("focus-thread").snapshot).toBe(storedBytes);
 
     expect(database.searchProjectFocusHistory("project-focus", "charcoal", 8)).toEqual([
       expect.objectContaining({ itemId: "decision", role: "user" })

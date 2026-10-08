@@ -1,8 +1,14 @@
 import { execFile } from "node:child_process";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import path from "node:path";
 import { detectGitRuntime, gitRuntimeFromError } from "./git-runtime.mjs";
+import { assertPublicFile } from "../backend/desktop-authority.mjs";
+
+async function publicDiffFile(filename) {
+  try { assertPublicFile(await stat(filename)); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
 
 const execFileAsync = promisify(execFile);
 const REVIEW_FILTER_OVERRIDES = [
@@ -107,9 +113,11 @@ export async function readDiff({ workingPath, baseCommit, scopePath = workingPat
   const args = baseCommit
     ? ["diff", "--no-ext-diff", baseCommit, "--", pathspec]
     : ["diff", "--no-ext-diff", "--", pathspec];
-  const tracked = await git(workingPath, args, gitExecutablePath);
   const untrackedOutput = await git(workingPath, ["ls-files", "--others", "--exclude-standard", "-z", "--", pathspec], gitExecutablePath);
   const untracked = untrackedOutput.split("\0").filter(Boolean);
+  const changed = await git(workingPath, [...args.slice(0, -2), '--name-only', '-z', '--', pathspec], gitExecutablePath);
+  await Promise.all([...changed.split('\0').filter(Boolean), ...untracked].map((name) => publicDiffFile(path.resolve(workingPath, name))));
+  const tracked = await git(workingPath, args, gitExecutablePath);
   const additions = new Array(untracked.length);
   let nextIndex = 0;
   await Promise.all(Array.from({ length: Math.min(4, untracked.length) }, async () => {
@@ -156,6 +164,7 @@ export async function readFileDiff({ workingPath, baseCommit, scopePath = workin
   const absoluteFilePath = path.resolve(canonicalScopePath, filePath);
   const relativeToScope = path.relative(canonicalScopePath, absoluteFilePath);
   if (relativeToScope.startsWith("..") || path.isAbsolute(relativeToScope)) throw new Error("Diff file is outside the project scope");
+  await publicDiffFile(absoluteFilePath);
   const pathspec = path.relative(canonicalWorkingPath, absoluteFilePath);
   const relativeScope = path.relative(canonicalWorkingPath, canonicalScopePath);
   const relativeArgs = relativeScope ? [`--relative=${relativeScope}`] : [];

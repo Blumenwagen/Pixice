@@ -1,0 +1,194 @@
+{
+  "desktop": {
+    "renderers": [
+      {
+        "phase": "speaking",
+        "renderer": "webgl",
+        "cssSize": 320,
+        "buffer": 480
+      },
+      {
+        "phase": "idle",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "connecting",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "listening",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "speaking",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "muted",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "error",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      }
+    ],
+    "overflow": false
+  },
+  "mobile": {
+    "renderers": [
+      {
+        "phase": "speaking",
+        "renderer": "webgl",
+        "cssSize": 320,
+        "buffer": 480
+      },
+      {
+        "phase": "idle",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "connecting",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "listening",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "speaking",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "muted",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "error",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      }
+    ],
+    "overflow": false
+  },
+  "contextLoss": {
+    "renderers": [
+      {
+        "phase": "speaking",
+        "renderer": "fallback",
+        "cssSize": 320,
+        "buffer": 480
+      },
+      {
+        "phase": "idle",
+        "renderer": "fallback",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "connecting",
+        "renderer": "fallback",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "listening",
+        "renderer": "fallback",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "speaking",
+        "renderer": "fallback",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "muted",
+        "renderer": "fallback",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "error",
+        "renderer": "fallback",
+        "cssSize": 160,
+        "buffer": 240
+      }
+    ],
+    "overflow": false
+  },
+  "contextRestored": {
+    "renderers": [
+      {
+        "phase": "speaking",
+        "renderer": "webgl",
+        "cssSize": 320,
+        "buffer": 480
+      },
+      {
+        "phase": "idle",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "connecting",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "listening",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "speaking",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "muted",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      },
+      {
+        "phase": "error",
+        "renderer": "webgl",
+        "cssSize": 160,
+        "buffer": 240
+      }
+    ],
+    "overflow": false
+  },
+  "errors": [],
+  "warnings": [
+    "%cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security\n  Policy set or a policy with \"unsafe-eval\" enabled. This exposes users of\n  this app to unnecessary security risks.\n\nFor more information and help, consult\nhttps://electronjs.org/docs/tutorial/security.\nThis warning will not show up\nonce the app is packaged."
+  ]
+}

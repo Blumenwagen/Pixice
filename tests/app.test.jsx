@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift } from "../src/App.jsx";
+import { App, Composer, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift, prepareSlashCommandPrompt, slashCommandAtCaret } from "../src/App.jsx";
+import { draftFocusWidget } from "../electron/backend/widget-draft-router.mjs";
+import { materializeWidgetCandidates } from "../electron/backend/widget-composition.mjs";
 import { listPricingCatalog } from "../electron/usage/pricing.mjs";
 import { appendAttachmentContext } from "../electron/runtime/prompt-attachments.mjs";
 import { ConnectRoot } from "../src/connect/ConnectRoot.jsx";
@@ -12,6 +14,8 @@ import cascadeStyles from "../src/components/StreamingTextVariants.module.css";
 
 expect.extend({ toHaveEditableValue });
 beforeAll(installPromptEditorGeometry);
+import { projectRendererThread } from "../electron/runtime/renderer-thread-projection.mjs";
+import { focusStateBrief } from "../electron/runtime/focus-coordinator-context.mjs";
 
 const appCss = readFileSync("src/styles.css", "utf8");
 
@@ -31,6 +35,18 @@ it("keeps picker popovers aligned inside the prompt box", () => {
     { left: 80, right: 464 },
     0
   )).toBe(-26);
+});
+
+it("keeps Focus overflow menus outside clipping and wraps project shortcuts on compact headers", () => {
+  expect(appCss).toMatch(/\.focus-chrome-start\s*\{[^}]*overflow: visible;/s);
+  expect(appCss).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?\.focus-project-overflow\s*\{[\s\S]*?position: static;/);
+  expect(appCss).toMatch(/@media \(max-width: 480px\)\s*\{[\s\S]*?\.focus-project-tiles\s*\{[\s\S]*?flex-wrap: wrap;/);
+  expect(appCss).not.toContain(".focus-navigation-dock::before");
+  expect(appCss).toMatch(/\.focus-navigation-dock\s*\{[^}]*position: absolute;[^}]*bottom: 16px;[^}]*left: 16px;/s);
+  expect(appCss).toMatch(/\.focus-navigation-dock\s*\{[^}]*box-sizing: border-box;[^}]*height: 36px;[^}]*padding: 2px;/s);
+  expect(appCss).toMatch(/\.focus-navigation-dock \.focus-workspace-button:focus-visible,[\s\S]*?transform: none;/);
+  expect(appCss).toMatch(/\.focus-workspace\[data-has-conversation="true"\] \.focus-navigation-dock\s*\{ bottom: var\(--focus-composer-clearance, 144px\); \}/);
+  expect(appCss).toMatch(/\.focus-layout\.preview-open \.focus-workspace\[data-has-conversation="true"\] \.focus-navigation-dock\s*\{ bottom: var\(--focus-composer-clearance, 144px\); \}/);
 });
 
 const project = {
@@ -328,7 +344,7 @@ function createApi(threadValue = thread, initialProactiveSuggestions = []) {
     focus: {
       ensure: vi.fn(async () => ({
         created: false,
-        session: { projectId: project.id, threadId: "focus-thread", userTurnCount: 2, lastMemoryReviewTurn: 0 },
+        session: { projectId: project.id, threadId: "focus-thread", generation: 1, userTurnCount: 2, lastMemoryReviewTurn: 0 },
         memory: focusMemory,
         thread: { ...thread, id: "focus-thread", name: "Aurora Focus", preview: "", parentThreadId: null, turns: [] }
       })),
@@ -497,20 +513,24 @@ describe("Pixice app shell", () => {
       turns: [{ id: "turn-paused", status: "completed", items: [] }]
     };
     window.pixice = createApi([activeTask, pausedTask]);
+    window.pixice.focus.state = vi.fn(async () => ({ work: [], events: [], policy: null, unseenEvents: [] }));
     render(<StrictMode><App /></StrictMode>);
 
     fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
 
     expect(await screen.findByRole("heading", { name: "Talk to Aurora" })).toBeInTheDocument();
+    const activityButton = screen.getByRole("button", { name: "Open activity panel" });
+    fireEvent.click(activityButton);
+    expect(screen.getByRole("complementary", { name: "Coordinator activity" })).toBeInTheDocument();
+    fireEvent.click(activityButton);
     expect(window.pixice.focus.ensure).toHaveBeenCalledWith(expect.objectContaining({ projectId: project.id, permissionMode: "full-access" }));
     const focusPrompt = screen.getByRole("textbox", { name: "Project Focus prompt" });
     expect(focusPrompt).toBeInTheDocument();
     expect(within(focusPrompt.closest(".composer")).queryByRole("button", { name: /^Permissions:/ })).not.toBeInTheDocument();
-    const projectPicker = screen.getByRole("button", { name: "Switch project, current project Aurora" });
-    fireEvent.click(projectPicker);
-    expect(screen.getByRole("menu", { name: "Choose project" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitemradio", { name: "Aurora" })).toHaveAttribute("aria-checked", "true");
-    expect(document.querySelector(".focus-project-tile")).toHaveStyle({ "--project-color": "#c3a7ee" });
+    const projectShortcuts = screen.getByRole("group", { name: "Projects" });
+    expect(within(projectShortcuts).getByRole("button", { name: "Aurora, current project" })).toHaveAttribute("aria-current", "page");
+    expect(within(projectShortcuts).queryByRole("button", { name: "More projects" })).not.toBeInTheDocument();
+    expect(document.querySelector(".focus-project-shortcut")).toHaveStyle({ "--project-color": "#c3a7ee" });
     fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: "Focus memory" }));
     expect(await screen.findByRole("dialog", { name: "Focus memory" })).toBeInTheDocument();
@@ -529,6 +549,8 @@ describe("Pixice app shell", () => {
     const taskProgress = screen.getByRole("complementary", { name: "Task progress overview" });
     expect(within(taskProgress).getByRole("progressbar", { name: "Refactor authentication progress" })).toHaveAttribute("aria-valuenow", "2");
     expect(within(taskProgress).getByRole("progressbar", { name: "Document the handoff progress" })).toHaveAttribute("aria-valuenow", "1");
+    expect(screen.queryByRole("button", { name: "Activity" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Since you were away")).not.toBeInTheDocument();
 
     act(() => window.pixice.emit({
       type: "FilePreviewOpenRequested",
@@ -671,7 +693,7 @@ describe("Pixice app shell", () => {
         type: "object", required: ["label"], properties: { label: { type: "string", title: "Window label" } }
       } }
     } }));
-    fireEvent.change(await screen.findByRole("textbox", { name: "Window label" }), { target: { value: "Review draft" } });
+    changeEditable(await screen.findByRole("textbox", { name: "Window label" }), { target: { value: "Review draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(api.elicitations.respond).toHaveBeenCalledWith({ requestId: "focus-generic-input", requestGeneration: 52, action: "accept", content: { label: "Review draft" } }));
     await waitFor(() => expect(screen.queryByRole("textbox", { name: "Window label" })).not.toBeInTheDocument());
@@ -704,6 +726,179 @@ describe("Pixice app shell", () => {
     await waitFor(() => expect(api.elicitations.respond).toHaveBeenCalledWith({ requestId: "workspace-computer-permission", requestGeneration: 54, decision: "acceptAlways" }));
     expect(api.approvals.resolve).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole("heading", { name: "No approvals waiting" })).toBeInTheDocument());
+  });
+
+  it("commits a project widget from the Focus composer and sends fallback requests as conversation", async () => {
+    const api = createApi();
+    const spec = { version: 1, title: "Focus session", size: "medium", blocks: [{ type: "timer", label: "Focus", durationSeconds: 1500, endAt: null }] };
+    let saved = [];
+    api.widgets = {
+      list: vi.fn(async () => ({ data: saved })),
+      draft: vi.fn().mockResolvedValueOnce({ status: "draft", projectId: project.id, spec }).mockResolvedValueOnce({ status: "fallback", reason: "no_candidate" }),
+      commit: vi.fn(async ({ projectId, spec: nextSpec }) => {
+        saved = [{ id: "focus-widget", projectId, revision: 1, spec: nextSpec }];
+        return saved[0];
+      }),
+      update: vi.fn(),
+      delete: vi.fn()
+    };
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    await screen.findByRole("heading", { name: "Talk to Aurora" });
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await waitFor(() => expect(prompt).not.toBeDisabled());
+    changeEditable(prompt, { target: { value: "Make a focus timer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(api.widgets.commit).toHaveBeenCalledWith({ projectId: project.id, spec }));
+    expect(api.turns.start).not.toHaveBeenCalled();
+    expect(await screen.findByRole("complementary", { name: "Live widgets" })).toBeInTheDocument();
+    expect(api.widgets.list).toHaveBeenCalledTimes(2);
+
+    changeEditable(prompt, { target: { value: "Explain the release plan" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ projectId: project.id, text: "Explain the release plan" })));
+    expect(api.widgets.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes bare math and named formulas through v2, then sends malformed math to chat", async () => {
+    const api = createApi();
+    const saved = [];
+    const resolveKey = vi.fn(async () => 'host-test-key');
+    const fetchImpl = vi.fn(async (_url, request) => {
+      const body = JSON.parse(request.body);
+      expect(request.headers.authorization).toBe('Bearer host-test-key');
+      expect(body.state.purpose).toBe('formula');
+      const material = materializeWidgetCandidates(body.state.request);
+      const yes = { type: 'noul', noul: .95 };
+      return { ok: true, json: async () => ({ answers: {
+        suitable: yes,
+        layout: { type: 'choice', choice: 'layoutCard', confidence: .9 },
+        grouping: { type: 'choice', choice: 'flat', confidence: .9 },
+        order: { type: 'choice', choice: 'inputsFirst', confidence: .9 },
+        ...Object.fromEntries(material.parts.map((item) => [`include_${item.id}`, yes])),
+        include_heading: { type: 'noul', noul: .05 }
+      } }) };
+    });
+    api.widgets = {
+      list: vi.fn(async () => ({ data: [...saved] })),
+      draft: vi.fn(({ projectId, text }) => draftFocusWidget({ projectId, text, projectName: project.displayName }, { resolveKey, fetchImpl })),
+      commit: vi.fn(async ({ projectId, spec }) => {
+        const widget = { id: `math-${saved.length + 1}`, projectId, revision: 1, spec };
+        saved.push(widget);
+        return widget;
+      })
+    };
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Focus' }));
+    const prompt = await screen.findByRole('textbox', { name: 'Project Focus prompt' });
+    await waitFor(() => expect(prompt).not.toBeDisabled());
+    changeEditable(prompt, { target: { value: '12 + 8' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api.widgets.commit).toHaveBeenCalledTimes(1));
+    expect(saved[0].spec.version).toBe(2);
+    expect(saved[0].spec.size).toBe('small');
+    expect(Object.keys(saved[0].spec.state.user)).toEqual(['operand1', 'operand2']);
+    expect(saved[0].spec.nodes.filter((node) => node.type === 'NumberInput')).toHaveLength(2);
+    expect(screen.getByLabelText('Result value')).toHaveTextContent('20');
+    expect(api.turns.start).not.toHaveBeenCalled();
+
+    const formula = 'calculator: (hours * rate) + fee with hours=4, rate=100, fee=20';
+    changeEditable(prompt, { target: { value: formula } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api.widgets.commit).toHaveBeenCalledTimes(2));
+    expect(saved[1].spec.state.user).toEqual({ hours: 4, rate: 100, fee: 20 });
+    await waitFor(() => expect(screen.getAllByLabelText('Result value').some((result) => result.textContent === '420')).toBe(true));
+    expect(api.turns.start).not.toHaveBeenCalled();
+
+    changeEditable(prompt, { target: { value: 'calculator: 4 +' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ projectId: project.id, text: 'calculator: 4 +' })));
+    expect(api.widgets.commit).toHaveBeenCalledTimes(2);
+    expect(resolveKey).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps saved v1 and v2 widgets under the live app accent when it changes", async () => {
+    localStorage.setItem('pixice.preferences', JSON.stringify({ accentColor: 'blue' }));
+    const material = materializeWidgetCandidates('12 + 8');
+    const parts = material.parts.filter((item) => item.required);
+    const spec = { ...material.base, root: 'root', nodes: [
+      { id: 'root', type: 'Card', props: { title: '12 + 8' }, slots: { body: parts.map((item) => item.id) } },
+      ...parts.map((item) => item.node)
+    ] };
+    const api = createApi();
+    api.widgets = { list: vi.fn(async () => ({ data: [
+      { id: 'saved-timer', projectId: project.id, revision: 1, spec: { version: 1, title: 'Saved timer', blocks: [{ type: 'timer', label: 'Saved timer', durationSeconds: 600, endAt: new Date(Date.now() + 600_000).toISOString() }] } },
+      { id: 'saved-math', projectId: project.id, revision: 1, spec }
+    ] })) };
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Focus' }));
+    await screen.findByRole('article', { name: 'Saved timer' });
+    const shell = document.querySelector('.pixice-app');
+    expect(shell).toHaveAttribute('data-accent-color', 'blue');
+    expect(shell.querySelector('article[data-kind="timer"]')).toBeInTheDocument();
+    expect(shell.querySelector('article[data-kind="v2"]')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Appearance/ }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Green accent' }));
+    expect(shell).toHaveAttribute('data-accent-color', 'green');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Focus' }));
+    await screen.findByRole('article', { name: 'Saved timer' });
+    expect(shell.querySelector('article[data-kind="timer"]')).toBeInTheDocument();
+    expect(shell.querySelector('article[data-kind="v2"]')).toBeInTheDocument();
+    expect(screen.getByLabelText('Result value')).toHaveTextContent('20');
+    expect(shell).toHaveAttribute('data-accent-color', 'green');
+  });
+
+  it("hides tool-call details only in the Focus coordinator conversation", async () => {
+    const workspaceThread = {
+      ...thread,
+      turns: [{
+        id: "workspace-turn",
+        status: "completed",
+        items: [
+          { id: "workspace-user", type: "userMessage", content: [{ type: "text", text: "Review the release plan" }] },
+          { id: "workspace-commentary", type: "agentMessage", phase: "commentary", text: "I am checking the current state." },
+          { id: "workspace-command", type: "commandExecution", command: "git status --short", status: "completed", aggregatedOutput: " M src/App.jsx" },
+          { id: "workspace-file-change", type: "fileChange", status: "completed", changes: [{ path: "src/App.jsx" }] },
+          { id: "workspace-reasoning", type: "reasoning", summary: "Reviewing context continuity." },
+          { id: "workspace-compaction", type: "contextCompaction", status: "completed", completedAt: "2026-09-23T07:00:00.000Z" },
+          { id: "workspace-collaboration", type: "collabAgentToolCall", tool: "collaboration.spawn", receiverThreadIds: ["worker-1"], status: "completed" },
+          { id: "workspace-mcp", type: "mcpToolCall", tool: "focus.read", server: "pixice", status: "completed" },
+          { id: "workspace-dynamic", type: "dynamicToolCall", tool: "workspace.inspect", status: "completed" },
+          { id: "workspace-final", type: "agentMessage", phase: "final_answer", text: "The release plan is ready." }
+        ]
+      }]
+    };
+    const coordinatorThread = { ...workspaceThread, id: "focus-thread", name: "Aurora Focus" };
+    const api = createApi(workspaceThread);
+    api.focus.ensure.mockResolvedValue({
+      created: false,
+      session: { projectId: project.id, threadId: coordinatorThread.id, userTurnCount: 1, lastMemoryReviewTurn: 0 },
+      memory: { projectId: project.id, projectMemory: "", userMemory: "", revision: 1 },
+      thread: coordinatorThread
+    });
+    window.pixice = api;
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+
+    expect(await screen.findByText("Review the release plan")).toBeInTheDocument();
+    expect(screen.getByText("I am checking the current state.")).toBeInTheDocument();
+    expect(screen.getByText("The release plan is ready.")).toBeInTheDocument();
+    expect(screen.getByText("Reviewing context continuity.")).toBeInTheDocument();
+    expect(screen.getByText("Compacted context")).toBeInTheDocument();
+    expect(screen.queryByText("git status --short")).not.toBeInTheDocument();
+    expect(screen.queryByText("M src/App.jsx")).not.toBeInTheDocument();
+    expect(screen.queryByText("collaboration.spawn")).not.toBeInTheDocument();
+    expect(screen.queryByText("focus.read")).not.toBeInTheDocument();
+    expect(screen.queryByText("workspace.inspect")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Workspace" }));
+    expect(await screen.findByText("git status --short")).toBeInTheDocument();
   });
 
   it("keeps the Focus draft and offers reconnect after a first-send session failure", async () => {
@@ -1473,12 +1668,12 @@ describe("Pixice app shell", () => {
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).not.toBeInTheDocument();
     const settingsSidebar = screen.getByRole("complementary", { name: "Settings navigation" });
     expect(settingsSidebar).toBeInTheDocument();
-    expect(within(settingsSidebar).getByRole("navigation").querySelectorAll("button")).toHaveLength(9);
+    expect(within(settingsSidebar).getByRole("navigation").querySelectorAll("button")).toHaveLength(10);
     expect(within(settingsSidebar).getByRole("button", { name: /^Voice/ })).toBeInTheDocument();
     expect(within(settingsSidebar).queryByRole("button", { name: /^Runtime/ })).not.toBeInTheDocument();
     expect(within(settingsSidebar).queryByRole("button", { name: /^Notifications/ })).not.toBeInTheDocument();
     expect(within(settingsSidebar).getByRole("button", { name: /^About Pixice/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back to task" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to Review" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Capabilities/ }));
     expect(screen.queryByRole("heading", { name: "General" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Capabilities" })).toBeInTheDocument();
@@ -1815,6 +2010,114 @@ describe("Pixice app shell", () => {
     expect(await screen.findByText("Sign in required")).toBeInTheDocument();
   });
 
+  it("follows authoritative Focus renewal while retaining the project draft and work rail", async () => {
+    const api = createApi([{ ...thread, id: "ongoing-worker", name: "Existing supervised work", status: { type: "active" } }]);
+    const fixtureRead = api.threads.read.getMockImplementation();
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    changeEditable(prompt, { target: { value: "Keep this draft across session renewal" } });
+    const replacement = { ...thread, id: "renewed-focus", name: "Aurora Focus", turns: [] };
+    api.threads.read.mockImplementation((payload) => payload.threadId === replacement.id
+      ? Promise.resolve({ thread: replacement, plan: [] }) : fixtureRead(payload));
+    api.focus.ensure.mockResolvedValue({ created: false, session: { projectId: project.id, threadId: replacement.id, generation: 2 },
+      configuration: { provider: "codex", model: "gpt-5.6" }, thread: replacement });
+    act(() => api.emit({ type: "FocusUpdated", payload: { projectId: project.id, session: { projectId: project.id, threadId: replacement.id, generation: 2 } } }));
+    await waitFor(() => expect(api.focus.ensure.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toHaveEditableValue("Keep this draft across session renewal"));
+    expect(screen.getByRole("heading", { name: "Talk to Aurora" })).toBeInTheDocument();
+    expect(screen.getByText("Work in flight")).toBeInTheDocument();
+    expect(screen.getByText("Existing supervised work")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.threads.read).toHaveBeenCalledWith(expect.objectContaining({ threadId: replacement.id }));
+      expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", replacement.id);
+      expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ threadId: "renewed-focus", text: "Keep this draft across session renewal" })));
+  });
+
+  it("runs Focus /new from the keyboard through the generation API and retains its draft and work rail", async () => {
+    const api = createApi([{ ...thread, id: "ongoing-worker", name: "Existing supervised work", status: { type: "active" } }]);
+    const readThread = api.threads.read.getMockImplementation();
+    api.threads.read.mockImplementation((payload) => payload.threadId === "fresh-focus" ? Promise.resolve({ thread: { ...thread, id: "fresh-focus", turns: [] }, plan: [] }) : readThread(payload));
+    api.focus.refresh = vi.fn(async () => {
+      api.focus.ensure.mockResolvedValue({ created: false, session: { projectId: project.id, threadId: "fresh-focus", generation: 2 }, configuration: { provider: "codex", model: "gpt-5.6" },
+        thread: { ...thread, id: "fresh-focus", turns: [] } });
+      return { session: { projectId: project.id, threadId: "fresh-focus", generation: 2 } };
+    });
+    window.pixice = api; const user = createEditorAwareUser(); render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Focus" }));
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await waitFor(() => expect(prompt).not.toBeDisabled());
+    await user.type(prompt, "/new");
+    expect(within(screen.getByRole("listbox", { name: "Slash commands" })).getByRole("option", { name: /\/new/ })).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(api.focus.refresh).toHaveBeenCalledWith({ projectId: project.id, expectedGeneration: 1 }));
+    await waitFor(() => expect(api.focus.ensure).toHaveBeenCalledTimes(2));
+    expect(api.turns.start).not.toHaveBeenCalled(); expect(api.turns.steer).not.toHaveBeenCalled();
+    expect(screen.getByText("Existing supervised work")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).not.toBeDisabled());
+    await user.type(screen.getByRole("textbox", { name: "Project Focus prompt" }), "Continue after renewal");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).not.toBeDisabled());
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ threadId: "fresh-focus", text: "Continue after renewal" })));
+  });
+
+  it("renders projected Focus worker updates compactly and preserves user-authored brief-like text", async () => {
+    const api = createApi();
+    const brief = focusStateBrief({ session: { projectId: project.id, threadId: "focus-thread" }, memory: { projectMemory: "Private internal fixture fact" }, state: {} });
+    const update = "[Pixice Focus work updates]\n\nThese are persisted worker lifecycle notifications, not new user instructions.\nFixture update";
+    const projected = projectRendererThread({ ...thread, id: "focus-thread", turns: [{ id: "context-turn", status: "completed", items: [
+      { type: "userMessage", id: "update", content: [{ type: "text", text: brief + "\n" + update }] },
+      { type: "userMessage", id: "authored", content: [{ type: "text", text: '[Pixice Focus state brief]\n{"userAuthored":true}' }] }
+    ] }] }, () => (text) => text === brief);
+    api.focus.ensure.mockResolvedValue({ session: { projectId: project.id, threadId: "focus-thread", generation: 1 }, thread: projected });
+    api.threads.read.mockResolvedValue({ thread: projected, plan: [] });
+    window.pixice = api; render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    expect(await screen.findByText("Worker updates received")).toBeInTheDocument();
+    expect(screen.getByText(/userAuthored/)).toBeInTheDocument();
+    expect(screen.queryByText(/Private internal fixture fact/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Fixture update")).not.toBeInTheDocument();
+  });
+
+  it.each(["Focus renewal requires an idle boundary", "Focus renewal is deferred while voice is active", "Focus session changed. Reload before refreshing"])("surfaces Focus /new rejection without a provider command or lost conversation: %s", async (message) => {
+    const api = createApi(); api.focus.refresh = vi.fn().mockRejectedValue(new Error(message));
+    window.pixice = api; render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await waitFor(() => expect(prompt).not.toBeDisabled());
+    changeEditable(prompt, { target: { value: "/new Remaining draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(api.focus.refresh).toHaveBeenCalledWith({ projectId: project.id, expectedGeneration: 1 });
+    expect(api.turns.start).not.toHaveBeenCalled(); expect(api.turns.steer).not.toHaveBeenCalled();
+    expect(prompt).toHaveEditableValue("Remaining draft");
+    expect(screen.getByRole("heading", { name: "Talk to Aurora" })).toBeInTheDocument();
+  });
+
+  it("applies and persists a painted Focus scene and background blur", async () => {
+    window.pixice = createApi();
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Golden forest" }));
+    changeEditable(screen.getByRole("slider", { name: "Focus background blur" }), { target: { value: "12" } });
+    expect(screen.getByRole("button", { name: "Golden forest" })).toHaveAttribute("aria-pressed", "true");
+    expect(JSON.parse(localStorage.getItem("pixice.preferences"))).toMatchObject({ focusBackground: "golden", focusBackgroundBlur: 12 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const workspace = document.querySelector(".focus-workspace");
+    expect(workspace.style.getPropertyValue("--focus-background-image")).toContain("focus-background-golden-forest");
+    expect(workspace.style.getPropertyValue("--focus-background-blur")).toBe("12px");
+  });
+
   it("keeps the third project row off by default and persists the nine-tile opt-in", async () => {
     const additionalProjects = Array.from({ length: 9 }, (_, index) => ({
       id: `project-${index + 2}`,
@@ -1850,6 +2153,73 @@ describe("Pixice app shell", () => {
     expect(within(recent).getAllByRole("button")).toHaveLength(9);
     expect(within(recent).getByRole("button", { name: "Project 9" })).toBeInTheDocument();
     expect(within(recent).queryByRole("button", { name: "Project 10" })).not.toBeInTheDocument();
+  });
+
+  it("shows Focus project shortcuts up to the limit and puts remaining projects in an accessible overflow menu", async () => {
+    const additionalProjects = Array.from({ length: 9 }, (_, index) => ({
+      id: `project-${index + 2}`,
+      displayName: `Project ${index + 2}`,
+      canonicalPath: `/work/project-${index + 2}`,
+      icon: "folder",
+      color: "blue",
+      folders: [`/work/project-${index + 2}`],
+      lastUsedAt: new Date(Date.now() - ((index + 1) * 1_000)).toISOString()
+    }));
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project, ...additionalProjects],
+      models: [{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    window.pixice = api;
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const shortcuts = await screen.findByRole("group", { name: "Projects" });
+    expect(document.querySelector(".focus-chrome-start")).toContainElement(shortcuts);
+    const dock = screen.getByRole("navigation", { name: "Focus navigation" });
+    expect(within(dock).getByRole("button", { name: "Workspace" })).toBeInTheDocument();
+    expect(within(dock).getByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(within(dock).queryByRole("group", { name: "Projects" })).not.toBeInTheDocument();
+    expect(within(shortcuts).getAllByRole("button")).toHaveLength(7);
+    expect(within(shortcuts).getByRole("button", { name: "Switch to Project 6" })).toBeInTheDocument();
+    expect(within(shortcuts).queryByRole("button", { name: "Switch to Project 7" })).not.toBeInTheDocument();
+
+    const overflowTrigger = within(shortcuts).getByRole("button", { name: "More projects" });
+    fireEvent.keyDown(overflowTrigger, { key: "ArrowDown" });
+    const overflow = await screen.findByRole("menu", { name: "More projects" });
+    const projectSeven = within(overflow).getByRole("menuitemradio", { name: "Project 7" });
+    expect(projectSeven).toHaveFocus();
+    fireEvent.keyDown(projectSeven, { key: "ArrowDown" });
+    expect(within(overflow).getByRole("menuitemradio", { name: "Project 8" })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement, { key: "End" });
+    const projectTen = within(overflow).getByRole("menuitemradio", { name: "Project 10" });
+    expect(projectTen).toHaveFocus();
+    fireEvent.keyDown(projectTen, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "More projects" })).not.toBeInTheDocument());
+    await waitFor(() => expect(overflowTrigger).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Show third project row" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Focus" }));
+
+    const expandedShortcuts = await screen.findByRole("group", { name: "Projects" });
+    expect(within(expandedShortcuts).getAllByRole("button")).toHaveLength(10);
+    expect(within(expandedShortcuts).getByRole("button", { name: "Switch to Project 9" })).toBeInTheDocument();
+    fireEvent.click(within(expandedShortcuts).getByRole("button", { name: "More projects" }));
+    expect(await screen.findByRole("menuitemradio", { name: "Project 10" })).toBeInTheDocument();
+  });
+
+  it("returns to Workspace from the compact Focus navigation dock", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const dock = screen.getByRole("navigation", { name: "Focus navigation" });
+    fireEvent.click(within(dock).getByRole("button", { name: "Workspace" }));
+    expect(await screen.findByRole("complementary", { name: "Primary navigation" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Focus navigation" })).not.toBeInTheDocument();
   });
 
   it("keeps the legacy sidebar off by default and restores nested project rows when enabled", async () => {
@@ -2502,6 +2872,62 @@ describe("Pixice app shell", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     expect(window.pixice.providers.login).toHaveBeenCalledWith({ provider: "claude" });
     expect(screen.getByRole("button", { name: "Check sign-in" })).toBeInTheDocument();
+  });
+
+  it("saves and removes the TypeSafe key from Provider Settings", async () => {
+    const user = createEditorAwareUser();
+    const api = createApi();
+    api.widgets = {
+      keyStatus: vi.fn().mockResolvedValue({ configured: false }),
+      keySave: vi.fn().mockResolvedValue({ configured: true }),
+      keyRemove: vi.fn().mockResolvedValue({ configured: false })
+    };
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /^Providers/ }));
+    const section = screen.getByRole("heading", { name: "Jev widget creation" }).closest("section");
+    expect(await within(section).findByText("Not configured")).toBeInTheDocument();
+
+    const input = within(section).getByLabelText("TypeSafe API key");
+    expect(input).toHaveAttribute("type", "password");
+    await user.type(input, "ts_test_secret");
+    await user.click(within(section).getByRole("button", { name: "Save key" }));
+    await waitFor(() => expect(api.widgets.keySave).toHaveBeenCalledWith({ key: "ts_test_secret" }));
+    expect(await within(section).findByText("Saved")).toBeInTheDocument();
+    expect(input).toHaveEditableValue("");
+    expect(within(section).queryByText("ts_test_secret")).not.toBeInTheDocument();
+
+    await user.click(within(section).getByRole("button", { name: "Remove key" }));
+    await waitFor(() => expect(api.widgets.keyRemove).toHaveBeenCalledOnce());
+    expect(await within(section).findByText("Not configured")).toBeInTheDocument();
+  });
+
+  it("keeps Provider Settings open when a discovered model has no capability ratings", async () => {
+    const api = createApi();
+    api.app.bootstrap.mockResolvedValue({
+      projects: [project],
+      models: [
+        { id: "rated", model: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", provider: "codex", bridge: { eligible: true, ratings: { coding: 5, reasoning: 5, ui: 4, taste: 4, speed: 3, costEfficiency: 2 }, summary: "Curated model" } },
+        { id: "discovered", model: "new-agent", displayName: "New agent", provider: "codex", bridge: { eligible: true, rated: false, ratings: null, summary: "Advertised by the provider" } }
+      ],
+      runtime: { state: "ready", connected: true },
+      settings: {}
+    });
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Providers/ }));
+
+    expect(await screen.findByRole("heading", { name: "Providers" })).toBeInTheDocument();
+    expect(screen.getByText("New agent")).toBeInTheDocument();
+    expect(screen.getByText("Not yet rated")).toBeInTheDocument();
+    expect(screen.getByLabelText("GPT-5.6 Sol capability ratings")).toHaveTextContent("Coding5");
+    expect(screen.getByRole("button", { name: "Refresh providers" })).toBeInTheDocument();
   });
 
   it("shows Codex and Claude runtime health independently", async () => {
@@ -3809,6 +4235,43 @@ describe("Pixice app shell", () => {
     expect(localStorage.getItem("pixice.draft.project-1:new")).toBeNull();
   });
 
+  it("does not restore a submitted new-task prompt or image after later replies", async () => {
+    const user = createEditorAwareUser();
+    render(<StrictMode><ConnectRoot><App /></ConnectRoot></StrictMode>);
+    await screen.findByText("I traced the current flow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    expect(screen.getByLabelText("Run on")).toBeInTheDocument();
+    let composer = screen.getByRole("textbox", { name: "Task prompt" });
+    await user.type(composer, "First submitted prompt");
+    const image = new File([new Uint8Array([137, 80, 78, 71])], "first.png", { type: "image/png" });
+    changeEditable(document.querySelector('input[type="file"]'), { target: { files: [image] } });
+    expect(await screen.findByRole("img", { name: "first.png" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("First submitted prompt"),
+      attachments: [expect.objectContaining({ name: "first.png", type: "image/png" })]
+    })));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue(""));
+    composer = screen.getByRole("textbox", { name: "Task prompt" });
+
+    await user.type(composer, "First reply");
+    fireEvent.click(screen.getByRole("button", { name: "Steer task" }));
+    await waitFor(() => expect(window.pixice.turns.steer).toHaveBeenCalledWith(expect.objectContaining({ text: "First reply" })));
+    await waitFor(() => expect(composer).toHaveEditableValue(""));
+    await user.type(composer, "Second reply");
+    fireEvent.click(screen.getByRole("button", { name: "Steer task" }));
+    await waitFor(() => expect(window.pixice.turns.steer).toHaveBeenCalledWith(expect.objectContaining({ text: "Second reply" })));
+    await waitFor(() => expect(composer).toHaveEditableValue(""));
+
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue("");
+    expect(screen.queryByRole("img", { name: "first.png" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("pixice.draft.project-1:new")).toBeNull();
+    expect(localStorage.getItem("pixice.draft.project-1:new.attachments")).toBeNull();
+  });
+
   it("keeps multiline prompts in a bounded editor with one scrolling region", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -3852,7 +4315,7 @@ describe("Pixice app shell", () => {
     expect(appCss).toMatch(/\.pixice-app\[data-reduce-motion="true"\][^{]*\.new-task-hover-plus\s*\{\s*transition-duration:\s*1ms/);
   });
 
-  it("discovers and autocompletes Codex commands from the slash menu", async () => {
+  it("offers only implemented Pixice commands and opens Usage without sending a turn", async () => {
     const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -3860,31 +4323,88 @@ describe("Pixice app shell", () => {
 
     await user.type(composer, "/");
     const commands = screen.getByRole("listbox", { name: "Slash commands" });
-    expect(within(commands).getByRole("option", { name: /\/model/ })).toHaveAttribute("aria-selected", "true");
-    expect(within(commands).getByRole("option", { name: /\/permissions/ })).toBeInTheDocument();
-    expect(within(commands).getByRole("option", { name: /\/compact/ })).toBeInTheDocument();
+    expect(within(commands).getByRole("option", { name: /\/usage/ })).toHaveAttribute("aria-selected", "true");
+    expect(within(commands).getByRole("option", { name: /\/settings/ })).toBeInTheDocument();
+    expect(within(commands).queryByRole("option", { name: /\/model|\/permissions|\/compact/ })).not.toBeInTheDocument();
 
-    await user.keyboard("{ArrowDown}{Enter}");
-    await waitFor(() => expect(composer).toHaveEditableValue("/fast "));
+    await user.keyboard("{Enter}");
+    await screen.findByRole("region", { name: "Usage overview" });
     expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
     expect(window.pixice.turns.start).not.toHaveBeenCalled();
   });
 
-  it("filters slash commands and keeps unknown commands sendable", async () => {
+  it("opens Usage from the Focus composer without sending the coordinator a prompt", async () => {
+    const user = createEditorAwareUser();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const composer = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await user.type(composer, "/usage");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await screen.findByRole("region", { name: "Usage overview" });
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-surface-mode", "workspace");
+    expect(window.pixice.turns.start).not.toHaveBeenCalled();
+  });
+
+  it("runs typed /usage through Pixice and keeps unsupported commands sendable as text", async () => {
     const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     const composer = screen.getByRole("textbox", { name: "Task prompt" });
 
     await user.type(composer, "/compact");
-    const commands = screen.getByRole("listbox", { name: "Slash commands" });
-    expect(within(commands).getAllByRole("option")).toHaveLength(1);
-    expect(within(commands).getByRole("option", { name: /\/compact/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument();
+    expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
 
     await user.clear(composer);
-    await user.type(composer, "/not-a-pixice-command{Enter}");
+    await user.type(composer, "/usage");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await screen.findByRole("region", { name: "Usage overview" });
+    expect(window.pixice.turns.start).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Back to task" }));
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "/settings{Enter}");
+    expect(await screen.findByRole("complementary", { name: "Settings navigation" })).toBeInTheDocument();
+    expect(window.pixice.turns.start).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Back to task" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue(""));
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "/not-a-pixice-command{Enter}");
     await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({ text: "/not-a-pixice-command" })));
+    expect(window.pixice.turns.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("completes a provider command at the cursor without replacing surrounding text", async () => {
+    const user = createEditorAwareUser();
+    const onSubmit = vi.fn();
+    render(<Composer
+      draftKey="claude-slash"
+      models={[{ model: "sonnet", displayName: "Claude Sonnet", provider: "claude", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }]}
+      selectedModel="sonnet"
+      effort="high"
+      providers={[]}
+      showSlashCommands
+      slashCommands={[{ name: "compact", description: "Compact context" }, { name: "my-skill", description: "Project skill" }]}
+      globalFileDrop={false}
+      onSubmit={onSubmit}
+    />);
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
+    await user.type(composer, "Please  later");
+    act(() => composer.editor.commands.setTextSelection(8));
+    fireEvent.select(composer);
+    await user.keyboard("/comp");
+    expect(composer).toHaveEditableValue("Please /comp later");
+    expect(within(screen.getByRole("listbox", { name: "Slash commands" })).getByRole("option", { name: /\/compact/ })).toBeInTheDocument();
+    expect(screen.getByText("Claude commands")).toBeInTheDocument();
+    await user.keyboard("{Tab}");
+    expect(composer).toHaveEditableValue("Please /compact later");
+    expect(screen.queryByText("Codex commands")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("/compact Please later", expect.any(Array), expect.any(Object), expect.any(Array), expect.any(AbortSignal), expect.any(Object)));
+  });
+
+  it("only detects a slash token at a word boundary and caret", () => {
+    expect(slashCommandAtCaret("Fix /rev this", 8)).toEqual({ start: 4, end: 8, query: "rev" });
+    expect(slashCommandAtCaret("https://example.com", 8)).toBeNull();
+    expect(slashCommandAtCaret("src/file", 8)).toBeNull();
+    expect(prepareSlashCommandPrompt("Read https://example.com/path", [{ name: "path" }])).toBe("Read https://example.com/path");
+    expect(prepareSlashCommandPrompt("Use /unknown here", [{ name: "review" }])).toBe("Use /unknown here");
   });
 
   it("does not submit a new task twice when send is clicked repeatedly", async () => {

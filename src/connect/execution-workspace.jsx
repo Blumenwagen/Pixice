@@ -439,6 +439,8 @@ export function ExecutionThreadWorkspace({
         }
         if (providerPayload.method === 'thread/name/updated') {
           setThread((current) => current?.id === threadIdRef.current ? { ...current, name: providerPayload.name } : current);
+        } else if (providerPayload.method === 'thread/slash-commands/updated') {
+          setThread((current) => current?.id === threadIdRef.current ? { ...current, slashCommands: providerPayload.slashCommands } : current);
         } else {
           commitRuntimePayload(providerPayload);
         }
@@ -820,6 +822,7 @@ export function ExecutionThreadWorkspace({
     spellCheckComposer: true,
     autoFocusComposer: true,
     showSlashCommands: true,
+    slashCommands: thread?.slashCommands,
     running: Boolean(thread?.turns?.findLast?.((turn) => ['inProgress', 'running', 'started'].includes(turn.status))),
     questionRequest: attention.find((request) => isQuestion(request) && request.params?.threadId === threadIdRef.current) ?? null,
     onQuestionResolve: resolveAttention,

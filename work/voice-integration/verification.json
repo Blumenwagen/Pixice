@@ -1,0 +1,126 @@
+{
+  "workId": "74b6938b-8f0c-40a7-97b5-bc4775e6f533",
+  "projectId": "acf157b1-b774-4c26-acf7-8ae4dd6a0a5c",
+  "date": "2026-09-30",
+  "status": "submitted-for-independent-review",
+  "direction": {
+    "revision": 12,
+    "acknowledged": true,
+    "permissionMode": "full-access",
+    "permissionFailures": []
+  },
+  "distinctPassingTests": 265,
+  "distinctTestFiles": 25,
+  "originalVoiceTestsPreserved": 37,
+  "expandedFoundationVoiceTests": 41,
+  "suites": [
+    {
+      "command": "pnpm exec vitest run --config work/voice-integration/vitest.config.mjs",
+      "passed": 74,
+      "files": 4
+    },
+    {
+      "command": "pnpm exec vitest run tests/voice-session.test.js tests/voice-controller.test.js tests/voice-runtime-transport.test.js tests/codex-runtime.test.js tests/codex-provider.test.js tests/provider-registry.test.js tests/backend-native.test.js tests/backend-service.test.js tests/workflow-preload.test.js tests/connect-security.test.js tests/connect-operations.test.js tests/connect-server.test.js tests/preview-files.test.js tests/workflow-node-executors.test.js tests/workflow-skill-node.test.js tests/connect-transfers.test.js",
+      "passed": 143,
+      "files": 16
+    },
+    {
+      "command": "pnpm exec vitest run tests/focus-coordination.test.jsx tests/focus-coordinator-questions.test.jsx tests/app.test.jsx tests/backend-desktop-ui.test.jsx -t 'Focus|slash|commands|fork|desktop'",
+      "passed": 44,
+      "skipped": 142,
+      "files": 4
+    },
+    {
+      "command": "pnpm exec vitest run tests/worktrees.test.js tests/workflow-node-executors.test.js tests/workflow-skill-node.test.js tests/preview-files.test.js",
+      "passed": 18,
+      "files": 4,
+      "note": "Adds four worktree tests in one new file. The other 14 tests were already counted in the 143-test group."
+    },
+    {
+      "command": "pnpm exec vitest run tests/app.test.jsx -t 'follows authoritative Focus renewal while retaining the project draft and work rail'",
+      "serialExecutions": 10,
+      "passedEach": 1,
+      "failedExecutions": 0,
+      "note": "Ten serial runs after the complete fixture/readiness correction, with no retries or between-run edits. Counted once in UI group."
+    }
+  ],
+  "build": {
+    "command": "pnpm exec vite build --mode desktop --outDir /tmp/pixice-voice-integration-r12-build",
+    "passed": true,
+    "modules": 801
+  },
+  "checks": {
+    "javascriptSyntaxFiles": 29,
+    "diffWhitespace": "passed",
+    "evidenceJson": "parsed"
+  },
+  "warnings": [
+    "Node SQLite experimental warning.",
+    "Existing Motion undefined opacity warning during UI regressions.",
+    "Vite mixed static/dynamic App import warning.",
+    "Vite chunk size above 500 kB.",
+    "Vite external output directory is not emptied automatically."
+  ],
+  "intermittentUiFailure": {
+    "test": "follows authoritative Focus renewal while retaining the project draft and work rail",
+    "priorSubmission": {
+      "test": "follows authoritative Focus renewal while retaining the project draft and work rail",
+      "location": "tests/app.test.jsx:1855",
+      "failedRun": {
+        "passed": 43,
+        "failed": 1,
+        "skipped": 142
+      },
+      "isolatedRerun": {
+        "passed": 1,
+        "skipped": 169
+      },
+      "fullFilteredRerun": {
+        "passed": 44,
+        "skipped": 142
+      },
+      "codeChangesBetweenAttempts": false,
+      "cause": "Unconfirmed. Existing loading-state readiness timing is a plausible explanation."
+    },
+    "instrumentedBeforeFix": {
+      "executions": 8,
+      "failed": 2,
+      "passed": 6,
+      "failedSendDisabled": true,
+      "failedPromptDisabled": true,
+      "failedLoadingIndicator": false,
+      "selectedThread": "renewed-focus",
+      "ensureCalls": 2
+    },
+    "readinessWaitOnly": {
+      "executions": 10,
+      "failed": 10,
+      "passed": 0
+    },
+    "readInstrumentation": {
+      "requestedThread": "renewed-focus",
+      "returnedThread": "ongoing-worker",
+      "failed": 1
+    },
+    "correction": "Scope the threads.read fixture to return the authoritative replacement thread and wait for its actual read, selected thread and enabled prompt/Send.",
+    "afterCompleteFix": {
+      "serialExecutions": 10,
+      "passed": 10,
+      "failed": 0,
+      "fullFilteredGroupPassed": 44,
+      "skipped": 142
+    },
+    "assertionPreserved": "turns.start receives renewed-focus and the exact retained draft."
+  },
+  "limitations": [
+    "Tests use isolated fake providers/native transports, disposable databases and mocked media/OS permissions.",
+    "No TypeScript compiler available in this checkout; declarations inspected and runtime preload contracts tested, not compiler checked.",
+    "No packaged Electron build, install or relaunch.",
+    "No live account entitlement, native session, WebRTC media, microphone permission or real Focus rotation.",
+    "No final visual UI or settings UI.",
+    "Private bootstrap isolates ordinary registration/read RPC possession, not arbitrary OS-user processes or explicitly authorized command/code execution."
+  ],
+  "forbiddenActionsPerformed": [],
+  "acceptance": "Not self-accepted. No complete_work call.",
+  "reviewFixesArtifact": "work/voice-integration/review-fixes.json"
+}
