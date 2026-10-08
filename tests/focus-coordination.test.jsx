@@ -50,6 +50,30 @@ describe("FocusCoordination", () => {
     await waitFor(() => expect(api.focus.followUp).toHaveBeenCalledWith({ projectId: "project-a", workId: "work-1", prompt: "Use the stable branch" }));
   });
 
+  it("keeps a pending pause truthful and preserves redirect text until exact termination", async () => {
+    const api = createApi();
+    const initial = focusState({ work: [{ id: "work-1", title: "Check release", status: "running" }], unseenEvents: [] });
+    let current = initial;
+    api.focus.state.mockImplementation(async () => current);
+    api.focus.controlWork.mockImplementation(async () => { current = { ...initial, work: [{ ...initial.work[0], stopRequested: "pause" }] }; });
+    render(<FocusCoordination api={api} projectId="project-a" models={models} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByRole("button", { name: /Check release/ }));
+    const input = screen.getByRole("textbox", { name: "Redirect Check release" });
+    fireEvent.change(input, { target: { value: "Keep this draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(await screen.findByText("Pausing…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
+    expect(input).toHaveValue("Keep this draft");
+    expect(input).toBeDisabled();
+    current = { ...initial, work: [{ ...initial.work[0], stopRequested: "pause", status: "paused" }] };
+    api.emit({ projectId: "project-a" });
+    expect(await screen.findByRole("button", { name: "Resume" })).toBeInTheDocument();
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(input).toHaveValue("Keep this draft");
+    expect(input).toBeEnabled();
+  });
+
   it("dismisses only the supplied monotonic activity sequence", async () => {
     const api = createApi();
     render(<FocusCoordination api={api} projectId="project-a" models={models} />);

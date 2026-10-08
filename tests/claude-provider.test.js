@@ -318,6 +318,9 @@ describe("Claude provider", () => {
     expect(queryArguments.options).toMatchObject({ model: "sonnet", effort: "high", permissionMode: "acceptEdits" });
     expect(queryArguments.options.mcpServers.pixice).toMatchObject({ type: "sdk", name: "pixice" });
     expect(queryArguments.options.mcpServers.pixice_bridge).toMatchObject({ type: "sdk", name: "pixice_bridge" });
+    expect(Object.keys(queryArguments.options.mcpServers.pixice_bridge.instance._registeredTools)).toEqual(
+      pixiceBridgeDynamicTools[0].tools.map((definition) => definition.name)
+    );
     expect(queryArguments.options.mcpServers.pixice_board).toMatchObject({ type: "sdk", name: "pixice_board" });
     expect(queryArguments.options.mcpServers.pixice_instruments).toMatchObject({ type: "sdk", name: "pixice_instruments" });
     expect(queryArguments.options.mcpServers.pixice_browser).toMatchObject({ type: "sdk", name: "pixice_browser" });
@@ -346,11 +349,19 @@ describe("Claude provider", () => {
     expect(iosTapSchema.safeParse({ x: 1.1, y: 0.5 }).success).toBe(false);
     await expect(queryArguments.options.canUseTool("mcp__pixice__request_user_input", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_bridge__spawn_thread", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+    await expect(queryArguments.options.canUseTool("mcp__pixice_bridge__read_thread", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_board__read_task", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_instruments__create_instrument", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_browser__navigate", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_preview__current", {}, {})).resolves.toMatchObject({ behavior: "allow" });
     await expect(queryArguments.options.canUseTool("mcp__pixice_ios__start", {}, {})).resolves.toMatchObject({ behavior: "allow" });
+
+    provider.pixiceBridge.handleToolCall.mockResolvedValueOnce({ success: true, contentItems: [{ type: "inputText", text: "referenced conversation" }] });
+    await queryArguments.options.mcpServers.pixice_bridge.instance._registeredTools.read_thread.handler({ targetThreadId: "source-thread" });
+    expect(provider.pixiceBridge.handleToolCall).toHaveBeenLastCalledWith({
+      namespace: "pixice_bridge", tool: "read_thread", threadId: thread.id, turnId: turn.id,
+      arguments: { targetThreadId: "source-thread" }
+    });
 
     await queryArguments.options.mcpServers.pixice_browser.instance._registeredTools.navigate.handler({ url: "https://apple.com" });
     expect(pixiceBrowser.handleToolCall).toHaveBeenCalledWith(expect.objectContaining({

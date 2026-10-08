@@ -1,0 +1,50 @@
+{
+  "terminalBeforeStartResponse": [
+    {
+      "request": { "method": "turn/start", "params": { "threadId": "thread-1" } },
+      "frames": [
+        { "method": "turn/started", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "inProgress" } } },
+        { "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } },
+        { "id": "$request", "result": { "turn": { "id": "turn-1", "status": "inProgress" } } }
+      ]
+    }
+  ],
+  "lateCompletionDuringNextStart": [
+    {
+      "request": { "method": "turn/start", "params": { "threadId": "thread-1" } },
+      "frames": [
+        { "id": "$request", "result": { "turn": { "id": "turn-old", "status": "inProgress" } } },
+        { "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-old", "status": "completed" } } }
+      ]
+    },
+    {
+      "request": { "method": "turn/start", "params": { "threadId": "thread-1" } },
+      "frames": [
+        { "method": "turn/started", "params": { "threadId": "thread-1", "turn": { "id": "turn-old", "status": "inProgress" } } },
+        { "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-old", "status": "interrupted" } } },
+        { "id": "$request", "result": { "turn": { "id": "turn-new", "status": "inProgress" } } }
+      ]
+    }
+  ],
+  "lostStartResponse": [
+    {
+      "request": { "method": "turn/start", "params": { "threadId": "thread-1" } },
+      "frames": [],
+      "close": true
+    }
+  ],
+  "recoverExactTurn": [
+    {
+      "request": { "method": "thread/read", "params": { "threadId": "thread-1", "includeTurns": true } },
+      "frames": [
+        { "id": "$request", "result": { "thread": { "id": "thread-1", "turns": [ { "id": "turn-1", "status": "inProgress" }, { "id": "unrelated-later", "status": "completed" } ] } } }
+      ]
+    },
+    {
+      "request": { "method": "thread/read", "params": { "threadId": "thread-1", "includeTurns": true } },
+      "frames": [
+        { "id": "$request", "result": { "thread": { "id": "thread-1", "turns": [ { "id": "turn-1", "status": "completed" }, { "id": "unrelated-later", "status": "inProgress" } ] } } }
+      ]
+    }
+  ]
+}

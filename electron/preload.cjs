@@ -51,7 +51,7 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     action: invoke("ios:action"),
     adopt: invoke("ios:adopt")
   }),
-  files: Object.freeze({ read: invoke("files:read"), preview: invoke("files:preview"), write: invoke("files:write") }),
+  files: Object.freeze({ list: invoke("files:list"), read: invoke("files:read"), preview: invoke("files:preview"), write: invoke("files:write") }),
   projects: Object.freeze({
     list: invoke("projects:list"),
     touch: invoke("projects:touch"),
@@ -138,12 +138,16 @@ contextBridge.exposeInMainWorld("pixice", Object.freeze({
     fork: invoke("threads:fork"),
     archive: invoke("threads:archive")
   }),
-  turns: Object.freeze({ start: invoke("turns:start"), steer: invoke("turns:steer"), interrupt: invoke("turns:interrupt") }),
+  turns: Object.freeze({ start: invoke("turns:start"), steer: invoke("turns:steer"), interrupt: invoke("turns:interrupt"), queue: invoke("turns:queue"), queueList: invoke("turns:queue:list"), queueDraft: invoke("turns:queue:draft"), queueEdit: invoke("turns:queue:edit"), queueRemove: invoke("turns:queue:remove"), queueReorder: invoke("turns:queue:reorder"), queueHold: invoke("turns:queue:hold"), queueResume: invoke("turns:queue:resume"), queueSteer: invoke("turns:queue:steer") }),
   approvals: Object.freeze({ resolve: invoke("approvals:resolve") }),
   requests: Object.freeze({ respond: invoke("requests:respond") }),
   questions: Object.freeze({ respond: invoke("questions:respond") }),
   elicitations: Object.freeze({ respond: invoke("elicitations:respond") }),
   review: Object.freeze({ read: invoke("review:read"), file: invoke("review:file") }),
+  htmlReplies: Object.freeze({ read: invoke("html-replies:read"), list: invoke("html-replies:list"), document: invoke("html-replies:document") }),
+  taskWorkspaces: Object.freeze({ read: invoke("task-workspaces:read"), remove: invoke("task-workspaces:remove") }),
+  history: Object.freeze({ list: invoke("history:list"), preview: invoke("history:preview"), rewind: invoke("history:rewind"), restoreFile: invoke("history:restore-file"), attachment: invoke("history:attachment") }),
+  pullRequests: Object.freeze({ workspace: invoke("pull-requests:workspace"), list: invoke("pull-requests:list"), read: invoke("pull-requests:read"), link: invoke("pull-requests:link"), unlink: invoke("pull-requests:unlink"), diff: invoke("pull-requests:diff"), commit: invoke("pull-requests:commit"), push: invoke("pull-requests:push"), create: invoke("pull-requests:create"), update: invoke("pull-requests:update"), watch: invoke("pull-requests:watch"), stopWatch: invoke("pull-requests:stop-watch") }),
   transcription: Object.freeze({
     state: invoke("transcription:state"),
     install: invoke("transcription:install"),

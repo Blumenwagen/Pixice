@@ -63,6 +63,9 @@ export class ProviderRegistry extends EventEmitter {
     this.database = database;
     this.providers = new Map();
     this.requestOwners = new Map();
+    this.requestOwnerGenerations = new Map();
+    this.requestOwnerContexts = new Map();
+    this.nextRequestOwnerGeneration = 1;
     this.threadOwners = new Map();
     this.modelProviders = new Map();
     this.statuses = new Map();
@@ -81,18 +84,33 @@ export class ProviderRegistry extends EventEmitter {
     this.providers.set(provider.id, provider);
     provider.on("status", (status) => this.#handleStatus(provider, status));
     provider.on("event", (event) => {
+      let providerRequestGeneration = event?.payload?.providerRequestGeneration;
       if (event?.payload?.method === "serverRequest/resolved") {
-        const key = this.#requestKey(event.payload.requestId);
-        if (this.requestOwners.get(key) === provider.id) this.requestOwners.delete(key);
+        const key = this.#requestKey(event.payload.requestId, provider.id);
+        const currentGeneration = this.requestOwnerGenerations.get(key);
+        const context = this.requestOwnerContexts.get(key);
+        const contextMatches = (!event.payload.threadId || !context?.threadId || event.payload.threadId === context.threadId) &&
+          (!event.payload.turnId || !context?.turnId || event.payload.turnId === context.turnId);
+        if (contextMatches) providerRequestGeneration ??= currentGeneration;
+        if (contextMatches && this.requestOwners.get(key) === provider.id && providerRequestGeneration === currentGeneration) {
+          this.requestOwners.delete(key);
+          this.requestOwnerGenerations.delete(key);
+          this.requestOwnerContexts.delete(key);
+        }
       }
       this.emit("event", {
         ...event,
-        payload: { ...(event?.payload ?? {}), provider: provider.id }
+        payload: { ...(event?.payload ?? {}), provider: provider.id,
+          ...(providerRequestGeneration == null ? {} : { providerRequestGeneration }) }
       });
     });
     provider.on("server-request", (request) => {
-      this.requestOwners.set(this.#requestKey(request.id), provider.id);
-      this.emit("server-request", { ...request, provider: provider.id });
+      const key = this.#requestKey(request.id, provider.id);
+      this.requestOwners.set(key, provider.id);
+      const providerRequestGeneration = this.nextRequestOwnerGeneration++;
+      this.requestOwnerGenerations.set(key, providerRequestGeneration);
+      this.requestOwnerContexts.set(key, { threadId: request.params?.threadId, turnId: request.params?.turnId });
+      this.emit("server-request", { ...request, provider: provider.id, providerRequestGeneration });
     });
     provider.on("recoverable-error", (error) => this.emit("recoverable-error", { ...error, provider: provider.id }));
     provider.on("diagnostic", (message) => this.emit("diagnostic", `[${provider.id}] ${message}`));
@@ -248,13 +266,34 @@ export class ProviderRegistry extends EventEmitter {
     return this.#rememberResponse(provider.id, method, prepared, response);
   }
 
-  respond(id, result) {
-    const key = this.#requestKey(id);
+  respond(id, result, { provider: expectedProvider, generation: expectedGeneration } = {}) {
+    const candidates = expectedProvider ? [expectedProvider]
+      : [...this.providers.keys()].filter(provider => this.requestOwners.has(this.#requestKey(id, provider)));
+    if (candidates.length !== 1) {
+      throw Object.assign(new Error("The original provider callback is no longer available or its owner is ambiguous."), { requestClosed: true, executionDisposition: "unavailable" });
+    }
+    const key = this.#requestKey(id, candidates[0]);
     const providerId = this.requestOwners.get(key);
-    const provider = providerId ? this.providers.get(providerId) : this.providers.get("codex");
-    if (!provider) throw new Error("The provider for this request is unavailable");
-    this.requestOwners.delete(key);
-    return provider.respond(id, result);
+    const generation = this.requestOwnerGenerations.get(key);
+    if (!providerId || expectedProvider && providerId !== expectedProvider ||
+      expectedGeneration != null && generation !== expectedGeneration) {
+      throw Object.assign(new Error("The original provider callback is no longer available."), { requestClosed: true, executionDisposition: "unavailable" });
+    }
+    const provider = this.providers.get(providerId);
+    if (!provider) throw Object.assign(new Error("The provider for this request is unavailable"), { requestClosed: true, executionDisposition: "unavailable" });
+    const response = provider.respond(id, result);
+    // Keep ownership until the native callback resolves, so an uncertain write
+    // can be retried against its original provider instead of defaulting to Codex.
+    const confirmed = ack => {
+      if (ack?.resolved === true && this.requestOwners.get(key) === providerId &&
+        this.requestOwnerGenerations.get(key) === generation) {
+        this.requestOwners.delete(key);
+        this.requestOwnerGenerations.delete(key);
+        this.requestOwnerContexts.delete(key);
+      }
+      return ack;
+    };
+    return response?.then ? response.then(confirmed) : confirmed(response);
   }
 
   providerForThread(threadId) {
@@ -436,6 +475,14 @@ export class ProviderRegistry extends EventEmitter {
   }
 
   #handleStatus(provider, status) {
+    if (["connecting", "reconnecting", "stopped", "error", "unavailable"].includes(status?.state)) {
+      for (const [key, owner] of this.requestOwners) {
+        if (owner !== provider.id) continue;
+        this.requestOwners.delete(key);
+        this.requestOwnerGenerations.delete(key);
+        this.requestOwnerContexts.delete(key);
+      }
+    }
     this.statuses.set(provider.id, status);
     const states = [...this.statuses.values()].map((entry) => entry.state);
     const state = states.includes("ready")
@@ -455,8 +502,8 @@ export class ProviderRegistry extends EventEmitter {
     });
   }
 
-  #requestKey(id) {
-    return `${typeof id}:${id}`;
+  #requestKey(id, provider) {
+    return `${provider}\0${typeof id}:${id}`;
   }
 
   #providerOperation(providerId, method, label, ...args) {

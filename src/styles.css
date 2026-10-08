@@ -1283,6 +1283,8 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
   container-type: inline-size;
   transition: width 280ms var(--ease), margin 280ms var(--ease), padding 280ms var(--ease);
 }
+.conversation-column.task-workspace-controls { min-height: 0; padding: 0; flex: none; }
+.task-workspace-controls:empty { display: none; }
 .pixice-app[data-inspector-open="true"] {
   --inspector-chat-left: max(32px, calc((100% - 1100px) / 2));
   --inspector-chat-width: min(var(--conversation-width), calc(100% - 380px));
@@ -3492,6 +3494,11 @@ body.preview-resizing .preview-resizer::after { background: var(--primary); }
 .operation-capsule-copy strong { max-width: 100%; overflow: hidden; color: var(--foreground); font-size: 11px; font-weight: 590; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .operation-capsule[data-tone="success"] .operation-capsule-copy strong { color: color-mix(in oklab, var(--success) 64%, var(--foreground)); }
 .operation-capsule-copy small { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.operation-capsule:has(.operation-capsule-details) .operation-capsule-copy strong { font-size: 12px; white-space: normal; }
+.operation-capsule:has(.operation-capsule-details) .operation-capsule-copy small { font-size: 12px; line-height: 1.45; white-space: normal; }
+.operation-capsule-details { margin: 4px 12px 0; padding: 8px 10px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 10px; font-size: 12px; line-height: 1.5; }
+.operation-capsule-details summary { cursor: pointer; }
+.operation-capsule-details p { max-height: min(240px, 30vh); margin: 8px 0 0; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .operation-capsule-actions { flex: none; display: flex; align-items: center; gap: 3px; }
 .operation-capsule-action,
 .operation-capsule-dismiss { border: 0; color: var(--muted); background: transparent; cursor: pointer; }

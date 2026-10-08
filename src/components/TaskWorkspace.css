@@ -1,0 +1,18 @@
+.task-workspace-picker,.task-workspace-badge{position:relative;display:inline-flex;min-width:0}
+.task-workspace-trigger{display:inline-flex;align-items:center;gap:7px;max-width:220px;padding:5px 7px;color:var(--muted);background:transparent;border:0;border-radius:7px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-workspace-trigger:hover:not(:disabled){color:var(--foreground);background:rgba(255,255,255,.045)}
+.task-workspace-options{position:absolute;z-index:80;bottom:calc(100% + 8px);left:0;width:290px;padding:9px;background:var(--surface-raised);border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 35px #0004;color:var(--foreground);font-size:13px;line-height:1.5}
+.task-workspace-badge .task-workspace-options{bottom:auto;top:calc(100% + 8px)}
+.task-workspace-options>button{display:flex;flex-direction:column;align-items:flex-start;width:100%;gap:2px;padding:8px;border:0;border-radius:7px;background:transparent;color:var(--foreground);text-align:left;font-size:13px}
+.task-workspace-options>button[aria-pressed=true]{background:rgba(255,255,255,.07)}
+.task-workspace-options>button:hover:not(:disabled){background:rgba(255,255,255,.045)}
+.task-workspace-options>button:disabled{opacity:.45}
+.task-workspace-options strong{font-weight:500}
+.task-workspace-options span,.task-workspace-options p{color:var(--muted);font-size:12px}
+.task-workspace-options p{margin:8px}
+.task-workspace-fields{display:flex;flex-direction:column;gap:10px;padding:9px 8px 0}
+.task-workspace-fields label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.task-workspace-fields input,.task-workspace-fields select{width:100%;padding:6px 8px;color:var(--foreground);background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:13px}
+.task-workspace-fields p{margin:0}
+.task-workspace-path{overflow-wrap:anywhere}
+.task-workspace-options>.task-workspace-done{margin-top:6px;align-items:center;color:var(--muted)}

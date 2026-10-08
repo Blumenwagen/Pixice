@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.jsx";
 import { WorkflowHost } from "./components/workflows/WorkflowHost.jsx";
 import { TaskPreviewHost } from "./components/TaskPreviewHost.jsx";
+import { CanvasHost } from "./components/canvas/CanvasHost.jsx";
 import { RendererErrorBoundary } from "./components/RendererErrorBoundary.jsx";
 import { registerRootConnectServiceWorker } from "./connect/push-pwa.js";
 import "./styles.css";
@@ -29,7 +30,8 @@ if (import.meta.env.DEV && (previewParameters.has("task-progress-preview") || pr
   window.pixice = createTaskProgressPreviewApi({
     focusPreview: previewParameters.has("focus-preview"),
     gitUnavailable: previewParameters.has("git-setup-preview"),
-    updatePreview: previewParameters.has("operation-capsule-preview")
+    updatePreview: previewParameters.get("operation-capsule-preview") || previewParameters.has("operation-capsule-preview"),
+    startupRecoveryPreview: previewParameters.get("startup-recovery")
   });
 }
 
@@ -39,7 +41,7 @@ createRoot(document.getElementById("root")).render(
       <ConnectRoot>
       <WorkflowHost>
         <TaskPreviewHost>
-          <App />
+          <CanvasHost><App /></CanvasHost>
         </TaskPreviewHost>
       </WorkflowHost>
       </ConnectRoot>

@@ -1,9 +1,12 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import webPush from 'web-push';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { startService } from '../electron/backend/service.mjs';
 import { ApplicationClient, requestJson } from '../electron/connect/application-client.mjs';
 import { BackendFixtureProvider } from './fixtures/backend-provider.mjs';
@@ -22,6 +25,68 @@ async function fixture(directory, options = {}) {
   return { root, service, client, provider };
 }
 describe('standalone application service', () => {
+  it('loads saved projects even when the connected provider stalls model discovery', async () => {
+    const { client, provider, root } = await fixture();
+    const folder = path.join(root, 'model-stall'); await mkdir(folder);
+    const project = await client.call('projects.create', { displayName: 'Model stall', icon: 'folder', color: 'gray', folders: [folder] });
+    const original = provider.request.bind(provider);
+    provider.request = (method, payload) => method === 'model/list' ? new Promise(() => {}) : original(method, payload);
+    const restored = await client.call('app.bootstrap');
+    expect(restored.projects).toContainEqual(expect.objectContaining({ id: project.id }));
+    expect(restored.models).toEqual([]);
+  });
+  it('loads saved projects while provider startup is still pending', async () => {
+    const { client, service, root } = await fixture();
+    const folder = path.join(root, 'slow-provider-project'); await mkdir(folder);
+    const project = await client.call('projects.create', { displayName: 'Saved', icon: 'folder', color: 'gray', folders: [folder] });
+    client.close(); await service.stop({ force: true });
+    let resumeProvider;
+    const barrier = new Promise(resolve => { resumeProvider = resolve; });
+    const provider = new BackendFixtureProvider();
+    const start = provider.start.bind(provider);
+    provider.start = async () => { await barrier; return start(); };
+    const next = await startService({ dataDirectory: path.join(root, 'data'), resourcesPath: path.resolve('resources'), clientDirectory: path.resolve('dist/client'), version: 'test',
+      providerFactories: { codex: () => provider, claude: () => new BackendFixtureProvider('claude') } });
+    cleanup.push(async () => { resumeProvider(); await next.ready; await next.stop({ force: true }); });
+    const reader = new ApplicationClient({ id: next.descriptor.hostId, endpoint: next.descriptor.endpoint, token: next.descriptor.token }, { probe: 'service.status' });
+    cleanup.push(() => reader.close()); await reader.connect();
+    try {
+      expect(next.status().phase).toBe('starting');
+      expect((await reader.call('app.bootstrap')).projects).toContainEqual(expect.objectContaining({ id: project.id }));
+      expect(await reader.call('workflows.list', { projectId: project.id })).toEqual({ data: [] });
+    } finally { resumeProvider(); await next.ready; }
+  });
+  it('keeps saved projects visible when repository inspection fails', async () => {
+    const { client, root } = await fixture();
+    const folder = path.join(root, 'broken-repository'); await mkdir(folder);
+    await promisify(execFile)('git', ['init'], { cwd: folder });
+    const project = await client.call('projects.create', { displayName: 'Broken Git', icon: 'folder', color: 'gray', folders: [folder] });
+    await writeFile(path.join(folder, '.git', 'config'), 'invalid git configuration\n');
+    const restored = await client.call('app.bootstrap');
+    expect(restored.projects).toContainEqual(expect.objectContaining({ id: project.id, repository: expect.objectContaining({ kind: 'unavailable' }) }));
+  });
+  it('restores every saved project even when one folder is unavailable after restart', async () => {
+    const { client, service, root } = await fixture();
+    const folders = [path.join(root, 'available'), path.join(root, 'external-drive')];
+    for (const folder of folders) await mkdir(folder);
+    const projects = [];
+    for (const folder of folders) projects.push(await client.call('projects.create', { displayName: path.basename(folder), icon: 'folder', color: 'gray', folders: [folder] }));
+    client.close(); await service.stop({ force: true });
+    await rm(folders[1], { recursive: true });
+    const next = await fixture(root);
+    const restored = await next.client.call('app.bootstrap');
+    expect(restored.projects.map(project => project.id).sort()).toEqual(projects.map(project => project.id).sort());
+    expect(restored.projects.find(project => project.id === projects[1].id).repository).toMatchObject({ kind: 'unavailable', error: expect.any(String) });
+    expect((await next.client.call('projects.list')).map(project => project.id)).toHaveLength(2);
+  });
+  it('creates and restores a project in a new Git repository before its first commit', async () => {
+    const { client, root } = await fixture();
+    const folder = path.join(root, 'new-repository'); await mkdir(folder);
+    await promisify(execFile)('git', ['init'], { cwd: folder });
+    const project = await client.call('projects.create', { displayName: 'New repository', icon: 'folder', color: 'gray', folders: [folder] });
+    expect(project.repository).toMatchObject({ kind: 'git', baseCommit: null });
+    expect((await client.call('app.bootstrap')).projects).toContainEqual(expect.objectContaining({ id: project.id }));
+  });
   it('runs workflows and the application API in plain Node without an Electron host', async () => {
     const { client, service, root } = await fixture();
     expect(service.local.apiRateLimit).toBe(60_000);

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installPromptEditorGeometry, changeEditable, toHaveEditableValue } from './helpers/prompt-editor.js';
 import { ExecutionThreadWorkspace } from '../src/connect/execution-workspace.jsx';
 import { normalizeCodexEvent } from '../electron/runtime/capability-adapter.mjs';
 
@@ -38,6 +39,8 @@ function mapStorageAdapter(storage = new Map()) {
   };
 }
 
+expect.extend({ toHaveValue: toHaveEditableValue });
+beforeEach(installPromptEditorGeometry);
 afterEach(() => { delete window.pixice; });
 
 describe('ExecutionThreadWorkspace', () => {
@@ -49,7 +52,7 @@ describe('ExecutionThreadWorkspace', () => {
 
     const prompt = await screen.findByLabelText('Task prompt');
     await waitFor(() => expect(prompt).toBeEnabled());
-    fireEvent.change(prompt, { target: { value: 'Run on B' } });
+    changeEditable(prompt, { target: { value: 'Run on B' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => expect(api.threads.create).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-b', model: 'model-b' })));
@@ -62,18 +65,18 @@ describe('ExecutionThreadWorkspace', () => {
     render(<ExecutionThreadWorkspace api={api} hostId="host-b" hostLabel="Laptop B" projectId={project.id} project={project} originProjectId="project-a" />);
     const prompt = await screen.findByLabelText('Task prompt');
     await waitFor(() => expect(prompt).toBeEnabled());
-    fireEvent.change(prompt, { target: { value: 'Stream on B' } });
+    changeEditable(prompt, { target: { value: 'Stream on B' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({ text: 'Stream on B', threadId: 'thread-b' })));
 
     act(() => emit(normalizeCodexEvent({ method: 'item/agentMessage/delta', params: { threadId: 'thread-b', turnId: 'turn-b', itemId: 'agent-delta', delta: 'Streamed answer' } })));
-    expect(await screen.findByText('Streamed answer')).toBeInTheDocument();
+    expect(await screen.findByText((_text, element) => element?.tagName === 'P' && element.textContent === 'Streamed answer')).toBeInTheDocument();
     act(() => emit(normalizeCodexEvent({ method: 'item/updated', params: {
       threadId: 'thread-b',
       item: { id: 'collab-1', type: 'collabAgentToolCall', tool: 'spawnAgent', senderThreadId: 'thread-b', receiverThreadIds: ['child-b'], prompt: 'Check the remote files', agentsStates: { 'child-b': { status: 'running', message: 'Checking' } } }
     } })));
     act(() => emit(normalizeCodexEvent({ method: 'turn/completed', params: { threadId: 'thread-b', turn: { id: 'turn-b', status: 'completed', items: [{ id: 'agent-delta', type: 'agentMessage', text: 'Streamed answer', phase: 'final_answer' }] } } })));
-    await waitFor(() => expect(screen.getByText('Streamed answer')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText((_text, element) => element?.tagName === 'P' && element.textContent === 'Streamed answer')).toBeInTheDocument());
 
     act(() => emit(normalizeCodexEvent({ method: 'item/requestUserInput', params: {
       requestId: 'question-1', requestGeneration: 4, projectId: project.id, threadId: 'thread-b',
@@ -88,11 +91,11 @@ describe('ExecutionThreadWorkspace', () => {
     render(<ExecutionThreadWorkspace api={api} hostId="host-b" hostLabel="Laptop B" projectId={project.id} project={project} originProjectId="project-a" />);
     const prompt = await screen.findByLabelText('Task prompt');
     await waitFor(() => expect(prompt).toBeEnabled());
-    fireEvent.change(prompt, { target: { value: 'Start' } });
+    changeEditable(prompt, { target: { value: 'Start' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(api.turns.start).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByRole('button', { name: 'Stop task' })).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Steer the active turn' } });
+    changeEditable(screen.getByLabelText('Task prompt'), { target: { value: 'Steer the active turn' } });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Steer task' })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Steer task' }));
     await waitFor(() => expect(api.turns.steer).toHaveBeenCalledWith(expect.objectContaining({ turnId: 'turn-b', text: 'Steer the active turn' })));
@@ -116,7 +119,7 @@ describe('ExecutionThreadWorkspace', () => {
     expect(storage.get('pixice.draft.host-b:project-b:new')).toBe('Keep this task');
     expect(storage.get('pixice.draft.host-b:project-b:thread-b')).toBe('Keep this task');
     expect(storage.get('pixice.draft.host-b:project-b:thread-b.attachments')).toContain('notes.png');
-    expect(await screen.findByDisplayValue('Keep this task')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Task prompt' })).toHaveValue('Keep this task'));
   });
 
   it('clears every matching initial draft copy after acceptance', async () => {
@@ -174,7 +177,7 @@ describe('ExecutionThreadWorkspace', () => {
     expect(api.threads.create).toHaveBeenCalledOnce();
     expect(api.turns.start).not.toHaveBeenCalled();
     expect(storage.get('pixice.draft.host-b:project-b:new')).toBe('Do not resend');
-    expect(await screen.findByDisplayValue('Do not resend')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Task prompt' })).toHaveValue('Do not resend'));
   });
 
   it('starts an attachment-only initial submission and reports acceptance', async () => {
@@ -191,7 +194,7 @@ describe('ExecutionThreadWorkspace', () => {
     api.providers.list.mockResolvedValueOnce([{ id: 'codex', connected: false, status: { state: 'unavailable' } }]);
     render(<ExecutionThreadWorkspace api={api} hostId="host-b" hostLabel="Laptop B" projectId={project.id} project={project} originProjectId="project-a" />);
     const prompt = await screen.findByLabelText('Task prompt');
-    await waitFor(() => expect(prompt).toBeDisabled());
+    await waitFor(() => expect(prompt).toHaveAttribute('aria-disabled', 'true'));
     expect(api.turns.start).not.toHaveBeenCalled();
   });
 

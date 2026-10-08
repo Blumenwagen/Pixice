@@ -17,9 +17,8 @@ const recoveryDescriptor = (descriptor, payload, uncertain = true) => ({
   uncertain
 });
 
-function abortableFetch(url, options) {
-  const signal = options?.signal;
-  if (!signal) return fetch(url, options);
+function abortableRead(read, signal) {
+  if (!signal) return Promise.resolve().then(read);
   return new Promise((resolve, reject) => {
     let settled = false;
     const cleanup = () => signal.removeEventListener?.('abort', onAbort);
@@ -32,7 +31,7 @@ function abortableFetch(url, options) {
     const onAbort = () => finish(reject, signal.reason ?? new DOMException('The request was aborted.', 'AbortError'));
     if (signal.aborted) { onAbort(); return; }
     signal.addEventListener?.('abort', onAbort, { once: true });
-    Promise.resolve(fetch(url, options)).then(
+    Promise.resolve().then(read).then(
       (response) => finish(resolve, response),
       (error) => finish(reject, error)
     );
@@ -40,6 +39,7 @@ function abortableFetch(url, options) {
 }
 
 export async function requestJson(endpoint, route, { token, body, signal, mutation = body !== undefined, onDispatch } = {}) {
+  const requestSignal = signal ?? AbortSignal.timeout(120_000);
   let encodedBody;
   if (body !== undefined) {
     try { encodedBody = JSON.stringify(body); }
@@ -57,14 +57,14 @@ export async function requestJson(endpoint, route, { token, body, signal, mutati
   let response;
   try {
     await onDispatch?.();
-    response = await abortableFetch(`${endpoint}/api/connect/${route}`, {
+    response = await abortableRead(() => fetch(`${endpoint}/api/connect/${route}`, {
       method: body === undefined ? 'GET' : 'POST', redirect: 'error', credentials: 'omit', cache: 'no-store',
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
-      ...(body !== undefined ? { body: encodedBody } : {}), signal: signal ?? AbortSignal.timeout(120_000)
-    });
+      ...(body !== undefined ? { body: encodedBody } : {}), signal: requestSignal
+    }), requestSignal);
   } catch (error) {
     throw Object.assign(new Error('The connection could not be completed.'), {
-      code: error?.name === 'AbortError' ? CONNECT_ERROR_CODES.REQUEST_ABORTED : CONNECT_ERROR_CODES.NETWORK_ERROR,
+      code: ['AbortError', 'TimeoutError'].includes(error?.name) ? CONNECT_ERROR_CODES.REQUEST_ABORTED : CONNECT_ERROR_CODES.NETWORK_ERROR,
       cause: error,
       uncertain: Boolean(mutation)
     });
@@ -83,13 +83,15 @@ export async function requestJson(endpoint, route, { token, body, signal, mutati
   return result;
 }
 export class ApplicationClient {
-  constructor(instance, { onState = () => {}, onReset = () => {}, onCommandUncertain = () => {}, onCommandIssued = () => {}, onCommandSettled = () => {}, probe = 'runtime.status', resolveInstance } = {}) {
+  constructor(instance, { onState = () => {}, onReset = () => {}, onCommandUncertain = () => {}, onCommandIssued = () => {}, onCommandSettled = () => {}, probe = 'runtime.status', resolveInstance, handshakeTimeoutMs = 10_000 } = {}) {
     this.instance = { ...instance, endpoint: normalizeEndpoint(instance.endpoint) };
     this.onState = onState; this.onReset = onReset; this.onCommandUncertain = onCommandUncertain; this.onCommandIssued = onCommandIssued; this.onCommandSettled = onCommandSettled; this.probe = probe; this.resolveInstance = resolveInstance;
     this.listeners = new Set(); this.requests = new Map(); this.attention = new Map(); this.commands = new Map(); this.uncertainCommands = new Map(); this.capabilities = null;
     this.closed = false; this.online = false; this.cursor = 0; this.eventInstance = ''; this.hasSnapshot = false;
     this.attentionRevision = 0; this.interventionReadSequence = 0;
+    this.lifetime = new AbortController(); this.handshakeTimeoutMs = handshakeTimeoutMs;
   }
+  handshakeSignal() { return AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(this.handshakeTimeoutMs)]); }
   subscribe(listener) {
     this.listeners.add(listener);
     queueMicrotask(() => { if (this.listeners.has(listener)) for (const payload of this.attention.values()) listener({ type: 'AttentionRequired', payload }); });
@@ -102,18 +104,20 @@ export class ApplicationClient {
     }
   }
   async connect() {
-    const info = await requestJson(this.instance.endpoint, 'info');
+    const info = await requestJson(this.instance.endpoint, 'info', { signal: this.handshakeSignal() });
+    if (this.closed) return;
     if (info.hostId !== this.instance.id) throw new Error('This address belongs to a different Pixice host. Pair again to verify its identity.');
     if (info.protocol !== PROTOCOL_VERSION) throw new Error('Incompatible Pixice Connect version. Update the host and client.');
     this.instanceId = info.instanceId;
     await this.getCapabilities();
+    if (this.closed) return;
     this.online = true;
-    try { await this.call(this.probe); } catch (error) { this.online = false; throw error; }
+    try { await this.call(this.probe, undefined, { signal: this.handshakeSignal() }); } catch (error) { this.online = false; throw error; }
     if (this.closed) return;
     this.onState({ state: 'connected' });
     void this.poll();
   }
-  async call(operation, payload) {
+  async call(operation, payload, { signal } = {}) {
     const mutation = isMutation(operation);
     if (!this.online || this.closed) throw Object.assign(new Error('The instance is offline. Your action was not sent.'), { code: CONNECT_ERROR_CODES.OFFLINE, uncertain: false });
     if (['approvals.resolve', 'requests.respond', 'questions.respond', 'elicitations.respond'].includes(operation)) {
@@ -137,6 +141,7 @@ export class ApplicationClient {
     try {
       const response = await requestJson(this.instance.endpoint, 'call', {
         token: this.instance.token,
+        signal,
         mutation,
         body: { ...descriptor, payload },
         onDispatch: mutation ? () => { dispatched = true; return this.issueCommand(descriptor, payload); } : undefined
@@ -215,7 +220,7 @@ export class ApplicationClient {
   dismissUncertainCommand(commandId) { return this.resolveUncertainCommand(commandId); }
   async getCapabilities() {
     try {
-      this.capabilities = await requestJson(this.instance.endpoint, 'session', { token: this.instance.token });
+      this.capabilities = await requestJson(this.instance.endpoint, 'session', { token: this.instance.token, signal: this.handshakeSignal() });
     } catch (error) {
       if (error.status === 404) { this.capabilities = null; return null; }
       throw error;
@@ -275,8 +280,11 @@ export class ApplicationClient {
           diagnostic: error.cause?.code || error.code || error.name, status: error.status });
         if (this.resolveInstance) {
           try {
-            const next = await this.resolveInstance();
-            const info = await requestJson(next.endpoint, 'info');
+            const signal = this.handshakeSignal();
+            const next = await abortableRead(() => this.resolveInstance({ signal }), signal);
+            if (this.closed) return;
+            const info = await requestJson(next.endpoint, 'info', { signal: this.handshakeSignal() });
+            if (this.closed) return;
             if (info.hostId !== next.id || info.protocol !== PROTOCOL_VERSION) throw new Error('The local service identity or protocol changed.');
             this.instance = { ...next, endpoint: normalizeEndpoint(next.endpoint) };
             this.instanceId = info.instanceId;
@@ -286,9 +294,10 @@ export class ApplicationClient {
             if (info.instanceId !== this.eventInstance) { this.eventInstance = ''; this.cursor = 0; }
           } catch { /* Keep reconnecting; never replay an application command. */ }
         } else if (error.status === 401) return;
+        if (this.closed) return;
         await new Promise((resolve) => { this.wake = resolve; this.retry = setTimeout(resolve, Math.min(15_000, 1000 * 2 ** failures++) + Math.random() * 250); });
       }
     }
   }
-  close() { this.closed = true; this.online = false; this.abort?.abort(); clearTimeout(this.retry); this.wake?.(); this.listeners.clear(); }
+  close() { this.closed = true; this.online = false; this.lifetime.abort(); this.abort?.abort(); clearTimeout(this.retry); this.wake?.(); this.listeners.clear(); }
 }

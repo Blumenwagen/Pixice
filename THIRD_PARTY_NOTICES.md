@@ -2,6 +2,38 @@
 
 Pixice is distributed without a product license at this time. This file applies only to third-party software included with Pixice. It does not grant rights to Pixice itself.
 
+## T3 Code reference implementation
+
+Pixice's native pull request watches adapt change evaluation and GitHub check/fingerprint selections from T3 Code, released as `v0.0.46-nightly.20261008.2813` (commit `30cc788975500a8c00d32a50f348174d1ce578d1`). Its managed task worktrees, rewind checkpoints, message queue, and HTML replies also use this release as a functional reference. T3 Code is available under the MIT License.
+
+- Source: https://github.com/pingdotgg/t3code
+- Reference modules: `apps/server/src/orchestration-v2/pullRequestWatch.ts`, `apps/server/src/orchestration-v2/PullRequestWatchReactor.ts`, and `apps/server/src/pullRequest/gitHubPullRequestJson.ts`
+- Other functional references: `apps/server/src/orchestration-v2/CheckpointService.ts`, `apps/server/src/orchestration-v2/CheckpointRestoreSafety.ts`, `apps/server/src/mcp/toolkits/worktree/`, `apps/server/src/htmlRender/HtmlRender.ts`, and the orchestration queue contracts
+- Computer Use app permission choices and native persistence responses adapt `apps/server/src/provider/CodexMcpElicitation.ts` at the same reference commit.
+- License: https://github.com/pingdotgg/t3code/blob/v0.0.46-nightly.20261008.2813/LICENSE
+
+MIT License
+
+Copyright (c) 2026 T3 Tools Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## GitHub CLI
 
 Pixice release builds include the official GitHub CLI for the packaged operating system. GitHub CLI is Copyright GitHub and contributors and is available under the MIT License.
@@ -59,3 +91,32 @@ When explicitly started in Connections, Pixice downloads official cloudflared 20
 
 - Source and license: https://github.com/cloudflare/cloudflared
 - Release: https://github.com/cloudflare/cloudflared/releases/tag/2026.8.3
+
+
+## T3 Code recorded provider replay fixture
+
+The sanitized Codex transcript excerpt in `tests/fixtures/orchestrator-replay/codex-recorded-approval.ndjson` is adapted from [T3 Code](https://github.com/pingdotgg/t3code/blob/30cc788975500a8c00d32a50f348174d1ce578d1/apps/server/src/orchestration-v2/testkit/fixtures/tool_call_read_only_on_request/codex_transcript.ndjson). Its fixture metadata records the source commit, checksum, retained lines, and sanitization.
+
+```text
+MIT License
+
+Copyright (c) 2026 T3 Tools Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

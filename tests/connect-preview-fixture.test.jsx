@@ -1,12 +1,25 @@
 import { webcrypto } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { ConnectPreview } from "../src/connect-preview.jsx";
 import { RemoteClient } from "../src/connect/client.js";
 import { createWorkspaceStorage } from "../src/connect/execution-storage.js";
+import { changeEditable, editableValue, installPromptEditorGeometry, toHaveEditableValue } from "./helpers/prompt-editor.js";
+
+beforeAll(installPromptEditorGeometry);
+expect.extend({ toHaveEditableValue });
 
 let fixture;
+
+async function openNewTask() {
+  await screen.findByRole("complementary", { name: "Primary navigation" });
+  // Bootstrap selects and reads the initial task asynchronously. Wait for that
+  // read before entering a draft so it cannot overwrite the new-task selection.
+  await screen.findByText("The handoff is ready for review.");
+  fireEvent.click(screen.getByRole("button", { name: "New task" }));
+  await screen.findByRole("combobox", { name: "Run on" });
+}
 
 function dispatchFiles(input, files) {
   Object.defineProperty(input, "files", { configurable: true, value: files });
@@ -30,6 +43,7 @@ function makeFixtureFile(contents, name) {
 beforeEach(() => {
   vi.stubGlobal("crypto", webcrypto);
   fixture = ConnectPreview.installFixture(window);
+  fixture.reset();
 });
 
 afterEach(() => {
@@ -41,8 +55,7 @@ afterEach(() => {
 describe("Connect preview fixture integration", () => {
   it("mounts the real App, sends one target-project turn, and keeps observer writes blocked", async () => {
     render(<StrictMode><ConnectPreview fixture={fixture} /></StrictMode>);
-    await screen.findByRole("complementary", { name: "Primary navigation" });
-    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await openNewTask();
     const runOn = await screen.findByRole("combobox", { name: "Run on" });
     expect(runOn.closest(".composer")).toBeNull();
     expect(runOn.closest(".execution-preflight")).toBeInTheDocument();
@@ -51,7 +64,7 @@ describe("Connect preview fixture integration", () => {
     fireEvent.change(targetProject, { target: { value: "project-b" } });
     const prompt = await screen.findByRole("textbox", { name: "Task prompt" });
     await waitFor(() => expect(prompt).toBeEnabled());
-    fireEvent.change(prompt, { target: { value: "Run on B only" } });
+    changeEditable(prompt, { target: { value: "Run on B only" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(fixture.calls.some((call) => call.hostId === "host-b" && call.operation === "turns.start" && call.projectId === "project-b")).toBe(true), { timeout: 5_000 });
@@ -77,13 +90,12 @@ describe("Connect preview fixture integration", () => {
 
   it("removes Run on after the first local send", async () => {
     render(<StrictMode><ConnectPreview fixture={fixture} /></StrictMode>);
-    await screen.findByRole("complementary", { name: "Primary navigation" });
-    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await openNewTask();
     const origin = document.querySelector(".origin-task-workspace");
     const prompt = within(origin).getByRole("textbox", { name: "Task prompt" });
     await waitFor(() => expect(prompt).toBeEnabled());
     expect(within(origin).getByRole("combobox", { name: "Run on" })).toBeInTheDocument();
-    fireEvent.change(prompt, { target: { value: "Run locally" } });
+    changeEditable(prompt, { target: { value: "Run locally" } });
     fireEvent.click(within(origin).getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(fixture.calls.some((call) => call.hostId === "local" && call.operation === "turns.start" && call.projectId === "project-a")).toBe(true), { timeout: 5_000 });
@@ -93,43 +105,41 @@ describe("Connect preview fixture integration", () => {
 
   it("clears accepted origin and target snapshots when a remote task closes and reopens", async () => {
     render(<StrictMode><ConnectPreview fixture={fixture} /></StrictMode>);
-    await screen.findByRole("complementary", { name: "Primary navigation" });
-    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await openNewTask();
     const runOn = await screen.findByRole("combobox", { name: "Run on" });
     fireEvent.change(runOn, { target: { value: "host-b" } });
     fireEvent.change(await screen.findByRole("combobox", { name: "Target project" }), { target: { value: "project-b" } });
     const origin = document.querySelector(".origin-task-workspace");
     const prompt = within(origin).getByRole("textbox", { name: "Task prompt" });
     await waitFor(() => expect(prompt).toBeEnabled());
-    fireEvent.change(prompt, { target: { value: "Accepted remote task" } });
+    changeEditable(prompt, { target: { value: "Accepted remote task" } });
     dispatchFiles(origin.querySelector('input[type="file"][multiple]'), [makeFixtureFile("submitted content", "fixture-sample.txt")]);
-    await waitFor(() => expect(within(origin).getByText("fixture-sample.txt")).toBeInTheDocument());
+    await waitFor(() => expect(within(origin).getByRole("button", { name: "Remove fixture-sample.txt" })).toBeInTheDocument());
     fireEvent.click(within(origin).getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(fixture.calls.filter((call) => call.hostId === "host-b" && call.operation === "turns.start" && call.projectId === "project-b")).toHaveLength(1), { timeout: 5_000 });
-    await waitFor(() => expect(within(origin).getByRole("textbox", { name: "Task prompt", hidden: true })).toHaveValue(""));
-    await waitFor(() => expect(within(origin).queryByText("fixture-sample.txt")).not.toBeInTheDocument());
+    await waitFor(() => expect(within(origin).getByRole("textbox", { name: "Task prompt", hidden: true })).toHaveEditableValue(""));
+    await waitFor(() => expect(within(origin).queryAllByText("fixture-sample.txt")).toHaveLength(0));
     fireEvent.click(screen.getByRole("button", { name: "Close remote task" }));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Task on Beacon host" })).not.toBeInTheDocument());
 
     expect(screen.getByRole("button", { name: "Environment: This device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Loom desktop" })).toHaveAttribute("aria-current", "true");
-    expect(within(origin).getByRole("textbox", { name: "Task prompt", hidden: true })).toHaveValue("");
-    expect(within(origin).queryByText("fixture-sample.txt")).not.toBeInTheDocument();
+    expect(within(origin).getByRole("textbox", { name: "Task prompt", hidden: true })).toHaveEditableValue("");
+    expect(within(origin).queryAllByText("fixture-sample.txt")).toHaveLength(0);
 
     const linked = (await screen.findAllByRole("button", { name: /Untitled fixture task/ }))
       .find((button) => button.title.includes("Beacon mobile"));
     expect(linked).toBeTruthy();
     fireEvent.click(linked);
     const reopened = await screen.findByRole("region", { name: "Task on Beacon host" });
-    await waitFor(() => expect(within(reopened).getByRole("textbox", { name: "Task prompt" })).toHaveValue(""));
-    expect(within(reopened).queryByText("fixture-sample.txt")).not.toBeInTheDocument();
+    await waitFor(() => expect(within(reopened).getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue(""));
+    expect(within(reopened).queryAllByText("fixture-sample.txt")).toHaveLength(0);
   });
 
   it("keeps later origin text and files while the real preparation request is gated", async () => {
     render(<StrictMode><ConnectPreview fixture={fixture} /></StrictMode>);
-    await screen.findByRole("complementary", { name: "Primary navigation" });
-    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await openNewTask();
     fireEvent.change(await screen.findByRole("combobox", { name: "Run on" }), { target: { value: "host-b" } });
     fireEvent.change(await screen.findByRole("combobox", { name: "Target project" }), { target: { value: "project-b" } });
     const origin = document.querySelector(".origin-task-workspace");
@@ -139,7 +149,7 @@ describe("Connect preview fixture integration", () => {
     const later = makeFixtureFile("later content", "later.txt");
     await waitFor(() => expect(prompt).toBeEnabled());
     dispatchFiles(input, [submitted]);
-    fireEvent.change(prompt, { target: { value: "Submitted origin task" } });
+    changeEditable(prompt, { target: { value: "Submitted origin task" } });
     expect(origin.textContent).toContain("submitted.txt");
 
     const fixtureFetch = window.fetch;
@@ -154,9 +164,11 @@ describe("Connect preview fixture integration", () => {
     };
     fireEvent.click(within(origin).getByRole("button", { name: "Send message" }));
     expect(origin.textContent).toContain("submitted.txt");
-    fireEvent.change(prompt, { target: { value: "Later origin task" } });
+    changeEditable(prompt, { target: { value: "Later origin task" } });
     dispatchFiles(input, [later]);
     await waitFor(() => expect(origin.textContent).toContain("later.txt"));
+    const laterDraft = editableValue(prompt);
+    expect(laterDraft).toContain("Later origin task");
 
     await act(async () => { releasePreparation(); });
     await waitFor(() => expect(fixture.calls.filter((call) => call.hostId === "host-b" && call.operation === "turns.start" && call.projectId === "project-b")).toHaveLength(1), { timeout: 5_000 });
@@ -177,16 +189,16 @@ describe("Connect preview fixture integration", () => {
         items: [{ kind: "file" }]
       }
     });
-    await waitFor(() => expect(within(execution).getByText("execution-only.txt")).toBeInTheDocument());
-    expect(within(origin).getByText("later.txt")).toBeInTheDocument();
+    await waitFor(() => expect(within(execution).getByRole("button", { name: "Remove execution-only.txt" })).toBeInTheDocument());
+    expect(within(origin).getByRole("button", { name: "Remove later.txt", hidden: true })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close remote task" }));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Task on Beacon host" })).not.toBeInTheDocument());
 
-    expect(within(origin).getByRole("textbox", { name: "Task prompt" })).toHaveValue("Later origin task");
-    expect(within(origin).queryByText("submitted.txt")).not.toBeInTheDocument();
-    expect(within(origin).getByText("later.txt")).toBeInTheDocument();
+    expect(within(origin).getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue(laterDraft);
+    expect(within(origin).queryAllByText("submitted.txt")).toHaveLength(0);
+    expect(within(origin).getByRole("button", { name: "Remove later.txt" })).toBeInTheDocument();
     const localStorage = createWorkspaceStorage("local");
-    expect(localStorage.getItem("pixice.draft.project-a:new")).toBe("Later origin task");
+    expect(localStorage.getItem("pixice.draft.project-a:new")).toBe(laterDraft);
     expect(JSON.parse(localStorage.getItem("pixice.draft.project-a:new.attachments"))).toEqual([
       expect.objectContaining({ name: "later.txt", size: later.size })
     ]);
@@ -206,8 +218,7 @@ describe("Connect preview fixture integration", () => {
 
   it("keeps target prompt and file metadata after a lost create response without retrying on rerender", async () => {
     render(<StrictMode><ConnectPreview fixture={fixture} /></StrictMode>);
-    await screen.findByRole("complementary", { name: "Primary navigation" });
-    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await openNewTask();
     fireEvent.change(await screen.findByRole("combobox", { name: "Run on" }), { target: { value: "host-b" } });
     fireEvent.change(await screen.findByRole("combobox", { name: "Target project" }), { target: { value: "project-b" } });
     const origin = document.querySelector(".origin-task-workspace");
@@ -215,9 +226,11 @@ describe("Connect preview fixture integration", () => {
     const input = origin.querySelector('input[type="file"][multiple]');
     const attachment = makeFixtureFile("create response payload", "create-lost.txt");
     await waitFor(() => expect(prompt).toBeEnabled());
-    fireEvent.change(prompt, { target: { value: "Keep after lost create" } });
+    changeEditable(prompt, { target: { value: "Keep after lost create" } });
     dispatchFiles(input, [attachment]);
-    await waitFor(() => expect(within(origin).getByText("create-lost.txt")).toBeInTheDocument());
+    await waitFor(() => expect(within(origin).getByRole("button", { name: "Remove create-lost.txt" })).toBeInTheDocument());
+    const submittedDraft = editableValue(prompt);
+    expect(submittedDraft).toContain("Keep after lost create");
     const send = within(origin).getByRole("button", { name: "Send message" });
     await waitFor(() => expect(send).toBeEnabled());
     fixture.hosts[ConnectPreview.fixtureHosts.operator].responseLoss = true;
@@ -225,7 +238,7 @@ describe("Connect preview fixture integration", () => {
 
     await waitFor(() => expect(fixture.calls.filter((call) => call.hostId === "host-b" && call.operation === "threads.create" && call.projectId === "project-b")).toHaveLength(1), { timeout: 5_000 });
     const targetStorage = createWorkspaceStorage("host-b");
-    await waitFor(() => expect(targetStorage.getItem("pixice.draft.host-b:project-b:new")).toBe("Keep after lost create"));
+    await waitFor(() => expect(targetStorage.getItem("pixice.draft.host-b:project-b:new")).toBe(submittedDraft.trim()));
     expect(JSON.parse(targetStorage.getItem("pixice.draft.host-b:project-b:new.attachments"))).toEqual([
       expect.objectContaining({ name: "create-lost.txt", size: attachment.size })
     ]);
@@ -234,8 +247,8 @@ describe("Connect preview fixture integration", () => {
     fixture.toggleHost("host-b", {});
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(fixture.calls.filter((call) => call.hostId === "host-b" && call.operation === "threads.create" && call.projectId === "project-b")).toHaveLength(1);
-    expect(within(origin).getByRole("textbox", { name: "Task prompt", hidden: true })).toHaveValue("Keep after lost create");
-    expect(within(origin).getByText("create-lost.txt")).toBeInTheDocument();
+    expect(within(origin).getByRole("textbox", { name: "Task prompt", hidden: true })).toHaveEditableValue(submittedDraft);
+    expect(within(origin).getByRole("button", { name: "Remove create-lost.txt", hidden: true })).toBeInTheDocument();
   });
 
   it("keeps an empty poll bounded and returns a Response-like json contract", async () => {

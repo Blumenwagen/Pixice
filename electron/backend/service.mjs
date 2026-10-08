@@ -29,8 +29,11 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
   const native = new NativeBridge({ launch: launchNative });
   const platform = suppliedPlatform ?? createNativePlatform({ native, directory: paths.data, environment });
   let application;
+  let resolveCoreReady, rejectCoreReady;
+  const coreReady = new Promise((resolve, reject) => { resolveCoreReady = resolve; rejectCoreReady = reject; });
+  coreReady.catch(() => {});
   const transferStore = new TransferStore({ directory: path.join(paths.data, 'connect', 'transfers'), projectExists: (projectId) => application?.connectProjectExists?.(projectId) ?? true });
-  application = createApplication({ userDataPath: paths.data, resourcesPath, version, platform, handlers: registry, providerFactories, transferStore,
+  application = createApplication({ userDataPath: paths.data, resourcesPath, version, platform, handlers: registry, providerFactories, transferStore, onCoreReady: resolveCoreReady,
     nativeReadiness: () => {
       const status = native.status();
       return { available: status.connected === true, canStart: typeof launchNative === 'function', reason: status.connected ? null : "The Pixice native helper is unavailable." };
@@ -73,7 +76,9 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
     invoke: async (operation, payload) => {
       const channel = APPLICATION_OPERATIONS.get(operation);
       if (control.entries.has(channel)) return control.invoke(channel, payload, { local: true });
-      await ready;
+      // Local project/settings access must not wait for a provider handshake or
+      // optional workflow/native initialization to finish.
+      await coreReady;
       return registry.invoke(channel, payload, { local: true });
     } });
   const tunnel = new ConnectTunnel({ directory: path.join(paths.data, 'connect'), server: remote,
@@ -196,6 +201,7 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
       await remote.start().catch((error) => publish({ type: 'ConnectStatus', payload: { ...remote.status(), error: error.message } }));
       phase = 'ready'; resolveReady(); publish({ type: 'ServiceState', payload: status() });
     }).catch(async (error) => {
+      rejectCoreReady(error);
       rejectReady(error);
       if (phase === 'stopping') return;
       phase = 'failed'; console.error('Pixice service startup failed:', error.message);
@@ -203,6 +209,7 @@ async function startOwnedService({ dataDirectory, resourcesPath, clientDirectory
     });
     return { ready, stop, status, descriptor, paths, application, local, remote, native, tunnel, transferStore, pushService };
   } catch (error) {
+    rejectCoreReady(error);
     rejectReady(error); await stop({ force: true }).catch(() => {}); throw error;
   }
 }

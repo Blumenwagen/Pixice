@@ -174,11 +174,10 @@
   .usage-settings-content .usage-stat-grid article:nth-child(even) { border-left: 1px solid var(--border); }
 }
 
-.connect-service-overlay { position: absolute; inset: 0; z-index: 80; display: grid; place-items: center; background: var(--bg, #181818); padding: 24px; }
-.connect-service-overlay > section { width: min(520px, 100%); padding: 24px; }
-.connect-service-overlay p { color: var(--text-muted, #999); }
-
-.connect-service-notice { position: absolute; top: 36px; left: 50%; transform: translateX(-50%); z-index: 80; max-width: calc(100% - 32px); padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--foreground); font-size: 12px; pointer-events: none; }
+.connect-service-notice { position: absolute; top: 36px; left: 50%; transform: translateX(-50%); z-index: 80; width: min(600px, calc(100% - 32px)); padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--foreground); font-size: 12px; }
+.connect-service-notice p { margin: 6px 0 10px; color: var(--text-muted, #999); }
+.connect-service-notice details { margin-top: 10px; }
+.connect-service-notice summary { cursor: pointer; color: var(--text-muted, #999); }
 
 .execution-workspace-shell { position: relative; z-index: 1; grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; margin: 0 var(--app-frame-gap) var(--app-frame-gap) 0; overflow: hidden; background: var(--canvas, #181818); color: var(--foreground); border-radius: var(--app-frame-radius); }
 .execution-workspace-shell > .task-workspace { flex: 1; min-height: 0; }

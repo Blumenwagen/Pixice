@@ -1,11 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { StrictMode, useState } from 'react';
 import { RemoteClient, createRemoteClientRegistry, getPixiceApi, parsePairingLink, pairInstance, savedInstances } from '../src/connect/client.js';
 import { ConnectRoot, useConnect } from '../src/connect/ConnectRoot.jsx';
 import { App } from '../src/App.jsx';
 import { listRemoteThreadLinks } from '../src/connect/execution-storage.js';
+import { changeEditable, installPromptEditorGeometry } from './helpers/prompt-editor.js';
 const json = (value, status = 200) => ({ ok: status < 400, status, json: async () => value });
+beforeAll(installPromptEditorGeometry);
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { delete window.pixice; delete window.pixiceRemote; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -315,6 +317,7 @@ describe('remote client behavior', () => {
         'threads.read': { thread: remoteThread, plan: [] },
         'threads.create': { thread: remoteThread },
         'turns.start': { turn: { id: 'remote-turn', status: 'inProgress', items: [] } },
+        'turns.queueList': { entries: [], held: false },
         'tasks.interventions': { requests: [] },
         'tasks.receipt': null,
         'browser.state': { native: false, activeTabId: null, tabs: [] },
@@ -334,7 +337,7 @@ describe('remote client behavior', () => {
       fireEvent.change(screen.getByRole('combobox', { name: 'Target project' }), { target: { value: remoteProject.id } });
       const prompt = screen.getByRole('textbox', { name: 'Task prompt' });
       await waitFor(() => expect(prompt).toBeEnabled());
-      fireEvent.change(prompt, { target: { value: 'Run on B only' } });
+      changeEditable(prompt, { target: { value: 'Run on B only' } });
       fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
       await waitFor(() => expect(remoteCalls.some((call) => call.operation === 'turns.start' && call.payload.projectId === remoteProject.id && call.payload.text === 'Run on B only')).toBe(true), { timeout: 2000 });
       expect(localStart).not.toHaveBeenCalled();

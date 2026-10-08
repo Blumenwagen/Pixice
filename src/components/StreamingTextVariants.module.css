@@ -1,0 +1,76 @@
+.text {
+  font-size: 15px;
+  line-height: 1.7;
+  letter-spacing: -.012em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: inherit;
+}
+
+.word {
+  animation-fill-mode: both;
+}
+
+.fade .word { animation: word-fade 240ms ease-out both; }
+.focus .word, .crisp .word, .dissolve .word, .cascade .word {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: baseline;
+  animation: soft-focus 320ms cubic-bezier(.22, 1, .36, 1) both;
+}
+.crisp .word { animation: crisp-focus 240ms cubic-bezier(.22, 1, .36, 1) both; }
+.dissolve .word { animation: focus-dissolve 380ms ease-out both; }
+.cascade .word { animation: soft-focus 340ms cubic-bezier(.22, 1, .36, 1) var(--word-stagger, 0ms) both; }
+.cascadeWord {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: baseline;
+  overflow-wrap: anywhere;
+  animation: soft-focus 340ms cubic-bezier(.22, 1, .36, 1) var(--word-stagger, 0ms) backwards;
+}
+
+:global(.pixice-app[data-reduce-motion="true"]) .cascadeWord { animation: none !important; }
+
+.caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -.12em;
+  border-radius: 1px;
+  background: currentColor;
+  animation: caret-pulse 1s ease-in-out infinite;
+}
+
+.paused .word, .paused .caret { animation-play-state: paused; }
+.reduced .word { animation: none; }
+
+@keyframes word-fade {
+  from { opacity: .12; }
+  to { opacity: 1; }
+}
+
+@keyframes soft-focus {
+  from { opacity: .16; filter: blur(1.5px); transform: translateY(8px); }
+  to { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+@keyframes crisp-focus {
+  from { opacity: .28; filter: blur(1px); transform: translateY(8px); }
+  to { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+@keyframes focus-dissolve {
+  from { opacity: .18; filter: blur(2px); }
+  to { opacity: 1; filter: blur(0); }
+}
+
+@keyframes caret-pulse {
+  0%, 100% { opacity: .75; }
+  50% { opacity: .25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .word, .cascadeWord { animation: none !important; }
+  .caret { display: none; }
+}

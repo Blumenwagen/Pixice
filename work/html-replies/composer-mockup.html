@@ -1,0 +1,246 @@
+<style>
+  .composer-demo { max-width: 800px; margin: auto; padding: 18px 20px 15px; color: var(--foreground); font: 14px/1.5 var(--font-sans); }
+  .composer-demo * { box-sizing: border-box; }
+  .composer-demo button, .composer-demo textarea { font: inherit; }
+  .composer-demo button { border: 0; cursor: pointer; color: inherit; }
+  .composer-demo button:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+  .composer-demo button:disabled { cursor: default; opacity: .35; }
+  .composer-demo [hidden] { display: none !important; }
+  .composer-demo svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .demo-head { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+  .demo-head strong { font-size: 15px; font-weight: 600; }
+  .demo-head span { font-size: 11px; color: var(--muted-foreground); }
+  .demo-reset { padding: 5px 8px; background: transparent; border-radius: 6px; font-size: 12px !important; color: var(--muted-foreground) !important; }
+  .demo-reset:hover { background: var(--muted); color: var(--foreground) !important; }
+  .demo-stage { position: relative; height: 395px; }
+  .demo-empty { position: absolute; top: 83px; left: 0; right: 0; text-align: center; color: var(--muted-foreground); }
+  .demo-empty p { margin: 0 0 5px; color: var(--foreground); font-size: 17px; }
+  .demo-empty span { font-size: 12px; }
+  .demo-submission { position: absolute; top: 27px; left: 17px; right: 17px; max-height: 191px; overflow-y: auto; scrollbar-width: thin; padding-bottom: 10px; }
+  .submission-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+  .submission-heading strong { font-size: 13px; font-weight: 600; }
+  .submission-heading span { font-size: 11px; color: var(--muted-foreground); }
+  .submission-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 10px; line-height: 1.55; }
+  .submission-detail { font-size: 11px; color: var(--muted-foreground); margin: 0 0 3px; }
+  .floating-composer { position: absolute; bottom: 28px; left: 0; right: 0; padding: 14px 14px 10px; border-radius: 20px; background: var(--muted); box-shadow: 0 18px 44px #0004; }
+  .floating-composer:focus-within { box-shadow: 0 18px 44px #0004, 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+  .demo-draft { display: block; width: 100%; min-height: 80px; max-height: 115px; padding: 0 2px 7px; color: var(--foreground); font-size: 15px !important; line-height: 1.5; border: 0; outline: 0; background: transparent; resize: none; scrollbar-width: thin; }
+  .demo-draft::placeholder { color: var(--muted-foreground); opacity: .85; }
+  .demo-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 1px 2px 11px; }
+  .demo-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 280px; padding: 3px 5px 3px 8px; border-radius: 7px; background: color-mix(in srgb, var(--card) 65%, transparent); border: 1px solid var(--border); color: var(--foreground); font-size: 12px; }
+  .demo-chip svg { width: 13px; height: 13px; color: var(--muted-foreground); }
+  .demo-chip .chip-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .demo-chip button { display: inline-grid; place-items: center; height: 19px; width: 19px; background: transparent; color: var(--muted-foreground); border-radius: 4px; }
+  .demo-chip button:hover { background: var(--border); color: var(--foreground); }
+  .demo-chip button svg { width: 11px; height: 11px; }
+  .composer-toolbar, .toolbar-left, .toolbar-right { display: flex; align-items: center; }
+  .composer-toolbar { justify-content: space-between; gap: 8px; }
+  .toolbar-left { gap: 2px; }
+  .toolbar-right { gap: 5px; }
+  .demo-icon { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: transparent; color: var(--muted-foreground) !important; }
+  .demo-icon:hover, .demo-icon[aria-expanded="true"] { color: var(--foreground) !important; background: #ffffff0b; }
+  .demo-context { font-size: 17px !important; font-weight: 600; }
+  .picker { position: relative; }
+  .picker-trigger { display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; height: 30px; max-width: 195px; background: transparent; border-radius: 9px; font-size: 11px !important; color: var(--muted-foreground) !important; }
+  .picker-trigger:hover, .picker-trigger[aria-expanded="true"] { color: var(--foreground) !important; background: #ffffff0b; }
+  .picker-trigger .chevron { width: 10px; height: 10px; color: var(--muted-foreground); }
+  .picker-trigger .trigger-copy { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .model-trigger { border-radius: 999px; background: #ffffff07; border: 1px solid #ffffff0c !important; max-width: 230px; }
+  .model-symbol { font-size: 15px; line-height: 1; color: var(--foreground); }
+  .demo-send { display: inline-grid; place-items: center; height: 30px; width: 30px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground) !important; margin-left: 2px; }
+  .demo-send svg { width: 16px; height: 16px; fill: currentColor; stroke: none; }
+  .demo-send:not(:disabled):hover { filter: brightness(1.08); }
+  .popover { position: absolute; bottom: calc(100% + 12px); z-index: 20; width: 305px; padding: 8px; border: 1px solid var(--border); border-radius: 18px; background: var(--card); box-shadow: 0 16px 42px #0007; }
+  .popover.left { left: 0; }
+  .popover.right { right: 0; }
+  .popover-heading { display: flex; align-items: center; justify-content: space-between; padding: 5px 8px 8px; font-size: 12px; font-weight: 600; }
+  .popover-heading small { font-size: 10px; color: var(--muted-foreground); font-weight: 400; }
+  .provider-tabs { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; gap: 3px; border: 1px solid var(--border); border-radius: 12px; background: var(--muted); margin: 0 2px 7px; }
+  .provider-tabs button { height: 29px; border-radius: 9px; color: var(--muted-foreground); font-size: 12px; background: transparent; }
+  .provider-tabs button[aria-selected="true"] { background: var(--card); color: var(--foreground); }
+  .menu-option { display: flex; align-items: center; gap: 9px; justify-content: space-between; width: 100%; text-align: left; padding: 7px 9px; border-radius: 9px; background: transparent; }
+  .menu-option:hover { background: var(--muted); }
+  .menu-option[aria-checked="true"] { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .option-copy strong { display: block; font-size: 12px; font-weight: 550; }
+  .option-copy small { display: block; font-size: 10px; color: var(--muted-foreground); margin-top: 1px; line-height: 1.4; }
+  .option-check { color: var(--accent); font-size: 12px; min-width: 11px; }
+  .danger .option-copy strong { color: #f3af95; }
+  .reasoning-setting { border-top: 1px solid var(--border); margin: 8px 4px 0; padding: 9px 3px 3px; display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 11px; color: var(--muted-foreground); }
+  .efforts { display: flex; gap: 2px; }
+  .efforts button { font-size: 10px; border-radius: 6px; padding: 4px 7px; background: transparent; color: var(--muted-foreground); }
+  .efforts button[aria-pressed="true"] { background: var(--muted); color: var(--foreground); }
+  .fast-setting { display: flex; align-items: center; justify-content: space-between; width: 100%; font-size: 11px !important; margin-top: 5px; padding: 5px 10px; background: transparent; color: var(--muted-foreground) !important; border-radius: 7px; }
+  .fast-setting:hover { background: var(--muted); }
+  .fast-setting i { height: 14px; width: 24px; border-radius: 9px; background: var(--border); padding: 2px; }
+  .fast-setting i::after { content: ''; display: block; height: 10px; width: 10px; background: var(--muted-foreground); border-radius: 50%; }
+  .fast-setting[aria-pressed="true"] i { background: var(--accent); }
+  .fast-setting[aria-pressed="true"] i::after { background: var(--foreground); transform: translateX(10px); }
+  .short-menu { width: 278px; }
+  .demo-hint { position: absolute; bottom: 0; left: 3px; right: 3px; display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--muted-foreground); font-size: 10px; }
+  .demo-hint kbd { font: inherit; }
+  .demo-foot { margin-top: 13px; font-size: 11px; color: var(--muted-foreground); border-top: 1px solid var(--border); padding-top: 11px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+</style>
+<div class="composer-demo">
+  <div class="demo-head"><div><strong>A composer, inside the answer</strong> <span>Interactive mockup</span></div><button type="button" class="demo-reset" id="reset-demo">Reset</button></div>
+  <div class="demo-stage">
+    <div class="demo-empty" id="empty-state"><p>What would you like to work on?</p><span>Try a model, add context, then send a local example.</span></div>
+    <section class="demo-submission" id="submission" aria-label="Local submitted prompt" hidden>
+      <div class="submission-heading"><strong>Submitted locally</strong><span id="submission-count">Example 1</span></div>
+      <p class="submission-text" id="submission-text"></p>
+      <p class="submission-detail" id="submission-profile"></p>
+      <p class="submission-detail" id="submission-context"></p>
+    </section>
+    <div class="floating-composer">
+      <label class="sr-only" for="demo-draft">Demo task prompt</label>
+      <textarea class="demo-draft" id="demo-draft" placeholder="Describe the task you want to work on" spellcheck="true">Review the composer and suggest one small improvement.</textarea>
+      <div class="demo-chips" id="demo-chips" aria-label="Demo context and attachment chips" hidden></div>
+      <div class="composer-toolbar">
+        <div class="toolbar-left">
+          <div class="picker">
+            <button class="demo-icon" type="button" id="attachment-trigger" aria-label="Add attachment" title="Add attachment" aria-haspopup="menu" aria-expanded="false" aria-controls="attachment-menu"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M3 10h14"></path></svg></button>
+            <div class="popover left short-menu" id="attachment-menu" role="menu" aria-label="Demo attachments" hidden>
+              <div class="popover-heading">Attachments <small>Local filenames only</small></div>
+              <button class="menu-option" type="button" id="choose-file" role="menuitem"><span class="option-copy"><strong>Choose files…</strong><small>Keep names in this mockup</small></span></button>
+              <button class="menu-option" type="button" id="sample-file" role="menuitem"><span class="option-copy"><strong>Add example attachment</strong><small>composer-notes.md · 1.2 KB</small></span></button>
+            </div>
+          </div>
+          <button class="demo-icon demo-context" type="button" id="add-context" aria-label="Add sample context" title="Add sample context">@</button>
+          <div class="picker">
+            <button class="demo-icon" type="button" id="saved-trigger" aria-label="Saved prompts" title="Saved prompts" aria-haspopup="menu" aria-expanded="false" aria-controls="saved-menu"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3.5h12v3H4zM5 6.5v10h10v-10M8 10h4"></path></svg></button>
+            <div class="popover left short-menu" id="saved-menu" role="menu" aria-label="Example saved prompts" hidden>
+              <div class="popover-heading">Saved prompts <small>Insert at the cursor</small></div>
+              <button class="menu-option" type="button" data-saved="Review this change for correctness, usability and recoverable failures." role="menuitem"><span class="option-copy"><strong>Review a change</strong><small>Correctness, usability, recovery</small></span></button>
+              <button class="menu-option" type="button" data-saved="Explain the tradeoffs, then suggest the smallest useful next step." role="menuitem"><span class="option-copy"><strong>Choose the next step</strong><small>Tradeoffs and one useful action</small></span></button>
+            </div>
+          </div>
+          <div class="picker">
+            <button class="picker-trigger" type="button" id="permission-trigger" aria-label="Permissions: Workspace access" aria-haspopup="menu" aria-expanded="false" aria-controls="permission-menu"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 16 5v4.5c0 4-6 7.5-6 7.5S4 13.5 4 9.5V5z"></path><path d="m7 9.5 2 2 4-4"></path></svg><span class="trigger-copy" id="permission-label">Workspace access</span><svg class="chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"></path></svg></button>
+            <div class="popover left" id="permission-menu" role="menu" aria-label="Demo permissions" hidden>
+              <div class="popover-heading">Permissions <small>Simulated selection</small></div>
+              <button class="menu-option" type="button" data-permission="Read only" role="menuitemradio" aria-checked="false"><span class="option-copy"><strong>Read only</strong><small>Inspect without changing project files</small></span><span class="option-check"></span></button>
+              <button class="menu-option" type="button" data-permission="Workspace access" role="menuitemradio" aria-checked="true"><span class="option-copy"><strong>Workspace access</strong><small>Work within the current project</small></span><span class="option-check">✓</span></button>
+              <button class="menu-option" type="button" data-permission="Auto-review" role="menuitemradio" aria-checked="false"><span class="option-copy"><strong>Auto-review</strong><small>Project sandbox with reviewed approvals</small></span><span class="option-check"></span></button>
+              <button class="menu-option danger" type="button" data-permission="Full access" role="menuitemradio" aria-checked="false"><span class="option-copy"><strong>Full access</strong><small>Broader access · risky in a real task</small></span><span class="option-check"></span></button>
+            </div>
+          </div>
+        </div>
+        <div class="toolbar-right">
+          <div class="picker">
+            <button class="picker-trigger model-trigger" type="button" id="model-trigger" aria-label="Model: GPT-5.6 Sol, Medium reasoning" aria-haspopup="menu" aria-expanded="false" aria-controls="model-menu"><span class="model-symbol" id="provider-symbol" aria-hidden="true">◉</span><span class="trigger-copy" id="model-label">GPT-5.6 Sol · Medium</span><svg class="chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"></path></svg></button>
+            <div class="popover right" id="model-menu" aria-label="Demo model and reasoning" hidden>
+              <div class="popover-heading">Model <small>Example options</small></div>
+              <div class="provider-tabs" role="tablist" aria-label="Demo provider"><button type="button" data-provider="codex" role="tab" aria-selected="true">Codex</button><button type="button" data-provider="claude" role="tab" aria-selected="false">Claude</button></div>
+              <div id="model-options" role="menu" aria-label="Example models"></div>
+              <div class="reasoning-setting"><span>Reasoning</span><div class="efforts" role="group" aria-label="Demo reasoning"><button type="button" data-effort="Low" aria-pressed="false">Low</button><button type="button" data-effort="Medium" aria-pressed="true">Medium</button><button type="button" data-effort="High" aria-pressed="false">High</button></div></div>
+              <button type="button" class="fast-setting" id="fast-mode" aria-pressed="false"><span>Fast mode</span><i aria-hidden="true"></i></button>
+            </div>
+          </div>
+          <button class="demo-send" type="button" id="demo-send" aria-label="Send local demo" title="Send local demo"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M17.7 2.3a.6.6 0 0 0-.65-.13L2.5 7.62a.6.6 0 0 0 .03 1.13l5.72 1.91 1.91 5.72a.6.6 0 0 0 1.13.03l5.45-14.56a.6.6 0 0 0-.13-.65l-6.51 6.51-1.8-.6z"></path></svg></button>
+        </div>
+      </div>
+    </div>
+    <div class="demo-hint"><span><kbd>Enter</kbd> sends · <kbd>Shift + Enter</kbd> adds a line</span><span id="demo-status" role="status" aria-live="polite">Local demo · no agent is running</span></div>
+  </div>
+  <div class="demo-foot">A working HTML mockup inside the reply. Sending shows a local summary; files, models and permissions do not connect to Pixice or a provider.</div>
+  <input id="local-files" type="file" multiple hidden>
+</div>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const draft = $('demo-draft');
+  const models = {
+    codex: [{name:'GPT-5.6 Sol',note:'Everyday work'},{name:'GPT-5.6 Terra',note:'Balanced example'},{name:'GPT-5.6 Luna',note:'Lightweight example'}],
+    claude: [{name:'Claude Opus',note:'Detailed work'},{name:'Claude Sonnet',note:'Balanced example'},{name:'Claude Haiku',note:'Lightweight example'}]
+  };
+  let provider = 'codex', visibleProvider = 'codex', model = 'GPT-5.6 Sol', effort = 'Medium', permission = 'Workspace access', fast = false, chips = [], submissions = 0, nextId = 0;
+  const menus = ['attachment','saved','permission','model'];
+  function closeMenus(returnFocus) {
+    menus.forEach(name => { $(name + '-menu').hidden = true; $(name + '-trigger').setAttribute('aria-expanded','false'); });
+    if (returnFocus) $(returnFocus + '-trigger').focus();
+  }
+  function toggleMenu(name) {
+    const opening = $(name + '-menu').hidden; closeMenus();
+    if (!opening) return;
+    if (name === 'model') { visibleProvider = provider; renderModels(); }
+    $(name + '-menu').hidden = false; $(name + '-trigger').setAttribute('aria-expanded','true');
+    const first = $(name + '-menu').querySelector('button'); if (first) first.focus();
+  }
+  menus.forEach(name => $(name + '-trigger').addEventListener('click', () => toggleMenu(name)));
+  document.addEventListener('pointerdown', event => { if (!event.target.closest('.picker')) closeMenus(); });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { const open = menus.find(name => !$(name + '-menu').hidden); if (open) { event.preventDefault(); closeMenus(open); } }
+  });
+  function announce(text) { $('demo-status').textContent = text; }
+  function updateSend() { $('demo-send').disabled = !draft.value.trim() && !chips.length; }
+  function svgIcon(kind) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 20 20'); svg.setAttribute('aria-hidden','true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg','path'); path.setAttribute('d',kind === 'remove' ? 'm5 5 10 10M15 5 5 15' : 'M5 2.5h7l4 4v11H5zM12 2.5v4h4M8 10h5M8 13h5'); svg.append(path); return svg;
+  }
+  function renderChips() {
+    $('demo-chips').hidden = !chips.length;
+    $('demo-chips').replaceChildren(...chips.map(chip => {
+      const wrapper = document.createElement('span'); wrapper.className = 'demo-chip'; wrapper.title = chip.detail;
+      const name = document.createElement('span'); name.className = 'chip-name'; name.textContent = chip.name;
+      const remove = document.createElement('button'); remove.type = 'button'; remove.setAttribute('aria-label','Remove ' + chip.name); remove.append(svgIcon('remove'));
+      remove.addEventListener('click', () => { chips = chips.filter(item => item.id !== chip.id); renderChips(); announce('Removed ' + chip.name); });
+      wrapper.append(svgIcon('file'),name,remove); return wrapper;
+    })); updateSend();
+  }
+  function addChip(name, kind, detail) {
+    if (chips.some(chip => chip.name === name && chip.kind === kind)) { announce(name + ' is already attached'); return; }
+    if (chips.length >= 5) { announce('This example allows five context or file chips'); return; }
+    chips.push({id:++nextId,name,kind,detail}); renderChips(); announce('Added ' + name); draft.focus();
+  }
+  $('add-context').addEventListener('click', () => { closeMenus(); addChip('src/App.jsx','context','Sample context reference · no file content was read'); });
+  $('sample-file').addEventListener('click', () => { closeMenus(); addChip('composer-notes.md','attachment','Example attachment · 1.2 KB'); });
+  $('choose-file').addEventListener('click', () => { closeMenus(); $('local-files').click(); });
+  $('local-files').addEventListener('change', event => {
+    [...event.target.files].slice(0,5).forEach(file => addChip(file.name,'attachment','Local filename only · ' + file.size.toLocaleString() + ' bytes'));
+    event.target.value = ''; announce('File names added locally; nothing uploaded');
+  });
+  document.querySelectorAll('[data-saved]').forEach(button => button.addEventListener('click', () => {
+    const start = draft.selectionStart, end = draft.selectionEnd, prefix = start > 0 && !/\s$/.test(draft.value.slice(0,start)) ? '\n' : '';
+    const text = prefix + button.dataset.saved; draft.setRangeText(text,start,end,'end'); closeMenus(); updateSend(); draft.focus(); announce('Saved prompt inserted into the draft');
+  }));
+  function updateProfile() {
+    $('model-label').textContent = model + ' · ' + effort + (fast ? ' · Fast' : '');
+    $('model-trigger').setAttribute('aria-label','Model: ' + model + ', ' + effort + ' reasoning' + (fast ? ', Fast mode' : ''));
+    $('provider-symbol').textContent = provider === 'codex' ? '◉' : '✳';
+    $('permission-label').textContent = permission; $('permission-trigger').setAttribute('aria-label','Permissions: ' + permission);
+    document.querySelectorAll('[data-permission]').forEach(button => { const selected = button.dataset.permission === permission; button.setAttribute('aria-checked',String(selected)); button.querySelector('.option-check').textContent = selected ? '✓' : ''; });
+    document.querySelectorAll('[data-effort]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.effort === effort)));
+    $('fast-mode').setAttribute('aria-pressed',String(fast));
+  }
+  function renderModels() {
+    document.querySelectorAll('[data-provider]').forEach(button => button.setAttribute('aria-selected',String(button.dataset.provider === visibleProvider)));
+    $('model-options').replaceChildren(...models[visibleProvider].map(option => {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'menu-option'; button.setAttribute('role','menuitemradio'); button.setAttribute('aria-checked',String(option.name === model));
+      const copy = document.createElement('span'); copy.className = 'option-copy'; const name = document.createElement('strong'); name.textContent = option.name; const note = document.createElement('small'); note.textContent = option.note; copy.append(name,note);
+      const check = document.createElement('span'); check.className = 'option-check'; check.textContent = option.name === model ? '✓' : ''; button.append(copy,check);
+      button.addEventListener('click', () => { provider = visibleProvider; model = option.name; updateProfile(); closeMenus('model'); announce('Selected ' + model + ' for the demo'); }); return button;
+    }));
+  }
+  document.querySelectorAll('[data-provider]').forEach(button => button.addEventListener('click', () => { visibleProvider = button.dataset.provider; renderModels(); }));
+  document.querySelectorAll('[data-effort]').forEach(button => button.addEventListener('click', () => { effort = button.dataset.effort; updateProfile(); announce(effort + ' reasoning selected'); }));
+  $('fast-mode').addEventListener('click', () => { fast = !fast; updateProfile(); announce('Fast mode ' + (fast ? 'on' : 'off') + ' in the example'); });
+  document.querySelectorAll('[data-permission]').forEach(button => button.addEventListener('click', () => { permission = button.dataset.permission; updateProfile(); closeMenus('permission'); announce(permission + ' selected for the demo'); }));
+  function sendDemo() {
+    if (!draft.value.trim() && !chips.length) return;
+    closeMenus(); submissions += 1;
+    $('empty-state').hidden = true; $('submission').hidden = false; $('submission-count').textContent = 'Example ' + submissions;
+    $('submission-text').textContent = draft.value.trim() || 'Attachment-only example';
+    $('submission-profile').textContent = (provider === 'codex' ? 'Codex' : 'Claude') + ' · ' + model + ' · ' + effort + ' reasoning' + (fast ? ' · Fast' : '') + ' · ' + permission;
+    $('submission-context').textContent = chips.length ? chips.map(chip => (chip.kind === 'context' ? 'Context: ' : 'File: ') + chip.name).join(' · ') : 'No context or attachments';
+    draft.value = ''; chips = []; renderChips(); draft.focus(); announce('Submitted locally · no provider request sent');
+  }
+  $('demo-send').addEventListener('click',sendDemo);
+  draft.addEventListener('input',updateSend);
+  draft.addEventListener('keydown',event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendDemo(); } });
+  $('reset-demo').addEventListener('click', () => {
+    closeMenus(); provider = visibleProvider = 'codex'; model = 'GPT-5.6 Sol'; effort = 'Medium'; permission = 'Workspace access'; fast = false; chips = []; submissions = 0;
+    draft.value = 'Review the composer and suggest one small improvement.'; $('empty-state').hidden = false; $('submission').hidden = true; updateProfile(); renderModels(); renderChips(); draft.focus(); announce('Local demo reset · no agent is running');
+  });
+  updateProfile(); renderModels(); renderChips(); updateSend();
+})();
+</script>

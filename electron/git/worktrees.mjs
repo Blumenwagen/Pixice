@@ -17,9 +17,9 @@ function isWithin(root, target) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-async function git(cwd, args, executablePath = "git") {
-  const { stdout } = await execFileAsync(executablePath, args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
-  return stdout.trim();
+async function git(cwd, args, executablePath = "git", options = {}) {
+  const { stdout } = await execFileAsync(executablePath, args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, ...options });
+  return stdout.trimEnd();
 }
 
 async function gitUntrackedDiff(cwd, args, executablePath = "git") {
@@ -58,17 +58,21 @@ function folderRepository(root, gitRuntime) {
   return { kind: "folder", root, baseCommit: null, dirtyPaths: [], git: gitRuntime };
 }
 
-export async function inspectRepository(folder, { gitRuntime = null, platform = process.platform } = {}) {
+export async function inspectRepository(folder, { gitRuntime = null, platform = process.platform, signal } = {}) {
   const canonicalFolder = await realpath(folder);
   const runtime = gitRuntime ?? await detectGitRuntime({ platform });
   if (!runtime.available) return folderRepository(canonicalFolder, runtime);
   try {
     const executablePath = runtime.executablePath;
-    const root = await git(canonicalFolder, ["rev-parse", "--show-toplevel"], executablePath);
+    const options = { timeout: 10_000, signal, windowsHide: true };
+    const root = await git(canonicalFolder, ["rev-parse", "--show-toplevel"], executablePath, options);
     const pathspec = path.relative(root, canonicalFolder) || ".";
     if (pathspec.startsWith("..") || path.isAbsolute(pathspec)) throw new Error("Project path is outside its Git repository");
-    const baseCommit = await git(root, ["rev-parse", "HEAD"], executablePath);
-    const status = await git(root, ["status", "--porcelain=v1", "--", pathspec], executablePath);
+    const baseCommit = await git(root, ["rev-parse", "--verify", "--quiet", "HEAD"], executablePath, options).catch((error) => {
+      if (error.code === 1) return null; // An initialized repository can have no commits yet.
+      throw error;
+    });
+    const status = await git(root, ["status", "--porcelain=v1", "--", pathspec], executablePath, options);
     return { kind: "git", root, baseCommit, dirtyPaths: status ? status.split("\n").map((line) => line.slice(3)) : [], git: runtime };
   } catch (error) {
     const diagnostic = `${error.stderr ?? ""}\n${error.message ?? ""}`;
@@ -81,15 +85,21 @@ export async function inspectRepository(folder, { gitRuntime = null, platform = 
   }
 }
 
-export async function createIsolatedWorktree({ root, destination, branch, baseCommit }) {
-  await git(root, ["worktree", "add", "-b", branch, destination, baseCommit]);
-  return { branch, worktreePath: destination, baseCommit };
+export async function createIsolatedWorktree({ root, destination, branch, baseCommit, gitExecutablePath = "git" }) {
+  await git(root, ["check-ref-format", "--branch", branch], gitExecutablePath);
+  const resolved = await git(root, ["rev-parse", "--verify", `${baseCommit}^{commit}`], gitExecutablePath);
+  await git(root, ["worktree", "add", "-b", branch, destination, resolved], gitExecutablePath);
+  return { branch, worktreePath: destination, baseCommit: resolved };
 }
 
-export async function removeCleanWorktree({ root, worktreePath }) {
-  const status = await git(worktreePath, ["status", "--porcelain=v1"]);
+export async function removeCleanWorktree({ root, worktreePath, gitExecutablePath = "git" }) {
+  const status = await git(worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"], gitExecutablePath);
   if (status) throw new Error("Worktree has uncommitted changes and cannot be removed");
-  await git(root, ["worktree", "remove", worktreePath]);
+  const ignored = (await git(worktreePath, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], gitExecutablePath)).split("\0").filter(Boolean);
+  if (ignored.some((file) => !file.split("/").includes("node_modules"))) throw new Error("Worktree contains ignored files and cannot be removed safely");
+  // Removing ignored dependencies is safe only after all other content passed
+  // the checks above. Git requires force even for ignored node_modules.
+  await git(root, ["worktree", "remove", ...(ignored.length ? ["--force"] : []), worktreePath], gitExecutablePath);
 }
 
 export async function readDiff({ workingPath, baseCommit, scopePath = workingPath, gitExecutablePath = "git" }) {

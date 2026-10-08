@@ -3,9 +3,11 @@ import { cp, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import { captureTaskSnapshot, createReplayWorkspace, taskWorkspaceChanges } from "../git/task-snapshots.mjs";
 
-const terminal = new Set(["completed", "failed", "interrupted"]);
+const terminal = new Set(["completed", "failed", "interrupted", "cancelled"]);
 const now = () => new Date().toISOString();
 const bounded = (value, length = 24_000) => String(value ?? "").slice(0, length);
+const acceptedPrompts = (record) => record.prompts.filter((prompt) => prompt.turnId && prompt.acceptance !== "rejected");
+const hasUnconfirmedPrompt = (record) => record.prompts.some((prompt) => !prompt.turnId && prompt.acceptance !== "rejected");
 const timestamp = (value) => {
   const date = new Date(typeof value === "number" && value < 1e12 ? value * 1_000 : value ?? Date.now());
   return Number.isNaN(date.getTime()) ? now() : date.toISOString();
@@ -82,13 +84,20 @@ export class TaskResults {
     this.createWorkspace = createWorkspace;
     this.readChanges = readChanges;
     this.finishing = new Map();
+    this.unboundCompletions = new Map();
     database.db.exec(`CREATE TABLE IF NOT EXISTS task_results (
       thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, group_id TEXT NOT NULL,
       updated_at TEXT NOT NULL, data TEXT NOT NULL
     ); CREATE INDEX IF NOT EXISTS task_results_project ON task_results(project_id);`);
-    // A replay never resumes spending on its own after the application exits.
+    // T3 Orchestrator V2 distinguishes process loss from a provider terminal.
+    // Retain the exact turn for reconciliation; replay never resumes spending
+    // just because a new backend process came up.
     for (const record of this.records()) {
-      if (record.status === "running") this.save({ ...record, status: "interrupted", replayQueue: [], error: "The Pixice backend stopped before this task finished. Open the task to continue." });
+      if (record.status === "running") this.save({ ...record, status: "uncertain", recoveryPending: true,
+        replayHeld: true, replayQueue: [], completedAt: null, revision: randomUUID(),
+        error: record.activeTurnId
+          ? "The backend restarted while this turn was active. Its provider state is being reconciled."
+          : "The backend restarted before the provider turn identity was confirmed. The outcome is uncertain; the prompt was not repeated." });
     }
   }
 
@@ -124,21 +133,27 @@ export class TaskResults {
   async observeThread(project, thread) {
     this.importThread(project, thread);
     const record = this.get(thread.id);
-    const latest = thread.turns?.at(-1);
-    if (!record || !latest) return;
-    if (terminal.has(latest.status) && !record.turns.some((turn) => turn.id === latest.id)) {
-      await this.complete(thread.id, latest);
-    } else if (latest.status === "inProgress" && record.status !== "running") {
-      this.observeStart(thread.id, latest.id);
+    if (!record || !record.activeTurnId) return;
+    const active = thread.turns?.find((turn) => turn.id === record.activeTurnId);
+    if (terminal.has(active?.status)) {
+      await this.complete(thread.id, active);
+    } else if (active?.status === "inProgress") {
+      this.observeStart(thread.id, active.id);
+    } else if (record.recoveryPending) {
+      this.save({ ...record, status: "uncertain", replayHeld: true,
+        error: `The provider did not establish the state of recorded turn ${record.activeTurnId}. Its execution remains held for recovery.` });
     }
   }
 
   observeStart(threadId, turnId) {
     const record = this.get(threadId);
-    if (!record || record.status === "running") return;
+    if (!record || record.turns.some((turn) => turn.id === turnId) || record.activeTurnId !== turnId) return;
+    if (record.status === "running" && !record.recoveryPending) return record;
     this.save({ ...record, status: "running", error: null, revision: randomUUID(),
-      activeTurnId: turnId, replayQueue: [],
-      replayUnavailableReason: "This task resumed outside the recorded prompt sequence. Start a new task to make an exact replay." });
+      activeTurnId: turnId, recoveryPending: false, pendingStart: false,
+      // Reconciliation confirms this turn; it does not authorize replaying the
+      // queued prompts discarded during process-loss recovery.
+      replayQueue: record.recoveryPending ? [] : record.replayQueue });
   }
 
   save(record) {
@@ -171,24 +186,68 @@ export class TaskResults {
     }
     try { frozenAttachments ??= await freezeAttachments(input, attachmentRoot, path.join(this.directory, "inputs")); }
     catch (error) { record.replayUnavailableReason = `Could not preserve attached inputs: ${error.message}`; }
-    return this.save({ ...record, status: "running",
+    const executionRevision = randomUUID();
+    // T3's command receipts distinguish a rejected dispatch from accepted work.
+    // A retry records a new attempt, while only accepted provider turns form the
+    // replay sequence. Unconfirmed inputs remain for conservative recovery.
+    const prompts = record.prompts.filter((candidate) => candidate.acceptance !== "rejected");
+    return this.save({ ...record, status: "running", activeTurnId: null, pendingStart: true,
+      executionRevision, recoveryPending: false, replayHeld: hasUnconfirmedPrompt({ prompts }),
       revision: randomUUID(), error: null, checks: [], unresolved: [], summary: null, completedAt: null, model, effort, serviceTier,
       attachmentRoot: attachmentRoot ?? record.attachmentRoot,
-      prompts: [...record.prompts, { input, frozenAttachments, text: bounded(prompt, 100_000), model, effort, serviceTier, startedAt: now() }]
+      prompts: [...prompts, { input, frozenAttachments, text: bounded(prompt, 100_000), model, effort, serviceTier, startedAt: now(), executionRevision, acceptance: "pending" }]
     });
   }
 
   started(threadId, turnId) {
     const record = this.get(threadId);
-    if (!record || record.turns.some((turn) => turn.id === turnId)) return;
+    if (!record || !turnId || record.turns.some((turn) => turn.id === turnId)) return record;
+    if (record.activeTurnId && record.activeTurnId !== turnId) return null;
+    if (!record.pendingStart && record.activeTurnId !== turnId) return null;
     const prompts = [...record.prompts];
-    prompts[prompts.length - 1] = { ...prompts.at(-1), turnId };
-    this.save({ ...record, prompts, activeTurnId: turnId });
+    if (!prompts.length || (prompts.at(-1).turnId && prompts.at(-1).turnId !== turnId)) return null;
+    prompts[prompts.length - 1] = { ...prompts.at(-1), turnId, acceptance: "accepted" };
+    const saved = this.save({ ...record, prompts, activeTurnId: turnId, pendingStart: false,
+      status: "running", recoveryPending: false, error: null });
+    const key = JSON.stringify([threadId, turnId]);
+    const early = this.unboundCompletions.get(key);
+    this.unboundCompletions.delete(key);
+    if (early?.executionRevision === record.executionRevision) {
+      void this.complete(threadId, early.turn, early.plan).catch((error) => this.failed(threadId, Object.assign(error, { uncertain: true }), { executionRevision: record.executionRevision, turnId }));
+    }
+    return saved;
   }
 
-  failed(threadId, error) {
+  failed(threadId, error, { executionRevision, turnId } = {}) {
     const record = this.get(threadId);
-    if (record) this.save({ ...record, status: "failed", replayQueue: [], error: bounded(error?.message ?? error), completedAt: now() });
+    if (!record || (executionRevision && record.executionRevision !== executionRevision) || (turnId && record.activeTurnId !== turnId)) return null;
+    if (terminal.has(record.status) && !record.pendingStart) return record;
+    const uncertain = Boolean(error?.uncertain);
+    const pending = record.pendingStart && !record.activeTurnId && !record.prompts.at(-1)?.turnId;
+    const prompts = pending ? record.prompts.map((prompt, index) => index === record.prompts.length - 1
+      ? { ...prompt, acceptance: uncertain ? "uncertain" : "rejected" } : prompt) : record.prompts;
+    const rejectedAttempts = pending && !uncertain ? [...(record.rejectedAttempts ?? []), {
+      executionRevision: record.executionRevision, startedAt: record.prompts.at(-1)?.startedAt,
+      rejectedAt: now(), error: bounded(error?.message ?? error)
+    }].slice(-32) : record.rejectedAttempts;
+    return this.save({ ...record, status: uncertain ? "uncertain" : "failed", recoveryPending: uncertain,
+      prompts, rejectedAttempts, pendingStart: uncertain ? record.pendingStart : false,
+      replayHeld: uncertain, replayQueue: [], error: bounded(error?.message ?? error), completedAt: uncertain ? null : now() });
+  }
+
+  async rewound(threadId, thread) {
+    await this.finishing.get(threadId);
+    const record = this.get(threadId);
+    if (!record) return;
+    const retained = new Set((thread?.turns ?? []).map(turn => turn.id));
+    const turns = record.turns.filter(turn => retained.has(turn.id));
+    const prompts = record.prompts.filter(prompt => retained.has(prompt.turnId));
+    const latest = turns.at(-1);
+    return this.save({ ...record, revision: randomUUID(), prompts, turns, status: latest?.status ?? "idle",
+      executionRevision: randomUUID(), activeTurnId: null, pendingStart: false, recoveryPending: false,
+      replayHeld: false, replayQueue: [], error: null, completedAt: latest?.completedAt ?? null,
+      summary: latest?.summary ?? null, checks: latest?.checks ?? [], unresolved: [], changes: null,
+      replayUnavailableReason: "The conversation was rewound. Start a new task to replay its original recorded sequence." });
   }
 
   stopReplay(threadId, steered = false) {
@@ -197,48 +256,84 @@ export class TaskResults {
   }
 
   complete(threadId, turn, plan = []) {
+    const record = this.get(threadId);
+    if (!record || !turn?.id || record.turns.some((candidate) => candidate.id === turn.id)) return Promise.resolve(record);
+    const known = record.activeTurnId === turn.id || record.prompts.some((prompt) => prompt.turnId === turn.id);
+    if (!known) {
+      if (record.pendingStart && !record.recoveryPending) {
+        const compact = { ...turn };
+        if (JSON.stringify(compact).length > 65_536) compact.items = [];
+        const compactPlan = plan.slice(0, 128).map((step) => ({ status: step.status, step: bounded(step.step ?? step.title, 1_000) }));
+        this.unboundCompletions.set(JSON.stringify([threadId, turn.id]), { executionRevision: record.executionRevision, turn: compact, plan: compactPlan });
+        // This buffer is only for notifications racing an authoritative RPC
+        // response. It grants no identity or restart recovery authority.
+        while (this.unboundCompletions.size > 16) this.unboundCompletions.delete(this.unboundCompletions.keys().next().value);
+      }
+      return Promise.resolve(null);
+    }
+    const executionRevision = record.executionRevision;
     const pending = this.finishing.get(threadId) ?? Promise.resolve();
-    const operation = pending.then(() => this.finish(threadId, turn, plan));
+    const operation = pending.catch(() => {}).then(() => this.finish(threadId, turn, plan, executionRevision));
     this.finishing.set(threadId, operation);
     operation.finally(() => { if (this.finishing.get(threadId) === operation) this.finishing.delete(threadId); }).catch(() => {});
     return operation;
   }
 
-  async finish(threadId, turn, plan) {
+  async finish(threadId, turn, plan, executionRevision) {
     let record = this.get(threadId);
-    if (!record || record.turns.some((candidate) => candidate.id === turn.id)) return;
+    if (!record || record.turns.some((candidate) => candidate.id === turn.id) ||
+      !(record.activeTurnId === turn.id || record.prompts.some((prompt) => prompt.turnId === turn.id))) return;
     let detail = turn;
     try {
       const response = await this.readThread?.(threadId);
-      detail = response?.thread?.turns?.find((candidate) => candidate.id === turn.id) ?? turn;
+      detail = (response?.thread?.id === threadId ? response.thread.turns?.find((candidate) => candidate.id === turn.id) : null) ?? turn;
     } catch { /* The completion event remains usable while a provider is offline. */ }
-    const status = terminal.has(detail.status) ? detail.status : detail.error ? "failed" : "completed";
+    // A completion notification is authoritative for its exact turn even when
+    // an eventually consistent read still returns inProgress.
+    const status = terminal.has(turn.status) ? turn.status : terminal.has(detail.status) ? detail.status : detail.error ? "failed" : "completed";
     const items = detail.items?.length ? detail.items : turn.items ?? [];
     const summary = items.filter((item) => item.type === "agentMessage").map((item) => item.text ?? "").filter(Boolean).at(-1) ?? "";
     const checks = verificationEvidence([{ ...detail, items }]);
     const finishedTurn = { id: turn.id, status, summary: bounded(summary), checks,
-      startedAt: detail.startedAt ?? turn.startedAt ?? record.prompts.at(-1)?.startedAt,
+      startedAt: detail.startedAt ?? turn.startedAt ?? record.prompts.find((prompt) => prompt.turnId === turn.id)?.startedAt,
       completedAt: detail.completedAt ?? turn.completedAt ?? now() };
     let changes = record.changes ?? null;
     let changesError = record.snapshotError;
-    if (record.snapshot) {
+    record = this.get(threadId);
+    if (!record) return;
+    const ownsBeforeDiff = record.executionRevision === executionRevision && record.activeTurnId === turn.id;
+    if (record.snapshot && ownsBeforeDiff) {
       try { changes = await this.readChanges(record.snapshot); changesError = null; }
       catch (error) { changesError = error.message; }
     }
     // An interrupt/steer can clear the replay queue while the diff is being read.
     record = this.get(threadId);
-    const more = status === "completed" && record.replayQueue?.length > 0;
-    const turns = [...record.turns, finishedTurn];
+    if (!record || record.turns.some((candidate) => candidate.id === turn.id) ||
+      !(record.activeTurnId === turn.id || record.prompts.some((prompt) => prompt.turnId === turn.id))) return;
+    const ownsCurrent = record.executionRevision === executionRevision && record.activeTurnId === turn.id;
+    const turns = [...record.turns, finishedTurn].sort((a, b) => {
+      const ordinal = (id) => record.prompts.findIndex((prompt) => prompt.turnId === id);
+      return ordinal(a.id) - ordinal(b.id);
+    });
+    if (!ownsCurrent) {
+      // Retain evidence from older accepted work, while leaving newer status,
+      // summary, resource ownership and replay decisions completely intact.
+      return this.save({ ...record, turns, revision: randomUUID() });
+    }
+    const more = status === "completed" && record.replayQueue?.length > 0 && !record.replayHeld && !record.recoveryPending;
     const unresolved = [
       ...plan.filter((step) => step.status !== "completed").map((step) => bounded(step.step ?? step.title, 1_000)),
       ...(detail.error ? [bounded(detail.error.message ?? detail.error)] : [])
     ].filter(Boolean);
     this.save({ ...record, status: more ? "running" : status, turns, changes, changesError, summary: bounded(summary),
       checks, unresolved,
-      completedAt: more ? null : now(), activeTurnId: null,
+      completedAt: more ? null : now(), activeTurnId: null, pendingStart: false, recoveryPending: false,
       replayQueue: status === "completed" ? record.replayQueue : [], error: detail.error?.message ?? null });
     // Submit after releasing the completion lock; begin() waits on that lock.
-    if (more) setTimeout(() => this.nextReplayTurn(threadId).catch((error) => this.failed(threadId, error)), 0);
+    if (more) setTimeout(() => {
+      if (this.get(threadId)?.executionRevision !== executionRevision) return;
+      void this.nextReplayTurn(threadId).catch((error) => this.failed(threadId, error));
+    }, 0);
   }
 
   usage(threadId) {
@@ -259,8 +354,9 @@ export class TaskResults {
     }, 0);
     return { ...receipt, title: this.database.getThreadName(threadId) ?? prompts[0]?.text?.slice(0, 120) ?? "Task result",
       prompt: prompts[0]?.text ?? "", promptCount: prompts.length, durationMs, usage: this.usage(threadId),
-      replayAvailable: Boolean(snapshot && prompts.length && terminal.has(record.status) && !record.replayUnavailableReason),
-      replayUnavailableReason: record.replayUnavailableReason ?? record.snapshotError ?? (record.status === "running" ? "Wait for the task to finish before replaying it." : null),
+      replayAvailable: Boolean(snapshot && acceptedPrompts(record).length && terminal.has(record.status) && !record.recoveryPending && !hasUnconfirmedPrompt(record) && !record.replayUnavailableReason),
+      replayUnavailableReason: record.replayUnavailableReason ?? (record.recoveryPending || hasUnconfirmedPrompt(record) ? "Confirm the provider turn's state before replaying this task." : null)
+        ?? record.snapshotError ?? (record.status === "running" ? "Wait for the task to finish before replaying it." : !acceptedPrompts(record).length ? "No provider turn accepted this task's prompts." : null),
       remainingReplayTurns: replayQueue?.length ?? 0 };
   }
 
@@ -277,13 +373,14 @@ export class TaskResults {
     if (!original || original.revision !== revision) throw new Error("This task changed. Refresh before replaying it.");
     const receipt = this.receipt(threadId);
     if (!receipt.replayAvailable) throw new Error(receipt.replayUnavailableReason ?? "This task has no replayable starting state.");
+    const prompts = acceptedPrompts(original);
     const id = randomUUID();
     const destination = path.join(this.directory, "replays", id);
     const workspace = await this.createWorkspace(original.snapshot, destination);
     const mappings = original.snapshot.folders.map((folder, index) => [
       path.resolve(original.snapshot.repositories[folder.repository].root, folder.relative), workspace.folders[index]
     ]).sort((a, b) => b[0].length - a[0].length);
-    const frozen = original.prompts.flatMap((prompt) => prompt.frozenAttachments ?? []);
+    const frozen = prompts.flatMap((prompt) => prompt.frozenAttachments ?? []);
     const attachmentMappings = new Map();
     if (frozen.length) {
       const inputs = path.join(destination, "inputs");
@@ -306,7 +403,7 @@ export class TaskResults {
       icon: "git-branch", color: "purple", createdAt: now(), updatedAt: now() });
     const response = await this.startThread({ project, model, serviceTier });
     const childId = response.thread.id;
-    const queue = original.prompts.map((prompt) => ({ input: remap(prompt.input), text: prompt.text, frozenAttachments: (prompt.frozenAttachments ?? []).map((attachment) => ({ ...attachment, path: attachmentMappings.get(attachment.path) })) }));
+    const queue = prompts.map((prompt) => ({ input: remap(prompt.input), text: prompt.text, frozenAttachments: (prompt.frozenAttachments ?? []).map((attachment) => ({ ...attachment, path: attachmentMappings.get(attachment.path) })) }));
     this.save({ threadId: childId, projectId: project.id, originProjectId: original.originProjectId, projectName: original.projectName,
       groupId: original.groupId, sourceThreadId: threadId, snapshot: workspace.snapshot, prompts: [], turns: [],
       startedAt: now(), status: "running", revision: randomUUID(), model, effort, serviceTier, replayQueue: queue });
@@ -317,7 +414,7 @@ export class TaskResults {
 
   async nextReplayTurn(threadId) {
     const record = this.get(threadId);
-    if (!record?.replayQueue?.length || record.activeTurnId) return;
+    if (!record?.replayQueue?.length || record.activeTurnId || record.recoveryPending || record.replayHeld || record.status !== "running") return;
     const [prompt, ...rest] = record.replayQueue;
     this.save({ ...record, replayQueue: rest });
     await this.startTurn({ project: this.database.getProject(record.projectId), threadId,

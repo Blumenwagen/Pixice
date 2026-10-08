@@ -5,6 +5,7 @@ import { afterEach } from "vitest";
 // jsdom intentionally omits a canvas renderer. Returning null keeps component
 // tests focused on DOM behavior; canvas-specific tests replace this with a
 // lightweight drawing-context spy.
+if (typeof window !== "undefined") {
 HTMLCanvasElement.prototype.getContext = () => null;
 
 if (typeof window.matchMedia !== "function") {
@@ -65,6 +66,7 @@ for (const [property, flowSize, nodeSize] of [
       return 0;
     }
   });
+}
 }
 
 afterEach(cleanup);

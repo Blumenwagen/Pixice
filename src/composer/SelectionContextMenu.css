@@ -1,0 +1,5 @@
+.composer-context-source-scope { display: contents; }
+.composer-selection-cite { position: fixed; z-index: 500; padding: 8px 12px; border: 1px solid var(--border, #ffffff20); border-radius: 9px; background: var(--surface, #353535); color: var(--foreground, #eee); font: 12px/1.2 -apple-system, BlinkMacSystemFont, sans-serif; box-shadow: 0 5px 18px #0004; }
+.composer-queue-edit-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 2px 8px; color: var(--muted); font-size: 12px; }
+.composer-queue-edit-banner button { border: 0; background: transparent; color: var(--foreground); cursor: pointer; font: inherit; }
+.composer-context-tool { color: var(--muted); padding: 0 8px; border: 0; background: transparent; font-size: 12px; cursor: pointer; white-space: nowrap; }

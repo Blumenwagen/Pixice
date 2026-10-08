@@ -69,8 +69,10 @@ function WorkItem({ item, onControl, onFollowUp, busy }) {
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const active = !TERMINAL.has(item.status) && item.status !== "review";
-  const canPause = ["queued", "blocked", "starting", "running"].includes(item.status);
-  const canResume = ["paused", "needs-attention"].includes(item.status);
+  const stopping = Boolean(item.stopRequested && !["paused", "cancelled"].includes(item.status));
+  const statusCopy = item.stopRequested === "pause" && stopping ? "Pausing…" : (item.stopRequested === "cancel" && stopping) || item.status === "cancelling" ? "Cancelling…" : readableStatus(item.status);
+  const canPause = !stopping && ["queued", "blocked", "starting", "running"].includes(item.status);
+  const canResume = !stopping && ["paused", "needs-attention"].includes(item.status);
   const decisionCurrent = item.decisionRevision == null || item.acknowledgedDecisionRevision === item.decisionRevision;
   const verification = verificationCopy(item.verification);
   const submit = async (event) => {
@@ -82,15 +84,15 @@ function WorkItem({ item, onControl, onFollowUp, busy }) {
   return (
     <article className="focus-coordination-work" data-status={item.status}>
       <div className="focus-coordination-work-main">
-        <span className="focus-coordination-status" aria-label={readableStatus(item.status)}>{item.status === "failed" || item.status === "needs-attention" ? <Warning size={13} /> : item.status === "done" ? <Check size={13} /> : item.status === "paused" ? <Pause size={12} /> : <i />}</span>
+        <span className="focus-coordination-status" aria-label={statusCopy}>{item.status === "failed" || item.status === "needs-attention" ? <Warning size={13} /> : item.status === "done" ? <Check size={13} /> : item.status === "paused" ? <Pause size={12} /> : <i />}</span>
         <button className="focus-coordination-work-title" type="button" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
-          <span><strong>{item.title || "Untitled work"}</strong><small>{readableStatus(item.status)}{item.model ? ` · ${item.model}` : ""}</small></span>
+          <span><strong>{item.title || "Untitled work"}</strong><small>{statusCopy}{item.model ? ` · ${item.model}` : ""}</small></span>
           <CaretDown size={13} />
         </button>
         <div className="focus-coordination-work-actions">
           {canPause && <button type="button" onClick={() => onControl(item.id, "pause")} disabled={busy}>Pause</button>}
           {canResume && <button type="button" onClick={() => onControl(item.id, "resume")} disabled={busy}>Resume</button>}
-          {active && <button type="button" className="danger" onClick={() => onControl(item.id, "cancel")} disabled={busy}>Cancel</button>}
+          {active && <button type="button" className="danger" onClick={() => onControl(item.id, "cancel")} disabled={busy || item.stopRequested === "cancel"}>Cancel</button>}
         </div>
       </div>
       {open && <div className="focus-coordination-work-detail">
@@ -102,8 +104,8 @@ function WorkItem({ item, onControl, onFollowUp, busy }) {
         {item.dependsOn?.length > 0 && <p className="focus-coordination-meta">Waiting on {item.dependsOn.length} dependency{item.dependsOn.length === 1 ? "" : "ies"}</p>}
         {item.decisionRevision != null && <p className={`focus-coordination-decision-state${decisionCurrent ? " acknowledged" : ""}`}>{decisionCurrent ? "Decision acknowledged" : "Decision needs acknowledgement"}</p>}
         <form onSubmit={submit} className="focus-coordination-followup">
-          <input aria-label={`Redirect ${item.title || "work"}`} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Redirect or add detail" disabled={busy} />
-          <button type="submit" aria-label="Send follow-up" disabled={busy || !prompt.trim()}><PaperPlaneTilt size={13} /></button>
+          <input aria-label={`Redirect ${item.title || "work"}`} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Redirect or add detail" disabled={busy || stopping} />
+          <button type="submit" aria-label="Send follow-up" disabled={busy || stopping || !prompt.trim()}><PaperPlaneTilt size={13} /></button>
         </form>
       </div>}
     </article>

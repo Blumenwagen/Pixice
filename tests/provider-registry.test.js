@@ -56,6 +56,114 @@ class FakeProvider extends EventEmitter {
 }
 
 describe("ProviderRegistry", () => {
+  it("retains provider response ownership until native confirmation, including failed and repeated writes", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", []));
+    const claude = registry.register(new FakeProvider("claude", []));
+    claude.respond = vi.fn().mockRejectedValueOnce(new Error("Response lost"))
+      .mockResolvedValue({ written: true, resolved: false });
+    codex.respond = vi.fn();
+    claude.emit("server-request", { id: "owned", method: "approval", params: {} });
+    await expect(registry.respond("owned", { decision: "accept" })).rejects.toThrow("Response lost");
+    await registry.respond("owned", { decision: "accept" });
+    await registry.respond("owned", { decision: "accept" });
+    expect(claude.respond).toHaveBeenCalledTimes(3);
+    expect(codex.respond).not.toHaveBeenCalled();
+    expect(registry.requestOwners.get("claude\0string:owned")).toBe("claude");
+    codex.emit("event", { payload: { method: "serverRequest/resolved", requestId: "owned" } });
+    expect(registry.requestOwners.get("claude\0string:owned")).toBe("claude");
+    claude.emit("event", { payload: { method: "serverRequest/resolved", requestId: "owned" } });
+    expect(registry.requestOwners.has("claude\0string:owned")).toBe(false);
+  });
+
+  it("a delayed resolved SDK receipt cannot release a replacement callback with a reused id", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const claude = registry.register(new FakeProvider("claude", []));
+    let resolve;
+    claude.respond = vi.fn(() => new Promise(yes => { resolve = yes; }));
+    claude.emit("server-request", { id: "reused", method: "approval", params: {} });
+    const original = registry.respond("reused", {});
+    claude.emit("server-request", { id: "reused", method: "approval", params: {} });
+    resolve({ resolved: true });
+    await original;
+    expect(registry.requestOwners.get("claude\0string:reused")).toBe("claude");
+  });
+
+  it("never defaults a lost callback to Codex and rejects a mismatched provider or native generation", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", []));
+    const claude = registry.register(new FakeProvider("claude", []));
+    codex.respond = vi.fn();
+    claude.respond = vi.fn(() => ({ written: true, resolved: false }));
+    expect(() => registry.respond("lost", {})).toThrow("no longer available");
+    let request;
+    registry.on("server-request", value => { request = value; });
+    claude.emit("server-request", { id: "owned", method: "approval", params: {} });
+    expect(() => registry.respond("owned", {}, { provider: "codex" })).toThrow("no longer available");
+    expect(() => registry.respond("owned", {}, { provider: "claude", generation: request.providerRequestGeneration + 1 })).toThrow("no longer available");
+    registry.respond("owned", {}, { provider: "claude", generation: request.providerRequestGeneration });
+    expect(claude.respond).toHaveBeenCalledOnce();
+    expect(codex.respond).not.toHaveBeenCalled();
+  });
+
+  it("routes simultaneous same typed ids separately and resolving one leaves the other owned", async () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", []));
+    const claude = registry.register(new FakeProvider("claude", []));
+    codex.respond = vi.fn(() => ({ written: true, resolved: false }));
+    claude.respond = vi.fn(() => ({ written: true, resolved: false }));
+    const requests = [];
+    registry.on("server-request", value => requests.push(value));
+    codex.emit("server-request", { id: 7, method: "approval", params: { threadId: "codex-thread" } });
+    claude.emit("server-request", { id: 7, method: "question", params: { threadId: "claude-thread" } });
+    expect(() => registry.respond(7, {})).toThrow("ambiguous");
+    registry.respond(7, { decision: "accept" }, { provider: "codex", generation: requests[0].providerRequestGeneration });
+    registry.respond(7, { answer: "yes" }, { provider: "claude", generation: requests[1].providerRequestGeneration });
+    expect(codex.respond).toHaveBeenCalledWith(7, { decision: "accept" });
+    expect(claude.respond).toHaveBeenCalledWith(7, { answer: "yes" });
+    const events = [];
+    registry.on("event", value => events.push(value));
+    codex.emit("event", { payload: { method: "serverRequest/resolved", requestId: 7 } });
+    expect(events[0].payload).toMatchObject({ provider: "codex", providerRequestGeneration: requests[0].providerRequestGeneration });
+    expect(registry.requestOwners.has("codex\0number:7")).toBe(false);
+    expect(registry.requestOwners.get("claude\0number:7")).toBe("claude");
+    registry.respond(7, {}, { provider: "claude", generation: requests[1].providerRequestGeneration });
+    expect(claude.respond).toHaveBeenCalledTimes(2);
+  });
+
+  it("known old native resolution generation cannot release a replacement callback", () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const claude = registry.register(new FakeProvider("claude", []));
+    const requests = [], events = [];
+    registry.on("server-request", value => requests.push(value));
+    registry.on("event", value => events.push(value));
+    claude.emit("server-request", { id: "reused", method: "question", params: {} });
+    claude.emit("server-request", { id: "reused", method: "question", params: {} });
+    claude.emit("event", { payload: { method: "serverRequest/resolved", requestId: "reused", providerRequestGeneration: requests[0].providerRequestGeneration } });
+    expect(registry.requestOwners.get("claude\0string:reused")).toBe("claude");
+    expect(events[0].payload.providerRequestGeneration).toBe(requests[0].providerRequestGeneration);
+    claude.emit("event", { payload: { method: "serverRequest/resolved", requestId: "reused", providerRequestGeneration: requests[1].providerRequestGeneration } });
+    expect(registry.requestOwners.has("claude\0string:reused")).toBe(false);
+  });
+
+  it("a resolved event for another recorded turn cannot remove the current native owner", () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", []));
+    codex.emit("server-request", { id: 1, method: "approval", params: { threadId: "thread", turnId: "new-turn" } });
+    codex.emit("event", { payload: { method: "serverRequest/resolved", requestId: 1, threadId: "thread", turnId: "old-turn" } });
+    expect(registry.requestOwners.get("codex\0number:1")).toBe("codex");
+  });
+
+  it("invalidates restarted provider callbacks while preserving another provider's same id", () => {
+    const registry = new ProviderRegistry({ database: new MemoryDatabase() });
+    const codex = registry.register(new FakeProvider("codex", []));
+    const claude = registry.register(new FakeProvider("claude", []));
+    codex.emit("server-request", { id: 1, method: "approval", params: {} });
+    claude.emit("server-request", { id: 1, method: "approval", params: {} });
+    codex.emit("status", { state: "connecting" });
+    expect(() => registry.respond(1, {}, { provider: "codex" })).toThrow("no longer available");
+    expect(() => registry.respond(1, {}, { provider: "claude" })).not.toThrow();
+  });
   it("refreshes developer instructions across provider adapters", () => {
     const registry = new ProviderRegistry({ database: new MemoryDatabase() });
     const codex = registry.register(new FakeProvider("codex", []));

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, PencilSimple } from "./icons/index.jsx";
 import "./FocusCoordinatorQuestions.css";
+import { RequestResponseStatus, useRequestResponse } from "./RequestResponseStatus.jsx";
+import { attentionIdentity } from "../lib/attention-identity.js";
 
 const storageKeyFor = (projectId) => `pixice.focusCoordinatorQuestionDrafts.${projectId ?? "none"}`;
 
@@ -97,8 +99,8 @@ function QuestionReceipt({ receipt }) {
 }
 
 function QuestionRequest({ request, drafts, onDraftChange, onResolve, onResolved }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
+  const response = useRequestResponse(request, onResolve);
+  const busy = response.locked;
   const [customQuestions, setCustomQuestions] = useState({});
   const key = requestKey(request);
   const questions = request?.params?.questions ?? [];
@@ -106,22 +108,13 @@ function QuestionRequest({ request, drafts, onDraftChange, onResolve, onResolved
   const context = coordinatorCopy(request);
 
   const update = (questionId, value) => onDraftChange(key, { ...answers, [questionId]: value });
-  const complete = async (action) => {
-    if (busy || !onResolve) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = { action, answers: action === "cancel" ? {} : answers };
-      const accepted = await onResolve?.(request, result);
-      if (accepted === false) {
-        setError("The answer was not accepted. Try again.");
-        return;
-      }
-      if (action === "answer") onResolved({ key, request, result });
-      onDraftChange(key, null);
-    } catch (cause) {
-      setError(cause?.message ?? "Could not send the answer.");
-    } finally { setBusy(false); }
+  const complete = async (action, exactAnswers = answers) => {
+    if (response.pending || !onResolve) return;
+    const result = { action, answers: action === "cancel" ? {} : exactAnswers };
+    const accepted = await response.submit(result);
+    if (!accepted) return;
+    if (action === "answer") onResolved({ key, request, result });
+    onDraftChange(key, null);
   };
 
   const canSubmit = questions.length > 0 && questions.every((question, index) => {
@@ -167,9 +160,9 @@ function QuestionRequest({ request, drafts, onDraftChange, onResolve, onResolved
           </section>;
         })}
       </div>
-      {error && <p className="focus-coordinator-question-error" role="alert">{error}</p>}
+      <RequestResponseStatus response={response} onRetry={() => void complete(response.lastResponse.action, response.lastResponse.answers)} className="focus-coordinator-question-reason" errorClassName="focus-coordinator-question-error" actionsClassName="focus-coordinator-question-actions" retryClassName="answer" />
       <footer className="focus-coordinator-question-actions">
-        <button type="button" className="answer" onClick={() => void complete("answer")} disabled={busy || !canSubmit || !onResolve}>{busy ? "Sending…" : "Send answer"}</button>
+        <button type="button" className="answer" onClick={() => void complete("answer")} disabled={busy || !canSubmit || !onResolve}>{response.pending ? "Waiting for confirmation…" : "Send answer"}</button>
       </footer>
     </article>
   );
@@ -239,7 +232,7 @@ export function FocusCoordinatorQuestions({ requests = [], onResolve, projectId,
   return (
     <section className="focus-coordinator-questions" aria-label="Coordinator questions">
       {receipts.map((receipt) => <QuestionReceipt key={receiptKey(receipt)} receipt={receipt} />)}
-      {unresolved.map((request) => <QuestionRequest key={requestKey(request)} request={request} drafts={drafts} onDraftChange={updateDraft} onResolve={onResolve} onResolved={(receipt) => setLocalReceipts((current) => [...current, redactedReceipt(receipt)])} />)}
+      {unresolved.map((request) => <QuestionRequest key={attentionIdentity(request)} request={request} drafts={drafts} onDraftChange={updateDraft} onResolve={onResolve} onResolved={(receipt) => setLocalReceipts((current) => [...current, redactedReceipt(receipt)])} />)}
     </section>
   );
 }

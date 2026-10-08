@@ -1,0 +1,15 @@
+.html-showcase-shell { height: 100vh; overflow: auto; background: var(--canvas); color: var(--foreground); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.html-showcase-header { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 30px; border-bottom: 1px solid var(--border); }
+.html-showcase-header > div { display: flex; align-items: center; gap: 16px; }
+.html-showcase-header span { color: var(--muted); }
+.html-showcase-header button, .html-showcase-tabs button { border: 0; background: transparent; color: var(--muted); font: inherit; padding: 6px 10px; border-radius: 7px; }
+.html-showcase-header button:hover, .html-showcase-tabs button:hover { background: var(--surface-raised); color: var(--foreground); }
+.html-showcase-main { width: min(920px, calc(100% - 64px)); margin: 20px auto 0; padding-bottom: 24px; }
+.html-showcase-tabs { display: flex; align-items: center; gap: 6px; margin-bottom: 22px; }
+.html-showcase-tabs button[aria-selected="true"] { background: var(--surface); color: var(--foreground); }
+.html-showcase-user { width: fit-content; max-width: 85%; margin: 0 0 26px auto; padding: 10px 14px; border-radius: 14px; background: var(--surface-raised); }
+.html-showcase-conversation .assistant-message { max-width: none; }
+.html-showcase-conversation .html-reply { margin-top: 22px; }
+.html-showcase-footnote { margin: 12px 0 0; font-size: 12px; color: var(--muted); }
+.html-showcase-preview { height: 680px; }
+.html-showcase-preview[hidden] { display: none; }

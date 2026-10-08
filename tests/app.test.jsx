@@ -1,14 +1,24 @@
+import { changeEditable, createEditorAwareUser, installPromptEditorGeometry, toHaveEditableValue } from "./helpers/prompt-editor.js";
 import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, formatElapsedDuration, generatedImageAttachment, generatedImageRevisionPrompt, horizontalPopoverShift } from "../src/App.jsx";
 import { listPricingCatalog } from "../electron/usage/pricing.mjs";
+import { appendAttachmentContext } from "../electron/runtime/prompt-attachments.mjs";
 import { ConnectRoot } from "../src/connect/ConnectRoot.jsx";
 import { WorkflowHost } from "../src/components/workflows/WorkflowHost.jsx";
+import cascadeStyles from "../src/components/StreamingTextVariants.module.css";
+
+expect.extend({ toHaveEditableValue });
+beforeAll(installPromptEditorGeometry);
 
 const appCss = readFileSync("src/styles.css", "utf8");
+
+// Streaming prose has one span per arriving word. Match the paragraph's full
+// text so these assertions still check message delivery and thread routing.
+const paragraphText = (expected) => (_content, element) => element?.tagName === "P"
+  && (expected instanceof RegExp ? expected.test(element.textContent) : element.textContent === expected);
 
 it("keeps picker popovers aligned inside the prompt box", () => {
   expect(horizontalPopoverShift(
@@ -388,6 +398,73 @@ beforeEach(() => {
 });
 
 describe("Pixice app shell", () => {
+  it("waits for the desktop connection before requesting startup data", async () => {
+    const api = window.pixice;
+    api.service = { connection: vi.fn(() => new Promise(() => {})) };
+    api.tasks = { interventions: vi.fn().mockResolvedValue({ requests: [] }) };
+    render(<ConnectRoot><App /></ConnectRoot>);
+    await screen.findByText("Connecting to Pixice…");
+    expect(api.app.bootstrap).not.toHaveBeenCalled();
+    expect(api.providers.list).not.toHaveBeenCalled();
+    expect(api.tasks.interventions).not.toHaveBeenCalled();
+    act(() => api.emit({ type: "ServiceConnectionState", payload: { state: "connected" } }));
+    await screen.findByText("I traced the current flow.");
+    expect(api.app.bootstrap).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Needs attention · Pixice")).not.toBeInTheDocument();
+  });
+  it("retries failed startup when the first backend connection succeeds", async () => {
+    const api = window.pixice;
+    api.app.bootstrap.mockRejectedValueOnce(new Error("The instance is offline. Your action was not sent."));
+    render(<App />);
+    await screen.findByText("Connecting to workspace…");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    act(() => api.emit({ type: "ServiceConnectionState", payload: { state: "connected" } }));
+    await screen.findByText("I traced the current flow.");
+    expect(api.app.bootstrap).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByText("The instance is offline. Your action was not sent.")).not.toBeInTheDocument());
+  });
+  it("recovers a temporary workspace startup failure without showing a global error", async () => {
+    const api = window.pixice;
+    api.app.bootstrap.mockRejectedValueOnce(new Error("The instance is offline. Your action was not sent."));
+    render(<App />);
+    await screen.findByText("Connecting to workspace…");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await screen.findByText("I traced the current flow.");
+    expect(api.app.bootstrap).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByText("Connecting to workspace…")).not.toBeInTheDocument());
+    expect(api.turns.start).not.toHaveBeenCalled();
+  });
+  it("offers specific startup recovery and complete error details for a permanent failure", async () => {
+    const api = window.pixice;
+    api.app.bootstrap.mockRejectedValueOnce(new Error("Saved workspace could not be decoded: unexpected record in project store"));
+    render(<App />);
+    expect(await screen.findByText("Workspace could not load")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Your workspace hasn't loaded" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Create a project" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Needs attention · Pixice")).not.toBeInTheDocument();
+    expect(screen.getByText("Saved workspace could not be decoded: unexpected record in project store")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("I traced the current flow.");
+    expect(api.app.bootstrap).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Workspace could not load")).not.toBeInTheDocument();
+  });
+  it("preserves the conversation and draft when refreshing the workspace fails", async () => {
+    const api = window.pixice;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
+    changeEditable(composer, { target: { value: "Keep this unsent direction" } });
+    api.app.bootstrap.mockRejectedValueOnce(new Error("Saved workspace could not be decoded"));
+    act(() => api.emit({ type: "ApplicationResync" }));
+    await screen.findByText("Workspace refresh failed");
+    expect(screen.getByText("I traced the current flow.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toBe(composer);
+    expect(composer).toHaveEditableValue("Keep this unsent direction");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText("Workspace refresh failed")).not.toBeInTheDocument());
+    expect(composer).toHaveEditableValue("Keep this unsent direction");
+    expect(api.turns.start).not.toHaveBeenCalled();
+  });
   it("builds an image revision prompt and reattaches local generated image data", () => {
     expect(generatedImageRevisionPrompt("Make the sky warmer", "A blue dawn scene")).toContain("Make the sky warmer");
     expect(generatedImageRevisionPrompt("Make the sky warmer", "A blue dawn scene")).toContain("A blue dawn scene");
@@ -438,7 +515,7 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Focus memory" }));
     expect(await screen.findByRole("dialog", { name: "Focus memory" })).toBeInTheDocument();
     const projectMemory = screen.getByRole("textbox", { name: "Project decisions" });
-    fireEvent.change(projectMemory, { target: { value: "Keep one persistent coordinator conversation." } });
+    changeEditable(projectMemory, { target: { value: "Keep one persistent coordinator conversation." } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(window.pixice.focus.updateMemory).toHaveBeenCalledWith(expect.objectContaining({
       projectId: project.id,
@@ -447,7 +524,7 @@ describe("Pixice app shell", () => {
     })));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Focus memory" })).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Focus memory" }));
-    expect(await screen.findByRole("textbox", { name: "Project decisions" })).toHaveValue("Keep one persistent coordinator conversation.");
+    expect(await screen.findByRole("textbox", { name: "Project decisions" })).toHaveEditableValue("Keep one persistent coordinator conversation.");
     fireEvent.keyDown(window, { key: "Escape" });
     const taskProgress = screen.getByRole("complementary", { name: "Task progress overview" });
     expect(within(taskProgress).getByRole("progressbar", { name: "Refactor authentication progress" })).toHaveAttribute("aria-valuenow", "2");
@@ -502,6 +579,8 @@ describe("Pixice app shell", () => {
     }));
     expect(document.querySelector(".pixice-app")).toHaveAttribute("data-surface-mode", "focus");
     expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument();
+    expect(screen.getByText("Approval required")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve", exact: true })).toBeEnabled();
 
     act(() => window.pixice.emit({
       type: "AttentionRequired",
@@ -533,25 +612,119 @@ describe("Pixice app shell", () => {
     expect(screen.queryByRole("heading", { name: "Talk to Aurora" })).not.toBeInTheDocument();
   });
 
+  it("keeps worker app approvals in Focus with remembered access and the coordinator draft intact", async () => {
+    const api = createApi();
+    let confirmResponse;
+    api.elicitations.respond.mockImplementationOnce(() => new Promise(resolve => { confirmResponse = resolve; }));
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    await waitFor(() => expect(prompt).toBeEnabled());
+    changeEditable(prompt, { target: { value: "Keep this unsent coordinator direction" } });
+    prompt.focus();
+    const scroll = document.querySelector(".focus-conversation-scroll");
+    Object.defineProperties(scroll, { scrollHeight: { configurable: true, value: 1200 }, clientHeight: { configurable: true, value: 300 } });
+    scroll.scrollTop = 100;
+    fireEvent.scroll(scroll);
+    const permissionSchema = { type: "object", required: ["approval"], properties: {
+      approval: { type: "string", enum: ["once", "session", "always"] }
+    } };
+    act(() => api.emit({ type: "AttentionRequired", payload: {
+      id: "other-project-app", requestGeneration: 50, projectId: "project-other", provider: "codex",
+      method: "mcpServer/elicitation/request", params: { threadId: "focus-thread", message: "Allow ChatGPT to use Mail?", _meta: { app_name: "Mail" }, requestedSchema: permissionSchema }
+    } }));
+    act(() => api.emit({ type: "AttentionRequired", payload: {
+      id: "focus-worker-app", requestGeneration: 51, projectId: project.id, provider: "codex",
+      method: "mcpServer/elicitation/request", params: { threadId: "worker-not-in-thread-list", message: "Allow ChatGPT to use Chrome?", _meta: { app_name: "Chrome" }, requestedSchema: permissionSchema }
+    } }));
+    expect(await screen.findByText("Allow ChatGPT to use Chrome?")).toBeInTheDocument();
+    expect(screen.queryByText("App access · Chrome")).not.toBeInTheDocument();
+    expect(screen.queryByText("Allow ChatGPT to use Mail?")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(prompt).toHaveFocus();
+    expect(prompt).toHaveEditableValue("Keep this unsent coordinator direction");
+    expect(scroll.scrollTop).toBe(100);
+    fireEvent.click(screen.getByRole("button", { name: "Always allow" }));
+    await waitFor(() => expect(api.elicitations.respond).toHaveBeenCalledWith({ requestId: "focus-worker-app", requestGeneration: 51, decision: "acceptAlways" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for provider confirmation");
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toBe(prompt);
+    expect(prompt).toHaveEditableValue("Keep this unsent coordinator direction");
+    await act(async () => confirmResponse({ resolved: true }));
+    await waitFor(() => expect(screen.queryByText("Allow ChatGPT to use Chrome?")).not.toBeInTheDocument());
+    expect(prompt).toHaveEditableValue("Keep this unsent coordinator direction");
+    expect(api.turns.start).not.toHaveBeenCalled();
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-surface-mode", "focus");
+  });
+
+  it("keeps generic and external elicitation requests actionable in the Focus conversation", async () => {
+    const api = createApi();
+    window.pixice = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
+    await screen.findByRole("textbox", { name: "Project Focus prompt" });
+    act(() => api.emit({ type: "AttentionRequired", payload: {
+      id: "focus-generic-input", requestGeneration: 52, projectId: project.id,
+      method: "mcpServer/elicitation/request", params: { threadId: "worker-other", serverName: "computer", _meta: { app_name: "Chrome" }, requestedSchema: {
+        type: "object", required: ["label"], properties: { label: { type: "string", title: "Window label" } }
+      } }
+    } }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Window label" }), { target: { value: "Review draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(api.elicitations.respond).toHaveBeenCalledWith({ requestId: "focus-generic-input", requestGeneration: 52, action: "accept", content: { label: "Review draft" } }));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Window label" })).not.toBeInTheDocument());
+    act(() => api.emit({ type: "AttentionRequired", payload: {
+      id: "focus-external-input", requestGeneration: 53, projectId: project.id,
+      method: "mcpServer/elicitation/request", params: { threadId: "worker-other", serverName: "computer", mode: "url", url: "https://example.test/connect", _meta: { app_name: "Chrome", allowPersistentApproval: true } }
+    } }));
+    expect(await screen.findByRole("link", { name: "Open request" })).toHaveAttribute("href", "https://example.test/connect");
+    expect(screen.queryByRole("button", { name: "Always allow" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(api.elicitations.respond).toHaveBeenCalledWith({ requestId: "focus-external-input", requestGeneration: 53, action: "accept" }));
+    expect(document.querySelector(".pixice-app")).toHaveAttribute("data-surface-mode", "focus");
+  });
+
+  it("discovers computer-use permissions in Workspace Attention and routes Always allow as an elicitation", async () => {
+    const api = createApi();
+    window.pixice = api;
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    act(() => api.emit({ type: "AttentionRequired", payload: {
+      id: "workspace-computer-permission", requestGeneration: 54, projectId: project.id,
+      method: "mcpServer/elicitation/request", params: {
+        threadId: thread.id, message: "Allow ChatGPT to use Chrome?", _meta: { app_name: "Chrome", allowPersistentApproval: true }
+      }
+    } }));
+    fireEvent.click(screen.getByRole("button", { name: "Attention" }));
+    expect(document.querySelector(".pixice-app")).toHaveClass("view-attention");
+    expect(screen.getByText("Allow ChatGPT to use Chrome?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Always allow" }));
+    await waitFor(() => expect(api.elicitations.respond).toHaveBeenCalledWith({ requestId: "workspace-computer-permission", requestGeneration: 54, decision: "acceptAlways" }));
+    expect(api.approvals.resolve).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "No approvals waiting" })).toBeInTheDocument());
+  });
+
   it("keeps the Focus draft and offers reconnect after a first-send session failure", async () => {
     const api = createApi();
     api.models.list.mockResolvedValue([{ id: "gpt", model: "gpt-5.6", displayName: "GPT-5.6", provider: "codex", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }]);
     api.turns.start.mockRejectedValueOnce(new Error("thread not found: runtime session is not loaded"));
     window.pixice = api;
     localStorage.setItem("pixice.draft.project-1:focus", "Keep this draft while reconnecting");
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "Focus" }));
     const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
-    await waitFor(() => expect(prompt).toHaveValue("Keep this draft while reconnecting"));
+    await waitFor(() => expect(prompt).toHaveEditableValue("Keep this draft while reconnecting"));
     const send = screen.getByRole("button", { name: "Send message" });
     await waitFor(() => expect(send).toBeEnabled());
     await user.click(send);
 
     await waitFor(() => expect(api.turns.start).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("Coordinator unavailable. Your draft and Focus history are still saved.")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toHaveValue("Keep this draft while reconnecting");
+    expect(screen.getByRole("textbox", { name: "Project Focus prompt" })).toHaveEditableValue("Keep this draft while reconnecting");
     const ensureCalls = api.focus.ensure.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(api.focus.ensure.mock.calls.length).toBeGreaterThan(ensureCalls));
@@ -565,7 +738,7 @@ describe("Pixice app shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Focus" }));
     const prompt = await screen.findByRole("textbox", { name: "Project Focus prompt" });
     await waitFor(() => expect(prompt).toBeEnabled());
-    fireEvent.change(prompt, { target: { value: "Meanwhile compare the hosting options" } });
+    changeEditable(prompt, { target: { value: "Meanwhile compare the hosting options" } });
     prompt.focus();
     expect(prompt).toHaveFocus();
     const scroll = document.querySelector(".focus-conversation-scroll");
@@ -584,7 +757,7 @@ describe("Pixice app shell", () => {
     }));
     expect(await screen.findByRole("heading", { name: "Which users should get the update?" })).toBeInTheDocument();
     expect(prompt).toHaveFocus();
-    expect(prompt).toHaveValue("Meanwhile compare the hosting options");
+    expect(prompt).toHaveEditableValue("Meanwhile compare the hosting options");
     expect(scroll.scrollTop).toBe(100);
     expect(document.querySelector(".composer-question")).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -610,7 +783,7 @@ describe("Pixice app shell", () => {
       }
     };
     window.pixice = createApi(thread, [suggestion]);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
 
     const card = await screen.findByRole("region", { name: "Turn this into a workflow?" });
@@ -647,7 +820,7 @@ describe("Pixice app shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "New project" }));
     const dialog = await screen.findByRole("dialog", { name: "Create project" });
-    fireEvent.change(within(dialog).getByRole("textbox", { name: "Project name" }), { target: { value: "Studio" } });
+    changeEditable(within(dialog).getByRole("textbox", { name: "Project name" }), { target: { value: "Studio" } });
     fireEvent.click(within(dialog).getByRole("radio", { name: "Code icon" }));
     fireEvent.click(within(dialog).getByRole("radio", { name: "Purple color" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Add folders" }));
@@ -769,7 +942,7 @@ describe("Pixice app shell", () => {
     expect(screen.getByRole("region", { name: "Aurora task board" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Add task" }));
-    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Plan release notes" } });
+    changeEditable(screen.getByLabelText("Task title"), { target: { value: "Plan release notes" } });
     fireEvent.click(within(screen.getByRole("region", { name: "Backlog" })).getByRole("button", { name: "Add task" }));
 
     const card = await screen.findByRole("button", { name: "Plan release notes" });
@@ -968,7 +1141,7 @@ describe("Pixice app shell", () => {
     expect(api.board.createPhase).not.toHaveBeenCalled();
     fireEvent.click(within(timeline).getByRole("button", { name: /Review suggested phase, Provider phase/ }));
     expect(screen.getByText("Confirm suggested phase")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Phase name"), { target: { value: "Provider rollout" } });
+    changeEditable(screen.getByLabelText("Phase name"), { target: { value: "Provider rollout" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm phase" }));
 
     await waitFor(() => expect(api.board.createPhase).toHaveBeenCalledWith({
@@ -1113,7 +1286,7 @@ describe("Pixice app shell", () => {
   });
 
   it("only promotes a bridge-created thread after the user messages it", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const bridgeThread = {
       ...thread,
       id: "bridge-thread",
@@ -1171,26 +1344,28 @@ describe("Pixice app shell", () => {
     await screen.findByText("I traced the current flow.");
     const appElement = container.querySelector(".pixice-app");
     const composer = screen.getByRole("textbox", { name: "Task prompt" });
-    fireEvent.change(composer, { target: { value: "Keep my unsent work" } });
+    changeEditable(composer, { target: { value: "Keep my unsent work" } });
     for (let cycle = 0; cycle < 3; cycle++) {
       act(() => api.emit({ type: "ServiceConnectionState", payload: { state: "reconnecting" } }));
       act(() => { api.emit({ type: "ServiceConnectionState", payload: { state: "connected" } }); api.emit({ type: "ApplicationResync" }); });
       await waitFor(() => expect(api.app.bootstrap).toHaveBeenCalledTimes(cycle + 2));
       expect(container.querySelector(".pixice-app")).toBe(appElement);
-      expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("Keep my unsent work");
+      expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue("Keep my unsent work");
     }
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     const heading = await screen.findByRole("heading", { name: "General" });
     const scroll = container.querySelector(".settings-content-scroll"); scroll.scrollTop = 125;
+    const bootstrapCalls = api.app.bootstrap.mock.calls.length;
     act(() => { api.emit({ type: "ServiceReset" }); api.emit({ type: "ServiceConnectionState", payload: { state: "reconnecting" } }); });
     expect(screen.getByRole("heading", { name: "General" })).toBe(heading);
+    expect(api.app.bootstrap).toHaveBeenCalledTimes(bootstrapCalls);
     act(() => { api.emit({ type: "ServiceConnectionState", payload: { state: "connected" } }); api.emit({ type: "ApplicationResync" }); });
-    await waitFor(() => expect(api.app.bootstrap).toHaveBeenCalledTimes(6));
+    await waitFor(() => expect(api.app.bootstrap).toHaveBeenCalledTimes(bootstrapCalls + 1));
     expect(screen.getByRole("heading", { name: "General" })).toBe(heading);
     expect(scroll.scrollTop).toBe(125);
     expect(container.querySelector(".pixice-app")).toBe(appElement);
     fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
-    expect(await screen.findByRole("textbox", { name: "Task prompt" })).toHaveValue("Keep my unsent work");
+    expect(await screen.findByRole("textbox", { name: "Task prompt" })).toHaveEditableValue("Keep my unsent work");
     expect(api.turns.start).not.toHaveBeenCalled();
   });
 
@@ -1208,7 +1383,7 @@ describe("Pixice app shell", () => {
   });
 
   it("renders Codex image generation in progress and swaps in the completed image", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const imageThread = {
       ...thread,
       status: { type: "active" },
@@ -1382,13 +1557,13 @@ describe("Pixice app shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
 
-    await waitFor(() => expect(api.review.file).toHaveBeenCalledWith({ projectId: "project-1", path: "src/auth.js" }));
+    await waitFor(() => expect(api.review.file).toHaveBeenCalledWith({ projectId: "project-1", threadId: "thread-1", path: "src/auth.js" }));
     expect(screen.getByText("Reading file diff…")).toBeInTheDocument();
     await act(async () => resolveFileDiff());
     expect(await screen.findByText("new selected")).toBeInTheDocument();
     expect(api.review.read).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /session\.js/ }));
-    await waitFor(() => expect(api.review.file).toHaveBeenCalledWith({ projectId: "project-1", path: "src/session.js" }));
+    await waitFor(() => expect(api.review.file).toHaveBeenCalledWith({ projectId: "project-1", threadId: "thread-1", path: "src/session.js" }));
     expect(api.review.file).toHaveBeenCalledTimes(2);
   });
 
@@ -1419,6 +1594,7 @@ describe("Pixice app shell", () => {
 
     await waitFor(() => expect(window.pixice.external.openEditor).toHaveBeenCalledWith({
       projectId: "project-1",
+      threadId: "thread-1",
       path: "src/session.js"
     }));
   });
@@ -1540,31 +1716,31 @@ describe("Pixice app shell", () => {
     fireEvent.keyDown(window, { key: ",", metaKey: true });
     expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Default permissions" }), { target: { value: "read-only" } });
+    changeEditable(screen.getByRole("combobox", { name: "Default permissions" }), { target: { value: "read-only" } });
     expect(localStorage.getItem("pixice.permissionMode")).toBe("read-only");
     fireEvent.click(screen.getByRole("checkbox", { name: "Use Fast mode for new tasks" }));
     expect(api.app.saveSettings).toHaveBeenCalledWith({ defaultFastMode: true });
-    fireEvent.change(screen.getByRole("combobox", { name: "Thread name model" }), { target: { value: "off" } });
+    changeEditable(screen.getByRole("combobox", { name: "Thread name model" }), { target: { value: "off" } });
     expect(api.app.saveSettings).toHaveBeenCalledWith({ threadNamingModel: "off" });
-    fireEvent.change(screen.getByRole("combobox", { name: "Workflow generation model" }), { target: { value: "codex:gpt-5.6" } });
+    changeEditable(screen.getByRole("combobox", { name: "Workflow generation model" }), { target: { value: "codex:gpt-5.6" } });
     expect(api.app.saveSettings).toHaveBeenCalledWith({ workflowGenerationModel: "codex:gpt-5.6" });
     fireEvent.click(screen.getByRole("checkbox", { name: "Keep System awake" }));
     expect(api.app.saveSettings).toHaveBeenCalledWith({ keepSystemAwake: true });
-    fireEvent.change(screen.getByRole("combobox", { name: "Thread cleanup age" }), { target: { value: "14" } });
+    changeEditable(screen.getByRole("combobox", { name: "Thread cleanup age" }), { target: { value: "14" } });
     expect(JSON.parse(localStorage.getItem("pixice.preferences"))).toMatchObject({ threadCleanupAgeDays: 14 });
-    fireEvent.change(screen.getByRole("combobox", { name: "Thread cleanup age" }), { target: { value: "custom" } });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Custom thread cleanup age" }), { target: { value: "9" } });
+    changeEditable(screen.getByRole("combobox", { name: "Thread cleanup age" }), { target: { value: "custom" } });
+    changeEditable(screen.getByRole("spinbutton", { name: "Custom thread cleanup age" }), { target: { value: "9" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "Notify when tasks finish" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Play notification sounds" }));
     expect(api.app.saveSettings).toHaveBeenCalledWith({ completionNotifications: true });
     expect(api.app.saveSettings).toHaveBeenCalledWith({ notificationSound: false });
 
     fireEvent.click(screen.getByRole("button", { name: /^Conversation/ }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Send shortcut" }), { target: { value: "mod-enter" } });
+    changeEditable(screen.getByRole("combobox", { name: "Send shortcut" }), { target: { value: "mod-enter" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "Check spelling in prompts" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Show slash command suggestions" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Show message timestamps" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Completed work details" }), { target: { value: "expanded" } });
+    changeEditable(screen.getByRole("combobox", { name: "Completed work details" }), { target: { value: "expanded" } });
 
     fireEvent.click(screen.getByRole("button", { name: /^Agents/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Expand task progress by default" }));
@@ -1572,10 +1748,10 @@ describe("Pixice app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Appearance/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Show shortcut hints" }));
     expect(document.querySelector(".pixice-app")).toHaveAttribute("data-show-shortcuts", "false");
-    fireEvent.change(screen.getByRole("combobox", { name: "Interface density" }), { target: { value: "comfortable" } });
+    changeEditable(screen.getByRole("combobox", { name: "Interface density" }), { target: { value: "comfortable" } });
     expect(document.querySelector(".pixice-app")).toHaveAttribute("data-density", "comfortable");
-    fireEvent.change(screen.getByRole("combobox", { name: "Conversation width" }), { target: { value: "wide" } });
-    fireEvent.change(screen.getByRole("combobox", { name: "Conversation text size" }), { target: { value: "large" } });
+    changeEditable(screen.getByRole("combobox", { name: "Conversation width" }), { target: { value: "wide" } });
+    changeEditable(screen.getByRole("combobox", { name: "Conversation text size" }), { target: { value: "large" } });
     fireEvent.click(screen.getByRole("radio", { name: "Teal accent" }));
     expect(screen.getByRole("radio", { name: "Teal accent" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("checkbox", { name: "Reduce transparency" }));
@@ -1611,7 +1787,7 @@ describe("Pixice app shell", () => {
     const prompt = await screen.findByRole("textbox", { name: "Task prompt" });
     expect(prompt).toHaveAttribute("spellcheck", "false");
     expect(document.querySelectorAll("time.message-timestamp")).toHaveLength(0);
-    fireEvent.change(prompt, { target: { value: "Use the customized composer" } });
+    changeEditable(prompt, { target: { value: "Use the customized composer" } });
     fireEvent.keyDown(prompt, { key: "Enter" });
     expect(api.turns.start).not.toHaveBeenCalled();
     fireEvent.keyDown(prompt, { key: "Enter", metaKey: true });
@@ -2099,7 +2275,7 @@ describe("Pixice app shell", () => {
   });
 
   it("moves the last messaged thread to the top and persists that order", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const secondThread = {
       ...thread,
       id: "thread-2",
@@ -2307,7 +2483,7 @@ describe("Pixice app shell", () => {
   });
 
   it("shows provider accounts, previous sessions, and opens sign in", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -2374,7 +2550,7 @@ describe("Pixice app shell", () => {
   });
 
   it("keeps separate setup actions available for missing and broken providers", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     let finishCodexInstall;
     api.providers.install.mockImplementation(() => new Promise((resolve) => { finishCodexInstall = resolve; }));
@@ -2409,7 +2585,7 @@ describe("Pixice app shell", () => {
   });
 
   it("keeps managed credentials honest and allows a connected provider to sign out", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     api.providers.list.mockResolvedValue([
       { id: "codex", installed: true, compatible: true, connected: true, authenticated: true, externallyManagedAuth: true, executablePath: "/usr/local/bin/codex", version: "1.2.3", actions: { logout: false } },
@@ -2431,7 +2607,7 @@ describe("Pixice app shell", () => {
   });
 
   it("does not label a missing runtime as connected just because its credentials are external", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     api.providers.list.mockResolvedValue([
       { id: "codex", installed: false, compatible: false, externallyManagedAuth: true, health: { state: "missing", message: "Codex is not installed" }, actions: { install: true, locate: true, logout: false } },
@@ -2451,7 +2627,7 @@ describe("Pixice app shell", () => {
   });
 
   it("keeps provider-neutral workspaces usable with zero connected providers", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({
       projects: [project],
@@ -2504,7 +2680,7 @@ describe("Pixice app shell", () => {
   });
 
   it("checks and updates Codex and Claude independently from Settings", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     api.providers.list.mockResolvedValue([
       {
@@ -2715,6 +2891,45 @@ describe("Pixice app shell", () => {
     expect(screen.getByText(/Provider runtime updates live.*under Providers/)).toBeInTheDocument();
   });
 
+  it("offers a signed replacement for an ineligible packaged Mac copy", async () => {
+    const api = createApi();
+    api.updates.status.mockResolvedValue({ supported: false, state: "unsupported", currentVersion: "0.1.0-beta.2", message: "This copy has an ad-hoc signature. Replace it once with the signed release." });
+    window.pixice = api; render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^About Pixice/ }));
+    expect(screen.getByText("Manual update required")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Get signed release" })).toHaveAttribute("href", "https://github.com/Blumenwagen/Pixice/releases");
+    expect(screen.queryByText("Development build")).not.toBeInTheDocument();
+  });
+
+  it("keeps the install retry available after native update preparation fails", async () => {
+    const api = createApi();
+    const downloaded = { supported: true, state: "downloaded", currentVersion: "0.1.0", availableVersion: "0.2.0", message: "Update downloaded." };
+    api.updates.status.mockResolvedValue(downloaded);
+    api.updates.install.mockImplementation(async () => {
+      api.updates.status.mockResolvedValue({ ...downloaded, state: "install-error", message: "Update not installed: signature mismatch. Your saved data is preserved." });
+      throw new Error("signature mismatch");
+    });
+    window.pixice = api; render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^About Pixice/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart and install" }));
+    expect(await screen.findByRole("button", { name: "Retry install" })).toBeEnabled();
+    expect(screen.getAllByText(/Update not installed: signature mismatch/).length).toBeGreaterThan(0);
+  });
+
+  it("disables update actions until the native installer is ready", async () => {
+    const api = createApi();
+    api.updates.status.mockResolvedValue({ supported: true, state: "preparing-install", currentVersion: "0.1.0", availableVersion: "0.2.0", message: "Waiting for the installer to verify the update." });
+    window.pixice = api; render(<App />);
+    await screen.findByText("I traced the current flow.");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^About Pixice/ }));
+    expect(screen.getByRole("button", { name: "Verifying update…" })).toBeDisabled();
+  });
+
   it("restores persistent model, reasoning, and permission defaults after an app update", async () => {
     const models = [{
       id: "gpt",
@@ -2744,10 +2959,10 @@ describe("Pixice app shell", () => {
     const modelSelect = await screen.findByRole("combobox", { name: "Default model" });
     const effortSelect = await screen.findByRole("combobox", { name: "Default reasoning effort" });
     const permissionSelect = await screen.findByRole("combobox", { name: "Default permissions" });
-    fireEvent.change(modelSelect, { target: { value: "gpt-5.4" } });
-    expect(effortSelect).toHaveValue("medium");
-    fireEvent.change(effortSelect, { target: { value: "high" } });
-    fireEvent.change(permissionSelect, { target: { value: "full-access" } });
+    changeEditable(modelSelect, { target: { value: "gpt-5.4" } });
+    expect(effortSelect).toHaveEditableValue("medium");
+    changeEditable(effortSelect, { target: { value: "high" } });
+    changeEditable(permissionSelect, { target: { value: "full-access" } });
     expect(firstApi.app.saveSettings).toHaveBeenCalledWith({ defaultModel: "gpt-5.4", defaultEffort: "medium" });
     expect(firstApi.app.saveSettings).toHaveBeenCalledWith({ defaultEffort: "high" });
     expect(firstApi.app.saveSettings).toHaveBeenCalledWith({ defaultPermissionMode: "full-access" });
@@ -2764,13 +2979,13 @@ describe("Pixice app shell", () => {
     await screen.findByText("I traced the current flow.");
     fireEvent.keyDown(window, { key: ",", metaKey: true });
 
-    expect(await screen.findByRole("combobox", { name: "Default model" })).toHaveValue("gpt-5.4");
-    expect(await screen.findByRole("combobox", { name: "Default reasoning effort" })).toHaveValue("high");
-    expect(await screen.findByRole("combobox", { name: "Default permissions" })).toHaveValue("full-access");
+    expect(await screen.findByRole("combobox", { name: "Default model" })).toHaveEditableValue("gpt-5.4");
+    expect(await screen.findByRole("combobox", { name: "Default reasoning effort" })).toHaveEditableValue("high");
+    expect(await screen.findByRole("combobox", { name: "Default permissions" })).toHaveEditableValue("full-access");
   });
 
   it("keeps composer reasoning changes scoped to their thread", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const secondThread = { ...thread, id: "thread-2", name: "Prepare release notes", preview: "Prepare release notes" };
     const models = [{
       id: "gpt",
@@ -2798,7 +3013,7 @@ describe("Pixice app shell", () => {
     expect(await screen.findByRole("button", { name: "Run profile: GPT-5.6, High reasoning" })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: ",", metaKey: true });
-    expect(await screen.findByRole("combobox", { name: "Default reasoning effort" })).toHaveValue("medium");
+    expect(await screen.findByRole("combobox", { name: "Default reasoning effort" })).toHaveEditableValue("medium");
 
     firstLaunch.unmount();
     const restartedApi = createApi();
@@ -2814,7 +3029,7 @@ describe("Pixice app shell", () => {
   });
 
   it("filters the model picker by Codex and Claude provider", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     api.providers.list.mockResolvedValue([
       { id: "codex", connected: true, account: { type: "chatgpt", email: "dev@example.com" }, authenticated: true, requiresAuth: true, sessionCount: 0, loginAvailable: true },
@@ -2844,7 +3059,7 @@ describe("Pixice app shell", () => {
   });
 
   it("marks Claude models as unauthenticated in the picker and starts sign in there", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({
       projects: [project],
@@ -2869,7 +3084,7 @@ describe("Pixice app shell", () => {
   });
 
   it("keeps provider sign in reachable when no models are authenticated", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({
       projects: [project],
@@ -2927,6 +3142,66 @@ describe("Pixice app shell", () => {
     await waitFor(() => expect(window.pixice.approvals.resolve).toHaveBeenCalledWith({ requestId: 17, decision: "accept" }));
   });
 
+  it("retains an unconfirmed approval inline and retries the same decision after an uncertain response", async () => {
+    const api = window.pixice;
+    let rejectFirst;
+    api.approvals.resolve.mockImplementationOnce(() => new Promise((resolve, reject) => { rejectFirst = reject; }))
+      .mockResolvedValue({ ok: true, resolved: true });
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const request = { id: "acknowledged-approval", requestGeneration: 12, method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-1", command: "pnpm test" } };
+    act(() => api.emit({ type: "AttentionRequired", payload: request }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve", exact: true }));
+    expect(await screen.findByText("Waiting for provider confirmation…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve", exact: true })).toBeDisabled();
+    act(() => api.emit({ type: "AttentionRequired", payload: { ...request, responseState: "uncertain", responseError: "The provider has not confirmed the approval." } }));
+    await act(async () => rejectFirst(Object.assign(new Error("The provider has not confirmed the approval."), { uncertain: true })));
+    const retry = await screen.findByRole("button", { name: "Retry response" });
+    expect(screen.getByRole("button", { name: "Decline", exact: true })).toBeDisabled();
+    expect(screen.queryByText("Needs attention · Pixice")).not.toBeInTheDocument();
+    fireEvent.click(retry);
+    await waitFor(() => expect(api.approvals.resolve).toHaveBeenCalledTimes(2));
+    expect(api.approvals.resolve.mock.calls.map(([value]) => value)).toEqual([
+      { requestId: request.id, requestGeneration: 12, decision: "accept" },
+      { requestId: request.id, requestGeneration: 12, decision: "accept" }
+    ]);
+    await waitFor(() => expect(screen.queryByText("Approval required")).not.toBeInTheDocument());
+  });
+
+  it("keeps provider and typed approval IDs separate while confirming the exact generation", async () => {
+    const api = window.pixice;
+    let confirmCodex;
+    api.approvals.resolve.mockImplementationOnce(() => new Promise(resolve => { confirmCodex = resolve; }))
+      .mockResolvedValue({ ok: true, resolved: true });
+    render(<App />);
+    await screen.findByText("I traced the current flow.");
+    const request = (id, provider, requestGeneration, command) => ({ id, provider, requestGeneration,
+      method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", command } });
+    act(() => {
+      api.emit({ type: "AttentionRequired", payload: request(17, "codex", 31, "Codex numeric ID") });
+      api.emit({ type: "AttentionRequired", payload: request(17, "claude", 32, "Claude numeric ID") });
+      api.emit({ type: "AttentionRequired", payload: request("17", "codex", 33, "Codex string ID") });
+    });
+    const codexCard = (await screen.findByText("Codex numeric ID")).closest(".approval-card");
+    const claudeCard = screen.getByText("Claude numeric ID").closest(".approval-card");
+    const stringCard = screen.getByText("Codex string ID").closest(".approval-card");
+    fireEvent.click(within(codexCard).getByRole("button", { name: "Approve", exact: true }));
+    expect(within(codexCard).getByRole("button", { name: "Approve", exact: true })).toBeDisabled();
+    expect(within(claudeCard).getByRole("button", { name: "Approve", exact: true })).toBeEnabled();
+    expect(within(stringCard).getByRole("button", { name: "Approve", exact: true })).toBeEnabled();
+    // Modern resolved events may identify the provider through their unique
+    // global generation alone. A native ID shared by two providers is safe.
+    act(() => api.emit({ type: "AttentionResolved", payload: { requestId: 17, requestGeneration: 32 } }));
+    expect(screen.queryByText("Claude numeric ID")).not.toBeInTheDocument();
+    expect(screen.getByText("Codex numeric ID")).toBeInTheDocument();
+    expect(screen.getByText("Codex string ID")).toBeInTheDocument();
+    await act(async () => confirmCodex({ ok: true, resolved: true }));
+    expect(screen.queryByText("Codex numeric ID")).not.toBeInTheDocument();
+    fireEvent.click(within(stringCard).getByRole("button", { name: "Approve", exact: true }));
+    await waitFor(() => expect(api.approvals.resolve).toHaveBeenLastCalledWith({ requestId: "17", requestGeneration: 33, decision: "accept" }));
+  });
+
   it("applies generated task names everywhere as soon as the runtime publishes them", async () => {
     const { container } = render(<App />);
     await screen.findByText("I traced the current flow.");
@@ -2953,7 +3228,7 @@ describe("Pixice app shell", () => {
   });
 
   it("answers structured user-input requests", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     act(() => window.pixice.emit({
@@ -2978,14 +3253,14 @@ describe("Pixice app shell", () => {
   });
 
   it("wires unrestricted permission modes and MCP elicitation forms", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
     fireEvent.keyDown(window, { key: ",", metaKey: true });
     const permissions = await screen.findByRole("combobox", { name: "Default permissions" });
     expect(within(permissions).getByRole("option", { name: "Auto-review" })).toBeInTheDocument();
-    fireEvent.change(permissions, { target: { value: "full-access" } });
+    changeEditable(permissions, { target: { value: "full-access" } });
     expect(localStorage.getItem("pixice.permissionMode")).toBe("full-access");
     fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
 
@@ -3294,6 +3569,33 @@ describe("Pixice app shell", () => {
     expect(resumedTaskProgress.querySelector(".progress-step.inProgress .spin-icon")).toBeInTheDocument();
   });
 
+  it("applies Gentle cascade to a live final answer without replaying words on completion", async () => {
+    const items = [
+      { id: "cascade-user", type: "userMessage", content: [{ type: "text", text: "Show the new animation" }] },
+      { id: "cascade-answer", type: "agentMessage", phase: "final_answer", text: "First wo" }
+    ];
+    const liveTurn = { id: "cascade-turn", status: "inProgress", items };
+    window.pixice = createApi({ ...thread, status: { type: "active" }, turns: [liveTurn] });
+    const { container } = render(<App />);
+    await waitFor(() => expect(container.querySelector(".assistant-message")).toHaveTextContent("First wo"));
+    const firstWord = container.querySelector(`.${cascadeStyles.cascadeWord}`);
+    expect(firstWord).toHaveTextContent("First");
+
+    act(() => window.pixice.emit({ type: "RuntimeEvent", payload: {
+      method: "item/agentMessage/delta", threadId: thread.id, turnId: liveTurn.id,
+      itemId: "cascade-answer", delta: "rd arrives."
+    } }));
+    await waitFor(() => expect(container.querySelector(".assistant-message")).toHaveTextContent("First word arrives."));
+    expect(container.querySelector(`.${cascadeStyles.cascadeWord}`)).toBe(firstWord);
+
+    act(() => window.pixice.emit({ type: "RuntimeEvent", payload: {
+      method: "turn/completed", threadId: thread.id,
+      turn: { ...liveTurn, status: "completed", items: [items[0], { ...items[1], text: "First word arrives." }] }
+    } }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop task" })).not.toBeInTheDocument());
+    expect(container.querySelector(`.${cascadeStyles.cascadeWord}`)).toBe(firstWord);
+  });
+
   it("preserves the reading position when live reasoning arrives after scrolling up", async () => {
     const readingThread = {
       ...thread,
@@ -3341,7 +3643,7 @@ describe("Pixice app shell", () => {
       }
     }));
 
-    await screen.findByText("Still working");
+    await screen.findByText(paragraphText("Still working"));
     await waitFor(() => expect(scroller.scrollTop).toBe(1400));
   });
 
@@ -3440,7 +3742,7 @@ describe("Pixice app shell", () => {
   });
 
   it("creates a real thread before sending the first new-task message", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
@@ -3465,7 +3767,7 @@ describe("Pixice app shell", () => {
     let finishTurnStart;
     localStorage.setItem("pixice.threadMessageRecency", JSON.stringify({ [thread.id]: 20 }));
     window.pixice.turns.start = vi.fn(() => new Promise((resolve) => { finishTurnStart = resolve; }));
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -3486,7 +3788,7 @@ describe("Pixice app shell", () => {
   it("starts the next new task with an empty composer after the previous prompt is accepted", async () => {
     let finishTurnStart;
     window.pixice.turns.start = vi.fn(() => new Promise((resolve) => { finishTurnStart = resolve; }));
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
@@ -3500,27 +3802,22 @@ describe("Pixice app shell", () => {
       text: "Do not copy this into the next task"
     })));
     await act(async () => finishTurnStart({ turn: { id: "turn-new", status: "inProgress", items: [] } }));
-    await waitFor(() => expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue(""));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue(""));
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
 
-    expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue("");
     expect(localStorage.getItem("pixice.draft.project-1:new")).toBeNull();
   });
 
-  it("expands multiline prompts upward and caps the textarea height", async () => {
+  it("keeps multiline prompts in a bounded editor with one scrolling region", async () => {
     render(<App />);
     await screen.findByText("I traced the current flow.");
     const composer = screen.getByRole("textbox", { name: "Task prompt" });
-    expect(composer).toHaveStyle({ height: "24px", overflowY: "hidden" });
-    let scrollHeight = 132;
-    Object.defineProperty(composer, "scrollHeight", { configurable: true, get: () => scrollHeight });
-
-    fireEvent.change(composer, { target: { value: "First line\nSecond line\nThird line" } });
-    expect(composer).toHaveStyle({ height: "132px", overflowY: "hidden" });
-
-    scrollHeight = 360;
-    fireEvent.change(composer, { target: { value: "First line\nSecond line\nThird line\nFourth line" } });
-    expect(composer).toHaveStyle({ height: "240px", overflowY: "auto" });
+    expect(composer).toHaveClass("prompt-editor-content");
+    changeEditable(composer, { target: { value: "First line\nSecond line\nThird line" } });
+    expect(composer).toHaveEditableValue("First line\nSecond line\nThird line");
+    const editorCss = readFileSync("src/composer/prompt-editor.css", "utf8");
+    expect(editorCss).toMatch(/\.prompt-editor-content\s*\{[^}]*min-height:\s*48px;[^}]*max-height:\s*280px;[^}]*overflow-y:\s*auto;/);
   });
 
   it("uses an icon-only permission control and a bounded run profile when preview is open", () => {
@@ -3556,7 +3853,7 @@ describe("Pixice app shell", () => {
   });
 
   it("discovers and autocompletes Codex commands from the slash menu", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     const composer = screen.getByRole("textbox", { name: "Task prompt" });
@@ -3568,13 +3865,13 @@ describe("Pixice app shell", () => {
     expect(within(commands).getByRole("option", { name: /\/compact/ })).toBeInTheDocument();
 
     await user.keyboard("{ArrowDown}{Enter}");
-    expect(composer).toHaveValue("/fast ");
+    await waitFor(() => expect(composer).toHaveEditableValue("/fast "));
     expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
     expect(window.pixice.turns.start).not.toHaveBeenCalled();
   });
 
   it("filters slash commands and keeps unknown commands sendable", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     const composer = screen.getByRole("textbox", { name: "Task prompt" });
@@ -3591,7 +3888,7 @@ describe("Pixice app shell", () => {
   });
 
   it("does not submit a new task twice when send is clicked repeatedly", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
@@ -3640,6 +3937,65 @@ describe("Pixice app shell", () => {
     expect(screen.queryByRole("textbox", { name: "Picture revision comments" })).not.toBeInTheDocument();
   });
 
+  it("renders native sent context as readable labels and prose without expanded content or upload paths", async () => {
+    const uploadedPath = "/Users/example/Library/Application Support/Pixice/prompt-attachments/private-upload-notes.txt";
+    const providerText = appendAttachmentContext('Review\n<context-reference kind="citation" label="Selected answer">\nPrivate selected answer excerpt\n</context-reference>\nand explain the difference.', [{ name: "notes.txt", mimeType: "text/plain", size: 42, path: uploadedPath }]);
+    const attachmentThread = {
+      ...thread,
+      turns: [{
+        id: "turn-native-context",
+        status: "completed",
+        items: [
+          { id: "user-native-context", type: "userMessage", content: [{ type: "text", text: providerText }] },
+          { id: "agent-native-context", type: "agentMessage", text: "I compared the selected answer.", phase: "final_answer" }
+        ]
+      }]
+    };
+    window.pixice = createApi(attachmentThread);
+    render(<App />);
+
+    await screen.findByText("I compared the selected answer.");
+    const prompt = document.querySelector('.user-message[data-prompt-id="user-native-context"]');
+    expect(prompt).toBeInTheDocument();
+    expect(prompt).toHaveTextContent("Review");
+    expect(prompt).toHaveTextContent("Selected answer");
+    expect(prompt).toHaveTextContent("and explain the difference.");
+    expect(prompt).not.toHaveTextContent("Private selected answer excerpt");
+    expect(prompt).not.toHaveTextContent("context-reference");
+    expect(prompt).not.toHaveTextContent(uploadedPath);
+    expect(prompt).not.toHaveTextContent("Attached files are available at these local paths:");
+    expect(prompt).not.toHaveTextContent("Use the paths above when reading or editing the attached files.");
+  });
+
+  it("keeps legacy file-only prompts visible by filename without recalling their upload paths", async () => {
+    const uploadedPath = "/tmp/pixice/prompt-attachments/private-upload-document.pdf";
+    const providerText = appendAttachmentContext('', [{ name: "document.pdf", mimeType: "application/pdf", size: 128, path: uploadedPath }]);
+    const attachmentThread = {
+      ...thread,
+      turns: [{
+        id: "turn-native-file-only",
+        status: "completed",
+        items: [
+          { id: "user-native-file-only", type: "userMessage", content: [{ type: "text", text: providerText }] },
+          { id: "agent-native-file-only", type: "agentMessage", text: "I reviewed the attached document.", phase: "final_answer" }
+        ]
+      }]
+    };
+    window.pixice = createApi(attachmentThread);
+    render(<App />);
+
+    await screen.findByText("I reviewed the attached document.");
+    const prompt = document.querySelector('.user-message[data-prompt-id="user-native-file-only"]');
+    expect(prompt).toHaveTextContent("document.pdf");
+    expect(prompt).not.toHaveTextContent(uploadedPath);
+    expect(prompt).not.toHaveTextContent("Attached files are available at these local paths:");
+    const composer = screen.getByRole("textbox", { name: "Task prompt" });
+    const user = createEditorAwareUser();
+    act(() => composer.focus());
+    await user.keyboard("{ArrowUp}");
+    expect(composer).toHaveEditableValue("");
+  });
+
   it("renders an attachment-only user message without an empty prompt bubble", async () => {
     const attachmentThread = {
       ...thread,
@@ -3676,7 +4032,8 @@ describe("Pixice app shell", () => {
     fireEvent.click(send);
 
     await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
-      text: "",
+      text: expect.stringMatching(/^\[clipboard\.png\]\(pixice-context:\/\/v1\/image\//),
+      contextRecords: [expect.objectContaining({ kind: "image", label: "clipboard.png" })],
       attachments: [{
         name: "clipboard.png",
         type: "image/png",
@@ -3711,14 +4068,15 @@ describe("Pixice app shell", () => {
 
     const code = new File(["export const answer = 42;"], "answer.ts", { type: "text/typescript" });
     const workbook = new File([new Uint8Array([80, 75, 3, 4])], "budget.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-    fireEvent.change(input, { target: { files: [code, workbook] } });
+    changeEditable(input, { target: { files: [code, workbook] } });
 
-    expect(await screen.findByText("answer.ts")).toBeInTheDocument();
-    expect(screen.getByText("budget.xlsx")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "file: answer.ts" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "file: budget.xlsx" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
-      text: "",
+      text: expect.stringContaining("pixice-context://v1/file/"),
+      contextRecords: [expect.objectContaining({ kind: "file", label: "answer.ts" }), expect.objectContaining({ kind: "file", label: "budget.xlsx" })],
       attachments: [
         expect.objectContaining({ name: "answer.ts", type: "text/typescript", dataUrl: expect.stringMatching(/^data:text\/typescript;base64,/) }),
         expect.objectContaining({ name: "budget.xlsx", type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", dataUrl: expect.stringMatching(/^data:application\/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,/) })
@@ -3727,7 +4085,7 @@ describe("Pixice app shell", () => {
   });
 
   it("uses accessible run profile and permission pickers", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -3743,7 +4101,7 @@ describe("Pixice app shell", () => {
   });
 
   it.each(["gpt-5.6", "gpt-6-astra"])("enables fast mode for %s and sends the priority service tier", async (model) => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({
       projects: [project],
@@ -3789,7 +4147,7 @@ describe("Pixice app shell", () => {
   });
 
   it("does not show fast mode for Claude models", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const api = createApi();
     api.app.bootstrap.mockResolvedValue({
       projects: [project],
@@ -3814,7 +4172,7 @@ describe("Pixice app shell", () => {
   });
 
   it("keeps composer permission changes scoped to their thread", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Permissions: Workspace access" }));
@@ -3833,7 +4191,7 @@ describe("Pixice app shell", () => {
   });
 
   it("shows events emitted immediately by a newly created thread", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const liveApi = createApi();
     const startedTurn = { id: "turn-new-live", status: "inProgress", items: [] };
     liveApi.turns.start = vi.fn(async ({ threadId }) => {
@@ -3862,7 +4220,7 @@ describe("Pixice app shell", () => {
     await user.type(composer, "Start immediately");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
-    expect(await screen.findByText("Live without switching tasks")).toBeInTheDocument();
+    expect(await screen.findByText(paragraphText("Live without switching tasks"))).toBeInTheDocument();
     expect(liveApi.threads.read).not.toHaveBeenCalledWith({
       projectId: "project-1",
       threadId: "thread-new"
@@ -3870,7 +4228,7 @@ describe("Pixice app shell", () => {
   });
 
   it("keeps a newly submitted prompt visible while turn startup is still pending", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const liveApi = createApi();
     let resolveStart;
     liveApi.turns.start = vi.fn(() => new Promise((resolve) => { resolveStart = resolve; }));
@@ -3896,7 +4254,7 @@ describe("Pixice app shell", () => {
   });
 
   it("keeps a steering prompt visible while the active turn accepts it", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const activeThread = {
       ...thread,
       status: { type: "active" },
@@ -3934,7 +4292,7 @@ describe("Pixice app shell", () => {
   });
 
   it("keeps follow-up prompts and answers visible without reopening the task", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const liveApi = createApi();
     const followUpTurn = { id: "turn-follow-up", status: "inProgress", items: [] };
     const refreshedThread = {
@@ -3969,7 +4327,7 @@ describe("Pixice app shell", () => {
   });
 
   it("reconciles live and persisted turn aliases without duplicate messages or reasoning", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     const liveApi = createApi();
     const liveTurn = { id: "turn-live-alias", status: "inProgress", items: [] };
     const prompt = "Give me a rundown";
@@ -4134,7 +4492,7 @@ describe("Pixice app shell", () => {
       }
     }));
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Task prompt" }), { target: { value: "look at this" } });
+    changeEditable(screen.getByRole("textbox", { name: "Task prompt" }), { target: { value: "look at this" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(window.pixice.turns.start).toHaveBeenCalledWith(expect.objectContaining({
       text: "look at this",
@@ -4165,7 +4523,7 @@ describe("Pixice app shell", () => {
     window.pixice.browser.setViewport.mockResolvedValue(next);
     act(() => window.pixice.emit({ type: "BrowserState", payload: next }));
     expect(await screen.findByRole("tab", { name: "From another client" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("textbox", { name: "Browser address" })).toHaveValue("https://two.example");
+    expect(screen.getByRole("textbox", { name: "Browser address" })).toHaveEditableValue("https://two.example");
   });
 
   it("opens, runs, and closes a thread-scoped iOS Simulator tab", async () => {
@@ -4427,7 +4785,7 @@ describe("Pixice app shell", () => {
       }]
     };
     window.pixice = createApi([thread, secondThread]);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4461,7 +4819,7 @@ describe("Pixice app shell", () => {
       }]
     };
     window.pixice = createApi([thread, secondThread]);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4493,7 +4851,7 @@ describe("Pixice app shell", () => {
       { ...thread, id: "thread-3", name: "Third task", preview: "Third task", turns: [{ id: "turn-3", status: "completed", items: [{ id: "agent-3", type: "agentMessage", text: "Third response", phase: "final_answer" }] }] }
     ];
     window.pixice = createApi(threads);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4506,7 +4864,7 @@ describe("Pixice app shell", () => {
   });
 
   it("opens response file links in a tab and edits the file in place", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4516,11 +4874,12 @@ describe("Pixice app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Edit" }));
     const editor = screen.getByRole("textbox", { name: "Edit runtime.js" });
-    fireEvent.change(editor, { target: { value: "export const ready = false;\n" } });
+    changeEditable(editor, { target: { value: "export const ready = false;\n" } });
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(window.pixice.files.write).toHaveBeenCalledWith({
       projectId: "project-1",
+      threadId: "thread-1",
       path: "/work/aurora/src/runtime.js",
       content: "export const ready = false;\n",
       expectedMtimeMs: 1
@@ -4528,7 +4887,7 @@ describe("Pixice app shell", () => {
   });
 
   it("closes the first browser tab when a file tab remains, then shows the chooser after the final tab", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4548,7 +4907,7 @@ describe("Pixice app shell", () => {
   });
 
   it("shows the new-tab chooser when its only browser tab closes", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
@@ -4562,7 +4921,7 @@ describe("Pixice app shell", () => {
   });
 
   it("replaces the active composer with a sequential question flow", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     expect(screen.getByRole("textbox", { name: "Task prompt" })).toBeInTheDocument();
@@ -4616,7 +4975,7 @@ describe("Pixice app shell", () => {
   });
 
   it("temporarily widens the preview side chat for a question", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
@@ -4667,7 +5026,7 @@ describe("Pixice app shell", () => {
       }]
     };
     window.pixice = createApi([thread, secondThread]);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4725,8 +5084,8 @@ describe("Pixice app shell", () => {
       }
     }));
 
-    expect(await within(sideThread).findByText("Side-only live answer")).toBeInTheDocument();
-    expect(within(document.querySelector(".main-canvas")).queryByText("Side-only live answer")).not.toBeInTheDocument();
+    expect(await within(sideThread).findByText(paragraphText("Side-only live answer"))).toBeInTheDocument();
+    expect(within(document.querySelector(".main-canvas")).queryByText(paragraphText("Side-only live answer"))).not.toBeInTheDocument();
     expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
 
     await user.click(within(sideThread).getByRole("button", { name: "Open as main task" }));
@@ -4744,7 +5103,7 @@ describe("Pixice app shell", () => {
       turns: [{ id: "turn-2", status: "completed", items: [{ id: "agent-2", type: "agentMessage", text: "The review is complete.", phase: "final_answer" }] }]
     };
     window.pixice = createApi([thread, secondThread]);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     expect(screen.getByRole("button", { name: "Finished side review" }).closest(".task-row")).toHaveClass("finished");
@@ -4776,7 +5135,7 @@ describe("Pixice app shell", () => {
       }]
     };
     window.pixice = createApi([thread, secondThread]);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4811,7 +5170,7 @@ describe("Pixice app shell", () => {
       turns: [{ id: "turn-2", status: "inProgress", items: [{ id: "agent-2", type: "agentMessage", text: "Reading the trace." }] }]
     };
     window.pixice = createApi([thread, secondThread]);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
@@ -4838,7 +5197,7 @@ describe("Pixice app shell", () => {
         delta: " More output."
       }
     }));
-    await within(sideThread).findByText(/More output/);
+    await within(sideThread).findByText(paragraphText(/More output/));
     expect(scroller.scrollTop).toBe(180);
 
     const image = new File([new Uint8Array([137, 80, 78, 71])], "wrong-thread.png", { type: "image/png" });
@@ -4869,7 +5228,7 @@ describe("Pixice app shell", () => {
       return { turn: startedTurn };
     });
     window.pixice = api;
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4881,7 +5240,7 @@ describe("Pixice app shell", () => {
 
     const sideThread = await screen.findByRole("region", { name: "Side thread: New side thread" });
     const sidePrompt = within(sideThread).getByRole("textbox", { name: "Side thread prompt" });
-    fireEvent.change(sidePrompt, { target: { value: "Compare two implementation options" } });
+    changeEditable(sidePrompt, { target: { value: "Compare two implementation options" } });
     await user.click(within(sideThread).getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(window.pixice.threads.create).toHaveBeenCalledWith({
@@ -4895,9 +5254,9 @@ describe("Pixice app shell", () => {
       text: "Compare two implementation options"
     }));
     expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
-    expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue("");
     expect(await screen.findByRole("button", { name: "Open as main task" })).toBeEnabled();
-    expect(await screen.findByText("Live from the new side thread")).toBeInTheDocument();
+    expect(await screen.findByText(paragraphText("Live from the new side thread"))).toBeInTheDocument();
   });
 
   it("puts a new side thread first while its initial turn is still starting", async () => {
@@ -4906,7 +5265,7 @@ describe("Pixice app shell", () => {
     localStorage.setItem("pixice.threadMessageRecency", JSON.stringify({ [thread.id]: 20 }));
     api.turns.start = vi.fn(() => new Promise((resolve) => { finishTurnStart = resolve; }));
     window.pixice = api;
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4917,7 +5276,7 @@ describe("Pixice app shell", () => {
     await user.click(within(await screen.findByLabelText("Side threads")).getByRole("button", { name: "New side thread" }));
 
     const sideThread = await screen.findByRole("region", { name: "Side thread: New side thread" });
-    fireEvent.change(within(sideThread).getByRole("textbox", { name: "Side thread prompt" }), { target: { value: "Start the side thread" } });
+    changeEditable(within(sideThread).getByRole("textbox", { name: "Side thread prompt" }), { target: { value: "Start the side thread" } });
     await user.click(within(sideThread).getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(api.turns.start).toHaveBeenCalledWith(expect.objectContaining({
@@ -4932,7 +5291,7 @@ describe("Pixice app shell", () => {
   it("closes a Side Thread tab without interrupting or archiving its thread", async () => {
     const secondThread = { ...thread, id: "thread-2", name: "Side review", preview: "Side review" };
     window.pixice = createApi([thread, secondThread]);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
@@ -4950,7 +5309,7 @@ describe("Pixice app shell", () => {
 
   it("warns before closing a new Side Thread with an unsent draft", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
@@ -4970,7 +5329,7 @@ describe("Pixice app shell", () => {
     const secondThread = { ...thread, id: "thread-2", name: "Side review", preview: "Side review" };
     window.pixice = createApi([thread, secondThread]);
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -4993,12 +5352,12 @@ describe("Pixice app shell", () => {
 
   it("warns about dirty Preview files and tears down an archived chat workspace", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Open src/runtime.js" }));
     await user.click(await screen.findByRole("button", { name: "Edit" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Edit runtime.js" }), { target: { value: "export const ready = false;\n" } });
+    changeEditable(screen.getByRole("textbox", { name: "Edit runtime.js" }), { target: { value: "export const ready = false;\n" } });
 
     await user.click(screen.getByRole("button", { name: "Delete Refactor authentication" }));
 
@@ -5012,7 +5371,7 @@ describe("Pixice app shell", () => {
   });
 
   it("forks a completed answer into the selected main task without opening Preview", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
     await user.click(screen.getByRole("button", { name: "Open preview workspace" }));
@@ -5083,7 +5442,7 @@ describe("Pixice app shell", () => {
     };
     const api = createApi(multiTurnThread);
     window.pixice = api;
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("Second answer");
 
@@ -5123,7 +5482,8 @@ describe("Pixice app shell", () => {
 
     expect(actionRow).toHaveClass("detached");
     expect(turnChildren.indexOf(actionRow)).toBeGreaterThan(turnChildren.indexOf(imageBlock));
-    expect(actionRow.firstElementChild).toBe(forkButton);
+    expect(actionRow.firstElementChild).toBe(within(actionRow).getByRole("button", { name: "Cite this answer" }));
+    expect(actionRow.children[1]).toBe(forkButton);
     expect(actionRow.querySelector("time")).toBeInTheDocument();
   });
 
@@ -5140,7 +5500,7 @@ describe("Pixice app shell", () => {
     };
     const api = createApi(thread, [sourceSuggestion]);
     window.pixice = api;
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByRole("region", { name: "Source-only suggestion" });
 
@@ -5176,7 +5536,7 @@ describe("Pixice app shell", () => {
     let resolveFork;
     api.threads.fork.mockImplementation(() => new Promise((resolve) => { resolveFork = resolve; }));
     window.pixice = api;
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -5205,7 +5565,7 @@ describe("Pixice app shell", () => {
     let resolveFork;
     api.threads.fork.mockImplementation(() => new Promise((resolve) => { resolveFork = resolve; }));
     window.pixice = api;
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -5236,7 +5596,7 @@ describe("Pixice app shell", () => {
   });
 
   it("opens the current task map as a Preview tab", async () => {
-    const user = userEvent.setup();
+    const user = createEditorAwareUser();
     render(<App />);
     await screen.findByText("I traced the current flow.");
 
@@ -5249,5 +5609,67 @@ describe("Pixice app shell", () => {
     expect(screen.getByText("Lead")).toBeInTheDocument();
     expect(screen.getByText("I traced the current flow.")).toBeInTheDocument();
     expect(document.querySelector(".pixice-app")).toHaveAttribute("data-active-thread-id", "thread-1");
+  });
+
+  it.each([false, true])("loads an HTML reply through the isolated document API and opens a unified Preview tab (copied=%s)", async (copied) => {
+    const id = "a".repeat(64);
+    const sourceThreadId = copied ? "original-thread" : thread.id;
+    const reference = { id, threadId: sourceThreadId, title: "Interactive comparison", height: 560, reference: `pixice-html://${sourceThreadId}/${id}` };
+    const html = '<button onclick="this.textContent=\'Selected\'">Choose</button>';
+    const htmlThread = { ...thread, ...(copied ? { htmlReplySourceThreadIds: [sourceThreadId] } : {}), turns: [{ ...thread.turns[0], items: [thread.turns[0].items[0], { id: "agent-html", type: "agentMessage", phase: "final_answer", text: `Explore the comparison.\n\n\`\`\`pixice-html\n${JSON.stringify(reference)}\n\`\`\`` }] }] };
+    const api = createApi(htmlThread);
+    const documentUrl = `http://127.0.0.1:43187/api/html-replies/document/${"z".repeat(43)}`;
+    api.htmlReplies = {
+      read: vi.fn().mockResolvedValue({ ...reference, threadId: thread.id, reference: `pixice-html://${thread.id}/${id}`, html }),
+      document: vi.fn().mockResolvedValue({ url: documentUrl, path: new URL(documentUrl).pathname, expiresAt: Date.now() + 600_000 })
+    };
+    window.pixice = api;
+    const user = createEditorAwareUser();
+    render(<App />);
+    const inlineFrame = await screen.findByTitle("Interactive comparison");
+    expect(inlineFrame).toHaveAttribute("src", documentUrl);
+    expect(inlineFrame).not.toHaveAttribute("srcdoc");
+    expect(api.htmlReplies.read).toHaveBeenCalledWith({ projectId: project.id, threadId: thread.id, id });
+    expect(api.htmlReplies.document).toHaveBeenCalledWith(expect.objectContaining({ projectId: project.id, threadId: thread.id, html, nonce: expect.any(String), theme: expect.objectContaining({ variables: expect.any(Object) }) }));
+    await user.click(screen.getByRole("button", { name: "Open Interactive comparison in Preview" }));
+    const preview = await screen.findByRole("region", { name: "Preview workspace" });
+    const previewFrame = await within(preview).findByTitle("Interactive comparison");
+    expect(previewFrame).toHaveAttribute("src", documentUrl);
+    expect(previewFrame).toHaveAttribute("sandbox", "allow-scripts");
+    expect(previewFrame).not.toHaveAttribute("srcdoc");
+    expect(api.htmlReplies.document.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(api.htmlReplies.read.mock.calls.every(([payload]) => payload.threadId === thread.id)).toBe(true);
+  });
+
+  it("replaces all rewound turns and restores the original editable prompt below an existing draft despite a missing attachment", async () => {
+    const originalText = "Restore the original request with its context";
+    const originalThread = { ...thread, checkpoints: [{ id: "checkpoint-1", turnId: "turn-1", supportsRewind: true }], turns: [
+      { ...thread.turns[0], items: [{ id: "user-original", type: "userMessage", content: [{ type: "text", text: originalText }] }, { id: "answer-original", type: "agentMessage", phase: "final_answer", text: "Original answer that must disappear" }] },
+      { id: "turn-2", status: "completed", items: [{ id: "user-later", type: "userMessage", content: [{ type: "text", text: "A later request" }] }, { id: "answer-later", type: "agentMessage", phase: "final_answer", text: "Later answer that must disappear" }] }
+    ] };
+    let rewound = false;
+    const api = createApi(originalThread);
+    api.threads.read.mockImplementation(async () => ({ thread: rewound ? { ...originalThread, turns: [], checkpoints: [] } : originalThread, plan: [] }));
+    api.history = {
+      preview: vi.fn().mockResolvedValue({ checkpointId: "checkpoint-1", conversationRevision: "conversation-1", workspaceRevision: "workspace-1", removedTurns: 2, fileCount: 0, files: [], restoreAllowed: true }),
+      rewind: vi.fn(async () => { rewound = true; return { checkpointId: "checkpoint-1", filesKept: true, input: { text: originalText, images: [], attachments: [{ path: "/missing/context.txt", name: "context.txt" }] } }; }),
+      restoreFile: vi.fn(),
+      attachment: vi.fn().mockRejectedValue(new Error("The checkpoint attachment is missing"))
+    };
+    window.pixice = api;
+    const user = createEditorAwareUser();
+    render(<App />);
+    await screen.findByText("Later answer that must disappear");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "Keep my unsent note");
+    await user.click(screen.getByRole("button", { name: "Edit from here" }));
+    await screen.findByRole("region", { name: "Rewind conversation preview" });
+    await user.click(screen.getByRole("button", { name: "Revert and keep changes" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Task prompt" })).toHaveEditableValue(`Keep my unsent note\n\n${originalText}`));
+    await waitFor(() => expect(document.querySelectorAll(".conversation-turn")).toHaveLength(0));
+    expect(screen.queryByText("Original answer that must disappear")).not.toBeInTheDocument();
+    expect(screen.queryByText("Later answer that must disappear")).not.toBeInTheDocument();
+    expect(api.history.rewind).toHaveBeenCalledWith({ projectId: project.id, threadId: thread.id, checkpointId: "checkpoint-1", conversationRevision: "conversation-1", workspaceRevision: "workspace-1", restoreFiles: false });
+    expect(api.history.attachment).toHaveBeenCalledWith({ projectId: project.id, threadId: thread.id, checkpointId: "checkpoint-1", path: "/missing/context.txt" });
+    expect(screen.getByText("The prompt was restored, but context.txt could not be loaded: The checkpoint attachment is missing")).toBeInTheDocument();
   });
 });

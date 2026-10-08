@@ -1,0 +1,37 @@
+.prompt-editor { width: 100%; min-width: 0; color: inherit; font: inherit; }
+.prompt-editor-content { position: relative; min-height: 48px; max-height: 280px; overflow-y: auto; padding: 0; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.55; caret-color: currentColor; scrollbar-width: thin; scrollbar-color: #ffffff20 transparent; }
+.prompt-editor-content[aria-disabled="true"] { opacity: .55; }
+.prompt-editor-content[data-empty="true"]::before { content: attr(data-placeholder); position: absolute; inset: 0; pointer-events: none; color: var(--text-muted, #929294); }
+.prompt-editor-content p { margin: 0; min-height: 1.55em; }
+.prompt-editor-content h1, .prompt-editor-content h2, .prompt-editor-content h3, .prompt-editor-content h4, .prompt-editor-content h5, .prompt-editor-content h6 { margin: 0; font-weight: 600; line-height: 1.55; }
+.prompt-editor-content h1 { font-size: 1.35em; }
+.prompt-editor-content h2 { font-size: 1.2em; }
+.prompt-editor-content h3, .prompt-editor-content h4, .prompt-editor-content h5, .prompt-editor-content h6 { font-size: 1em; }
+.prompt-editor-content strong { font-weight: 650; }
+.prompt-editor-content s { opacity: .75; }
+.prompt-editor-content code { font: .92em/1.55 var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); background: #ffffff0b; padding: 1px 3px; border-radius: 3px; }
+.prompt-editor-content blockquote { margin: 0; padding-left: 11px; border-left: 2px solid #ffffff25; color: var(--text-secondary, #bcbcbc); }
+.prompt-editor-content ul, .prompt-editor-content ol { margin: 0; padding-left: 1.4em; }
+.prompt-editor-content li { margin: 0; }
+.prompt-editor-content li[data-marker]::marker { content: attr(data-marker) " "; color: var(--text-muted, #929294); }
+.prompt-editor-content ul[data-type="taskList"] { list-style: none; padding-left: 0; }
+.prompt-editor-content li:is([data-type="taskItem"], [data-checked]) { display: flex; align-items: flex-start; gap: 7px; }
+.prompt-editor-content li:is([data-type="taskItem"], [data-checked]) > label { flex: 0 0 auto; padding-top: 1px; user-select: none; }
+.prompt-editor-content li:is([data-type="taskItem"], [data-checked]) > div { flex: 1; min-width: 0; }
+.prompt-editor-content input[type="checkbox"] { accent-color: #aaa; width: 12px; height: 12px; margin: 0; }
+.prompt-editor-content hr { border: 0; border-top: 1px solid #ffffff26; margin: .7em 0; }
+.prompt-context-chip { display: inline-flex; vertical-align: baseline; margin: 0 1px; max-width: 100%; border: 1px solid #ffffff18; border-radius: 5px; background: #ffffff0b; white-space: nowrap; }
+.prompt-context-chip button { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 0 5px; border: 0; background: transparent; color: inherit; font: inherit; font-size: .9em; line-height: 1.65; cursor: pointer; overflow: hidden; text-overflow: ellipsis; }
+.prompt-context-kind { color: var(--text-muted, #929294); font-size: .88em; }
+.prompt-context-chip.selected { border-color: #ffffff65; background: #ffffff1b; }
+.prompt-context-chip.unavailable { border-style: dashed; color: #d1b9a0; }
+.prompt-code-block { position: relative; margin: 6px 0; border: 1px solid #ffffff14; border-radius: 7px; background: #00000016; overflow: hidden; }
+.prompt-code-header { height: 24px; padding: 2px 7px; background: #ffffff03; border-bottom: 1px solid #ffffff09; }
+.prompt-code-header select { appearance: auto; max-width: 180px; border: 0; background: transparent; color: var(--text-muted, #929294); font: inherit; font-size: 10px; outline-offset: 1px; }
+.prompt-code-block pre { margin: 0; padding: 7px 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-code-block code { padding: 0; background: none; }
+.prompt-editor .hljs-keyword, .prompt-editor .hljs-selector-tag, .prompt-editor .hljs-literal { color: #d2b9c9; }
+.prompt-editor .hljs-string, .prompt-editor .hljs-attribute, .prompt-editor .hljs-regexp { color: #b8c7b5; }
+.prompt-editor .hljs-number, .prompt-editor .hljs-built_in, .prompt-editor .hljs-type { color: #c6bea8; }
+.prompt-editor .hljs-title, .prompt-editor .hljs-function { color: #b7c1cf; }
+.prompt-editor .hljs-comment, .prompt-editor .hljs-quote { color: #84898d; }

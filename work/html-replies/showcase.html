@@ -1,0 +1,284 @@
+<style>
+  .reply-demo { padding: 18px 22px 20px; color: var(--foreground); font: 14px/1.5 var(--font-sans); }
+  .reply-demo * { box-sizing: border-box; }
+  .reply-demo button, .reply-demo input, .reply-demo select { font: inherit; }
+  .reply-demo button { color: inherit; cursor: pointer; }
+  .reply-demo button:focus-visible, .reply-demo input:focus-visible, .reply-demo select:focus-visible, .reply-demo [tabindex]:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+  .reply-tabs { display: flex; gap: 5px; padding-bottom: 15px; border-bottom: 1px solid var(--border); }
+  .reply-tabs button { background: transparent; border: 0; border-radius: 7px; padding: 7px 12px; color: var(--muted-foreground); }
+  .reply-tabs button[aria-selected="true"] { background: var(--muted); color: var(--foreground); }
+  .reply-panel { padding-top: 20px; min-height: 538px; }
+  .reply-panel[hidden] { display: none; }
+  .reply-demo h2 { font-size: 21px; line-height: 1.3; font-weight: 600; margin: 0 0 6px; letter-spacing: -.3px; }
+  .reply-demo h3 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+  .reply-demo p { margin: 0; }
+  .muted { color: var(--muted-foreground); }
+  .description { margin-bottom: 23px !important; }
+  .example-note { font-size: 12px; color: var(--muted-foreground); margin-top: 17px !important; }
+  .calc-layout { display: grid; grid-template-columns: 214px minmax(0, 1fr); gap: 32px; }
+  .control { display: block; margin-bottom: 19px; }
+  .control .label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
+  .control input[type="range"] { width: 100%; accent-color: var(--chart-1); }
+  .control output { font-variant-numeric: tabular-nums; color: var(--foreground); }
+  .metrics { display: flex; gap: 29px; padding: 0 0 22px; }
+  .metric .number { display: block; font-size: 30px; font-weight: 600; letter-spacing: -.7px; line-height: 1.25; font-variant-numeric: tabular-nums; }
+  .metric .caption { color: var(--muted-foreground); font-size: 12px; }
+  .chart-wrap { border-top: 1px solid var(--border); padding-top: 17px; }
+  .chart-head { display: flex; justify-content: space-between; margin-bottom: 12px; }
+  .bar-row { display: grid; grid-template-columns: 68px minmax(0,1fr) 47px; gap: 12px; align-items: center; margin: 10px 0; font-size: 12px; }
+  .bar-track { height: 20px; border-radius: 4px; background: var(--muted); overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; background: var(--chart-1); opacity: .55; transition: width .2s ease, opacity .2s ease; }
+  .bar-row.selected .bar-fill { opacity: 1; }
+  .bar-row.selected .worker-label { color: var(--foreground); font-weight: 600; }
+  .bar-value { text-align: right; font-variant-numeric: tabular-nums; }
+  .formula { margin-top: 17px !important; font-size: 12px; color: var(--muted-foreground); }
+  .compare-toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
+  .reply-demo input[type="search"], .reply-demo input[type="text"], .reply-demo select { background: var(--card); border: 1px solid var(--input); border-radius: 7px; color: var(--foreground); padding: 7px 10px; min-height: 36px; }
+  .compare-toolbar input { flex: 1; min-width: 0; }
+  .compare-toolbar select { width: 155px; }
+  .reply-demo table { width: 100%; border-collapse: collapse; text-align: left; }
+  .reply-demo th { font-size: 12px; color: var(--muted-foreground); font-weight: 500; padding: 0 10px 10px; border-bottom: 1px solid var(--border); }
+  .reply-demo th:first-child, .reply-demo td:first-child { padding-left: 0; }
+  .reply-demo td { padding: 13px 10px; border-bottom: 1px solid var(--border); }
+  .reply-demo td small { display: block; color: var(--muted-foreground); font-size: 12px; margin-top: 2px; }
+  .sort-button { padding: 0; color: inherit !important; background: none; border: 0; }
+  .rating { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .comparison-status { min-height: 21px; margin-top: 14px !important; font-size: 12px; }
+  .empty-row { text-align: center; color: var(--muted-foreground); }
+  .graph { position: relative; height: 232px; margin-top: 24px; }
+  .graph svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .graph path { fill: none; stroke: var(--border); stroke-width: 2; }
+  .graph .node { position: absolute; transform: translate(-50%, -50%); min-width: 102px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); text-align: left; }
+  .graph .node small { display: block; font-size: 11px; color: var(--muted-foreground); margin-top: 2px; }
+  .graph .node[aria-pressed="true"] { border-color: var(--chart-1); box-shadow: 0 0 0 1px var(--chart-1); }
+  .node-detail { padding-top: 20px; border-top: 1px solid var(--border); display: grid; grid-template-columns: 1fr 1fr; gap: 22px; min-height: 146px; }
+  .node-detail .eyebrow { font-size: 11px; color: var(--muted-foreground); margin-bottom: 4px; }
+  .node-detail p { color: var(--muted-foreground); }
+  .node-detail dl { margin: 0; display: grid; grid-template-columns: 91px 1fr; align-content: start; gap: 7px 12px; font-size: 13px; }
+  .node-detail dt { color: var(--muted-foreground); }
+  .node-detail dd { margin: 0; }
+  .prototype-layout { display: grid; grid-template-columns: 208px minmax(0, 1fr); gap: 30px; }
+  .prototype-controls label { display: block; margin-bottom: 17px; }
+  .prototype-controls label span { display: block; margin-bottom: 6px; }
+  .prototype-controls select, .prototype-controls input[type="text"] { width: 100%; }
+  .prototype-controls label.check { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+  .prototype-controls label.check input { accent-color: var(--chart-1); }
+  .prototype-controls label.check span { margin: 0; }
+  .reset-button { border: 1px solid var(--border); border-radius: 7px; background: transparent; padding: 6px 10px; font-size: 13px !important; }
+  .prototype { --mock-accent: var(--chart-1); border: 1px solid var(--border); border-radius: 12px; background: var(--card); overflow: hidden; }
+  .prototype header { display: flex; justify-content: space-between; align-items: center; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+  .prototype .day { color: var(--muted-foreground); font-size: 12px; }
+  .prototype .mock-body { padding: 20px; }
+  .prototype .progress-label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 8px; }
+  .prototype .progress-track { height: 4px; background: var(--muted); border-radius: 3px; overflow: hidden; margin-bottom: 22px; }
+  .prototype .progress-fill { background: var(--mock-accent); height: 100%; width: 33.333%; transition: width .2s ease; }
+  .mock-task { display: flex; align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid var(--border); }
+  .mock-task:last-child { border-bottom: 0; }
+  .mock-task input { accent-color: var(--mock-accent); width: 15px; height: 15px; }
+  .mock-task .task-text { flex: 1; }
+  .mock-task small { display: block; color: var(--muted-foreground); font-size: 12px; margin-top: 2px; }
+  .mock-task:has(input:checked) .task-name { color: var(--muted-foreground); text-decoration: line-through; }
+  .prototype.compact .mock-task { padding: 8px 0; }
+  .prototype.compact .mock-body { padding: 15px 20px; }
+  .prototype .time { font-size: 12px; color: var(--muted-foreground); }
+  .prototype.hide-times .time { display: none; }
+  .prototype-status { margin-top: 12px !important; font-size: 12px; }
+  .reply-footer { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 11px; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted-foreground); }
+  @media (prefers-reduced-motion: reduce) { .reply-demo * { transition: none !important; } }
+</style>
+<div class="reply-demo">
+  <nav class="reply-tabs" role="tablist" aria-label="Interactive reply examples">
+    <button id="tab-calculate" type="button" role="tab" aria-selected="true" aria-controls="panel-calculate" data-tab="calculate">What if</button>
+    <button id="tab-compare" type="button" role="tab" aria-selected="false" aria-controls="panel-compare" data-tab="compare" tabindex="-1">Compare</button>
+    <button id="tab-explore" type="button" role="tab" aria-selected="false" aria-controls="panel-explore" data-tab="explore" tabindex="-1">Explore a plan</button>
+    <button id="tab-prototype" type="button" role="tab" aria-selected="false" aria-controls="panel-prototype" data-tab="prototype" tabindex="-1">Try a design</button>
+  </nav>
+
+  <section class="reply-panel" id="panel-calculate" role="tabpanel" aria-labelledby="tab-calculate">
+    <h2>How much time could parallel work save?</h2>
+    <p class="muted description">Change the assumptions. The estimate and chart update immediately.</p>
+    <div class="calc-layout">
+      <div>
+        <label class="control"><span class="label">Independent tasks <output id="tasks-output">8</output></span><input id="tasks" aria-label="Independent tasks" type="range" min="2" max="24" value="8"></label>
+        <label class="control"><span class="label">Minutes per task <output id="duration-output">30 min</output></span><input id="duration" aria-label="Minutes per task" type="range" min="5" max="60" step="5" value="30"></label>
+        <label class="control"><span class="label">Parallel workers <output id="workers-output">4</output></span><input id="workers" aria-label="Parallel workers" type="range" min="1" max="8" value="4"></label>
+        <label class="control"><span class="label">Coordination per worker <output id="overhead-output">5 min</output></span><input id="overhead" aria-label="Coordination per additional worker" type="range" min="0" max="15" value="5"></label>
+      </div>
+      <div>
+        <div class="metrics" aria-live="polite">
+          <div class="metric"><span class="number" id="parallel-time">75m</span><span class="caption">parallel estimate</span></div>
+          <div class="metric"><span class="number" id="time-saved">165m</span><span class="caption">time saved</span></div>
+          <div class="metric"><span class="number" id="saving-percent">69%</span><span class="caption">less elapsed time</span></div>
+        </div>
+        <div class="chart-wrap" role="img" aria-label="Elapsed time by worker count" id="worker-chart">
+          <div class="chart-head"><span>Elapsed time by worker count</span><span class="muted" id="serial-caption">Serial: 240m</span></div>
+          <div id="worker-bars"></div>
+        </div>
+        <p class="formula">Estimate = task waves × task duration + coordination for each additional worker.</p>
+      </div>
+    </div>
+    <p class="example-note">Illustrative model. Assumes equal independent tasks; real dependencies, worker availability and verification can change the result.</p>
+  </section>
+
+  <section class="reply-panel" id="panel-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
+    <h2>An answer you can interrogate</h2>
+    <p class="muted description">Search the rows, narrow the category, or sort by value.</p>
+    <div class="compare-toolbar">
+      <input id="feature-search" type="search" aria-label="Search example features" placeholder="Search features…">
+      <select id="feature-category" aria-label="Filter feature category"><option value="all">All categories</option><option value="Presentation">Presentation</option><option value="Interaction">Interaction</option><option value="Workflow">Workflow</option></select>
+    </div>
+    <table>
+      <thead><tr><th>Capability</th><th>Starter example</th><th>Rich example</th><th><button type="button" class="sort-button" id="sort-value" aria-label="Sort by example value">Value ↓</button></th></tr></thead>
+      <tbody id="feature-rows"></tbody>
+    </table>
+    <p class="comparison-status muted" id="comparison-status" aria-live="polite"></p>
+    <p class="example-note">Fictitious feature scorecard and subjective example ratings. This is a demonstration, not a factual Pixice or T3 comparison.</p>
+  </section>
+
+  <section class="reply-panel" id="panel-explore" role="tabpanel" aria-labelledby="tab-explore" hidden>
+    <h2>Explore the reasoning behind a plan</h2>
+    <p class="muted description">Choose a step to see its outcome, dependencies and estimated effort.</p>
+    <div class="graph" aria-label="Example plan dependency graph">
+      <svg viewBox="0 0 700 232" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M100 112 C155 112 165 53 230 53 M100 112 C155 112 165 174 230 174 M230 53 C320 53 340 112 420 112 M230 174 C320 174 340 112 420 112 M420 112 L625 112"></path>
+      </svg>
+      <button class="node" type="button" data-node="brief" aria-pressed="false" style="left:10%;top:48%">Brief<small>Shared input</small></button>
+      <button class="node" type="button" data-node="evidence" aria-pressed="false" style="left:33%;top:23%">Evidence<small>Parallel work</small></button>
+      <button class="node" type="button" data-node="prototype" aria-pressed="false" style="left:33%;top:75%">Prototype<small>Parallel work</small></button>
+      <button class="node" type="button" data-node="synthesis" aria-pressed="true" style="left:60%;top:48%">Synthesis<small>Combine results</small></button>
+      <button class="node" type="button" data-node="review" aria-pressed="false" style="left:90%;top:48%">Review<small>Accept outcome</small></button>
+    </div>
+    <div class="node-detail" aria-live="polite">
+      <div><p class="eyebrow">SELECTED STEP</p><h3 id="node-title">Synthesis</h3><p id="node-description">Combine the evidence and prototype into one recommendation with explicit tradeoffs.</p></div>
+      <dl><dt>Depends on</dt><dd id="node-dependencies">Evidence, Prototype</dd><dt>Produces</dt><dd id="node-outcome">Decision-ready recommendation</dd><dt>Effort</dt><dd id="node-effort">15 minutes</dd></dl>
+    </div>
+    <p class="example-note">Example plan. These interactions explain the answer; they do not launch agents or modify a real project.</p>
+  </section>
+
+  <section class="reply-panel" id="panel-prototype" role="tabpanel" aria-labelledby="tab-prototype" hidden>
+    <h2>Try the design before choosing it</h2>
+    <p class="muted description">Change the treatment and interact with the preview, inside the answer.</p>
+    <div class="prototype-layout">
+      <div class="prototype-controls">
+        <label><span>List title</span><input id="prototype-title" type="text" aria-label="Prototype list title" value="A quieter morning" maxlength="50"></label>
+        <label><span>Density</span><select id="prototype-density" aria-label="Prototype density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
+        <label><span>Accent</span><select id="prototype-accent" aria-label="Prototype accent"><option value="blue">Soft blue</option><option value="teal">Muted teal</option><option value="neutral">Neutral</option></select></label>
+        <label class="check"><input id="show-times" type="checkbox" checked><span>Show planned times</span></label>
+        <button class="reset-button" type="button" id="reset-prototype">Reset example</button>
+      </div>
+      <div>
+        <div class="prototype" id="prototype-preview">
+          <header><strong id="mock-title">A quieter morning</strong><span class="day">Today</span></header>
+          <div class="mock-body">
+            <div class="progress-label"><span>Morning routine</span><span id="mock-progress">1 of 3</span></div>
+            <div class="progress-track"><div class="progress-fill" id="mock-progress-fill"></div></div>
+            <label class="mock-task"><input type="checkbox" data-mock-task checked aria-label="Complete Make coffee"><span class="task-text"><span class="task-name">Make coffee</span><small>A moment before the day starts</small></span><span class="time">08:00</span></label>
+            <label class="mock-task"><input type="checkbox" data-mock-task aria-label="Complete Read a few pages"><span class="task-text"><span class="task-name">Read a few pages</span><small>Leave the phone in another room</small></span><span class="time">08:15</span></label>
+            <label class="mock-task"><input type="checkbox" data-mock-task aria-label="Complete Take a short walk"><span class="task-text"><span class="task-name">Take a short walk</span><small>Ten minutes is enough</small></span><span class="time">08:35</span></label>
+          </div>
+        </div>
+        <p class="prototype-status muted" id="prototype-status" aria-live="polite">Comfortable spacing · Soft blue · 1 of 3 complete</p>
+      </div>
+    </div>
+    <p class="example-note">A working UI sketch with local state. Your choices stay in this reply while it is mounted; they do not change Pixice settings.</p>
+  </section>
+  <footer class="reply-footer"><span>HTML + CSS + JavaScript + SVG, directly in a reply</span><span>Self-contained example · no network requests</span></footer>
+</div>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const tabs = [...document.querySelectorAll('[data-tab]')];
+  function activate(tab, focus = false) {
+    tabs.forEach(button => {
+      const selected = button === tab;
+      button.setAttribute('aria-selected', String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      $('panel-' + button.dataset.tab).hidden = !selected;
+    });
+    if (focus) tab.focus();
+  }
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', event => {
+      let target;
+      if (event.key === 'ArrowRight') target = tabs[(index + 1) % tabs.length];
+      if (event.key === 'ArrowLeft') target = tabs[(index + tabs.length - 1) % tabs.length];
+      if (event.key === 'Home') target = tabs[0];
+      if (event.key === 'End') target = tabs[tabs.length - 1];
+      if (target) { event.preventDefault(); activate(target, true); }
+    });
+  });
+
+  function calculate() {
+    const count = Number($('tasks').value), duration = Number($('duration').value), workers = Number($('workers').value), overhead = Number($('overhead').value);
+    const serial = count * duration;
+    const estimate = n => Math.ceil(count / Math.min(n, count)) * duration + (Math.min(n, count) - 1) * overhead;
+    const parallel = estimate(workers), saved = serial - parallel;
+    $('tasks-output').value = String(count); $('duration-output').value = duration + ' min'; $('workers-output').value = String(workers); $('overhead-output').value = overhead + ' min';
+    $('parallel-time').textContent = parallel + 'm'; $('time-saved').textContent = saved + 'm'; $('saving-percent').textContent = Math.round(saved / serial * 100) + '%';
+    $('serial-caption').textContent = 'Serial: ' + serial + 'm';
+    const times = Array.from({length: 8}, (_, index) => estimate(index + 1));
+    const maximum = Math.max(serial, ...times);
+    $('worker-bars').replaceChildren(...times.map((time, index) => {
+      const row = document.createElement('div'); row.className = 'bar-row' + (index + 1 === workers ? ' selected' : '');
+      const name = document.createElement('span'); name.className = 'worker-label muted'; name.textContent = (index + 1) + (index === 0 ? ' worker' : ' workers');
+      const track = document.createElement('div'); track.className = 'bar-track';
+      const fill = document.createElement('div'); fill.className = 'bar-fill'; fill.style.width = (time / maximum * 100) + '%'; track.append(fill);
+      const value = document.createElement('span'); value.className = 'bar-value muted'; value.textContent = time + 'm'; row.append(name, track, value); return row;
+    }));
+    $('worker-chart').setAttribute('aria-label', 'Elapsed time by worker count: ' + times.map((time, index) => (index + 1) + ' workers, ' + time + ' minutes').join('; '));
+  }
+  ['tasks', 'duration', 'workers', 'overhead'].forEach(id => $(id).addEventListener('input', calculate)); calculate();
+
+  const features = [
+    {name:'What-if estimates',category:'Interaction',starter:'Fixed assumptions',rich:'Live parameters',value:5},
+    {name:'Feature comparison',category:'Presentation',starter:'Static table',rich:'Search, filter, sort',value:5},
+    {name:'Plan explanations',category:'Workflow',starter:'Written sequence',rich:'Clickable graph',value:4},
+    {name:'Design decisions',category:'Interaction',starter:'Screenshot',rich:'Working UI sketch',value:5},
+    {name:'Answer structure',category:'Presentation',starter:'One long page',rich:'Local tabs',value:3},
+    {name:'Sensitivity review',category:'Workflow',starter:'One scenario',rich:'Explore tradeoffs',value:4}
+  ];
+  let descending = true;
+  function renderFeatures() {
+    const query = $('feature-search').value.trim().toLowerCase(), category = $('feature-category').value;
+    const rows = features.filter(feature => (category === 'all' || feature.category === category) && [feature.name,feature.category,feature.starter,feature.rich].join(' ').toLowerCase().includes(query)).sort((a,b) => descending ? b.value-a.value : a.value-b.value);
+    $('feature-rows').replaceChildren(...rows.map(feature => {
+      const row = document.createElement('tr');
+      [feature.name,feature.starter,feature.rich,feature.value + '/5'].forEach((text,index) => {
+        const cell = document.createElement('td'); cell.textContent = text;
+        if (index === 0) { const categoryLabel = document.createElement('small'); categoryLabel.textContent = feature.category; cell.append(categoryLabel); }
+        if (index === 3) cell.className = 'rating'; row.append(cell);
+      }); return row;
+    }));
+    if (!rows.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 4; cell.className = 'empty-row'; cell.textContent = 'No matching examples. Try another search.'; row.append(cell); $('feature-rows').append(row); }
+    $('comparison-status').textContent = rows.length + ' of ' + features.length + ' examples · sorted by value ' + (descending ? 'high to low' : 'low to high');
+    $('sort-value').textContent = 'Value ' + (descending ? '↓' : '↑');
+  }
+  $('feature-search').addEventListener('input', renderFeatures); $('feature-category').addEventListener('change', renderFeatures);
+  $('sort-value').addEventListener('click', () => { descending = !descending; renderFeatures(); }); renderFeatures();
+
+  const nodes = {
+    brief:{title:'Brief',description:'Agree on the question, the audience and what a useful answer should enable.',dependencies:'None — the starting point',outcome:'Shared scope and success criteria',effort:'5 minutes'},
+    evidence:{title:'Evidence',description:'Gather the relevant facts and identify uncertainty. This can run alongside the prototype.',dependencies:'Brief',outcome:'Evidence with source notes',effort:'20 minutes'},
+    prototype:{title:'Prototype',description:'Make a small working example so the recommendation can be judged through use.',dependencies:'Brief',outcome:'Interactive design example',effort:'30 minutes'},
+    synthesis:{title:'Synthesis',description:'Combine the evidence and prototype into one recommendation with explicit tradeoffs.',dependencies:'Evidence, Prototype',outcome:'Decision-ready recommendation',effort:'15 minutes'},
+    review:{title:'Review',description:'Check the recommendation against the brief, resolve material gaps and prepare the final handoff.',dependencies:'Synthesis',outcome:'Verified final answer',effort:'10 minutes'}
+  };
+  document.querySelectorAll('[data-node]').forEach(button => button.addEventListener('click', () => {
+    const node = nodes[button.dataset.node]; document.querySelectorAll('[data-node]').forEach(other => other.setAttribute('aria-pressed', String(other === button)));
+    $('node-title').textContent = node.title; $('node-description').textContent = node.description; $('node-dependencies').textContent = node.dependencies; $('node-outcome').textContent = node.outcome; $('node-effort').textContent = node.effort;
+  }));
+
+  const mockTasks = [...document.querySelectorAll('[data-mock-task]')];
+  function updatePrototype() {
+    const density = $('prototype-density').value, accent = $('prototype-accent').value, completed = mockTasks.filter(input => input.checked).length;
+    const preview = $('prototype-preview'); $('mock-title').textContent = $('prototype-title').value.trim() || 'Your morning';
+    preview.classList.toggle('compact', density === 'compact'); preview.classList.toggle('hide-times', !$('show-times').checked);
+    preview.style.setProperty('--mock-accent', {blue:'var(--chart-1)',teal:'var(--chart-2)',neutral:'var(--foreground)'}[accent]);
+    $('mock-progress').textContent = completed + ' of 3'; $('mock-progress-fill').style.width = (completed / 3 * 100) + '%';
+    $('prototype-status').textContent = (density === 'compact' ? 'Compact' : 'Comfortable') + ' spacing · ' + {blue:'Soft blue',teal:'Muted teal',neutral:'Neutral'}[accent] + ' · ' + completed + ' of 3 complete';
+  }
+  ['prototype-title','prototype-density','prototype-accent','show-times'].forEach(id => $(id).addEventListener('input', updatePrototype)); mockTasks.forEach(input => input.addEventListener('change', updatePrototype));
+  $('reset-prototype').addEventListener('click', () => { $('prototype-title').value = 'A quieter morning'; $('prototype-density').value = 'comfortable'; $('prototype-accent').value = 'blue'; $('show-times').checked = true; mockTasks.forEach((input,index) => input.checked = index === 0); updatePrototype(); }); updatePrototype();
+})();
+</script>

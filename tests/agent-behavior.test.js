@@ -89,8 +89,10 @@ describe("agent behavior packs", () => {
 
     expect(instructions).toContain("requests such as `visualize`");
     expect(instructions).toContain("Do not invoke an installed visualization Skill");
-    expect(instructions).toContain("Treat `Pixice visualization`, `in-chat visualization`, `inline visualization`, and `native visualization` as explicit format requirements");
-    expect(instructions).toContain("takes precedence over Skills or other instructions that would create an HTML file");
+    expect(instructions).toContain("Treat `Pixice visualization`, `in-chat visualization`, `inline visualization`, and `native visualization` as explicit requests to render the result in the current conversation");
+    expect(instructions).toContain("Emit a fenced `pixice-visualization` block for a structured visual, or publish an HTML reply and include its returned `pixice-html` fence");
+    expect(instructions).toContain("Prefer these formats over creating a standalone file, opening Preview, or emitting a `visualize` reference unless the user asks for a standalone artifact");
+    expect(instructions).toContain("Use an HTML reply for richer layouts, custom charts, or interactions that need JavaScript");
     expect(instructions).toContain("Timelines use `timeline.items`");
     expect(instructions).toContain("Calendars use `calendar.events`");
   });

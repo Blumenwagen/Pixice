@@ -333,6 +333,8 @@ export function ConnectRoot({ children }) {
   const [ready, setReady] = useState(false);
   const [state, setState] = useState({ state: 'connecting' });
   const [localState, setLocalState] = useState({ state: window.pixice?.service ? 'connecting' : 'connected' });
+  const [serviceBusy, setServiceBusy] = useState(false);
+  const [serviceError, setServiceError] = useState('');
   const [retry, setRetry] = useState(0);
   const [pairing, setPairing] = useState(Boolean(initialPair.current));
   const [switcher, setSwitcher] = useState(false);
@@ -475,10 +477,13 @@ export function ConnectRoot({ children }) {
     });
     return () => { disposed = true; unsubscribe(); };
   }, []);
-  async function startLocalService() {
-    setLocalState({ state: 'connecting' });
-    try { await window.pixice.service.start(); }
-    catch (error) { setLocalState({ state: 'error', error: error.message }); }
+  async function controlLocalService(action, force = false) {
+    setServiceBusy(true); setServiceError('');
+    try {
+      const result = await window.pixice.service[action](...(force ? [{ force: true }] : []));
+      if (!result?.cancelled) setLocalState(await window.pixice.service.connection());
+    } catch (error) { setServiceError(error.message); }
+    finally { setServiceBusy(false); }
   }
   function select(id) {
     if (active === id) { setSwitcher(false); return; }
@@ -804,8 +809,19 @@ export function ConnectRoot({ children }) {
         </div>
         {execution && <div className="connect-observer-execution"><Suspense fallback={<p role="status">Opening target task…</p>}>{context.executionView}</Suspense></div>}
       </div> : children}</div>}
-      {local && !active && localState.state === 'reconnecting' && <div className="connect-service-notice" role="status" title={[localState.error, localState.diagnostic].filter(Boolean).join(' · ')}>Reconnecting to backend… Your work stays open.</div>}
-      {local && !active && !['connected', 'reconnecting'].includes(localState.state) && <div className="connect-service-overlay"><section className="settings-card" role="status"><h2>{localState.state === 'connecting' ? 'Connecting to Pixice…' : 'Backend unavailable'}</h2><p>{localState.error || 'Your projects and saved usage remain on this device.'}</p><div className="connect-actions"><button className="settings-action primary" onClick={startLocalService}>Start backend</button><button className="settings-action" onClick={() => setSwitcher(true)}>Choose another instance</button><button className="settings-action" onClick={() => setShowUsage(true)}>View Unified Usage</button></div></section></div>}
+      {local && !active && (localState.state !== 'connected' || serviceError) && <div className="connect-service-notice" role="status">
+        <strong>{localState.state === 'connected' ? 'Backend action failed' : localState.state === 'reconnecting' ? 'Reconnecting to backend… Your work stays open.' : localState.state === 'connecting' ? 'Connecting to Pixice…' : 'Backend unavailable'}</strong>
+        <p>{serviceError || localState.error || 'Your projects and drafts stay on this device. Settings remain available.'}</p>
+        <div className="connect-actions">
+          <button className="settings-action primary" disabled={serviceBusy} onClick={() => controlLocalService('start')}>{serviceBusy ? 'Working…' : localState.state === 'reconnecting' ? 'Reconnect backend' : 'Start backend'}</button>
+          {window.pixice.service.restart && <button className="settings-action" disabled={serviceBusy} onClick={() => controlLocalService('restart')}>Restart backend</button>}
+          {window.pixice.service.stop && <button className="settings-action" disabled={serviceBusy} onClick={() => controlLocalService('stop')}>Stop backend</button>}
+          <button className="settings-action" onClick={() => setSwitcher(true)}>Choose another instance</button>
+          <button className="settings-action" onClick={() => setShowUsage(true)}>View Unified Usage</button>
+          {localState.state === 'connected' && <button className="settings-action" onClick={() => setServiceError('')}>Dismiss</button>}
+        </div>
+        {window.pixice.service.restart && <details><summary>Recovery options</summary><p>Force recovery interrupts running agents and workflows. Pixice asks before proceeding.</p><div className="connect-actions"><button className="settings-action" disabled={serviceBusy} onClick={() => controlLocalService('restart', true)}>Force restart</button><button className="settings-action" disabled={serviceBusy} onClick={() => controlLocalService('stop', true)}>Force stop</button></div></details>}
+      </div>}
       {!ready && <main className="connect-welcome"><section>
         <img src={pixiceIcon} alt="" width="48" height="48" /><h1>Pixice Connect</h1>
         <p>{instance ? `Opening ${instance.name}…` : 'Your projects, wherever you are.'}</p>

@@ -1,0 +1,13 @@
+.message-queue { margin: 12px 0; font-size: 13px; color: var(--text-secondary, #a6a6aa); border-top: 1px solid var(--border, #ffffff14); }
+.message-queue header { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; gap: 12px; }
+.message-queue ol { list-style: none; margin: 0; padding: 0; }
+.message-queue li { padding: 9px 0; border-top: 1px solid var(--border, #ffffff14); }
+.message-queue p { white-space: pre-wrap; margin: 0 0 5px; color: var(--text-primary, #e3e3e7); overflow-wrap: anywhere; }
+.message-queue small { display: inline; font-size: 12px; }
+.message-queue button { border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; border-radius: 6px; padding: 3px 6px; }
+.message-queue button:hover { background: var(--surface-hover, #ffffff0c); color: var(--text-primary, #e3e3e7); }
+.message-queue button:disabled { opacity: .4; cursor: default; }
+.message-queue-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.message-queue-editing { background: var(--surface-hover, #ffffff06); border-radius: 6px; }
+.message-queue textarea { width: 100%; resize: vertical; min-height: 64px; padding: 8px; background: var(--surface, #ffffff06); color: var(--text-primary, #e3e3e7); border: 1px solid var(--border, #ffffff14); border-radius: 8px; font: inherit; }
+.composer-dispatch-mode { max-width: 80px; border: 0; border-radius: 6px; padding: 4px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }

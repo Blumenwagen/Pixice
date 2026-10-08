@@ -38,5 +38,5 @@ export class BackendFixtureProvider extends EventEmitter {
     }
     throw new Error(`Unsupported fixture request: ${method}`);
   }
-  respond() {}
+  respond(id) { this.event({ method: 'serverRequest/resolved', requestId: id }); return { resolved: true }; }
 }

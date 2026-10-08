@@ -36,13 +36,17 @@ export const CAPABILITIES = {
   projects: { list: 'projects:list', touch: 'projects:touch', create: 'projects:create', delete: 'projects:delete' },
   focus: { ensure: 'focus:ensure', readMemory: 'focus:memory', updateMemory: 'focus:memory:update', clearMemory: 'focus:memory:clear', state: 'focus:state', controlWork: 'focus:work:control', followUp: 'focus:work:follow-up', updatePolicy: 'focus:policy:update', markSeen: 'focus:seen' },
   threads: { list: 'threads:list', read: 'threads:read', children: 'threads:children', create: 'threads:create', fork: 'threads:fork', archive: 'threads:archive' },
-  turns: { start: 'turns:start', steer: 'turns:steer', interrupt: 'turns:interrupt' },
+  turns: { start: 'turns:start', steer: 'turns:steer', interrupt: 'turns:interrupt', queue: 'turns:queue', queueList: 'turns:queue:list', queueDraft: 'turns:queue:draft', queueEdit: 'turns:queue:edit', queueRemove: 'turns:queue:remove', queueReorder: 'turns:queue:reorder', queueHold: 'turns:queue:hold', queueResume: 'turns:queue:resume', queueSteer: 'turns:queue:steer' },
   approvals: { resolve: 'approvals:resolve' },
   requests: { respond: 'requests:respond' },
   questions: { respond: 'questions:respond' },
   elicitations: { respond: 'elicitations:respond' },
   review: { read: 'review:read', file: 'review:file' },
-  files: { read: 'files:read', preview: 'files:preview', write: 'files:write' },
+  htmlReplies: { read: 'html-replies:read', list: 'html-replies:list', document: 'html-replies:document' },
+  taskWorkspaces: { read: 'task-workspaces:read', remove: 'task-workspaces:remove' },
+  history: { list: 'history:list', preview: 'history:preview', rewind: 'history:rewind', restoreFile: 'history:restore-file', attachment: 'history:attachment' },
+  pullRequests: { workspace: 'pull-requests:workspace', list: 'pull-requests:list', read: 'pull-requests:read', link: 'pull-requests:link', unlink: 'pull-requests:unlink', diff: 'pull-requests:diff', commit: 'pull-requests:commit', push: 'pull-requests:push', create: 'pull-requests:create', update: 'pull-requests:update', watch: 'pull-requests:watch', stopWatch: 'pull-requests:stop-watch' },
+  files: { list: 'files:list', read: 'files:read', preview: 'files:preview', write: 'files:write' },
   models: { list: 'models:list' },
   tasks: { receipts: 'tasks:receipts', receipt: 'tasks:receipt', replay: 'tasks:replay', interventions: 'tasks:interventions' },
   board: { list: 'board:list', read: 'board:read', create: 'board:create', update: 'board:update', move: 'board:move', delete: 'board:delete', attach: 'board:attach', createPhase: 'board:phase:create', activity: 'board:activity', readProposal: 'board:proposal:read', applyProposal: 'board:proposal:apply', discardProposal: 'board:proposal:discard', saveBinding: 'board:binding:save', deleteBinding: 'board:binding:delete' },
@@ -63,3 +67,6 @@ export function normalizeEndpoint(value) {
 }
 
 export const READ_OPERATIONS = new Set(['browser.state', 'browser.frame', 'app.bootstrap', 'app.overview', 'runtime.status', 'git.status', 'providers.list', 'usage.summary', 'usage.limits', 'projects.list', 'projects.directories', 'focus.readMemory', 'focus.state', 'threads.list', 'threads.read', 'threads.children', 'review.read', 'review.file', 'files.read', 'files.preview', 'models.list', 'tasks.receipts', 'tasks.receipt', 'tasks.interventions', 'board.list', 'board.read', 'board.activity', 'board.readProposal', 'proactivity.list', 'instruments.list', 'instruments.tools', 'instruments.read', 'instruments.events', 'instruments.receipts', 'instruments.revisions', 'workflows.list', 'workflows.read', 'workflows.taskRuns', 'workflows.triggers', 'transcription.state']);
+
+for (const event of ['MessageQueueUpdated', 'PullRequestsUpdated', 'ThreadHistoryUpdated', 'TaskWorkspacesUpdated']) REMOTE_EVENTS.add(event);
+for (const operation of ['files.list', 'turns.queueDraft', 'turns.queueList', 'history.list', 'history.preview', 'history.attachment', 'htmlReplies.read', 'htmlReplies.list', 'htmlReplies.document', 'taskWorkspaces.read', 'pullRequests.workspace', 'pullRequests.list', 'pullRequests.read', 'pullRequests.diff']) READ_OPERATIONS.add(operation);

@@ -4,6 +4,20 @@ import { OperationCapsuleStack } from "../src/components/OperationCapsule.jsx";
 import { publishOperation } from "../src/state/operation-events.js";
 
 describe("OperationCapsuleStack", () => {
+  it("keeps the complete failure detail in a disclosure alongside recovery", () => {
+    const onAction = vi.fn();
+    render(<OperationCapsuleStack operations={[{
+      id: "workspace-bootstrap", title: "Workspace", tone: "error", status: "Loading failed",
+      label: "Workspace could not load", detail: "Try again.",
+      technicalDetail: "Bootstrap failed with a long diagnostic that must remain fully readable and selectable.",
+      actionLabel: "Retry", onAction, dismissible: false
+    }]} />);
+    expect(screen.getByText("Details").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("Bootstrap failed with a long diagnostic that must remain fully readable and selectable.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dismiss Workspace" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onAction).toHaveBeenCalledOnce();
+  });
   it("shows determinate progress and updates the status in place", () => {
     const operation = {
       id: "pixice-update",

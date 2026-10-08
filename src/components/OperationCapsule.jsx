@@ -31,13 +31,19 @@ function OperationCapsule({ operation, onDismiss }) {
         {operation.tone === "error" && <Warning className="operation-capsule-warning" size={14} />}
         <span className="operation-capsule-copy">
           <strong><MorphText value={label} duration={340} /></strong>
-          {operation.tone === "error" && operation.detail && <small><MorphText value={operation.detail} duration={360} /></small>}
+          {operation.tone === "error" && operation.detail && <small>{operation.technicalDetail ? operation.detail : <MorphText value={operation.detail} duration={360} />}</small>}
         </span>
         <span className="operation-capsule-actions">
           {operation.actionLabel && <button type="button" className="operation-capsule-action" onClick={operation.onAction}>{operation.actionLabel}</button>}
           {operation.dismissible !== false && <button type="button" className="operation-capsule-dismiss" aria-label={`Dismiss ${operation.title}`} onClick={() => onDismiss(operation)}><X size={13} /></button>}
         </span>
       </div>
+      {operation.technicalDetail && (
+        <details className="operation-capsule-details">
+          <summary>Details</summary>
+          <p>{operation.technicalDetail}</p>
+        </details>
+      )}
       {(progress !== null || operation.indeterminate) && operation.tone !== "error" && (
         <span
           className="operation-capsule-track"

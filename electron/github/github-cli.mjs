@@ -73,6 +73,18 @@ export class GitHubCli extends EventEmitter {
     this.spawn = spawn;
   }
 
+  /** Bounded, shell-free access for native GitHub surfaces. Credentials remain in gh. */
+  async execute(args, { cwd, timeout = 30_000, maxBuffer = 8 * 1024 * 1024, signal } = {}) {
+    if (!this.resolved) throw new Error("GitHub CLI is not available in this build");
+    if (!Array.isArray(args) || args.some((argument) => typeof argument !== "string" || argument.includes("\0"))) {
+      throw new Error("GitHub CLI arguments must be strings");
+    }
+    return this.run(this.resolved.path, args, {
+      cwd, encoding: "utf8", timeout, maxBuffer, windowsHide: true, signal,
+      env: { ...process.env, GH_PROMPT_DISABLED: "1", GH_PAGER: "cat", NO_COLOR: "1" }
+    });
+  }
+
   async status() {
     if (!this.resolved) {
       return {

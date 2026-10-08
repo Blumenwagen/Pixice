@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -312,6 +313,8 @@ describe('live Connect protocol boundaries', () => {
     const paired = await context.pair();
     const issued = vi.fn();
     const uncertain = vi.fn();
+    const storage = new Map();
+    vi.stubGlobal('localStorage', { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)), removeItem: key => storage.delete(key) });
     const registry = createRemoteClientRegistry({
       getInstance: () => ({ id: server.state.hostId, endpoint: context.endpoint(), token: paired.token, deviceId: paired.deviceId }),
       getOrigin: () => ({ hostId: 'origin-host', projectId: 'origin-project' }),

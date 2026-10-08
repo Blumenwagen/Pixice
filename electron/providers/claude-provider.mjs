@@ -41,6 +41,8 @@ import {
   iosDynamicTools
 } from "../ios/ios-tools.mjs";
 import { z } from "zod";
+import { PIXICE_HTML_MCP_TOOLS, PIXICE_HTML_NAMESPACE, htmlReplyDynamicTools, htmlReplyToolShapes, htmlReplyToolSchemas } from "../runtime/html-replies.mjs";
+import { PIXICE_PULL_REQUEST_MCP_TOOLS, PIXICE_PULL_REQUEST_NAMESPACE, pullRequestDynamicTools, pullRequestToolShapes } from "../github/pull-request-tools.mjs";
 
 const FALLBACK_MODELS = [
   { value: "default", displayName: "Claude (recommended)", description: "Use Claude Code's recommended model." }
@@ -171,7 +173,9 @@ export function claudePermissionSettings(mode) {
       ...PIXICE_INSTRUMENTS_MCP_TOOLS,
       ...PIXICE_BROWSER_MCP_TOOLS,
       ...PIXICE_PREVIEW_MCP_TOOLS,
-      ...PIXICE_IOS_MCP_TOOLS
+      ...PIXICE_IOS_MCP_TOOLS,
+      ...PIXICE_HTML_MCP_TOOLS,
+      ...PIXICE_PULL_REQUEST_MCP_TOOLS
     ]
   };
 }
@@ -265,7 +269,7 @@ function toolItem(block) {
   }
   if (block.name.startsWith("mcp__")) {
     const [, server, ...tool] = block.name.split("__");
-    return { ...common, type: [PIXICE_BROWSER_NAMESPACE, PIXICE_PREVIEW_NAMESPACE, PIXICE_IOS_NAMESPACE].includes(server) ? "dynamicToolCall" : "mcpToolCall", server, tool: tool.join("__"), arguments: block.input };
+    return { ...common, type: [PIXICE_BROWSER_NAMESPACE, PIXICE_PREVIEW_NAMESPACE, PIXICE_IOS_NAMESPACE, PIXICE_HTML_NAMESPACE, PIXICE_PULL_REQUEST_NAMESPACE].includes(server) ? "dynamicToolCall" : "mcpToolCall", server, tool: tool.join("__"), arguments: block.input };
   }
   return { ...common, type: "mcpToolCall", server: "claude", tool: block.name, arguments: block.input };
 }
@@ -475,6 +479,8 @@ export class ClaudeProvider extends EventEmitter {
     pixiceBrowser = null,
     pixicePreview = null,
     pixiceIos = null,
+    pixiceHtml = null,
+    pixicePullRequests = null,
     pathToClaudeCodeExecutable = null,
     requireExternalExecutable = false,
     runtimeLifecycle = null,
@@ -498,6 +504,8 @@ export class ClaudeProvider extends EventEmitter {
     this.pixiceBrowser = pixiceBrowser;
     this.pixicePreview = pixicePreview;
     this.pixiceIos = pixiceIos;
+    this.pixiceHtml = pixiceHtml;
+    this.pixicePullRequests = pixicePullRequests;
     this.pathToClaudeCodeExecutable = pathToClaudeCodeExecutable;
     this.requireExternalExecutable = requireExternalExecutable;
     this.runtimeLifecycle = runtimeLifecycle;
@@ -724,13 +732,13 @@ export class ClaudeProvider extends EventEmitter {
     this.pendingRequests.delete(String(id));
     if (pending.kind === "question") {
       pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answers: result.answers ?? {} } });
-      return;
+      return { resolved: true };
     }
     if (pending.kind === "pixice-question") {
       pending.resolve(result.action === "cancel"
         ? { cancelled: true, answers: {} }
         : { cancelled: false, answers: result.answers ?? {} });
-      return;
+      return { resolved: true };
     }
     if (result.decision === "accept" || result.decision === "acceptForSession") {
       pending.resolve({
@@ -741,6 +749,7 @@ export class ClaudeProvider extends EventEmitter {
     } else {
       pending.resolve({ behavior: "deny", message: "The user declined this tool call", interrupt: result.decision === "cancel" });
     }
+    return { resolved: true };
   }
 
   async #listModels() {
@@ -1165,7 +1174,9 @@ export class ClaudeProvider extends EventEmitter {
         ...(this.pixiceInstruments && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_INSTRUMENTS_NAMESPACE) ? { pixice_instruments: this.#pixiceInstrumentsServer(context) } : {}),
         ...(this.pixiceBrowser && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_BROWSER_NAMESPACE) ? { [PIXICE_BROWSER_NAMESPACE]: this.#pixiceBrowserServer(context) } : {}),
         ...(this.pixicePreview && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_PREVIEW_NAMESPACE) ? { [PIXICE_PREVIEW_NAMESPACE]: this.#pixicePreviewServer(context) } : {}),
-        ...(this.pixiceIos && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_IOS_NAMESPACE) ? { [PIXICE_IOS_NAMESPACE]: this.#pixiceIosServer(context) } : {})
+        ...(this.pixiceIos && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_IOS_NAMESPACE) ? { [PIXICE_IOS_NAMESPACE]: this.#pixiceIosServer(context) } : {}),
+        ...(this.pixiceHtml && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_HTML_NAMESPACE) ? { [PIXICE_HTML_NAMESPACE]: this.#pixiceHtmlServer(context) } : {}),
+        ...(this.pixicePullRequests && profileAllowsNamespace(context.dynamicToolProfile, PIXICE_PULL_REQUEST_NAMESPACE) ? { [PIXICE_PULL_REQUEST_NAMESPACE]: this.#pixicePullRequestsServer(context) } : {})
       },
       skills: context.dynamicToolProfile !== null && !profileAllowsNamespace(context.dynamicToolProfile, PIXICE_INSTRUMENTS_NAMESPACE) ? [] : undefined,
       pathToClaudeCodeExecutable: this.pathToClaudeCodeExecutable,
@@ -1668,6 +1679,8 @@ export class ClaudeProvider extends EventEmitter {
       || PIXICE_BROWSER_MCP_TOOLS.has(toolName)
       || PIXICE_PREVIEW_MCP_TOOLS.has(toolName)
       || PIXICE_IOS_MCP_TOOLS.has(toolName)
+      || PIXICE_HTML_MCP_TOOLS.has(toolName)
+      || PIXICE_PULL_REQUEST_MCP_TOOLS.has(toolName)
     );
     if (isPixiceTool) {
       const match = /^mcp__(.+)__(.+)$/.exec(toolName);
@@ -1895,6 +1908,42 @@ export class ClaudeProvider extends EventEmitter {
         definition.description,
         zodShapeFromDynamicTool(definition),
         run(definition.name)
+      ))
+    });
+  }
+
+  #pixiceHtmlServer(context) {
+    return createSdkMcpServer({
+      name: PIXICE_HTML_NAMESPACE,
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: allowedToolDefinitions(context, PIXICE_HTML_NAMESPACE, htmlReplyDynamicTools[0].tools).map((definition) => tool(
+        definition.name,
+        definition.description,
+        htmlReplyToolShapes[definition.name],
+        async (input) => claudeMcpResult(await this.pixiceHtml.handleToolCall({
+          namespace: PIXICE_HTML_NAMESPACE,
+          tool: definition.name,
+          threadId: context.thread.id,
+          turnId: context.currentTurn?.id,
+          arguments: htmlReplyToolSchemas[definition.name].parse(input),
+          source: "claude"
+        }))
+      ))
+    });
+  }
+
+  #pixicePullRequestsServer(context) {
+    return createSdkMcpServer({
+      name: PIXICE_PULL_REQUEST_NAMESPACE,
+      version: this.clientVersion || "1.0.0",
+      alwaysLoad: true,
+      tools: allowedToolDefinitions(context, PIXICE_PULL_REQUEST_NAMESPACE, pullRequestDynamicTools[0].tools).map((definition) => tool(
+        definition.name, definition.description, pullRequestToolShapes[definition.name],
+        async (input) => claudeMcpResult(await this.pixicePullRequests.handleToolCall({
+          namespace: PIXICE_PULL_REQUEST_NAMESPACE, tool: definition.name,
+          threadId: context.thread.id, turnId: context.currentTurn?.id, arguments: input, source: "claude"
+        }))
       ))
     });
   }

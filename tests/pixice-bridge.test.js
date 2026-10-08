@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { PixiceBridge } from "../electron/runtime/pixice-bridge.mjs";
+import { MemoryBridgeJobStore } from "../electron/persistence/bridge-job-store.mjs";
 
 class MemoryDatabase {
   constructor() { this.links = new Map(); }
@@ -41,6 +42,7 @@ function createBridge(models, contextOverrides = {}) {
   const bridge = new PixiceBridge({
     runtime,
     database,
+    jobStore: new MemoryBridgeJobStore(),
     dynamicTools: () => [{ name: "pixice_bridge" }],
     threadContext: () => ({
       projectId: "project-1",

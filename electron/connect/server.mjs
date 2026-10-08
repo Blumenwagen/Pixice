@@ -10,6 +10,8 @@ import { CONNECT_ERROR_CODES, CONNECT_LIMITS, CONNECT_RECOVERY_LIMITS, PROTOCOL_
 import { canAccessProject, filterAttention, filterEventOrCursor, filterObserverReadiness, filterObserverResult, isObserver, normalizePairingAccess, operationAllowed, operationNeedsProject, persistedDeviceAccess, statusAccess, OBSERVER_OPERATIONS } from './access-policy.mjs';
 import { normalizeExternalOrigin } from './push-contract.mjs';
 import { TRANSFER_LIMITS } from './transfer-store.mjs';
+import { HtmlReplyDocuments, htmlReplyDocumentSchema } from '../runtime/html-reply-documents.mjs';
+import { HTML_REPLY_CSP } from '../runtime/html-reply-document.mjs';
 
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
@@ -126,6 +128,7 @@ export class ConnectServer {
     this.downloadTimeoutMs = Math.max(1, Number(downloadTimeoutMs) || DEFAULT_DOWNLOAD_TIMEOUT_MS);
     this.downloads = new Set();
     this.downloadCount = 0;
+    this.htmlReplyDocuments = new HtmlReplyDocuments();
     this.stopping = false;
     this.onDeviceRevoked = onDeviceRevoked;
     this.resolveEventProject = resolveEventProject;
@@ -302,6 +305,7 @@ export class ConnectServer {
   }
   async stop() {
     this.stopping = true;
+    this.htmlReplyDocuments.clear();
     clearInterval(this.heartbeat);
     for (const download of [...this.downloads]) download.stop();
     this.downloads.clear();
@@ -343,6 +347,7 @@ export class ConnectServer {
     for (const download of [...this.downloads]) if (all || download.deviceId === id) download.stop();
     for (const poll of this.polls) if (all || poll.deviceId === id) { clearTimeout(poll.timer); clearTimeout(poll.flushTimer); this.errorJson(poll.res, 401, 'Device access was revoked', CONNECT_ERROR_CODES.AUTH_REQUIRED); this.polls.delete(poll); }
     for (const deviceId of revoked) {
+      this.htmlReplyDocuments.revokeDevice(deviceId);
       void this.transferStore?.invalidateDevice(deviceId);
       void Promise.resolve().then(() => this.onDeviceRevoked(deviceId)).catch(() => {});
     }
@@ -590,6 +595,22 @@ export class ConnectServer {
       return res.end();
     }
     const url = new URL(req.url, localOrigin);
+    const htmlDocument = /^\/api\/html-replies\/document\/([A-Za-z0-9_-]{43})$/.exec(url.pathname);
+    if (htmlDocument && req.method === 'GET') {
+      this.rate(req, 'html-document', 240);
+      const entry = this.htmlReplyDocuments.read(htmlDocument[1]);
+      const device = entry && this.device(entry.deviceId);
+      if (!entry || !device || !this.projectExists(entry.projectId) || !canAccessProject(persistedDeviceAccess(device), entry.projectId) || !this.operationAllowed(device, 'htmlReplies.document')) throw fail(404, 'This HTML reply document has expired or is unavailable.');
+      // This response owns its CSP instead of inheriting the shell's script-src
+      // policy as srcdoc does. The iframe keeps an opaque origin; CSP sandbox
+      // also protects users opening a copied token URL directly.
+      res.removeHeader('X-Frame-Options');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Security-Policy', `${HTML_REPLY_CSP}; sandbox allow-scripts`);
+      res.setHeader('Cache-Control', 'no-store, private');
+      res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=()');
+      return res.end(entry.html);
+    }
     if (url.pathname === '/api/connect/info' && req.method === 'GET') {
       this.rate(req, 'info', 120);
       return this.json(res, 200, { protocol: PROTOCOL_VERSION, hostId: this.state.hostId, instanceId: this.instanceId, name: String(this.state.name ?? '').slice(0, 80), version: String(this.version ?? '').slice(0, 80) });
@@ -885,7 +906,17 @@ export class ConnectServer {
           const auditKey = `${device.id}:${body.operation}`;
           if (Date.now() - (this.readAudit.get(auditKey) ?? 0) > 60_000) { this.audit(body.operation, device.id); this.readAudit.set(auditKey, Date.now()); }
           try {
-            const result = await this.invoke(body.operation, body.payload, { deviceId: device.id, device, access: persistedDeviceAccess(device) });
+            const context = { deviceId: device.id, device, access: persistedDeviceAccess(device) };
+            let result;
+            if (body.operation === 'htmlReplies.document') {
+              const value = htmlReplyDocumentSchema.parse(body.payload);
+              if (!this.projectExists(value.projectId) || !canAccessProject(context.access, value.projectId)) throw fail(403, 'This device cannot access that project.');
+              await this.invoke('htmlReplies.list', { projectId: value.projectId, threadId: value.threadId }, context);
+              this.authenticate(req);
+              const document = this.htmlReplyDocuments.create(value, device.id);
+              const requestOrigin = this.state.publicUrl && req.headers.host === new URL(this.state.publicUrl).host ? this.state.publicUrl : localOrigin;
+              result = { ...document, url: new URL(document.path, requestOrigin).href };
+            } else result = await this.invoke(body.operation, body.payload, context);
             this.authenticate(req); // Do not release a captured page after access is revoked.
             return this.json(res, 200, { result: filterObserverResult(body.operation, result, persistedDeviceAccess(device)) });
           } catch (error) {
@@ -934,7 +965,7 @@ export class ConnectServer {
       throw fail(404, 'Unknown endpoint');
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') throw fail(405, 'Method not allowed');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; frame-src 'self' blob: data: https:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; frame-src 'self' blob: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     const relative = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
     if (relative.includes('\0')) throw fail(400, 'Invalid path');
     const root = await realpath(this.clientDirectory);

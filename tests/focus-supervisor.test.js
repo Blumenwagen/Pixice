@@ -26,6 +26,7 @@ class MemoryStore {
     this.decisions = [];
     this.seen = 0;
     this.nextId = 1;
+    this.deliveries = new Map();
   }
   getPolicy() { return { ...this.policy }; }
   listWork(projectId, { query, limit = 40 } = {}) {
@@ -37,7 +38,7 @@ class MemoryStore {
   createWork(projectId, input) {
     const id = input.id ?? `work-${this.nextId++}`;
     const work = { id, projectId, threadId: null, turnId: null, answer: "", error: null, verification: null, artifacts: [],
-      revision: 1, decisionRevision: 0, acknowledgedDecisionRevision: 0, completionReported: false, ...input };
+      revision: 1, decisionRevision: 0, acknowledgedDecisionRevision: 0, completionReported: false, stopRequested: null, ...input };
     this.work.set(id, work);
     return { ...work };
   }
@@ -48,16 +49,54 @@ class MemoryStore {
     this.work.set(id, next);
     return { ...next };
   }
+  createWorkWithEvent(projectId, input, event) {
+    const work = this.createWork(projectId, input);
+    this.appendEvent(projectId, { ...event, workId: work.id });
+    return work;
+  }
+  transitionWork(projectId, id, patch, event) {
+    if (event.id && this.events.some(item => item.id === event.id)) return this.getWork(projectId, id);
+    const work = this.updateWork(projectId, id, patch);
+    this.appendEvent(projectId, { ...event, workId: id });
+    return work;
+  }
+  hasSettledTurn(projectId, id, turnId) {
+    return this.events.some(event => event.projectId === projectId && event.workId === id && event.id === `focus:${id}:turn:${turnId}:settled`);
+  }
+  listDeliveries(projectId, { states = null } = {}) {
+    return [...this.deliveries.values()].filter(item => item.projectId === projectId && (!states || states.includes(item.state)));
+  }
+  claimDelivery(projectId, coordinatorThreadId, eventIds) {
+    if (this.listDeliveries(projectId, { states: ["claimed", "uncertain"] }).length) return null;
+    const id = `focus-delivery:${eventIds[0]}`;
+    const delivery = { id, projectId, coordinatorThreadId, eventIds, messageId: `focus-message:${eventIds[0]}`, state: "claimed" };
+    this.deliveries.set(id, delivery);
+    for (const event of this.events) if (eventIds.includes(event.id)) event.deliveryId = id;
+    return delivery;
+  }
+  settleDelivery(projectId, id, patch) {
+    const delivery = this.deliveries.get(id); Object.assign(delivery, patch);
+    for (const event of this.events.filter(event => event.projectId === projectId && delivery.eventIds.includes(event.id))) {
+      if (patch.state === "not-delivered") event.deliveryId = null;
+      else if (["accepted", "observed"].includes(patch.state)) {
+        event.deliveredAt = new Date().toISOString();
+        const work = event.workId && this.getWork(projectId, event.workId);
+        if (work && ["review", "done", "failed", "cancelled", "needs-attention"].includes(work.status)) this.updateWork(projectId, work.id, { completionReported: true });
+      }
+    }
+    return delivery;
+  }
   listRecoverableWork(projectId) {
     return [...this.work.values()].filter((work) => (!projectId || work.projectId === projectId) && (!["done", "failed", "cancelled"].includes(work.status) || !work.completionReported)).map((work) => ({ ...work }));
   }
   appendEvent(projectId, event) {
+    if (event.id && this.events.some(item => item.id === event.id)) return this.events.find(item => item.id === event.id);
     const value = { id: `event-${this.events.length + 1}`, sequence: this.events.length + 1, projectId, deliveredAt: null, ...event };
     this.events.push(value);
     return { ...value };
   }
   listEvents(projectId, { after = 0, limit = 50 } = {}) { return this.events.filter((event) => event.projectId === projectId && event.sequence > after).slice(0, limit).map((event) => ({ ...event })); }
-  pendingEvents(projectId, limit = 20) { return this.events.filter((event) => event.projectId === projectId && !event.deliveredAt).slice(0, limit).map((event) => ({ ...event })); }
+  pendingEvents(projectId, limit = 20) { return this.events.filter((event) => event.projectId === projectId && !event.deliveredAt && !event.deliveryId).slice(0, limit).map((event) => ({ ...event })); }
   markEventsDelivered(projectId, ids) { for (const event of this.events) if (event.projectId === projectId && ids.includes(event.id)) event.deliveredAt = new Date().toISOString(); }
   latestSequence(projectId) { return this.events.filter((event) => event.projectId === projectId).at(-1)?.sequence ?? 0; }
   getSeen() { return this.seen; }
@@ -65,6 +104,9 @@ class MemoryStore {
   recordDecision(projectId, input) {
     const decision = { id: `decision-${this.decisions.length + 1}`, projectId, revision: this.decisions.length + 1, ...input };
     this.decisions.push(decision);
+    for (const work of this.listRecoverableWork(projectId).filter(work => !["done", "failed", "cancelled"].includes(work.status) && (!input.workIds?.length || input.workIds.includes(work.id)))) {
+      this.transitionWork(projectId, work.id, { decisionRevision: decision.revision }, { id: `direction:${decision.id}:${work.id}`, kind: "direction-recorded" });
+    }
     return { ...decision };
   }
   listDecisions(projectId, { limit = 20 } = {}) { return this.decisions.filter((decision) => decision.projectId === projectId).slice(-limit).reverse().map((decision) => ({ ...decision })); }
@@ -328,7 +370,7 @@ describe("FocusSupervisor", () => {
     await tick();
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(deliver.mock.calls[0][0].events.length).toBeLessThanOrEqual(25);
-    first.reject(new Error("coordinator unavailable"));
+    first.reject(Object.assign(new Error("coordinator unavailable"), { definitelyNotSent: true }));
     await tick();
     await tick();
     expect(deliver).toHaveBeenCalledTimes(1);

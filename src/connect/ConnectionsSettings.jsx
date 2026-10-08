@@ -124,7 +124,10 @@ export function ConnectionsSettings() {
   }, [api, host?.hostId]);
   async function refresh() {
     if (!api) return;
-    if (globalThis.window?.pixice?.service) setService(await globalThis.window.pixice.service.status());
+    if (globalThis.window?.pixice?.service) {
+      try { setService(await globalThis.window.pixice.service.status()); }
+      catch (cause) { setService({ phase: 'unresponsive', error: cause.message }); }
+    }
     const status = await api.status();
     const savedUrl = status.publicUrl || '';
     if (urlRef.current !== savedUrl) {
@@ -143,7 +146,7 @@ export function ConnectionsSettings() {
   useEffect(() => {
     if (!api) return;
     void refresh().catch((cause) => setError(cause.message));
-    return globalThis.window.pixice.events.subscribe((event) => { if (event.type === 'ConnectStatus') void refresh().catch((cause) => setError(cause.message)); });
+    return globalThis.window.pixice.events.subscribe((event) => { if (['ConnectStatus', 'ServiceConnectionState', 'ServiceState'].includes(event.type)) void refresh().catch((cause) => setError(cause.message)); });
   }, [api]);
   useEffect(() => {
     if (!pair) return undefined;
@@ -189,7 +192,8 @@ export function ConnectionsSettings() {
     {!globalThis.window?.pixice && <BrowserInstallSettings />}
     <BrowserPushSettings instance={remoteInstance} />
     {globalThis.window?.pixice?.service && <Group title="Background backend" description="Tasks, workflows, and remote access continue when you close or quit the interface. Stopping requires all active work to finish first.">
-      <Row title="Service" description={service ? `${service.phase === 'ready' ? 'Running' : service.phase} · Process ${service.pid}` : 'Checking backend…'}><div className="connect-actions"><button className="settings-action" disabled={busy} onClick={() => perform(() => globalThis.window.pixice.service.restart())}>Restart backend</button><button className="settings-action" disabled={busy} onClick={() => perform(() => globalThis.window.pixice.service.stop())}>Stop backend</button></div></Row>
+      <Row title="Service" description={service ? `${service.phase === 'ready' ? 'Running' : service.phase}${service.pid ? ` · Process ${service.pid}` : ''}` : 'Checking backend…'}><div className="connect-actions">{service?.phase === 'stopped' && <button className="settings-action" disabled={busy} onClick={() => perform(() => globalThis.window.pixice.service.start())}>Start backend</button>}<button className="settings-action" disabled={busy} onClick={() => perform(() => globalThis.window.pixice.service.restart())}>Restart backend</button><button className="settings-action" disabled={busy} onClick={() => perform(() => globalThis.window.pixice.service.stop())}>Stop backend</button></div></Row>
+      {service?.error && <><p className="settings-footnote">{service.error}</p><div className="connect-actions"><button className="settings-action" disabled={busy} onClick={() => perform(() => globalThis.window.pixice.service.restart({ force: true }))}>Force restart</button><button className="settings-action" disabled={busy} onClick={() => perform(() => globalThis.window.pixice.service.stop({ force: true }))}>Force stop</button></div></>}
       {service?.loginSupported && <Row title="Start at login" description="Starts the backend and native browser helper in the background."><button className="settings-action" disabled={busy || !service} onClick={() => perform(() => globalThis.window.pixice.service.setOpenAtLogin({ enabled: !service.openAtLogin }))}>{service?.openAtLogin ? 'Turn off' : 'Enable'}</button></Row>}
       {service?.native?.error && <p className="settings-footnote">{service.native.error}</p>}
     </Group>}

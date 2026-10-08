@@ -256,7 +256,8 @@ const releaseTool = {
   lastOpenedAt: "2026-08-23T09:30:00.000Z"
 };
 
-export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavailable = false, updatePreview = false } = {}) {
+export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavailable = false, updatePreview = false, startupRecoveryPreview = null } = {}) {
+  let bootstrapAttempts = 0;
   const gitStatus = gitUnavailable
     ? { state: "command-line-tools-missing", available: false, installSupported: true, executablePath: null, version: null, message: "Apple Command Line Tools are not installed. Pixice can still work with folders, but Git features are unavailable." }
     : { state: "ready", available: true, installSupported: false, executablePath: "/usr/bin/git", version: "git version 2.50.1", message: "git version 2.50.1 is ready." };
@@ -341,7 +342,14 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
     tabs: [{ id: "preview-browser-tab", title: "New tab", url: "", loading: false, error: null, canGoBack: false, canGoForward: false }]
   };
   return {
-    app: { bootstrap: async () => ({ projects: [previewProject], models, runtime: { state: "ready", connected: true, userAgent: "Preview runtime" } }) },
+    app: { bootstrap: async () => {
+      bootstrapAttempts += 1;
+      if (startupRecoveryPreview && bootstrapAttempts === 1) {
+        if (startupRecoveryPreview === "transient") throw Object.assign(new Error("The instance is offline. Your action was not sent."), { code: "OFFLINE" });
+        throw new Error("Workspace bootstrap failed: the saved project snapshot could not be read. This is a simulated preview failure; Retry restores the example workspace.");
+      }
+      return { projects: [previewProject], models, runtime: { state: "ready", connected: true, userAgent: "Preview runtime" } };
+    } },
     runtime: { status: async () => ({ state: "ready", connected: true }) },
     tasks: { interventions: async () => ({ requests: pendingFocusQuestion ? [structuredClone(pendingFocusQuestion)] : [] }) },
     questions: { respond: async ({ requestId, requestGeneration, answers }) => {
@@ -365,7 +373,11 @@ export function createTaskProgressPreviewApi({ focusPreview = false, gitUnavaila
     },
     updates: {
       status: async () => updatePreview
-        ? { supported: true, state: "downloading", currentVersion: "0.9.0", availableVersion: "0.10.0", percent: 64, message: "Downloading the signed Pixice update." }
+        ? { supported: updatePreview !== "unsupported", state: typeof updatePreview === "string" ? updatePreview : "downloading", currentVersion: "0.1.0-beta.2", availableVersion: "0.1.0-beta.7", percent: 64, message: ({
+          "preparing-install": "Waiting for the installer to verify the update. Pixice will stay open until it is ready.",
+          "install-error": "Update not installed: The macOS installer did not become ready in time. Pixice stayed open; retry the installation. Your saved data is preserved.",
+          "unsupported": "This copy of Pixice has an ad-hoc signature and cannot install automatic macOS updates. Replace it once with the signed Pixice release from GitHub to enable future updates."
+        })[updatePreview] || "Downloading the signed Pixice update." }
         : { supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." },
       check: async () => ({ supported: false, state: "development", currentVersion: "0.0.0", availableVersion: null, percent: 0, message: "Updates are available in packaged Pixice builds." }),
       download: async () => ({}),

@@ -41,16 +41,16 @@ describe("bridge parent continuation", () => {
   it("leaves a completion on the original active turn", async () => {
     const { coordinator, startTurn, steerTurn } = createCoordinator("parent-turn-1");
 
-    await expect(coordinator.notify(completion)).resolves.toEqual({ action: "same-turn", turnId: "parent-turn-1" });
+    await expect(coordinator.notify(completion)).resolves.toEqual({ action: "awaiting-tool-resolution", turnId: "parent-turn-1" });
     expect(startTurn).not.toHaveBeenCalled();
     expect(steerTurn).not.toHaveBeenCalled();
   });
 
-  it("assumes an unlabelled active turn owns the pending tool call", async () => {
+  it("keeps an unlabelled active tool result pending until observation is confirmed", async () => {
     const { coordinator, startTurn, steerTurn } = createCoordinator("parent-turn-1");
 
     await expect(coordinator.notify({ ...completion, parentTurnId: null })).resolves.toEqual({
-      action: "same-turn",
+      action: "awaiting-tool-resolution",
       turnId: "parent-turn-1"
     });
     expect(startTurn).not.toHaveBeenCalled();

@@ -40,8 +40,32 @@ describe("FocusCoordinatorQuestions", () => {
     fireEvent.click(screen.getByRole("radio", { name: /Preserve shape/ }));
     fireEvent.change(screen.getByRole("textbox", { name: "Answer for What should the workers preserve?" }), { target: { value: "Keep cookies" } });
     fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("not accepted");
+    expect(await screen.findByRole("alert")).toHaveTextContent("not confirmed");
     expect(screen.getByRole("textbox", { name: "Answer for What should the workers preserve?" })).toHaveValue("Keep cookies");
+  });
+
+  it("retains the exact answer while awaiting provider confirmation and permits an explicit identical retry", async () => {
+    let rejectFirst;
+    const onResolve = vi.fn().mockImplementationOnce(() => new Promise((resolve, reject) => { rejectFirst = reject; })).mockResolvedValue(true);
+    const view = render(<FocusCoordinatorQuestions projectId="project-a" requests={[request]} onResolve={onResolve} storage={localStorage} />);
+    fireEvent.click(screen.getByRole("radio", { name: /Preserve shape/ }));
+    const input = screen.getByRole("textbox", { name: "Answer for What should the workers preserve?" });
+    fireEvent.change(input, { target: { value: "Keep the draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(await screen.findByText("Waiting for provider confirmation…")).toBeInTheDocument();
+    expect(input).toHaveValue("Keep the draft");
+    expect(input).toBeDisabled();
+    expect(screen.queryByText("Coordinator question answered")).not.toBeInTheDocument();
+    const uncertain = { ...request, responseState: "uncertain", responseError: "The provider has not confirmed the answer." };
+    view.rerender(<FocusCoordinatorQuestions projectId="project-a" requests={[uncertain]} onResolve={onResolve} storage={localStorage} />);
+    rejectFirst(Object.assign(new Error("Provider confirmation missing"), { uncertain: true }));
+    const retry = await screen.findByRole("button", { name: "Retry response" });
+    expect(input).toHaveValue("Keep the draft");
+    expect(input).toBeDisabled();
+    fireEvent.click(retry);
+    await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(2));
+    expect(onResolve.mock.calls[1][1]).toEqual(onResolve.mock.calls[0][1]);
+    expect(await screen.findByText("Coordinator question answered")).toBeInTheDocument();
   });
 
   it("keeps a custom answer field open and submits its typed value", async () => {

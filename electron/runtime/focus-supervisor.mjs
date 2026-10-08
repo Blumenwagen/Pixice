@@ -21,6 +21,7 @@ const recoverableProviderError = (error) => {
     || /(?:unavailable|not connected|not ready|offline).*(?:provider|runtime|codex|claude)/.test(message);
 };
 const shouldRecover = (work) => RECOVERABLE_STATUSES.has(work?.status)
+  || (work?.stopRequested && !["paused", "cancelled"].includes(work.status))
   || (work?.status === "needs-attention" && String(work.error ?? "").startsWith(DEFERRED_RECOVERY_PREFIX));
 
 function payloadOf(event) {
@@ -104,6 +105,7 @@ export class FocusSupervisor {
     continueWorker,
     interruptWorker,
     deliver,
+    resolveDelivery = null,
     onChange = () => {}
   }) {
     if (!store) throw new Error("FocusSupervisor requires a store");
@@ -114,6 +116,7 @@ export class FocusSupervisor {
     this.continueWorker = continueWorker;
     this.interruptWorker = interruptWorker;
     this.deliver = deliver;
+    this.resolveDelivery = resolveDelivery;
     this.onChange = onChange;
     this.disposed = false;
     this.drains = new Map();
@@ -148,12 +151,14 @@ export class FocusSupervisor {
     const latestSequence = Number(this.store.latestSequence(projectId) ?? 0);
     const events = this.store.listEvents(projectId, { after: Math.max(0, latestSequence - 200), limit: 200 });
     const unseenEvents = this.store.listEvents(projectId, { after: seenSequence, limit: 200 });
-    return { work, decisions, policy, events, seenSequence, latestSequence, unseenEvents };
+    const deliveries = this.store.listDeliveries?.(projectId) ?? [];
+    return { work, decisions, policy, events, seenSequence, latestSequence, unseenEvents, deliveries };
   }
 
   inspect(projectId, id) {
     const work = this.store.getWork(projectId, id);
     if (!work) return null;
+    this.store.observeWorkDeliveries?.(projectId, id);
     const latestSequence = Number(this.store.latestSequence(projectId) ?? 0);
     const events = this.store.listEvents(projectId, { after: Math.max(0, latestSequence - 200), limit: 200 })
       .filter((event) => event.workId === id);
@@ -170,7 +175,7 @@ export class FocusSupervisor {
     const access = input?.access === "read" ? "read" : "write";
     const requestedPermission = access === "read" ? "read-only" : input?.permissionMode;
     const permissionMode = permissionAtMost(requestedPermission, policy.permissionMode);
-    const created = this.store.createWork(projectId, {
+    const created = this.store.createWorkWithEvent(projectId, {
       coordinatorThreadId: context.coordinatorThreadId,
       title: bounded(input?.title || input?.prompt || "Focus work", 160),
       prompt: bounded(input?.prompt, 80_000),
@@ -182,8 +187,7 @@ export class FocusSupervisor {
       dependsOn: asArray(input?.dependsOn),
       reviewOf: input?.reviewOf ?? null,
       status: "queued"
-    });
-    this.store.appendEvent(projectId, { workId: created.id, kind: "queued", message: "Work queued for supervision." });
+    }, { kind: "queued", message: "Work queued for supervision." });
     this.#changed(projectId);
     this.#scheduleDrain(projectId);
     return this.store.getWork(projectId, created.id) ?? created;
@@ -191,35 +195,36 @@ export class FocusSupervisor {
 
   async followUp(projectId, id, { prompt }) {
     const work = this.#requiredWork(projectId, id);
-    if (["cancelled", "cancelling"].includes(work.status)) throw new Error("Cancelled work cannot be continued");
+    if (["cancelled", "cancelling"].includes(work.status) || work.stopRequested && !["paused"].includes(work.status)) throw new Error("Stopping or cancelled work cannot be continued before its turn settles");
     const nextPrompt = bounded(prompt, 80_000);
     if (ACTIVE_STATUSES.has(work.status) && work.threadId && work.turnId) {
       const decisions = this.store.listDecisions(projectId, { workId: work.id, limit: 100 });
       const steered = await this.continueWorker({ projectId, workId: work.id, threadId: work.threadId, turnId: work.turnId,
         prompt: workerPrompt({ ...work, prompt: nextPrompt }, decisions, { continuation: true }),
         model: work.model, effort: work.effort, permissionMode: work.permissionMode });
-      const updated = this.store.updateWork(projectId, id, {
+      const updated = this.#transition(work, {
         prompt: nextPrompt,
         turnId: steered?.turnId ?? steered?.turn?.id ?? work.turnId,
         answer: "",
         error: null,
-        verification: null
-      });
+        verification: null,
+        completionReported: false
+      }, { kind: "continued", message: "Follow-up steered to the active worker." });
       this.#index(updated);
-      this.store.appendEvent(projectId, { workId: id, kind: "continued", message: "Follow-up steered to the active worker." });
       this.#changed(projectId);
       return updated;
     }
     if (work.status === "starting") throw new Error("Worker dispatch is still starting; retry the follow-up after its thread is available");
-    const updated = this.store.updateWork(projectId, id, {
+    const updated = this.#transition(work, {
       prompt: nextPrompt,
       status: "queued",
       turnId: null,
       answer: "",
       error: null,
-      verification: null
-    });
-    this.store.appendEvent(projectId, { workId: id, kind: "continued", message: "Follow-up queued on the existing durable work item." });
+      verification: null,
+      stopRequested: null,
+      completionReported: false
+    }, { kind: "continued", message: "Follow-up queued on the existing durable work item." });
     this.#changed(projectId);
     this.#scheduleDrain(projectId);
     return updated;
@@ -227,60 +232,57 @@ export class FocusSupervisor {
 
   async control(projectId, id, { action }) {
     const work = this.#requiredWork(projectId, id);
-    if (action === "pause") {
-      const updated = this.store.updateWork(projectId, id, { status: "paused" });
-      if (ACTIVE_STATUSES.has(work.status) && work.threadId && work.turnId) {
-        try { await this.interruptWorker({ projectId, threadId: work.threadId, turnId: work.turnId }); }
-        catch (error) {
-          const attention = this.store.updateWork(projectId, id, { status: "needs-attention", error: errorMessage(error) });
-          this.#changed(projectId);
-          return attention;
-        }
-      }
-      this.store.appendEvent(projectId, { workId: id, kind: "paused", message: "Work paused by the coordinator." });
-      this.#changed(projectId);
-      this.#scheduleDrain(projectId);
-      return updated;
-    }
     if (action === "resume") {
       if (work.status !== "paused" && work.status !== "needs-attention") throw new Error("Only paused or attention-required work can be resumed");
-      if (!work.threadId) {
-        const updated = this.store.updateWork(projectId, id, { status: "queued", error: null });
-        this.#changed(projectId);
-        this.#scheduleDrain(projectId);
-        return updated;
-      }
-      const updated = this.store.updateWork(projectId, id, { status: "queued", turnId: null, error: null });
+      if (work.stopRequested && work.status !== "paused") throw new Error("Wait for the stopping worker turn to settle before resuming");
+      const updated = this.#transition(work, { status: "queued", turnId: null, stopRequested: null, error: null, completionReported: false },
+        { kind: "resumed", message: "Work queued for resumption." });
       this.#changed(projectId);
       this.#scheduleDrain(projectId);
       return updated;
     }
-    if (action === "cancel") {
-      if (TERMINAL_STATUSES.has(work.status)) return work;
-      this.store.updateWork(projectId, id, { status: "cancelling" });
-      if (work.threadId && work.turnId) {
-        try { await this.interruptWorker({ projectId, threadId: work.threadId, turnId: work.turnId }); }
-        catch (error) {
-          const attention = this.store.updateWork(projectId, id, { status: "needs-attention", error: errorMessage(error) });
+    if (!["pause", "cancel"].includes(action)) throw new Error(`Unsupported Focus control action: ${action}`);
+    if (TERMINAL_STATUSES.has(work.status) || action === "pause" && work.status === "paused") return work;
+    if (work.stopRequested === action) return work;
+    const settled = work.turnId && this.store.hasSettledTurn?.(projectId, id, work.turnId);
+    const live = !settled && (ACTIVE_STATUSES.has(work.status) || this.startReservations.has(id) ||
+      work.status === "needs-attention" && Boolean(work.threadId && work.turnId));
+    // T3 ProviderTurnControlService distinguishes Stop intent/RPC acceptance from
+    // a settled provider turn. Retain capacity and resource claims until proof.
+    const updated = this.#transition(work, {
+      stopRequested: action,
+      status: live ? action === "cancel" ? "cancelling" : work.status : action === "pause" ? "paused" : "cancelled",
+      error: null
+    }, { kind: live ? `${action}-requested` : action === "pause" ? "paused" : "cancelled",
+      message: live ? `Worker ${action} requested; waiting for its exact turn to stop.` : `Work ${action === "pause" ? "paused" : "cancelled"} by the coordinator.` });
+    this.#changed(projectId);
+    if (live && work.threadId && work.turnId) {
+      try {
+        await this.interruptWorker({ projectId, threadId: work.threadId, turnId: work.turnId });
+        const current = this.store.getWork(projectId, id);
+        // A terminal event can arrive synchronously inside interruptWorker.
+        if (current?.stopRequested && !["paused", "cancelled"].includes(current.status)) {
+          void this.#recover(current).catch(error => this.#recordFailure(projectId, id, "stop-recovery-error", error));
+        }
+      } catch (error) {
+        const current = this.store.getWork(projectId, id);
+        if (current?.stopRequested && !["paused", "cancelled"].includes(current.status)) {
+          this.#transition(current, { status: "needs-attention", error: `Worker stop is unconfirmed: ${errorMessage(error)}` },
+            { kind: "stop-unconfirmed", message: `Worker stop is unconfirmed: ${errorMessage(error)}` });
           this.#changed(projectId);
-          return attention;
         }
       }
-      const updated = this.store.updateWork(projectId, id, { status: "cancelled" });
-      this.store.appendEvent(projectId, { workId: id, kind: "cancelled", message: "Work cancelled by the coordinator." });
-      this.#changed(projectId);
-      this.#scheduleDrain(projectId);
-      return updated;
     }
-    throw new Error(`Unsupported Focus control action: ${action}`);
+    this.#scheduleDrain(projectId);
+    return this.store.getWork(projectId, id) ?? updated;
   }
 
   async decide(projectId, { text, workIds = [], sourceThreadId = null }) {
     const decision = this.store.recordDecision(projectId, { text: bounded(text, 20_000), workIds, sourceThreadId });
     const affected = asArray(this.store.listRecoverableWork())
       .filter((work) => work.projectId === projectId && !TERMINAL_STATUSES.has(work.status) && decisionApplies(decision, work.id));
-    for (const work of affected) this.store.updateWork(projectId, work.id, { decisionRevision: decision.revision });
-    const targets = affected.filter((work) => ACTIVE_STATUSES.has(work.status) && work.threadId);
+    // FocusStore records decision + all affected revisions/outbox events atomically.
+    const targets = affected.filter((work) => ACTIVE_STATUSES.has(work.status) && work.threadId && !work.stopRequested);
     const deliveredWorkIds = [];
     await Promise.allSettled(targets.map(async (work) => {
       try {
@@ -288,14 +290,15 @@ export class FocusSupervisor {
           prompt: workerPrompt(work, [decision], { continuation: true, direction: bounded(text, 20_000) }),
           model: work.model, effort: work.effort, permissionMode: work.permissionMode });
         const turnId = next?.turnId ?? next?.turn?.id;
-        if (turnId) {
-          const updated = this.store.updateWork(projectId, work.id, { turnId });
-          this.#index(updated);
-        }
+        const current = this.store.getWork(projectId, work.id);
+        const updated = this.#transition(current, turnId ? { turnId } : {}, {
+          id: `direction:${decision.id}:${work.id}:delivered`, kind: "direction-delivered",
+          message: `Direction r${decision.revision} was delivered; worker acknowledgement is pending.`, decisionRevision: decision.revision
+        });
+        this.#index(updated);
         deliveredWorkIds.push(work.id);
-        this.store.appendEvent(projectId, { workId: work.id, kind: "direction-delivered", message: `Direction r${decision.revision} was delivered; worker acknowledgement is pending.`, decisionRevision: decision.revision });
       } catch (error) {
-        this.store.appendEvent(projectId, { workId: work.id, kind: "direction-delivery-failed", message: errorMessage(error), decisionRevision: decision.revision });
+        this.store.appendEvent(projectId, { id: `direction:${decision.id}:${work.id}:failed`, workId: work.id, kind: "direction-delivery-failed", message: errorMessage(error), decisionRevision: decision.revision });
       }
     }));
     this.#changed(projectId);
@@ -309,8 +312,8 @@ export class FocusSupervisor {
       throw new Error("Acknowledgement revision is outside this work item's delivered direction range");
     }
     if (value < Number(work.acknowledgedDecisionRevision ?? 0)) return work;
-    const updated = this.store.updateWork(projectId, id, { acknowledgedDecisionRevision: value });
-    this.store.appendEvent(projectId, { workId: id, kind: "direction-acknowledged", message: `Worker acknowledged direction r${value}.`, decisionRevision: value });
+    const updated = this.#transition(work, { acknowledgedDecisionRevision: value },
+      { id: `direction-ack:${id}:${value}`, kind: "direction-acknowledged", message: `Worker acknowledged direction r${value}.`, decisionRevision: value });
     this.#changed(projectId);
     return updated;
   }
@@ -326,13 +329,12 @@ export class FocusSupervisor {
     if (!new Set(["passed", "not-required"]).has(status) || !evidence) {
       throw new Error("Completion requires passed verification evidence or a concrete not-required justification");
     }
-    const updated = this.store.updateWork(projectId, id, {
+    const updated = this.#transition(work, {
       status: "done",
       answer: bounded(summary, 40_000),
       verification: { status, evidence },
       artifacts: asArray(artifacts).slice(0, 32)
-    });
-    this.store.appendEvent(projectId, { workId: id, kind: "completed", message: bounded(summary, 4_000) || "Work reviewed and completed." });
+    }, { kind: "completed", message: bounded(summary, 4_000) || "Work reviewed and completed." });
     this.#changed(projectId);
     this.#scheduleDelivery(projectId);
     this.#scheduleDrain(projectId);
@@ -382,9 +384,10 @@ export class FocusSupervisor {
       if (this.startReservations.has(work.id)) continue;
       results.push(await this.#recover(work));
     }
-    const projects = new Set(records.map((work) => work.projectId));
+    const projects = new Set([...records.map((work) => work.projectId), ...(this.store.deliveryProjects?.() ?? [])]);
     if (projectId) projects.add(projectId);
     for (const id of projects) {
+      await this.#reconcileDeliveries(id);
       await this.#requestDelivery(id);
       this.#scheduleDrain(id);
     }
@@ -417,8 +420,8 @@ export class FocusSupervisor {
         || (work.threadId && this.runtime?.providerForThread?.(work.threadId) === provider);
       if (!matches) continue;
       const message = `${DEFERRED_RECOVERY_PREFIX} ${provider || "worker"} is unavailable.`;
-      const updated = this.store.updateWork(work.projectId, work.id, { status: "needs-attention", error: message });
-      this.store.appendEvent(work.projectId, { workId: work.id, kind: "needs-attention", message, recoverable: true, provider });
+      const updated = this.#transition(work, { status: "needs-attention", error: message },
+        { kind: "needs-attention", message, recoverable: true, provider });
       this.#changed(work.projectId);
       this.#scheduleDelivery(work.projectId);
       this.#scheduleDrain(work.projectId);
@@ -428,7 +431,8 @@ export class FocusSupervisor {
   }
 
   /** Explicit delivery retry hook, intended for coordinator turn completion. */
-  flush(projectId) {
+  async flush(projectId) {
+    await this.#reconcileDeliveries(projectId);
     return this.#requestDelivery(projectId);
   }
 
@@ -445,6 +449,34 @@ export class FocusSupervisor {
     this.recoverAll = false;
     this.threadIndex.clear();
     this.startReservations.clear();
+  }
+
+  #transition(work, patch, event) {
+    return this.store.transitionWork(work.projectId, work.id, patch, {
+      id: event.id ?? `focus:${work.id}:r${work.revision}:${event.kind}`,
+      ...event
+    });
+  }
+
+  async #reconcileDeliveries(projectId) {
+    if (!this.resolveDelivery) return;
+    for (const delivery of this.store.listDeliveries(projectId, { states: ["uncertain"] })) {
+      try {
+        const result = await this.resolveDelivery({ ...delivery, deliveryId: delivery.id });
+        if (this.disposed) return;
+        if (result && ["accepted", "observed", "not-delivered"].includes(result.state)) {
+          this.store.settleDelivery(projectId, delivery.id, result);
+          this.#changed(projectId);
+        }
+      } catch { /* An unreadable coordinator is not evidence a send did not land. */ }
+    }
+  }
+
+  reconcileDelivery(projectId, deliveryId, result) {
+    const delivery = this.store.settleDelivery(projectId, deliveryId, result);
+    this.#changed(projectId);
+    if (result.state === "not-delivered") this.#scheduleDelivery(projectId);
+    return delivery;
   }
 
   #requiredWork(projectId, id) {
@@ -486,18 +518,20 @@ export class FocusSupervisor {
       const waiting = dependencies.some((item) => item && item.status !== "done");
       const status = failed || waiting ? "blocked" : "queued";
       const reason = failed ? `Dependency ${failed?.id ?? "missing"} cannot complete.` : waiting ? "Waiting for dependencies to complete." : null;
-      if (queued.status !== status || queued.error !== reason) this.store.updateWork(projectId, queued.id, { status, error: reason });
+      if (queued.status !== status || queued.error !== reason) this.#transition(queued, { status, error: reason },
+        { kind: status, message: reason || "Dependencies are ready." });
     }
     work = asArray(this.store.listRecoverableWork()).filter((item) => item.projectId === projectId);
     const active = work.filter((item) => ACTIVE_STATUSES.has(item.status)
       || this.startReservations.has(item.id)
+      || item.stopRequested && !["paused", "cancelled"].includes(item.status)
       || (item.status === "needs-attention" && item.threadId && item.turnId && String(item.error ?? "").startsWith(DEFERRED_RECOVERY_PREFIX)));
     const selected = [];
     for (const candidate of work.filter((item) => item.status === "queued")) {
       if (active.length + selected.length >= limit) break;
       if ([...active, ...selected].some((other) => conflicts(candidate, other))) continue;
       this.startReservations.add(candidate.id);
-      const starting = this.store.updateWork(projectId, candidate.id, { status: "starting", error: null });
+      const starting = this.#transition(candidate, { status: "starting", error: null }, { kind: "starting", message: "Worker dispatch claimed." });
       selected.push(starting);
       this.#changed(projectId);
     }
@@ -514,7 +548,7 @@ export class FocusSupervisor {
       const scopedRevision = decisions.filter((decision) => decisionApplies(decision, work.id))
         .reduce((revision, decision) => Math.max(revision, Number(decision.revision) || 0), 0);
       if (Number(current.decisionRevision ?? 0) < scopedRevision) {
-        current = this.store.updateWork(work.projectId, work.id, { decisionRevision: scopedRevision });
+        current = this.#transition(current, { decisionRevision: scopedRevision }, { kind: "direction-current", message: `Worker dispatch applies direction r${scopedRevision}.`, decisionRevision: scopedRevision });
       }
       const request = {
         projectId: work.projectId,
@@ -533,12 +567,21 @@ export class FocusSupervisor {
       if (!latest) return;
       const startedThreadId = started?.threadId ?? started?.thread?.id ?? latest.threadId;
       const startedTurnId = started?.turnId ?? started?.turn?.id ?? latest.turnId;
-      if (["paused", "cancelled", "cancelling"].includes(latest.status)) {
-        if (startedThreadId && startedTurnId) {
-          await this.interruptWorker({ projectId: work.projectId, threadId: startedThreadId, turnId: startedTurnId }).catch(() => {});
-        }
-        if (!this.disposed && latest.status === "cancelling") {
-          this.store.updateWork(work.projectId, work.id, { status: "cancelled", threadId: startedThreadId, turnId: startedTurnId });
+      if (latest.stopRequested || ["paused", "cancelled", "cancelling"].includes(latest.status)) {
+        if (!["paused", "cancelled"].includes(latest.status)) {
+          const stopping = this.#transition(latest, { threadId: startedThreadId, turnId: startedTurnId },
+            { kind: "stop-targeted", message: "Worker start resolved; stopping its exact turn." });
+          if (startedThreadId && startedTurnId) {
+            try {
+              await this.interruptWorker({ projectId: work.projectId, threadId: startedThreadId, turnId: startedTurnId });
+              await this.#recover(this.store.getWork(work.projectId, work.id) ?? stopping, { allowStarting: true });
+            } catch (error) {
+              const current = this.store.getWork(work.projectId, work.id);
+              if (current && !["paused", "cancelled"].includes(current.status)) this.#transition(current,
+                { status: "needs-attention", error: `Worker stop is unconfirmed: ${errorMessage(error)}` },
+                { kind: "stop-unconfirmed", message: `Worker stop is unconfirmed: ${errorMessage(error)}` });
+            }
+          }
         }
         return;
       }
@@ -547,21 +590,20 @@ export class FocusSupervisor {
         this.#index(latest);
         return;
       }
-      const updated = this.store.updateWork(work.projectId, work.id, {
+      const updated = this.#transition(latest, {
         status: "running",
         threadId: startedThreadId,
         turnId: startedTurnId,
         decisionRevision: Math.max(Number(latest.decisionRevision ?? 0), scopedRevision)
-      });
+      }, { kind: "started", message: "Worker started." });
       this.#index(updated);
-      this.store.appendEvent(work.projectId, { workId: work.id, kind: "started", message: "Worker started." });
       this.#changed(work.projectId);
     } catch (error) {
       if (this.disposed) return;
       const current = this.store.getWork(work.projectId, work.id);
       if (current && current.status !== "cancelled") {
-        this.store.updateWork(work.projectId, work.id, { status: "failed", error: errorMessage(error) });
-        this.store.appendEvent(work.projectId, { workId: work.id, kind: "failed", message: errorMessage(error) });
+        this.#transition(current, { status: current.stopRequested ? "needs-attention" : "failed", error: errorMessage(error) },
+          { kind: current.stopRequested ? "stop-unconfirmed" : "failed", message: errorMessage(error) });
         this.#changed(work.projectId);
         this.#scheduleDelivery(work.projectId);
       }
@@ -587,29 +629,38 @@ export class FocusSupervisor {
     if (!work) return;
     if (payload.method === "turn/started") {
       const turnId = payload.turn?.id ?? payload.turnId;
-      if (turnId && ["starting", "running"].includes(work.status) && (!work.turnId || work.status === "starting")) {
-        this.store.updateWork(work.projectId, work.id, { turnId, status: "running" });
+      if (turnId && ACTIVE_STATUSES.has(work.status) && (!work.turnId || work.status === "starting" && !work.stopRequested)) {
+        this.#transition(work, { turnId, status: work.stopRequested === "cancel" ? "cancelling" : "running" },
+          { id: `focus:${work.id}:turn:${turnId}:started`, kind: "started", message: "Worker turn started." });
       }
       return;
     }
     if (payload.method !== "turn/completed") return;
     if (["queued", "blocked", "paused", "cancelled"].includes(work.status) || (work.status === "starting" && !work.turnId)) return;
     const turnId = payload.turn?.id ?? payload.turnId;
-    if (work.turnId && turnId && work.turnId !== turnId) return;
+    if (!work.turnId || !turnId || work.turnId !== turnId) return;
     if (["review", "done"].includes(work.status)) return;
     const turnStatus = payload.turn?.status ?? payload.status ?? "completed";
-    if (work.status === "cancelling") {
-      this.store.updateWork(work.projectId, work.id, { status: "cancelled" });
-      this.store.appendEvent(work.projectId, { workId: work.id, kind: "cancelled", message: "Worker stopped after cancellation." });
+    if (turnId && !["inProgress", "running", "started"].includes(turnStatus)) {
+      this.store.appendEvent(work.projectId, { id: `focus:${work.id}:turn:${turnId}:settled`, workId: work.id,
+        kind: "turn-settled", message: `Exact worker turn ${turnStatus}.`, turnId, turnStatus });
+    }
+    if (work.stopRequested || work.status === "cancelling") {
+      // Sparse or stale completion is not proof that the reserved turn stopped.
+      if (!turnId || work.turnId !== turnId) return;
+      const status = work.stopRequested === "pause" ? "paused" : "cancelled";
+      this.#transition(work, { status, error: null }, { id: `focus:${work.id}:turn:${turnId}:${status}`,
+        kind: status, message: `Worker ${status} after its exact turn settled.` });
       this.#changed(work.projectId);
+      this.#scheduleDelivery(work.projectId);
       this.#scheduleDrain(work.projectId);
       return;
     }
     if (turnStatus === "interrupted" && work.status === "paused") return;
     if (turnStatus !== "completed") {
       const status = work.status === "cancelling" ? "cancelled" : "failed";
-      this.store.updateWork(work.projectId, work.id, { status, error: errorMessage(payload.turn?.error ?? payload.error ?? turnStatus) });
-      this.store.appendEvent(work.projectId, { workId: work.id, kind: status, message: `Worker turn ${turnStatus}.` });
+      this.#transition(work, { status, error: errorMessage(payload.turn?.error ?? payload.error ?? turnStatus) },
+        { id: `focus:${work.id}:turn:${turnId}:${status}`, kind: status, message: `Worker turn ${turnStatus}.` });
       this.#changed(work.projectId);
       this.#scheduleDelivery(work.projectId);
       this.#scheduleDrain(work.projectId);
@@ -630,14 +681,11 @@ export class FocusSupervisor {
         if (!current || current.status !== work.status || current.turnId !== work.turnId) return;
       }
     }
-    const updated = this.store.updateWork(work.projectId, work.id, {
-      status: "review",
-      answer,
-      error: null
-    });
-    const stale = Number(updated.acknowledgedDecisionRevision ?? 0) < Number(updated.decisionRevision ?? 0);
-    this.store.appendEvent(work.projectId, {
-      workId: work.id,
+    const current = this.store.getWork(work.projectId, work.id);
+    if (!current || current.status !== work.status || current.turnId !== work.turnId || current.stopRequested) return;
+    const stale = Number(current.acknowledgedDecisionRevision ?? 0) < Number(current.decisionRevision ?? 0);
+    this.#transition(current, { status: "review", answer, error: null }, {
+      id: `focus:${work.id}:turn:${turnId ?? work.turnId}:review`,
       kind: stale ? "review-stale" : "review-ready",
       message: stale ? "Worker result needs the latest direction acknowledgement before review can complete." : "Worker result is ready for coordinator review."
     });
@@ -679,40 +727,47 @@ export class FocusSupervisor {
       if (events.length === 0 && pending.length < 200) return null;
     }
     if (!events.length || this.disposed) return null;
+    let claim = null;
     try {
       const context = await this.contextForProject(projectId);
-      if (this.disposed) return null;
-      if (!context?.coordinatorThreadId) return null;
-      const accepted = await this.deliver({ projectId, coordinatorThreadId: context.coordinatorThreadId, events });
+      if (this.disposed || !context?.coordinatorThreadId) return null;
+      claim = this.store.claimDelivery(projectId, context.coordinatorThreadId, events.map(event => event.id));
+      if (!claim) return { accepted: false, held: true, error: "Coordinator delivery is awaiting reconciliation." };
+      const accepted = await this.deliver({ projectId, coordinatorThreadId: context.coordinatorThreadId, events,
+        metadata: { deliveryId: claim.id, messageId: claim.messageId } });
       if (this.disposed) return accepted;
-      if (accepted === false || accepted?.accepted === false) return accepted;
-      const acceptedIds = asArray(accepted?.eventIds).length ? accepted.eventIds : events.map((event) => event.id);
-      this.store.markEventsDelivered(projectId, acceptedIds);
-      for (const workId of new Set(events.filter((event) => acceptedIds.includes(event.id)).map((event) => event.workId).filter(Boolean))) {
-        const work = this.store.getWork(projectId, workId);
-        if (work && ["review", "done", "failed", "cancelled", "needs-attention"].includes(work.status)) {
-          this.store.updateWork(projectId, workId, { completionReported: true });
-        }
+      if (accepted === false || accepted?.accepted === false) {
+        this.store.settleDelivery(projectId, claim.id, { state: accepted?.uncertain ? "uncertain" : "not-delivered", error: accepted?.error ?? null });
+        this.#changed(projectId);
+        return accepted;
       }
+      if (accepted?.accepted !== true) {
+        this.store.settleDelivery(projectId, claim.id, { state: "uncertain", error: "Provider acceptance was not confirmed." });
+        this.#changed(projectId);
+        return { accepted: false, uncertain: true, error: "Provider acceptance was not confirmed." };
+      }
+      this.store.settleDelivery(projectId, claim.id, { state: "accepted", turnId: accepted?.turnId ?? accepted?.turn?.id ?? null });
       this.#changed(projectId);
       return accepted;
     } catch (error) {
-      // Delivery retries only on a later explicit ready/reconcile or a new completion.
-      return { accepted: false, error: errorMessage(error) };
+      if (claim && !this.disposed) {
+        this.store.settleDelivery(projectId, claim.id, {
+          state: error.definitelyNotSent || error.uncertain === false ? "not-delivered" : "uncertain", error: errorMessage(error)
+        });
+        this.#changed(projectId);
+      }
+      return { accepted: false, uncertain: Boolean(claim && !(error.definitelyNotSent || error.uncertain === false)), error: errorMessage(error) };
     }
   }
 
-  async #recover(work) {
+  async #recover(work, { allowStarting = false } = {}) {
     let current = this.store.getWork(work.projectId, work.id);
     if (!current || !shouldRecover(current)) return current ?? work;
     this.#index(current);
-    if (this.startReservations.has(current.id)) return current;
+    if (this.startReservations.has(current.id) && !allowStarting) return current;
     if (!current.threadId || !current.turnId) {
-      const attention = this.store.updateWork(current.projectId, current.id, {
-        status: "needs-attention",
-        error: "Pixice stopped while worker dispatch was ambiguous. Review before resuming; it was not restarted automatically."
-      });
-      this.store.appendEvent(current.projectId, { workId: current.id, kind: "needs-attention", message: attention.error });
+      const message = "Pixice stopped while worker dispatch was ambiguous. Review before resuming; it was not restarted automatically.";
+      const attention = this.#transition(current, { status: "needs-attention", error: message }, { kind: "needs-attention", message });
       this.#changed(current.projectId);
       return attention;
     }
@@ -727,7 +782,8 @@ export class FocusSupervisor {
       const turn = asArray(thread?.turns).find((candidate) => candidate.id === current.turnId);
       if (!turn) throw new Error("The worker turn is missing from its thread");
       if (["inProgress", "running", "started"].includes(turn.status)) {
-        const running = this.store.updateWork(current.projectId, current.id, { status: "running", error: null });
+        const running = this.#transition(current, { status: current.stopRequested === "cancel" ? "cancelling" : "running", error: null },
+          { kind: "recovered", message: current.stopRequested ? "Worker turn remains live while stopping; its reservation is retained." : "Recovered the running worker turn." });
         this.#index(running);
         return running;
       }
@@ -739,13 +795,11 @@ export class FocusSupervisor {
       if (!latest || latest.revision !== expected.revision || latest.status !== expected.status
         || latest.threadId !== expected.threadId || latest.turnId !== expected.turnId) return latest ?? current;
       const deferred = recoverableProviderError(error);
-      const attention = this.store.updateWork(current.projectId, current.id, {
-        status: "needs-attention",
-        error: deferred
-          ? `${DEFERRED_RECOVERY_PREFIX} ${errorMessage(error)}`
-          : `Worker recovery needs attention: ${errorMessage(error)}`
-      });
-      this.store.appendEvent(current.projectId, { workId: current.id, kind: "needs-attention", message: attention.error, recoverable: deferred });
+      const message = deferred
+        ? `${DEFERRED_RECOVERY_PREFIX} ${errorMessage(error)}`
+        : `Worker recovery needs attention: ${errorMessage(error)}`;
+      const attention = this.#transition(current, { status: "needs-attention", error: message },
+        { kind: "needs-attention", message, recoverable: deferred });
       this.#changed(current.projectId);
       return attention;
     }

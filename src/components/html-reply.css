@@ -1,0 +1,15 @@
+.html-reply { position: relative; margin: 12px 0 18px; min-width: 0; }
+.html-reply-actions { display: flex; align-items: center; gap: 8px; min-height: 28px; margin-bottom: 6px; color: var(--quiet, #a2a4aa); font: 12px/1.4 var(--font-sans, inherit); }
+.html-reply-actions > span { margin-right: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.html-reply-actions button { padding: 4px 7px; border: 0; border-radius: 6px; background: transparent; color: var(--muted, #a2a4aa); font: inherit; cursor: pointer; }
+.html-reply-actions button:hover, .html-reply-actions button:focus-visible, .html-reply-actions button[aria-pressed="true"] { background: var(--surface-raised, #303236); color: var(--foreground, #eee); }
+.html-reply-document { position: relative; width: 100%; min-width: 0; }
+.html-reply-document iframe { display: block; width: 100%; border: 0; border-radius: 4px; background: var(--canvas, #242628); color-scheme: normal; }
+.html-reply-document.is-expanded { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.html-reply-document.is-expanded iframe { flex: 1; height: 100%; min-height: 0; }
+.html-reply-placeholder { min-height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.html-reply-placeholder code { max-width: 100%; overflow-wrap: anywhere; font-size: 10px; }
+.html-reply-source { max-height: 560px; overflow: auto; }
+.html-reply-link-request { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; padding: 9px 10px; margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 12px; }
+.html-reply-link-request span { margin-right: auto; }
+.html-reply-link-request a, .html-reply-link-request button { padding: 4px 7px; border: 0; border-radius: 5px; background: var(--surface-raised); color: var(--foreground); font: inherit; cursor: pointer; text-decoration: none; }

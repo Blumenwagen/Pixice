@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, screen, shell, Tray, WebContentsView } from 'electron';
+import { app, autoUpdater as nativeUpdater, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, screen, shell, Tray, WebContentsView } from 'electron';
 import { spawn } from 'node:child_process';
 import { appendFile, stat, rename } from 'node:fs/promises';
 import path from 'node:path';
@@ -7,11 +7,16 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import electronUpdater from 'electron-updater';
 import { BrowserWorkspace } from './browser/browser-workspace.mjs';
+import { guardHtmlReplyNavigation } from './browser/html-reply-navigation.mjs';
 import { PixiceAppUpdater } from './updater/app-updater.mjs';
+import { assertMacUpdateEligible } from './updater/macos-update.mjs';
+import { UpdateJournal } from './updater/update-journal.mjs';
+import { createUpdateDataBackup } from './persistence/update-data-backup.mjs';
+import { acquireServiceOwnership } from './backend/ownership.mjs';
 import { createSystemAwakeController } from './runtime/system-awake.mjs';
 import { ApplicationClient } from './connect/application-client.mjs';
 import { APPLICATION_CHANNELS } from './connect/application-protocol.mjs';
-import { backendBuildId, descriptorInstance, ensureService, readServiceDescriptor, serviceCall, stopService } from './backend/manager.mjs';
+import { backendBuildId, descriptorInstance, ensureService, inspectService, readServiceDescriptor, serviceCall, stopService } from './backend/manager.mjs';
 import { BrowserSessions } from './native/browser-sessions.mjs';
 import { NativeHelperClient } from './native/helper-client.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -23,6 +28,8 @@ const dataDirectory = app.getPath('userData');
 const browserSessions = new BrowserSessions(dataDirectory);
 let mainWindow, tray, trayWindow, trayIconDataUrl, browserWorkspace, appUpdater, client, nativeHelper;
 let quitting = false, desktopLoaded = false, connecting;
+let serviceEnabled = true, reconnectTimer, reconnectAttempts = 0, lifecycle, recovering;
+let updateServiceWasEnabled = null;
 const loginSupported = process.platform === 'darwin' || process.platform === 'win32';
 let connectionState = { state: 'connecting' };
 let trayState = { items: [], activeCount: 0 };
@@ -30,7 +37,8 @@ const awake = createSystemAwakeController(powerSaveBlocker);
 const configuration = {
   dataDirectory, resourcesPath: isDev ? path.join(__dirname, '../resources') : process.resourcesPath, clientDirectory: path.join(__dirname, '../dist/client'),
   version: app.getVersion(), buildId: backendBuildId(), runAsNode: true,
-  nativeConfiguration: { command: process.execPath, args: isDev ? [path.resolve(__dirname, '..')] : [] }, waitForReady: false
+  nativeConfiguration: { command: process.execPath, args: isDev ? [path.resolve(__dirname, '..')] : [] }, waitForReady: false, timeoutMs: 10_000,
+  shouldStart: () => serviceEnabled && !quitting
 };
 function send(type, payload = {}) {
   if (mainWindow && !mainWindow.isDestroyed() && desktopLoaded) mainWindow.webContents.send('pixice:event', { type, payload, at: new Date().toISOString() });
@@ -51,14 +59,23 @@ function updateConnection(value) {
 }
 async function connectService({ start = true } = {}) {
   if (connecting) return connecting;
+  clearTimeout(reconnectTimer);
   connecting = (async () => {
     const descriptor = start ? await ensureService(configuration) : await readServiceDescriptor(dataDirectory);
     const replacingClient = Boolean(client);
     nativeHelper?.close(); client?.close();
-    client = new ApplicationClient(descriptorInstance(descriptor), {
-      probe: 'service.status', resolveInstance: async () => descriptorInstance(await readServiceDescriptor(dataDirectory)),
-      onState: (value) => { updateConnection(value); }
+    const nextClient = new ApplicationClient(descriptorInstance(descriptor), {
+      probe: 'service.status', handshakeTimeoutMs: 3000,
+      resolveInstance: async ({ signal }) => {
+        if (!serviceEnabled) throw new Error('The backend was stopped.');
+        const lookup = ensureService({ ...configuration, signal });
+        recovering = lookup;
+        try { return descriptorInstance(await lookup); }
+        finally { if (recovering === lookup) recovering = null; }
+      },
+      onState: (value) => { if (client === nextClient) updateConnection(value); }
     });
+    client = nextClient;
     client.subscribe((event) => {
       if (event.type === 'ApplicationResync') recordConnection({ state: 'resync', reason: event.payload?.reason });
       if (event.type === 'TrayState') { trayState = event.payload; updateTrayMenu(); }
@@ -67,11 +84,48 @@ async function connectService({ start = true } = {}) {
     nativeHelper = new NativeHelperClient({ directory: dataDirectory, browser: browserWorkspace, sessions: browserSessions, invokeDesktop, crypto: safeStorage });
     nativeHelper.start();
     await client.connect();
+    reconnectAttempts = 0;
     if (replacingClient) send('ApplicationResync');
     void refreshTrayState().catch(() => {});
     return { connected: true };
-  })().catch((error) => { updateConnection({ state: 'error', error: error.message }); throw error; }).finally(() => { connecting = null; });
+  })().catch((error) => {
+    updateConnection({ state: 'error', error: error.message });
+    if (serviceEnabled && !quitting) reconnectTimer = setTimeout(() => { void connectService().catch(() => {}); }, Math.min(15_000, 1000 * 2 ** reconnectAttempts++));
+    throw error;
+  }).finally(() => { connecting = null; });
   return connecting;
+}
+async function serviceAction(action, payload) {
+  const { force } = z.object({ force: z.boolean().default(false) }).strict().parse(payload ?? {});
+  if (lifecycle || updateServiceWasEnabled !== null) throw new Error('A backend action or app update is already in progress.');
+  lifecycle = (async () => {
+    if (force) {
+      const result = await dialog.showMessageBox(mainWindow, { type: 'warning', buttons: ['Cancel', `Force ${action}`], defaultId: 0, cancelId: 0,
+        message: `Force ${action} the Pixice backend?`, detail: 'This interrupts running agents and workflows. Saved projects and conversations are kept; unsent drafts remain open.' });
+      if (result.response !== 1) return { cancelled: true };
+    }
+    if (action === 'start') { serviceEnabled = true; updateConnection({ state: 'connecting' }); return connectService(); }
+    const wasEnabled = serviceEnabled;
+    serviceEnabled = false; clearTimeout(reconnectTimer);
+    client?.close();
+    try {
+      // Finish discovery before stopping its process, and cancel any old poller
+      // after shutdown so an intentional stop cannot be auto-restarted.
+      if (connecting) await connecting.catch(() => {});
+      if (recovering) await recovering.catch(() => {});
+      client?.close();
+      await stopService(dataDirectory, { force, restart: action === 'restart' });
+      client?.close(); nativeHelper?.close(); awake.stop();
+      updateConnection({ state: 'stopped' });
+    } catch (error) {
+      serviceEnabled = wasEnabled;
+      if (wasEnabled) void connectService().catch(() => {});
+      throw error;
+    }
+    if (action === 'restart') { serviceEnabled = true; updateConnection({ state: 'connecting' }); return connectService(); }
+    return { stopped: true };
+  })();
+  try { return await lifecycle; } finally { lifecycle = null; }
 }
 async function invokeDesktop(method, args) {
   const value = args[0];
@@ -88,7 +142,11 @@ async function invokeDesktop(method, args) {
       message: `Allow ${action.capability}?`, detail: `${resolution.summary}\n\nTool request: ${action.confirmation}\nInstrument: ${instrument.metadata?.name || instrument.document.title}` });
     return result.response === 1;
   }
-  if (method === 'serviceStopped') { awake.stop(); updateConnection({ state: 'stopped' }); return { exitHelper: value?.reason === 'user' && !desktopLoaded }; }
+  if (method === 'serviceStopped') {
+    if (['user', 'update'].includes(value?.reason)) { serviceEnabled = false; clearTimeout(reconnectTimer); client?.close(); }
+    awake.stop(); updateConnection({ state: 'stopped' });
+    return { exitHelper: value?.reason === 'user' && !desktopLoaded };
+  }
   if (method === 'shutdown') return { exitHelper: true };
   if (method === 'finishShutdown') return shutdownNative();
   throw new Error('Unsupported desktop capability');
@@ -112,6 +170,7 @@ async function openMainWindow(destination = null) {
 }
 function shutdownNative() {
   quitting = true;
+  serviceEnabled = false; clearTimeout(reconnectTimer);
   nativeHelper?.close(); client?.close(); appUpdater?.stop(); awake.stop();
   browserSessions.flush(); browserWorkspace?.destroy();
   for (const window of BrowserWindow.getAllWindows()) window.destroy();
@@ -172,6 +231,7 @@ function createWindow() {
       backgroundThrottling: false
     }
   });
+  guardHtmlReplyNavigation(mainWindow.webContents);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
     return { action: "deny" };
@@ -270,15 +330,14 @@ function registerIpc() {
   for (const [channel, operation] of APPLICATION_CHANNELS) {
     if (operation.startsWith('native.') || operation.startsWith('service.') || operation.startsWith('tray.')) continue;
     handle(channel, async (payload) => {
-      if (!client) { if (!connecting) throw new Error('The backend is offline. Start it in Connections.'); await connecting; }
+      if (connecting) await connecting;
+      if (!client) throw new Error('The backend is offline. Start it in Connections.');
       return client.call(operation, payload);
     });
   }
   handle('service:connection', () => connectionState);
-  handle('service:status', async () => ({ ...await serviceCall(await readServiceDescriptor(dataDirectory), 'service.status'), loginSupported, openAtLogin: loginSupported ? app.getLoginItemSettings().openAtLogin : false }));
-  handle('service:start', () => connectService());
-  handle('service:stop', () => stopService(dataDirectory));
-  handle('service:restart', async () => { await stopService(dataDirectory, { restart: true }); return connectService(); });
+  handle('service:status', async () => ({ ...await inspectService(dataDirectory), loginSupported, openAtLogin: loginSupported ? app.getLoginItemSettings().openAtLogin : false }));
+  for (const action of ['start', 'stop', 'restart']) handle(`service:${action}`, (payload) => serviceAction(action, payload));
   handle('service:login', (value) => { const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(value); if (!loginSupported) throw new Error('Use your system service manager to start Pixice at login on this platform.'); app.setLoginItemSettings({ openAtLogin: enabled, args: [...(isDev ? [path.resolve(__dirname, '..')] : []), '--pixice-native-helper'] }); return { enabled }; });
   for (const action of ['status', 'check', 'download', 'install']) handle(`updates:${action}`, () => action === 'status' ? appUpdater.snapshot() : appUpdater[action]());
   ipcMain.handle('tray:action', async (event, payload) => {
@@ -304,12 +363,42 @@ else {
     createWindow();
     browserWorkspace = new BrowserWorkspace({ window: mainWindow, WebContentsView, BrowserWindow, emit: (type, payload) => nativeHelper?.event({ type, payload }) });
     registerIpc();
-    appUpdater = new PixiceAppUpdater({ updater: electronUpdater.autoUpdater, app, prepareInstall: async ({ currentVersion, availableVersion }) => {
-      const descriptor = await readServiceDescriptor(dataDirectory);
-      const backup = await serviceCall(descriptor, 'service.backup', { currentVersion, targetVersion: availableVersion });
-      await stopService(dataDirectory, { update: true, keepDesktop: true });
-      quitting = true; return backup;
-    } });
+    appUpdater = new PixiceAppUpdater({
+      updater: electronUpdater.autoUpdater, nativeUpdater, app,
+      journal: new UpdateJournal(path.join(dataDirectory, 'updates')),
+      assertInstallable: process.platform === 'darwin' ? () => assertMacUpdateEligible(process.execPath) : null,
+      prepareInstall: async ({ currentVersion, availableVersion }) => {
+        if (lifecycle) throw new Error('Wait for the current backend action to finish before updating.');
+        updateServiceWasEnabled = serviceEnabled;
+        // Pause every recovery path before stopping the old executable. Otherwise
+        // its disconnect can spawn the old backend again during installation.
+        serviceEnabled = false; clearTimeout(reconnectTimer);
+        if (connecting) await connecting.catch(() => {});
+        if (recovering) await recovering.catch(() => {});
+        client?.close();
+        let descriptor;
+        try { descriptor = await readServiceDescriptor(dataDirectory); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        let backup;
+        if (descriptor) {
+          backup = await serviceCall(descriptor, 'service.backup', { currentVersion, targetVersion: availableVersion });
+          await stopService(dataDirectory, { update: true, keepDesktop: true });
+        } else {
+          const ownership = await acquireServiceOwnership(dataDirectory);
+          try { backup = await createUpdateDataBackup({ userDataPath: dataDirectory, currentVersion, targetVersion: availableVersion }); }
+          finally { await ownership.release(); }
+        }
+        updateConnection({ state: 'stopped' });
+        return backup;
+      },
+      beforeQuit: () => { quitting = true; },
+      recoverInstall: async () => {
+        if (updateServiceWasEnabled === null) return;
+        quitting = false;
+        serviceEnabled = updateServiceWasEnabled; updateServiceWasEnabled = null;
+        if (serviceEnabled) { updateConnection({ state: 'connecting' }); await connectService(); }
+      }
+    });
     appUpdater.on('status', (status) => send('UpdateState', status)); appUpdater.start();
     const connection = connectService();
     if (!helperOnly) await openMainWindow(); else app.dock?.hide();

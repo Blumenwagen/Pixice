@@ -1,4 +1,5 @@
 import { useUnifiedUsage } from "./connect/useUnifiedUsage.js";
+import { attentionProvider, attentionGeneration, attentionOwnerKey, attentionIdentity } from "./lib/attention-identity.js";
 import { RemoteBrowserSurface } from "./connect/RemoteBrowserSurface.jsx";
 import { ConnectionsSettings } from "./connect/ConnectionsSettings.jsx";
 import { getPixiceApi } from "./connect/client.js";
@@ -44,24 +45,41 @@ import { InstrumentHost } from "./components/instruments/InstrumentHost.jsx";
 import { IosSimulatorPreview } from "./components/ios/IosSimulatorPreview.jsx";
 import { ProjectToolsSidebar, ProjectToolsWorkspace } from "./components/instruments/ProjectToolsWorkspace.jsx";
 import { TaskReceipt, ModelReplay } from "./components/TaskResults.jsx";
+import { MessageQueuePanel } from "./components/MessageQueue.jsx";
+import { PromptEditor } from "./composer/PromptEditor.jsx";
+import { ContextPicker, ContextInspector } from "./composer/ContextPicker.jsx";
+import { CONTEXT_CLIPBOARD_MIME, normalizeContextRecords, mergeContextRecords, createContextRecord, serializeContextToken, parseContextTokens, contextPromptTextForDisplay, contextSendIssues, composerContextTrigger, requestComposerContext, subscribeComposerContext } from "./composer/context.js";
+import { createDraftMemory, stripGeneratedAttachmentContext, buildPromptHistoryEntries, acceptedPromptHistoryAnchor, reconcileAcceptedPromptHistory, stepPromptHistory, pasteToAttachment } from "./composer/draft-memory.js";
+import { DraftStash } from "./composer/DraftStash.jsx";
+import { COMPOSER_QUEUE_EDIT_EVENT, requestQueueEdit, attachmentFromDraft } from "./composer/composer-runtime.js";
+import { rememberComposerAttachment, recoverComposerAttachment } from "./composer/attachment-registry.js";
+import { SelectionContextMenu } from "./composer/SelectionContextMenu.jsx";
+import { HtmlReply, HtmlReplyFrame, HtmlReplyContext, parseHtmlReplySpec } from "./components/HtmlReply.jsx";
+import { PullRequestWorkspace } from "./components/PullRequestWorkspace.jsx";
+import { TaskWorkspacePicker, TaskWorkspaceBadge } from "./components/TaskWorkspace.jsx";
+import { RewindPromptAction } from "./components/RewindPrompt.jsx";
 import { TaskPreviewContent } from "./components/TaskPreviewHost.jsx";
 import { WorkflowPreview } from "./components/workflows/WorkflowWorkspace.jsx";
 import { DitherAreaChart, DitherBarChart } from "./components/dither-kit/DitherChart.jsx";
 import { UsageHeatMap } from "./components/dither-kit/UsageHeatMap.jsx";
 import { NumberTicker } from "./components/NumberTicker.jsx";
 import { MorphText } from "./components/MorphText.jsx";
+import { GentleCascade } from "./components/GentleCascade.jsx";
 import { OperationCapsuleStack } from "./components/OperationCapsule.jsx";
+import { recoverWorkspaceBootstrap } from "./state/bootstrap-recovery.js";
 import { ImageGeneration } from "./components/ImageGeneration.jsx";
 import { InspectablePicture } from "./components/PictureInspector.jsx";
 import { PromptPreviewRail } from "./components/PromptPreviewRail.jsx";
 import { FocusCoordination } from "./components/FocusCoordination.jsx";
 import { FocusCoordinatorQuestions } from "./components/FocusCoordinatorQuestions.jsx";
+import { RequestResponseStatus, useRequestResponse } from "./components/RequestResponseStatus.jsx";
 import { KanbanBoard } from "./components/KanbanBoard.jsx";
 import { ProjectCreationDialog, ProjectGlyph, ProjectSwitcher, projectTileStyle } from "./components/sidebar/ProjectSwitcher.jsx";
 import { ThreadCleanupPopover } from "./components/sidebar/ThreadCleanupPopover.jsx";
 import { normalizeThreadCleanupAgeDays, THREAD_CLEANUP_MAX_DAYS, THREAD_CLEANUP_MIN_DAYS } from "./components/sidebar/thread-cleanup.js";
 import { resolveThreadNamingModel, threadNamingModels, THREAD_NAMING_AUTO, THREAD_NAMING_OFF } from "../electron/runtime/thread-naming-models.mjs";
 import { resolveWorkflowGenerationModel, workflowGenerationModels, WORKFLOW_GENERATION_AUTO } from "../electron/runtime/workflow-generation-models.mjs";
+import { describeMcpElicitationApproval } from "../electron/runtime/mcp-elicitation.mjs";
 import {
   appendLocalUserMessage,
   applyRuntimePayload,
@@ -89,6 +107,7 @@ const RUNTIME_RECOVERY_SILENCE_MS = 12_000;
 const FOCUS_CONNECTION_ERROR = /(?:thread|session).*(?:not found|not loaded|unavailable)|(?:unable|failed) to connect(?: to (?:thread|session))?|(?:connection|provider|runtime).*(?:lost|closed|offline|unavailable|reconnect|stopped)|ECONN|fetch failed/i;
 const EMPTY_AGENT_BEHAVIORS = [];
 const WorkspaceOpenContext = createContext(null);
+const ComposerSourceContext = createContext(null);
 const MIN_SIDEBAR_WIDTH = 224;
 const MAX_SIDEBAR_WIDTH = 360;
 const DEFAULT_SIDEBAR_WIDTH = 264;
@@ -112,6 +131,7 @@ const DEFAULT_PREFERENCES = {
   preserveDrafts: true,
   sendShortcut: "enter",
   spellCheckComposer: true,
+  composerRichTextEnabled: true,
   autoFocusComposer: true,
   showSlashCommands: true,
   showMessageTimestamps: true,
@@ -1275,12 +1295,12 @@ function FileSurface({ file, onUpdate, onSave, onDownload = null, onDownloadCanc
         {file.error && <div className="file-save-error"><Warning size={13} />{file.error}</div>}
       </div>
     );
-  } else if (file.previewKind === "markdown") content = <div className="file-document markdown-document"><MarkdownMessage text={source} /></div>;
+  } else if (file.previewKind === "markdown") content = <div className="file-document markdown-document" data-context-kind="preview" data-context-label={file.name} data-context-path={file.path}><MarkdownMessage text={source} /></div>;
   else if (file.previewKind === "html") content = <iframe className="html-preview" title={`Preview ${file.name}`} srcDoc={source} sandbox="allow-scripts allow-forms allow-modals" />;
   else if (file.previewKind === "image") content = <div className="file-media-preview"><img src={file.dataUrl} alt={file.name} /></div>;
   else if (file.previewKind === "pdf") content = <iframe className="pdf-preview" title={file.name} src={file.dataUrl} />;
   else if (file.previewKind === "unsupported") content = <div className="file-empty"><File size={28} /><strong>Preview unavailable</strong><small>This binary format cannot be displayed or edited in Pixice yet.</small></div>;
-  else content = <pre className="text-file-preview"><code>{source}</code></pre>;
+  else content = <pre className="text-file-preview" data-context-kind="preview" data-context-label={file.name} data-context-path={file.path}><code>{source}</code></pre>;
   return <div className="file-surface">
     {(onDownload || downloadError) && <div className="file-surface-actions">
       {onDownload && <button type="button" className="settings-action" onClick={() => void onDownload(file)} disabled={downloadBusy}>{downloadBusy ? <SpinnerGap className="spin-icon" size={13} /> : <ArrowClockwise size={13} />}{downloadBusy ? "Downloading…" : "Download file"}</button>}
@@ -1290,6 +1310,35 @@ function FileSurface({ file, onUpdate, onSave, onDownload = null, onDownloadCanc
     </div>}
     {content}
   </div>;
+}
+
+function HtmlReplyPreview({ api, projectId, threadId, spec }) {
+  const [reply, setReply] = useState(null); const [error, setError] = useState(null);
+  useEffect(() => {
+    let current = true; setReply(null); setError(null);
+    if (spec?.html) { setReply(spec); return () => { current = false; }; }
+    if (!spec?.id || spec.threadId !== threadId) { setError("This HTML reply belongs to another conversation."); return () => { current = false; }; }
+    api.htmlReplies.read({ projectId, threadId, id: spec.id }).then(value => { if (current) setReply(value); }).catch(cause => { if (current) setError(cause.message); });
+    return () => { current = false; };
+  }, [api, projectId, threadId, spec]);
+  const context = useMemo(() => ({ documentUrl: payload => api.htmlReplies.document({ ...payload, projectId, threadId }) }), [api, projectId, threadId]);
+  return <HtmlReplyContext.Provider value={context}>{error ? <div className="file-empty" role="alert">{error}</div> : reply ? <HtmlReplyFrame html={reply.html} title={reply.title} expanded /> : <div className="file-empty" role="status">Loading interactive reply…</div>}</HtmlReplyContext.Provider>;
+}
+
+function ConversationHtmlScope({ api, project, thread, onOpen, children }) {
+  const value = useMemo(() => ({
+    documentUrl: payload => api.htmlReplies.document({ ...payload, projectId: project.id, threadId: thread.id }),
+    resolveSpec: spec => spec?.threadId && spec.threadId !== thread?.id && thread?.htmlReplySourceThreadIds?.includes(spec.threadId) ? { ...spec, threadId: thread.id, reference: `pixice-html://${encodeURIComponent(thread.id)}/${spec.id}` } : spec,
+    load: spec => {
+      if (!thread?.id || spec.threadId !== thread.id) throw new Error("This HTML reply belongs to another conversation.");
+      return api.htmlReplies.read({ projectId: project.id, threadId: thread.id, id: spec.id });
+    },
+    open: spec => {
+      const reply = spec.id ? { id: spec.id, threadId: thread.id, title: spec.title, height: spec.height } : spec;
+      onOpen?.({ id: `htmlReply:${thread.id}:${spec.id ?? Date.now()}`, kind: "htmlReply", title: spec.title ?? "Interactive reply", payload: { projectId: project.id, threadId: thread.id, reply } });
+    }
+  }), [api, project?.id, thread?.id, thread?.htmlReplySourceThreadIds, onOpen]);
+  return <ComposerSourceContext.Provider value={{ projectId: project?.id, threadId: thread?.id ?? null, hostId: api?.remote?.hostId ?? "local" }}><HtmlReplyContext.Provider value={value}><SelectionContextMenu projectId={project?.id} threadId={thread?.id ?? null} hostId={api?.remote?.hostId ?? "local"}>{children}</SelectionContextMenu></HtmlReplyContext.Provider></ComposerSourceContext.Provider>;
 }
 
 function PreviewTabSurface({ workspaceId, reduceMotion }) {
@@ -1305,6 +1354,8 @@ function PreviewTabSurface({ workspaceId, reduceMotion }) {
 }
 
 function PreviewCustomTabIcon({ kind }) {
+  if (kind === "pull-requests") return <GitBranch size={12} />;
+  if (kind === "htmlReply") return <Code size={12} />;
   if (kind === "workflow") return <TreeStructure size={12} />;
   if (kind === "task") return <Circle size={12} />;
   if (kind === "plan") return <Gauge size={12} />;
@@ -1368,6 +1419,7 @@ function PreviewNewTab({ api, projectId, hostThreadId, threads, onChooseBrowser,
           <button type="button" onClick={() => void loadItems("task")}><Circle size={16} /><span><strong>Work item</strong><small>Open a Board item</small></span></button>
           <button type="button" onClick={() => void loadItems("workflow")}><TreeStructure size={16} /><span><strong>Workflow</strong><small>Open a workflow canvas</small></span></button>
           {hostThreadId && <button type="button" onClick={() => onChooseCustom({ id: `task-map:${hostThreadId}`, kind: "task-map", title: "Task map", payload: { projectId, threadId: hostThreadId, hostThreadId } })}><TaskMapIcon size={16} /><span><strong>Task map</strong><small>Watch plans and agents</small></span></button>}
+          {hostThreadId && api?.pullRequests && <button type="button" onClick={() => onChooseCustom({ id: `pull-requests:${hostThreadId}`, kind: "pull-requests", title: "Pull requests", payload: { projectId, threadId: hostThreadId } })}><GitBranch size={16} /><span><strong>Pull requests</strong><small>Deliver, review, and watch changes</small></span></button>}
           <button type="button" onClick={onChooseSimulator}><Desktop size={16} /><span><strong>iOS Simulator</strong><small>Build and run SwiftUI</small></span></button>
         </div>
         {mode === "file" && (
@@ -1499,7 +1551,7 @@ function BrowserPanel({ api, workspaceId, apiWorkspaceId = workspaceId, state, o
     if (!file?.editable || !file.dirty || file.saving) return;
     onFileUpdate(file.id, { saving: true, error: null });
     try {
-      const saved = await api.files.write({ projectId, path: file.path, content: file.draft ?? file.content ?? "", expectedMtimeMs: file.mtimeMs });
+      const saved = await api.files.write({ projectId, ...(hostThreadId ? { threadId: hostThreadId } : {}), path: file.path, content: file.draft ?? file.content ?? "", expectedMtimeMs: file.mtimeMs });
       onFileUpdate(file.id, {
         ...saved,
         previewKind: saved.kind,
@@ -1664,11 +1716,16 @@ function BrowserPanel({ api, workspaceId, apiWorkspaceId = workspaceId, state, o
           {...sideThreadProps}
           api={api}
           tab={activeCustomTab}
+          onPreviewCustomTabOpen={onCustomTabOpen}
           onTabUpdate={(patch) => onCustomTabUpdate(activeCustomTab.id, patch)}
           key={activeCustomTab.id}
         />
       ) : activeCustomTab?.kind === "task-map" ? (
         <TaskMapPreview {...taskMapProps} />
+      ) : activeCustomTab?.kind === "pull-requests" ? (
+        <PullRequestWorkspace api={api} projectId={activeCustomTab.payload.projectId ?? projectId} threadId={activeCustomTab.payload.threadId ?? hostThreadId} initialUrl={activeCustomTab.payload.url} onOpenUrl={url => onOpenResource(url, { browserOnly: true })} />
+      ) : activeCustomTab?.kind === "htmlReply" ? (
+        <HtmlReplyPreview api={api} projectId={activeCustomTab.payload.projectId ?? projectId} threadId={activeCustomTab.payload.threadId ?? hostThreadId} spec={activeCustomTab.payload.reply} />
       ) : activeCustomTab?.kind === "simulator" ? (
         <IosSimulatorPreview
           api={api}
@@ -1839,12 +1896,12 @@ function PlanPanel({ plan, fallbackText, thread, agents = [], fileCount = 0, run
   );
 }
 
-function CommandOutput({ output }) {
+function CommandOutput({ output, itemId }) {
   const [open, setOpen] = useState(false);
   return (
     <details className="trace-command-output" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary><span>View output</span><CaretRight className="activity-caret" size={12} /></summary>
-      {open && <pre>{output}</pre>}
+      {open && <pre data-context-kind="terminal" data-context-label="Terminal excerpt" data-context-item={itemId}>{output}</pre>}
     </details>
   );
 }
@@ -1866,7 +1923,7 @@ function ActivityItem({ item }) {
           <span className="trace-entry-copy"><strong>Command</strong><code title={command}>{command}</code></span>
           <StatusDot status={item.status === "completed" ? "complete" : item.status === "failed" ? "error" : "running"} />
         </div>
-        {item.aggregatedOutput && <CommandOutput output={item.aggregatedOutput} />}
+        {item.aggregatedOutput && <CommandOutput output={item.aggregatedOutput} itemId={item.id} />}
       </div>
     );
   }
@@ -2003,12 +2060,13 @@ function appendTrailing(blocks, trailing) {
   return next;
 }
 
-export function MarkdownMessage({ text, trailing }) {
+export function MarkdownMessage({ text, trailing, streaming = false }) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const blocks = [];
   let index = 0;
 
   while (index < lines.length) {
+    const blockStart = index;
     const line = lines[index];
     if (!line.trim()) {
       index += 1;
@@ -2025,7 +2083,7 @@ export function MarkdownMessage({ text, trailing }) {
       }
       index += 1;
       const source = code.join("\n");
-      blocks.push(<FencedMessageBlock source={source} language={language} key={`fence-${index}`} />);
+      blocks.push(<FencedMessageBlock source={source} language={language} key={`fence-${blockStart}`} />);
       continue;
     }
 
@@ -2046,7 +2104,7 @@ export function MarkdownMessage({ text, trailing }) {
         rows.push(tableCells(lines[index]));
         index += 1;
       }
-      blocks.push(<MarkdownTable headers={headers} rows={rows} key={`table-${index}`} />);
+      blocks.push(<MarkdownTable headers={headers} rows={rows} key={`table-${blockStart}`} />);
       continue;
     }
 
@@ -2062,7 +2120,7 @@ export function MarkdownMessage({ text, trailing }) {
         index += 1;
       }
       const List = unordered ? "ul" : "ol";
-      blocks.push(<List key={`list-${index}`}>{listItems}</List>);
+      blocks.push(<List key={`list-${blockStart}`}>{listItems}</List>);
       continue;
     }
 
@@ -2072,7 +2130,7 @@ export function MarkdownMessage({ text, trailing }) {
         quote.push(lines[index].replace(/^>\s?/, ""));
         index += 1;
       }
-      blocks.push(<blockquote key={`quote-${index}`}>{inlineMarkdown(quote.join(" "), `quote-${index}`)}</blockquote>);
+      blocks.push(<blockquote key={`quote-${blockStart}`}>{inlineMarkdown(quote.join(" "), `quote-${blockStart}`)}</blockquote>);
       continue;
     }
 
@@ -2082,15 +2140,16 @@ export function MarkdownMessage({ text, trailing }) {
       paragraph.push(lines[index].trim());
       index += 1;
     }
-    blocks.push(<p key={`paragraph-${index}`}>{inlineMarkdown(paragraph.join(" "), `paragraph-${index}`)}</p>);
+    blocks.push(<p key={`paragraph-${blockStart}`}>{inlineMarkdown(paragraph.join(" "), `paragraph-${blockStart}`)}</p>);
   }
 
-  return <div className="markdown-body">{appendTrailing(blocks, trailing)}</div>;
+  return <div className="markdown-body"><GentleCascade text={text} active={streaming}>{appendTrailing(blocks, trailing)}</GentleCascade></div>;
 }
 
 function FencedMessageBlock({ source, language }) {
   const visualization = useMemo(() => parseVisualizationSpec(source, language), [language, source]);
-  return visualization
+  const htmlReply = useMemo(() => parseHtmlReplySpec(source, language), [language, source]);
+  return htmlReply ? <HtmlReply spec={htmlReply} /> : visualization
     ? <InlineVisualization spec={visualization} />
     : <pre className="message-code"><code data-language={language || undefined}>{source}</code></pre>;
 }
@@ -2135,11 +2194,13 @@ function sameThreadSummary(left, right) {
     && left.bridge?.effort === right.bridge?.effort;
 }
 
-function AssistantAnswerActions({ timestamp = null, showTimestamp = true, onFork = null }) {
+function AssistantAnswerActions({ timestamp = null, showTimestamp = true, onFork = null, citation = null }) {
+  const source = useContext(ComposerSourceContext);
   const [forking, setForking] = useState(false);
-  if (!onFork && !showTimestamp) return null;
+  if (!onFork && !showTimestamp && !citation) return null;
   return (
     <div className="assistant-answer-actions detached">
+      {citation && source?.projectId && <button type="button" className="fork-response-button" aria-label="Cite this answer" title="Cite this answer" onClick={() => requestComposerContext({ ...source, record: createContextRecord("citation", { label: "Assistant answer", text: citation.text, source: { ...source, ...citation.source } }) })}><span aria-hidden="true">❞</span></button>}
       {onFork && (
         <button
           type="button"
@@ -2165,34 +2226,25 @@ function AssistantAnswerActions({ timestamp = null, showTimestamp = true, onFork
   );
 }
 
-function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false }) {
-  const [animate] = useState(() => !seenResponseIds.has(responseKey));
-  const systemReducedMotion = useReducedMotion();
+function AssistantResponse({ item, forceFinal, responseKey, seenResponseIds, sentToMain = false, streaming = false }) {
   useEffect(() => {
     seenResponseIds.add(responseKey);
   }, [responseKey, seenResponseIds]);
 
   return (
     <div className="assistant-message-block">
-      <article className={`message assistant-message ${forceFinal ? "final_answer" : item.phase ?? ""}`}>
-        {animate ? (
-          <motion.div
-            initial={systemReducedMotion ? false : { opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: systemReducedMotion ? 0 : 0.24, ease: MOTION_EASE }}
-          >
-            <MarkdownMessage text={item.text} />
-          </motion.div>
-        ) : <MarkdownMessage text={item.text} />}
+      <article className={`message assistant-message ${forceFinal ? "final_answer" : item.phase ?? ""}`} data-context-kind="citation" data-context-label="Assistant quote" data-context-item={item.id}>
+        <MarkdownMessage text={item.text} streaming={streaming} />
         {sentToMain && <div className="bridge-answer-status"><CheckCircle size={11} weight="fill" />Sent answer to main agent</div>}
       </article>
     </div>
   );
 }
 
-function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds, imagePrompt = null, imageResolution = null, promptAnchorId = null, openedByAgent = false, sentToMain = false, timestamp = null, showTimestamp = true, onImageRevision = null, imageRevisionDisabled = false }) {
+function ConversationItem({ item, forceFinal = false, responseKey, seenResponseIds, imagePrompt = null, imageResolution = null, promptAnchorId = null, openedByAgent = false, sentToMain = false, timestamp = null, showTimestamp = true, onImageRevision = null, imageRevisionDisabled = false, streaming = false }) {
   if (item.type === "userMessage") {
-    const text = stripPreviewContext(item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
+    const rawText = item.promptText ?? item.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    const text = stripGeneratedAttachmentContext(contextPromptTextForDisplay(stripPreviewContext(rawText)), { attachmentOnlyNames: true });
     if (text.startsWith("[Pixice Focus work updates]\n\nThese are persisted worker lifecycle notifications, not new user instructions.")) {
       return <div className="focus-update-notice" role="status">Worker updates received</div>;
     }
@@ -2229,7 +2281,7 @@ function ConversationItem({ item, forceFinal = false, responseKey, seenResponseI
   }
   if (item.type === "agentMessage") {
     if (!item.text) return null;
-    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} sentToMain={sentToMain} />;
+    return <AssistantResponse item={item} forceFinal={forceFinal} responseKey={responseKey} seenResponseIds={seenResponseIds} sentToMain={sentToMain} streaming={streaming} />;
   }
   if (item.type === "imageGeneration") {
     return (
@@ -2672,7 +2724,7 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
           {reasoningItems.length > 0 && (
             <div className="trace-reasoning-list">
               {reasoningItems.map((item, index) => item.type === "agentMessage" ? (
-                <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} /></div>
+                <div className="trace-commentary" key={item.renderId ?? item.id ?? `commentary-${index}`}><MarkdownMessage text={item.text} streaming={item === latestTraceItem} /></div>
               ) : (
                 <ActivityItem item={item} key={item.renderId ?? item.id ?? `reasoning-${index}`} />
               ))}
@@ -2719,12 +2771,13 @@ export function WorkingTrace({ items, running, settled, startedAt = null, comple
   );
 }
 
-const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds, showTimestamps = true, completedWorkDetails = "auto", onImageRevision = null, imageRevisionDisabled = false, onFork = null, receipt = null, onReceiptCompare = null }) {
+const TurnConversation = memo(function TurnConversation({ thread, turn, turnIndex, seenResponseIds, showTimestamps = true, completedWorkDetails = "auto", onImageRevision = null, imageRevisionDisabled = false, onFork = null, rewindTools = null, receipt = null, onReceiptCompare = null }) {
   const items = turn.items ?? [];
   const threadId = thread.id;
   const running = turnIsRunning(turn.status);
   const bridgeTurn = turnIndex === 0 && (thread.bridge?.kind === "pixiceBridge" || thread.bridgeModel);
   const firstUserIndex = items.findIndex((item) => item.type === "userMessage");
+  const checkpoint = thread.checkpoints?.find(value => value.turnId === turn.id && value.supportsRewind);
   const explicitFinalIndex = items.findLastIndex((item) => item.type === "agentMessage" && item.phase === "final_answer");
   const fallbackFinalIndex = explicitFinalIndex === -1 && turn.status === "completed"
     ? items.findLastIndex((item) => item.type === "agentMessage" && item.text)
@@ -2766,6 +2819,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
       <ConversationItem
         item={item}
         forceFinal={isFinal}
+        streaming={running}
         responseKey={responseDisplayKey(threadId, turn.renderId ?? turn.id, item, index)}
         seenResponseIds={seenResponseIds}
         imagePrompt={item.type === "imageGeneration" ? imageGenerationPrompt(items, index, item) : null}
@@ -2780,6 +2834,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
         key={item.renderId ?? item.id ?? `${item.type}-${index}`}
       />
     );
+    if (index === firstUserIndex && checkpoint && rewindTools) rendered.push(<RewindPromptAction checkpointId={checkpoint.id} disabled={rewindTools.disabled} preview={() => rewindTools.api.preview({ projectId: rewindTools.projectId, threadId, checkpointId: checkpoint.id })} rewind={payload => rewindTools.api.rewind({ projectId: rewindTools.projectId, threadId, ...payload })} restoreFile={payload => rewindTools.api.restoreFile({ projectId: rewindTools.projectId, threadId, ...payload })} onRewound={rewindTools.onRewound} key={`rewind:${checkpoint.id}`} />);
   });
   flushTrace();
   if (turn.status === "completed" && finalItem) {
@@ -2787,6 +2842,7 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
     const answerActions = <AssistantAnswerActions
       timestamp={timestamp}
       showTimestamp={showTimestamps}
+      citation={{ text: finalItem.text, source: { threadId, turnId: turn.id, itemId: finalItem.id } }}
       onFork={finalItem.id && onFork ? () => onFork({ threadId, turnId: turn.id, itemId: finalItem.id }) : null}
     />;
     rendered.push(receipt ? <TaskReceipt
@@ -2816,12 +2872,15 @@ const TurnConversation = memo(function TurnConversation({ thread, turn, turnInde
   && previous.onImageRevision === next.onImageRevision
   && previous.imageRevisionDisabled === next.imageRevisionDisabled
   && previous.onFork === next.onFork
+  && previous.rewindTools === next.rewindTools
+  && previous.thread?.checkpoints === next.thread?.checkpoints
   && previous.receipt === next.receipt
   && previous.onReceiptCompare === next.onReceiptCompare
   && previous.seenResponseIds === next.seenResponseIds);
 
 function isApprovalRequest(request) {
-  return request?.method?.includes("requestApproval") || ["applyPatchApproval", "execCommandApproval"].includes(request?.method);
+  return request?.method?.includes("requestApproval") || ["applyPatchApproval", "execCommandApproval"].includes(request?.method)
+    || request?.method?.toLowerCase().includes("elicitation") && Boolean(describeMcpElicitationApproval(request.params));
 }
 
 function isQuestionRequest(request) {
@@ -2829,10 +2888,7 @@ function isQuestionRequest(request) {
 }
 
 function normalizedRequestGeneration(request) {
-  const value = request?.requestGeneration;
-  if (value === undefined || value === null) return null;
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : value;
+  return attentionGeneration(request);
 }
 
 function requestGenerationPayload(request) {
@@ -2842,15 +2898,14 @@ function requestGenerationPayload(request) {
 }
 
 function sameAttentionRequest(request, other) {
-  return String(request?.id) === String(other?.id)
-    && normalizedRequestGeneration(request) === normalizedRequestGeneration(other);
+  return attentionIdentity(request) === attentionIdentity(other);
 }
 
 function mergeAttentionRequests(current, incoming) {
   const next = [...current];
   for (const request of incoming ?? []) {
     if (request?.id === undefined || request?.id === null) continue;
-    const index = next.findIndex((candidate) => String(candidate?.id) === String(request.id));
+    const index = next.findIndex((candidate) => attentionOwnerKey(candidate) === attentionOwnerKey(request));
     if (index === -1) {
       next.push(request);
       continue;
@@ -2864,13 +2919,15 @@ function mergeAttentionRequests(current, incoming) {
 }
 
 function attentionResolvedRequest(request, payload) {
-  if (String(request?.id) !== String(payload?.requestId)) return false;
+  if (request?.id !== payload?.requestId) return false;
   const resolvedGeneration = normalizedRequestGeneration(payload);
+  if (payload?.provider !== undefined && attentionProvider(request) !== attentionProvider(payload)) return false;
+  if (payload?.provider === undefined && resolvedGeneration === null && attentionProvider(request) !== "codex") return false;
   return resolvedGeneration === null || resolvedGeneration === normalizedRequestGeneration(request);
 }
 
 function questionRequestKey(request) {
-  return `${request?.id}:${normalizedRequestGeneration(request) ?? "legacy"}`;
+  return attentionIdentity(request);
 }
 
 function optionIsRecommended(option) {
@@ -2883,17 +2940,21 @@ function optionDisplayLabel(option) {
 
 function ComposerQuestion({ request, onResolve }) {
   const questions = request.params.questions;
+  const response = useRequestResponse(request, onResolve);
   const asynchronous = request.params.isBlocking === false;
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState({});
   const [phase, setPhase] = useState("idle");
   const [customOpen, setCustomOpen] = useState(false);
   const [customAnswer, setCustomAnswer] = useState("");
+  const [submitScheduled, setSubmitScheduled] = useState(false);
+  const submitScheduledRef = useRef(false);
   const timersRef = useRef([]);
   const customInputRef = useRef(null);
   const question = questions[Math.min(step, questions.length - 1)];
   const questionId = question.id ?? `question-${step + 1}`;
   const showCustomInput = customOpen || !question.options?.length;
+  const controlsLocked = response.locked || submitScheduled;
   const moveToQuestion = (index) => {
     const nextQuestion = questions[index];
     const saved = answers[nextQuestion.id ?? `question-${index + 1}`] ?? "";
@@ -2909,8 +2970,10 @@ function ComposerQuestion({ request, onResolve }) {
     setPhase("idle");
     setCustomOpen(false);
     setCustomAnswer("");
+    submitScheduledRef.current = false;
+    setSubmitScheduled(false);
     return () => timersRef.current.splice(0).forEach(window.clearTimeout);
-  }, [request.id, request.requestGeneration]);
+  }, [questionRequestKey(request)]);
 
   useEffect(() => {
     if (customOpen) customInputRef.current?.focus();
@@ -2922,27 +2985,30 @@ function ComposerQuestion({ request, onResolve }) {
   };
 
   const complete = (action, nextAnswers = answers) => {
-    if (phase === "leaving") return;
-    setPhase("leaving");
-    after(async () => {
-      const accepted = await onResolve(request, { action, answers: action === "cancel" ? {} : nextAnswers });
-      if (accepted === false) setPhase("idle");
+    if (response.locked || submitScheduledRef.current) return;
+    submitScheduledRef.current = true;
+    setSubmitScheduled(true);
+    setPhase("idle");
+    // Preserve the cancellable handoff interval when the provider replaces a
+    // callback. The answer stays visible while confirmation is pending.
+    after(() => {
+      submitScheduledRef.current = false;
+      setSubmitScheduled(false);
+      void response.submit({ action, answers: action === "cancel" ? {} : nextAnswers });
     }, 150);
   };
 
   const choose = (answer) => {
-    if (phase === "leaving" || !String(answer).trim()) return;
+    if (controlsLocked || phase === "leaving" || !String(answer).trim()) return;
     const nextAnswers = { ...answers, [questionId]: String(answer).trim() };
     setAnswers(nextAnswers);
     if (asynchronous) return;
+    if (step === questions.length - 1) {
+      complete("answer", nextAnswers);
+      return;
+    }
     setPhase("leaving");
     after(() => {
-      if (step === questions.length - 1) {
-        void onResolve(request, { action: "answer", answers: nextAnswers }).then((accepted) => {
-          if (accepted === false) setPhase("idle");
-        });
-        return;
-      }
       setStep((current) => current + 1);
       setCustomOpen(false);
       setCustomAnswer("");
@@ -2960,7 +3026,7 @@ function ComposerQuestion({ request, onResolve }) {
             <span>{question.header ?? `Question ${step + 1}`}</span>
             <h2>{question.question ?? `Question ${step + 1}`}</h2>
           </div>
-          <button type="button" className="question-close" aria-label="Skip questions" onClick={() => complete("cancel")}><X size={18} /></button>
+          <button type="button" disabled={controlsLocked} className="question-close" aria-label="Skip questions" onClick={() => complete("cancel")}><X size={18} /></button>
         </header>
 
         <div className="question-options" role="radiogroup" aria-label={question.question}>
@@ -2969,6 +3035,7 @@ function ComposerQuestion({ request, onResolve }) {
             return (
               <button
                 type="button"
+                disabled={controlsLocked}
                 className="question-option"
                 data-recommended={recommended}
                 role="radio"
@@ -2991,32 +3058,45 @@ function ComposerQuestion({ request, onResolve }) {
           {showCustomInput ? (
             <form className="question-custom-form" onSubmit={(event) => { event.preventDefault(); choose(customAnswer); }}>
               <PencilSimple size={16} />
-              <input ref={customInputRef} type={question.isSecret ? "password" : "text"} aria-label="Custom answer" value={customAnswer} onChange={(event) => { setCustomAnswer(event.target.value); if (asynchronous) setAnswers((current) => ({ ...current, [questionId]: event.target.value })); }} placeholder="Type a different answer" />
-              <button type="submit" disabled={!customAnswer.trim()} aria-label="Use custom answer"><CaretRight size={18} /></button>
+              <input ref={customInputRef} type={question.isSecret ? "password" : "text"} aria-label="Custom answer" disabled={controlsLocked} value={customAnswer} onChange={(event) => { setCustomAnswer(event.target.value); if (asynchronous) setAnswers((current) => ({ ...current, [questionId]: event.target.value })); }} placeholder="Type a different answer" />
+              <button type="submit" disabled={controlsLocked || !customAnswer.trim()} aria-label="Use custom answer"><CaretRight size={18} /></button>
             </form>
           ) : (
-            <button type="button" className="question-custom" onClick={() => { setCustomOpen(true); if (asynchronous) setAnswers((current) => ({ ...current, [questionId]: customAnswer })); }}><PencilSimple size={17} /><span>Type a different answer</span></button>
+            <button type="button" disabled={controlsLocked} className="question-custom" onClick={() => { setCustomOpen(true); if (asynchronous) setAnswers((current) => ({ ...current, [questionId]: customAnswer })); }}><PencilSimple size={17} /><span>Type a different answer</span></button>
           )}
           <div className="question-progress" aria-label={`Question ${step + 1} of ${questions.length}`}>
             {questions.map((candidate, index) => <i className={index === step ? "active" : index < step ? "complete" : ""} key={candidate.id ?? index} />)}
           </div>
           {asynchronous && <>
-            {step > 0 && <button type="button" className="question-skip" onClick={() => moveToQuestion(step - 1)}>Back</button>}
-            <button type="button" className="question-submit" disabled={phase === "leaving" || !answers[questionId]?.trim()} onClick={() => {
+            {step > 0 && <button type="button" disabled={controlsLocked} className="question-skip" onClick={() => moveToQuestion(step - 1)}>Back</button>}
+            <button type="button" className="question-submit" disabled={controlsLocked || phase === "leaving" || !answers[questionId]?.trim()} onClick={() => {
               if (step === questions.length - 1) complete("answer", answers);
               else moveToQuestion(step + 1);
             }}>{step === questions.length - 1 ? "Submit answer" : "Next"}</button>
           </>}
-          <button type="button" className="question-skip" onClick={() => complete("cancel")}>Skip</button>
+          <button type="button" disabled={controlsLocked} className="question-skip" onClick={() => complete("cancel")}>Skip</button>
         </div>
       </div>
+      <RequestResponseStatus response={response} className="question-async-status" errorClassName="focus-coordination-error" retryClassName="question-submit" />
     </section>
   );
 }
 
-export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, showPermissionPicker = true, running, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
+export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, restoredDraft = null, preserveDrafts, sendShortcut, spellCheckComposer, autoFocusComposer, showSlashCommands, showPermissionPicker = true, running, queueEnabled = false, activeTurnId = null, contextOptions = {}, promptHistory = [], richTextEnabled = true, questionRequest, onQuestionResolve, models, selectedModel, onModelChange, effort, onEffortChange, fastMode, onFastModeChange, permissionMode, onPermissionModeChange, providers, onProviderLogin, onProvidersRefresh, onSubmit, onInterrupt, onDraftStateChange, ariaLabel = "Task prompt", placeholder = "Describe the task you want to work on", runningPlaceholder = "Steer the active task", globalFileDrop = true, storage = localStorage, attachmentContext = null, attachmentScopeKey = null, transcription = null, micDeviceId = null, dictationApi = null, accentColor = "coral" }) {
   const blockingQuestion = questionRequest && questionRequest.params?.isBlocking !== false;
   const [text, setText] = useState("");
+  const [contextRecords, setContextRecords] = useState([]);
+  const [contextTrigger, setContextTrigger] = useState(null);
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [inspectedContext, setInspectedContext] = useState(null);
+  const [stashOpen, setStashOpen] = useState(false);
+  const [savingStash, setSavingStash] = useState(false);
+  const [queueEditing, setQueueEditing] = useState(null);
+  const queueBackupRef = useRef(null);
+  const historyPositionRef = useRef(null);
+  const [acceptedPrompts, setAcceptedPrompts] = useState([]);
+  const pasteBypassRef = useRef(false);
+  const [dispatchMode, setDispatchMode] = useState(() => storage.getItem("pixice.messageDispatchMode") === "steer" ? "steer" : "queue");
   const [attachments, setAttachments] = useState([]);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [attachmentNotice, setAttachmentNotice] = useState("");
@@ -3029,6 +3109,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   const [showDictationBeam, setShowDictationBeam] = useState(false);
   const storageKey = `pixice.draft.${draftKey}`;
   const attachmentStorageKey = `${storageKey}.attachments`;
+  const contextStorageKey = `${storageKey}.context`;
   const currentAttachmentScope = useMemo(() => attachmentContext?.scope ?? createAttachmentScope(attachmentContext ?? {}), [
     attachmentContext?.api,
     attachmentContext?.deviceId,
@@ -3039,9 +3120,21 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     attachmentContext?.scope?.projectId
   ]);
   const currentAttachmentScopeKey = attachmentScopeKey ?? attachmentContext?.scopeKey ?? transferScopeKey(currentAttachmentScope);
+  const draftMemory = useMemo(() => createDraftMemory({ storage, scope: { hostId: currentAttachmentScope.hostId, projectId: currentAttachmentScope.projectId } }), [storage, currentAttachmentScope.hostId, currentAttachmentScope.projectId]);
+  const unacknowledgedPrompts = useMemo(() => reconcileAcceptedPromptHistory(promptHistory, acceptedPrompts), [promptHistory, acceptedPrompts]);
+  const historyEntries = useMemo(() => buildPromptHistoryEntries([...promptHistory, ...unacknowledgedPrompts]), [promptHistory, unacknowledgedPrompts]);
+  useEffect(() => {
+    setAcceptedPrompts(current => current.length === unacknowledgedPrompts.length && current.every((entry, index) => entry === unacknowledgedPrompts[index]) ? current : unacknowledgedPrompts);
+  }, [unacknowledgedPrompts]);
+  const contextRecordsRef = useRef(contextRecords);
+  contextRecordsRef.current = contextRecords;
+  const queueEditingRef = useRef(queueEditing);
+  queueEditingRef.current = queueEditing;
   const commandListId = useId();
+  const contextListId = useId();
   const composerRef = useRef(null);
   const textareaRef = useRef(null);
+  const contextPickerRef = useRef(null);
   const fileInputRef = useRef(null);
   const reselectInputRefs = useRef(new Map());
   const uploadAbortRef = useRef(null);
@@ -3091,8 +3184,8 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     ? `Run profile: ${fullModelLabel}, ${selectedEffort?.label ?? effort} reasoning${fastTier ? `, Fast ${fastMode ? "on" : "off"}` : ""}`
     : "Run profile: Choose model";
   const hasSteeringDraft = Boolean(text.trim() || attachments.length > 0);
-  const runActionState = running && !hasSteeringDraft ? "stop" : "send";
-  const runActionLabel = runActionState === "stop" ? "Stop task" : running ? "Steer task" : "Send message";
+  const runActionState = !queueEditing && running && !hasSteeringDraft ? "stop" : "send";
+  const runActionLabel = queueEditing ? "Save queued message" : runActionState === "stop" ? "Stop task" : running ? queueEnabled && dispatchMode === "queue" ? "Queue message" : "Steer task" : "Send message";
   const runActionDisabled = runActionState === "stop"
     ? disabled
     : disabled || busy || submissionBusy || uploadState?.activeCount > 0 || uploadState?.state === "preparing" || attachments.some((attachment) => attachment.needsReselect) || !selected || !hasSteeringDraft;
@@ -3117,6 +3210,16 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     }
     if (!identityChanged && draftReloadToken > 0 && draftInteractionRef.current) return;
     setText(preserveDrafts ? storage.getItem(storageKey) ?? "" : "");
+    let restoredContext = [];
+    try { if (preserveDrafts) restoredContext = normalizeContextRecords(JSON.parse(storage.getItem(contextStorageKey) || "[]")); } catch { /* Text survives a damaged context record. */ }
+    setContextRecords(restoredContext);
+    setQueueEditing(null);
+    queueBackupRef.current?.attachments.forEach(disposeComposerAttachment);
+    queueBackupRef.current = null;
+    historyPositionRef.current = null;
+    setAcceptedPrompts([]);
+    setContextTrigger(null);
+    setContextMenuOpen(false);
     let restored = [];
     if (preserveDrafts) {
       try {
@@ -3134,8 +3237,19 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     if (!preserveDrafts) {
       storage.removeItem(storageKey);
       storage.removeItem(attachmentStorageKey);
+      storage.removeItem(contextStorageKey);
     }
   }, [draftReloadToken, preserveDrafts, storage, storageKey]);
+  const appliedRestoredDraft = useRef(null);
+  useEffect(() => {
+    if (!restoredDraft || restoredDraft.draftKey !== draftKey || appliedRestoredDraft.current === restoredDraft.id) return;
+    appliedRestoredDraft.current = restoredDraft.id;
+    setText(current => [current, restoredDraft.text].filter(Boolean).join("\n\n"));
+    setContextRecords(current => mergeContextRecords(current, restoredDraft.contextRecords ?? []));
+    setAttachments(current => [...current, ...(restoredDraft.attachments ?? [])].slice(0, MAX_COMPOSER_ATTACHMENTS));
+    draftInteractionRef.current = false;
+    textareaRef.current?.focus();
+  }, [restoredDraft, draftKey]);
 
   useEffect(() => {
     const previous = attachmentScopeRef.current;
@@ -3159,6 +3273,10 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
         scopeKey: currentAttachmentScopeKey,
         needsReselect: !attachment.file
       })));
+      setContextRecords(current => current.map(record => {
+        const id = record.attachmentId ?? record.imageId ?? record.source?.attachmentId;
+        return id && attachmentsRef.current.some(attachment => attachment.id === id) ? { ...record, source: { ...record.source, ...currentAttachmentScope } } : record;
+      }));
       setAttachmentNotice("The target changed. Selected files remain here and will upload to the new target.");
     }
     attachmentScopeRef.current = currentAttachmentScopeKey;
@@ -3177,20 +3295,28 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
         submissionRef.current.controller.abort(new DOMException("The composer closed.", "AbortError"));
       }
       attachmentsRef.current.forEach(disposeComposerAttachment);
+      queueBackupRef.current?.attachments.forEach(disposeComposerAttachment);
     };
   }, []);
 
   useEffect(() => {
-    if (!preserveDrafts || draftHydratedKey !== storageKey) return;
+    if (!preserveDrafts || queueEditing || draftHydratedKey !== storageKey) return;
     try {
       if (attachments.length) storage.setItem(attachmentStorageKey, JSON.stringify(serializeAttachmentMetadata(attachments, currentAttachmentScope)));
       else if (!busy) storage.removeItem(attachmentStorageKey);
     } catch { /* Large or unavailable storage must not prevent sending. */ }
-  }, [attachmentStorageKey, attachments, busy, currentAttachmentScope, draftHydratedKey, preserveDrafts, storage, storageKey]);
+  }, [attachmentStorageKey, attachments, busy, currentAttachmentScope, draftHydratedKey, preserveDrafts, queueEditing, storage, storageKey]);
 
-  useLayoutEffect(() => {
-    resizeComposerTextarea(textareaRef.current);
-  }, [text]);
+  useEffect(() => {
+    if (!preserveDrafts || queueEditing || draftHydratedKey !== storageKey) return;
+    try {
+      if (text) storage.setItem(storageKey, text); else storage.removeItem(storageKey);
+      if (contextRecords.length) storage.setItem(contextStorageKey, JSON.stringify(normalizeContextRecords(contextRecords)));
+      else storage.removeItem(contextStorageKey);
+    } catch { /* A draft still remains editable when storage is full. */ }
+  }, [preserveDrafts, queueEditing, draftHydratedKey, storageKey, contextStorageKey, text, contextRecords, storage]);
+
+
 
   useEffect(() => {
     onDraftStateChange?.({ hasText: Boolean(text), attachmentCount: attachments.length });
@@ -3218,6 +3344,12 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
       draftInteractionRef.current = true;
       setAttachments((current) => [...current, ...additions].slice(0, MAX_COMPOSER_ATTACHMENTS));
       if (withinLimit.length > available) setAttachmentNotice(`You can attach up to ${MAX_COMPOSER_ATTACHMENTS} files.`);
+      additions.forEach(attachment => {
+        rememberComposerAttachment(attachment, currentAttachmentScope);
+        const record = createContextRecord(COMPOSER_IMAGE_TYPES.has(attachment.type) ? "image" : "file", { label: attachment.name, attachmentId: attachment.id, imageId: COMPOSER_IMAGE_TYPES.has(attachment.type) ? attachment.id : undefined, source: { ...currentAttachmentScope, attachmentId: attachment.id, name: attachment.name } });
+        textareaRef.current?.insertContext(record);
+        setContextRecords(current => mergeContextRecords(current, [record]));
+      });
       textareaRef.current?.focus();
     } catch {
       setAttachmentNotice("One of the files could not be read.");
@@ -3298,7 +3430,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     draftInteractionRef.current = true;
     setText(value);
     setCommandsDismissed(true);
-    if (preserveDrafts) storage.setItem(storageKey, value);
+    if (preserveDrafts && !queueEditingRef.current) storage.setItem(storageKey, value);
     window.setTimeout(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(value.length, value.length);
@@ -3320,13 +3452,13 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     const caret = before.length + spacer.length + addition.length;
     draftInteractionRef.current = true;
     setText(value);
-    if (preserveDrafts) storage.setItem(storageKey, value);
+    if (preserveDrafts && !queueEditingRef.current) storage.setItem(storageKey, value);
     window.setTimeout(() => {
       const target = textareaRef.current;
       if (!target) return;
       target.focus();
       target.setSelectionRange(caret, caret);
-      resizeComposerTextarea(target);
+
     }, 0);
   };
 
@@ -3465,6 +3597,12 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     }
     draftInteractionRef.current = true;
     disposeComposerAttachment(attachment);
+    const references = new Set(contextRecords.filter(record => [record.attachmentId, record.imageId, record.source?.attachmentId].includes(attachment.id)).map(record => `${record.kind}:${record.id}`));
+    setText(current => {
+      let next = current;
+      for (const token of parseContextTokens(current).filter(token => references.has(`${token.kind}:${token.id}`)).reverse()) next = next.slice(0, token.start) + next.slice(token.end);
+      return next.trim() ? next : "";
+    });
     setAttachments((current) => current.filter((candidate) => candidate.id !== attachment.id));
   };
   const cancelUploads = () => {
@@ -3477,14 +3615,179 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     setUploadState(uploadStateRef.current);
     setAttachmentNotice("Upload cancelled. Send again to restart.");
   };
-  const submit = async () => {
+  const updateText = (value) => {
+    draftInteractionRef.current = true;
+    setText(value);
+    setCommandsDismissed(false);
+    setCommandSelection(0);
+    const trigger = composerContextTrigger(value, textareaRef.current?.selectionStart ?? value.length);
+    setContextTrigger(trigger);
+  };
+  const insertContexts = useCallback((incoming, range = null) => {
+    if (disabled) return;
+    const records = normalizeContextRecords(incoming);
+    setContextRecords(current => mergeContextRecords(current, records));
+    setAttachments(current => {
+      const restored = records.filter(record => record.attachmentId || record.imageId || record.source?.attachmentId).filter(record => !current.some(attachment => attachment.id === (record.attachmentId ?? record.imageId ?? record.source?.attachmentId))).map(record => recoverComposerAttachment(record, currentAttachmentScope)).filter(Boolean);
+      return [...current, ...restored].slice(0, MAX_COMPOSER_ATTACHMENTS);
+    });
+    draftInteractionRef.current = true;
+    const editor = textareaRef.current;
+    if (range) editor?.setSelectionRange(range.start, range.end);
+    records.forEach(record => editor?.insertContext(record));
+    setContextTrigger(null);
+    setContextMenuOpen(false);
+    editor?.focus();
+  }, [disabled, currentAttachmentScope]);
+  useEffect(() => disabled || blockingQuestion ? undefined : subscribeComposerContext({ projectId: currentAttachmentScope.projectId, threadId: attachmentContext?.threadId ?? null, hostId: currentAttachmentScope.hostId, onInsert: records => insertContexts(records) }), [disabled, blockingQuestion, currentAttachmentScope.projectId, currentAttachmentScope.hostId, attachmentContext?.threadId, insertContexts]);
+  const restoreStash = (draft) => {
+    if (textRef.current.trim() || attachmentsRef.current.length) {
+      setAttachmentNotice("Save or clear the current draft before restoring a saved prompt.");
+      draft.attachments?.forEach(disposeComposerAttachment);
+      return false;
+    }
+    setText(draft.text);
+    setContextRecords(normalizeContextRecords(draft.records ?? draft.contextRecords));
+    setAttachments(draft.attachments ?? []);
+    draftInteractionRef.current = true;
+    textareaRef.current?.focus();
+    return true;
+  };
+  const stashOrRestore = async () => {
+    if (disabled || submissionBusy || savingStash || queueEditing) return;
+    if (!textRef.current.trim() && !attachmentsRef.current.length) {
+      const saved = draftMemory.listStashes();
+      if (saved.length === 1) { const result = draftMemory.restore(saved[0].id); if (result.ok) restoreStash(result.draft); setAttachmentNotice(result.message); }
+      else setStashOpen(true);
+      return;
+    }
+    const originalKey = storageKeyRef.current;
+    const originalText = textRef.current;
+    const originalAttachments = attachmentsRef.current;
+    const originalRecords = contextRecordsRef.current;
+    setSavingStash(true);
+    try {
+      const result = await draftMemory.stash({ text: originalText, records: originalRecords, attachments: originalAttachments });
+      if (!mountedRef.current || storageKeyRef.current !== originalKey) return;
+      setAttachmentNotice(result.message);
+      if (result.ok && result.durable && textRef.current === originalText && attachmentsRef.current === originalAttachments && contextRecordsRef.current === originalRecords) {
+        setText(""); setContextRecords([]); setAttachments([]);
+        originalAttachments.forEach(disposeComposerAttachment);
+        draftInteractionRef.current = true;
+      }
+    } finally { if (mountedRef.current) setSavingStash(false); }
+  };
+  const cancelQueueEdit = () => {
+    const backup = queueBackupRef.current;
+    if (!backup) return;
+    attachmentsRef.current.forEach(attachment => { if (!backup.attachments.includes(attachment)) disposeComposerAttachment(attachment); });
+    setText(backup.text); setContextRecords(backup.records); setAttachments(backup.attachments);
+    setQueueEditing(null); queueBackupRef.current = null;
+    setAttachmentNotice(""); textareaRef.current?.focus();
+  };
+  const beginQueueEdit = useCallback(async entry => {
+    const api = attachmentContext?.api;
+    const threadId = attachmentContext?.threadId;
+    if (!api?.turns?.queueDraft || !threadId || submissionRef.current || queueEditingRef.current) return;
+    const identity = storageKeyRef.current;
+    try {
+      const draft = await api.turns.queueDraft({ projectId: currentAttachmentScope.projectId, threadId, id: entry.id });
+      if (!mountedRef.current || storageKeyRef.current !== identity || submissionRef.current || queueEditingRef.current) return;
+      queueBackupRef.current = { text: textRef.current, records: contextRecordsRef.current, attachments: attachmentsRef.current };
+      const records = normalizeContextRecords(draft.contextRecords);
+      let imageIndex = 0;
+      const images = records.filter(record => record.kind === "image");
+      const usedRecords = new Set();
+      const restored = draft.attachments.map(attachment => {
+        const matching = records.find(record => !usedRecords.has(record.id) && (record.source?.name === attachment.name || record.label === attachment.name) && (record.attachmentId || record.imageId || record.source?.attachmentId)) ?? (attachment.type?.startsWith("image/") ? images[imageIndex++] : null);
+        if (matching) usedRecords.add(matching.id);
+        return attachmentFromDraft(attachment, currentAttachmentScope, matching);
+      });
+      setText(draft.text); setContextRecords(records); setAttachments(restored); setQueueEditing({ id: entry.id, originalText: draft.text });
+      setContextTrigger(null);
+      setAttachmentNotice(restored.some(attachment => attachment.needsReselect) ? "Some queued attachments need reselecting before saving." : "");
+      textareaRef.current?.focus();
+    } catch (cause) { if (mountedRef.current && storageKeyRef.current === identity) setAttachmentNotice(cause.message); }
+  }, [attachmentContext?.api, attachmentContext?.threadId, currentAttachmentScope]);
+  useEffect(() => {
+    const listener = event => {
+      if (event.detail?.projectId === currentAttachmentScope.projectId && event.detail?.threadId === attachmentContext?.threadId) void beginQueueEdit(event.detail.entry);
+    };
+    window.addEventListener(COMPOSER_QUEUE_EDIT_EVENT, listener);
+    return () => window.removeEventListener(COMPOSER_QUEUE_EDIT_EVENT, listener);
+  }, [beginQueueEdit, currentAttachmentScope.projectId, attachmentContext?.threadId]);
+  useEffect(() => {
+    if (disabled || blockingQuestion) return;
+    const frame = window.requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [queueEditing?.id, disabled, blockingQuestion]);
+  const queueShortcut = async action => {
+    const api = attachmentContext?.api;
+    const scope = { projectId: currentAttachmentScope.projectId, threadId: attachmentContext?.threadId };
+    if (!api?.turns?.queueList || !scope.threadId) return;
+    try {
+      const queue = await api.turns.queueList(scope);
+      if (action === "edit") { const entry = queue.entries.findLast(entry => entry.source === "user" && ["queued", "failed"].includes(entry.state)); if (entry) await beginQueueEdit(entry); }
+      else {
+        const entry = queue.entries[0];
+        if (entry?.state === "queued") {
+          if (activeTurnId) await api.turns.queueSteer({ ...scope, id: entry.id, turnId: activeTurnId });
+          else await api.turns.queueResume(scope);
+        }
+      }
+    } catch (cause) { setAttachmentNotice(cause.message); }
+  };
+  const handleComposerKeyDown = (event) => {
+    const composing = event.nativeEvent?.isComposing || event.isComposing;
+    pasteBypassRef.current = Boolean(event.shiftKey);
+    if (composing) return;
+    if ((contextTrigger || contextMenuOpen) && contextPickerRef.current?.handleKeyDown(event)) return;
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void stashOrRestore(); return; }
+    if (event.altKey && event.key === "ArrowUp") { event.preventDefault(); void queueShortcut("edit"); return; }
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === "Enter" && queueEnabled) { event.preventDefault(); void queueShortcut("steer"); return; }
+    if (commandMenuOpen && ["ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault(); const direction = event.key === "ArrowDown" ? 1 : -1;
+      setCommandSelection(current => (current + direction + matchingCommands.length) % matchingCommands.length); return;
+    }
+    if (commandMenuOpen && ["Enter", "Tab"].includes(event.key)) { event.preventDefault(); completeCommand(activeCommand); return; }
+    if (event.key === "Escape") {
+      if (contextTrigger || contextMenuOpen || inspectedContext) { event.preventDefault(); setContextTrigger(null); setContextMenuOpen(false); setInspectedContext(null); return; }
+      if (commandMenuOpen) { event.preventDefault(); setCommandsDismissed(true); return; }
+      if (queueEditing) { event.preventDefault(); cancelQueueEdit(); return; }
+    }
+    if (["ArrowUp", "ArrowDown"].includes(event.key) && !contextTrigger && !queueEditing) {
+      const atVisualEdge = textareaRef.current?.isCaretOnVisualEdge?.(event.key === "ArrowUp" ? "start" : "end") ?? false;
+      const result = stepPromptHistory({ direction: event.key === "ArrowUp" ? "up" : "down", entries: historyEntries, position: historyPositionRef.current, currentText: text, attachments, records: contextRecords, atVisualEdge, event: { ...event, isComposing: composing } });
+      if (result) { event.preventDefault(); historyPositionRef.current = result.position; setText(result.text); return; }
+    }
+    if (event.key === "Enter" && running && queueEnabled && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+      event.preventDefault(); void submit(dispatchMode === "queue" ? "steer" : "queue"); return;
+    }
+    const sendWithEnter = sendShortcut === "enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey;
+    const sendWithModifier = sendShortcut === "mod-enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey;
+    if (event.key === "Enter" && (sendWithEnter || sendWithModifier)) { event.preventDefault(); void submit(); }
+  };
+  const handleComposerPaste = (event) => {
+    const files = attachmentFilesFromTransfer(event.clipboardData);
+    if (files.length) { event.preventDefault(); void addAttachmentFiles(files); return; }
+    if (event.clipboardData?.getData(CONTEXT_CLIPBOARD_MIME) || event.clipboardData?.getData("text/html")?.includes("data-pixice-composer-fragment")) return;
+    const text = event.clipboardData?.getData("text/plain") ?? "";
+    const pasted = pasteToAttachment(text, { shiftKey: event.shiftKey || pasteBypassRef.current, names: attachments.map(attachment => attachment.name) });
+    if (pasted && attachments.length < MAX_COMPOSER_ATTACHMENTS) { event.preventDefault(); void addAttachmentFiles([pasted.file]); setAttachmentNotice(pasted.message); }
+  };
+  const submit = async (overrideDispatch = null) => {
     const value = text.trim();
+    const contextIssues = contextSendIssues(value, contextRecords, { ...currentAttachmentScope, attachments });
+    if (contextIssues.length) { setAttachmentNotice(contextIssues[0].message); return; }
     if (attachments.some((attachment) => attachment.needsReselect)) {
       setAttachmentNotice("Reselect each saved attachment before sending.");
       return;
     }
     if ((!value && attachments.length === 0) || disabled || busy || submissionBusy || submissionRef.current || !selected || uploadStateRef.current?.activeCount > 0) return;
     const submittedText = text;
+    const submittedRecords = contextRecords;
+    const historyAnchorId = acceptedPromptHistoryAnchor(promptHistory);
+    const editing = queueEditing;
     const submittedAttachments = attachments.slice();
     const submittedAttachmentIds = new Set(submittedAttachments.map((attachment) => attachment.id));
     const displayAttachments = submittedAttachments.map((attachment) => ({
@@ -3513,7 +3816,9 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
     try {
       const prepared = await prepareAttachments(submittedAttachments, controller.signal, false, attempt);
       if (!mountedRef.current || uploadAttemptRef.current !== attempt || controller.signal.aborted || submissionRef.current?.cancelled) return;
-      const accepted = await onSubmit(value, displayAttachments, prepared, submittedAttachments, controller.signal, {
+      const accepted = editing ? await attachmentContext.api.turns.queueEdit(requestPayloadWithAttachments({ projectId: currentAttachmentScope.projectId, threadId: attachmentContext.threadId, id: editing.id, text: value, contextRecords: submittedRecords, replaceAttachments: true }, prepared)) : await onSubmit(value, displayAttachments, prepared, submittedAttachments, controller.signal, {
+        contextRecords: submittedRecords,
+        dispatchMode: running && queueEnabled ? overrideDispatch ?? dispatchMode : "start",
         adoptDraftKey: (nextDraftKey) => {
           if (submissionRef.current === attempt && nextDraftKey) attempt.adoptedStorageKeys.add(`pixice.draft.${nextDraftKey}`);
         }
@@ -3522,16 +3827,21 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
       if (accepted === false) {
         uploadStateRef.current = null;
         setUploadState(null);
+      } else if (editing) {
+        cancelQueueEdit();
       } else {
+        setAcceptedPrompts(current => [...current.slice(-49), { role: "user", text: submittedText, accepted: true, historyAnchorId, id: globalThis.crypto.randomUUID() }]);
         const textUnchanged = textRef.current === submittedText;
         if (textUnchanged) {
           setText("");
+          if (contextRecordsRef.current === submittedRecords) setContextRecords([]);
         }
         setAttachments((current) => current.filter((attachment) => !submittedAttachmentIds.has(attachment.id)));
         for (const adoptedStorageKey of attempt.adoptedStorageKeys) {
           if (!textUnchanged && adoptedStorageKey === storageKeyRef.current) continue;
           storage.removeItem(adoptedStorageKey);
           storage.removeItem(`${adoptedStorageKey}.attachments`);
+          storage.removeItem(`${adoptedStorageKey}.context`);
         }
       }
     } catch (cause) {
@@ -3559,13 +3869,13 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
   };
   if (blockingQuestion) {
     return (
-      <div className="composer" data-question-active="true" data-question-present="true" data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
+      <div className="composer" data-question-active="true" data-question-present="true" data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef} onKeyUp={event => { pasteBypassRef.current = Boolean(event.shiftKey); }}>
         <ComposerQuestion key={questionRequestKey(questionRequest)} request={questionRequest} onResolve={onQuestionResolve} />
       </div>
     );
   }
   return (
-    <div className="composer" data-question-present={Boolean(questionRequest)} data-dragging-files={draggingFiles} data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef}>
+    <div className="composer" data-question-present={Boolean(questionRequest)} data-dragging-files={draggingFiles} data-composer-drop-scope={globalFileDrop ? "global" : "local"} ref={composerRef} onKeyUp={event => { pasteBypassRef.current = Boolean(event.shiftKey); }}>
       {showDictationBeam && (
         <VoiceBeam
           className="composer-voice-beam"
@@ -3657,55 +3967,36 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
           ))}
         </div>
       )}
-      <textarea
+      {queueEditing && <div className="composer-queue-edit-banner"><span>Editing queued message</span><button type="button" onClick={cancelQueueEdit}>Cancel edit</button></div>}
+      {(contextMenuOpen || contextTrigger) && <ContextPicker ref={contextPickerRef} listboxId={contextListId} api={attachmentContext?.api} projectId={currentAttachmentScope.projectId} threadId={attachmentContext?.threadId} hostId={currentAttachmentScope.hostId} threads={contextOptions.threads ?? []} skills={contextOptions.skills ?? []} currentPreview={contextOptions.preview} query={contextTrigger?.query ?? ""} marker={contextTrigger?.marker ?? "@"} autofocus={contextMenuOpen} onAttachFiles={() => fileInputRef.current?.click()} onSelect={record => insertContexts([record], contextTrigger)} onClose={() => { setContextTrigger(null); setContextMenuOpen(false); }} />}
+      {inspectedContext && <ContextInspector record={contextRecords.find(record => record.id === inspectedContext.id && record.kind === inspectedContext.kind) ?? inspectedContext} onChange={updated => setContextRecords(current => mergeContextRecords(current, [updated]))} onSourceOpen={contextOptions.onOpenSource} onRemove={record => { const tokens = parseContextTokens(text).filter(token => token.id === record.id && token.kind === record.kind); let value = text; for (const token of tokens.reverse()) value = value.slice(0, token.start) + value.slice(token.end); setText(value); setInspectedContext(null); }} onClose={() => setInspectedContext(null)} />}
+      <PromptEditor
+        key={`${draftKey}:${queueEditing?.id ?? "draft"}`}
         ref={textareaRef}
-        aria-label={ariaLabel}
+        ariaLabel={ariaLabel}
         aria-autocomplete="list"
-        aria-expanded={commandMenuOpen}
-        aria-controls={commandMenuOpen ? commandListId : undefined}
+        aria-expanded={Boolean(commandMenuOpen || contextTrigger || contextMenuOpen)}
+        aria-controls={contextTrigger || contextMenuOpen ? contextListId : commandMenuOpen ? commandListId : undefined}
         aria-activedescendant={commandMenuOpen && activeCommand ? `${commandListId}-${activeCommand.name}` : undefined}
-        placeholder={disabled ? "Connect a provider and select a project to begin" : running ? runningPlaceholder : placeholder}
+        placeholder={disabled ? "Connect a provider and select a project to begin" : running ? queueEnabled && dispatchMode === "queue" ? "Queue a follow-up for after this task" : runningPlaceholder : placeholder}
         spellCheck={spellCheckComposer}
         value={text}
-        disabled={disabled}
-        onPaste={(event) => {
-          const files = attachmentFilesFromTransfer(event.clipboardData);
-          if (files.length > 0) addAttachmentFiles(files);
+        records={contextRecords}
+        onRecordsChange={(records, change) => {
+          setContextRecords(current => mergeContextRecords(current, records));
+          setAttachments(current => {
+            const restored = normalizeContextRecords(change?.insertedRecords ?? []).filter(record => record.attachmentId || record.imageId || record.source?.attachmentId).filter(record => !current.some(attachment => attachment.id === (record.attachmentId ?? record.imageId ?? record.source?.attachmentId))).map(record => recoverComposerAttachment(record, currentAttachmentScope)).filter(Boolean);
+            return [...current, ...restored].slice(0, MAX_COMPOSER_ATTACHMENTS);
+          });
         }}
+        richTextEnabled={richTextEnabled}
+        disabled={disabled}
+        onPaste={handleComposerPaste}
         onFocus={() => setCommandsDismissed(false)}
         onBlur={() => setCommandsDismissed(true)}
-        onChange={(event) => {
-          const value = event.target.value;
-          draftInteractionRef.current = true;
-          setText(value);
-          setCommandsDismissed(false);
-          setCommandSelection(0);
-          if (preserveDrafts) storage.setItem(storageKey, value);
-        }}
-        onKeyDown={(event) => {
-          if (commandMenuOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-            event.preventDefault();
-            const direction = event.key === "ArrowDown" ? 1 : -1;
-            setCommandSelection((current) => (current + direction + matchingCommands.length) % matchingCommands.length);
-            return;
-          }
-          if (commandMenuOpen && (event.key === "Enter" || event.key === "Tab") && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            completeCommand(activeCommand);
-            return;
-          }
-          if (commandMenuOpen && event.key === "Escape") {
-            event.preventDefault();
-            setCommandsDismissed(true);
-            return;
-          }
-          const sendWithEnter = sendShortcut === "enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey;
-          const sendWithModifier = sendShortcut === "mod-enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey;
-          if (event.key === "Enter" && (sendWithEnter || sendWithModifier) && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            submit();
-          }
-        }}
+        onChange={updateText}
+        onKeyDown={handleComposerKeyDown}
+        onContextOpen={setInspectedContext}
       />
       {attachmentNotice && <div className="composer-image-notice" role="status">{attachmentNotice}</div>}
       {uploadState && (
@@ -3735,6 +4026,8 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
           <IconButton label="Attach files" className="composer-attach" onClick={() => fileInputRef.current?.click()} disabled={disabled || attachments.length >= MAX_COMPOSER_ATTACHMENTS}>
             <Plus size={18} />
           </IconButton>
+          <button type="button" className="composer-context-tool" disabled={disabled} title="Add context · @ files, threads and skills · # pull requests" onClick={() => { setContextTrigger(null); setContextMenuOpen(!contextMenuOpen); }} aria-label="Add context">@</button>
+          <DraftStash memory={draftMemory} disabled={disabled || submissionBusy || savingStash || Boolean(queueEditing)} open={stashOpen} onOpenChange={setStashOpen} onRestore={restoreStash} onNotice={setAttachmentNotice} />
           {showPermissionPicker && <ComposerPicker
             label="Permissions"
             hint="Applied to this task"
@@ -3747,6 +4040,9 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
           />}
         </div>
         <div className="composer-actions">
+          {running && queueEnabled && <select className="composer-dispatch-mode" aria-label="Message delivery" value={dispatchMode} disabled={disabled || busy || submissionBusy} onChange={event => { setDispatchMode(event.target.value); storage.setItem("pixice.messageDispatchMode", event.target.value); }}>
+            <option value="queue">Queue</option><option value="steer">Steer</option>
+          </select>}
           <ComposerPicker
             label="Model"
             hint={null}
@@ -3811,7 +4107,7 @@ export function Composer({ disabled, busy, draftKey, draftReloadToken = 0, prese
             data-state={runActionState}
             aria-label={runActionLabel}
             title={runActionLabel}
-            onClick={runActionState === "stop" ? onInterrupt : submit}
+            onClick={runActionState === "stop" ? onInterrupt : () => void submit()}
             disabled={runActionDisabled}
           >
             <span className="composer-run-icon composer-run-icon-send"><PaperPlaneTilt size={17} weight="fill" /></span>
@@ -3854,6 +4150,7 @@ function SideThreadSurface({
   onOpenMain,
   onForkResponse,
   onTabUpdate,
+  onPreviewCustomTabOpen,
   onError,
   storage = localStorage
 }) {
@@ -3905,14 +4202,14 @@ function SideThreadSurface({
       : defaultPermissionMode));
   }, [defaultEffort, defaultFastMode, defaultModel, defaultPermissionMode, enforcedPermissionMode, models, storage, threadId]);
 
-  const refresh = useCallback(async (targetThreadId = threadIdRef.current) => {
+  const refresh = useCallback(async (targetThreadId = threadIdRef.current, replaceHistory = false) => {
     if (!api?.threads?.read || !projectId || !targetThreadId) return;
     try {
       const response = await api.threads.read({ projectId, threadId: targetThreadId });
       if (!mountedRef.current || threadIdRef.current !== targetThreadId) return;
       markResponsesSeen(response.thread, seenResponseIds);
       onThreadViewed(response.thread);
-      setSnapshot((current) => mergeThreadSnapshot(current, response.thread));
+      setSnapshot((current) => replaceHistory ? response.thread : mergeThreadSnapshot(current, response.thread));
       setSurfaceError("");
     } catch (cause) {
       if (!mountedRef.current || threadIdRef.current !== targetThreadId) return;
@@ -3967,6 +4264,7 @@ function SideThreadSurface({
       const targetThreadId = threadIdRef.current;
       if (event.type === "ApplicationResync" && targetThreadId) { void refresh(targetThreadId); return; }
       if (!targetThreadId || (payload.threadId ?? payload.thread?.id) !== targetThreadId) return;
+      if (payload.method === "thread/rewound") { pendingDeltasRef.current = []; void refresh(targetThreadId, true); return; }
       commitPayload(payload);
       if (payload.method === "turn/completed") {
         window.setTimeout(() => void refresh(targetThreadId), 120);
@@ -4051,6 +4349,7 @@ function SideThreadSurface({
           projectId,
           threadId: PROSPECTIVE_THREAD_ID,
           text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
           model: selectedModel || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
           effort,
@@ -4068,7 +4367,7 @@ function SideThreadSurface({
         });
         assertSubmissionActive(signal);
         targetThreadId = created.thread.id;
-        draftLifecycle?.adoptDraftKey(`${projectId}:side:${targetThreadId}`);
+        draftLifecycle?.adoptDraftKey?.(`${projectId}:side:${targetThreadId}`);
         threadIdRef.current = targetThreadId;
         setSnapshot(created.thread);
         saveThreadConfiguration(targetThreadId, { model: selectedModel, effort, fastMode, permissionMode }, storage);
@@ -4081,16 +4380,24 @@ function SideThreadSurface({
 
       const currentSnapshot = snapshot?.id === targetThreadId ? snapshot : null;
       const activeTurn = [...(currentSnapshot?.turns ?? [])].reverse().find((turn) => turnIsRunning(turn.status));
+      if (activeTurn && draftLifecycle?.dispatchMode === "queue" && api.turns.queue) {
+        const payload = requestPayloadWithAttachments({ projectId, threadId: targetThreadId, text, contextRecords: draftLifecycle?.contextRecords ?? [],
+          model: selectedModel || undefined, ...(serviceTier !== undefined ? { serviceTier } : {}), effort, permissionMode }, prepared);
+        assertSubmissionRequestBudget({ api, operation: "turns.queue", payload });
+        await api.turns.queue(payload);
+        return true;
+      }
       if (activeTurn) {
         optimisticTurnId = activeTurn.id;
         optimisticMessageId = `local-user:${activeTurn.id}:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
         setSnapshot((current) => appendLocalUserMessage(current, {
           turnId: activeTurn.id,
           text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
           attachments,
           messageId: optimisticMessageId
         }));
-        const steerPayload = requestPayloadWithAttachments({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text }, prepared);
+        const steerPayload = requestPayloadWithAttachments({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, contextRecords: draftLifecycle?.contextRecords ?? [] }, prepared);
         assertSubmissionRequestBudget({ api, operation: "turns.steer", payload: steerPayload });
         await api.turns.steer(steerPayload);
         assertSubmissionActive(signal);
@@ -4102,6 +4409,7 @@ function SideThreadSurface({
         setSnapshot((current) => appendLocalUserMessage(current, {
           turnId: optimisticTurnId,
           text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
           attachments,
           messageId: optimisticMessageId
         }));
@@ -4109,6 +4417,7 @@ function SideThreadSurface({
           projectId,
           threadId: targetThreadId,
           text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
           model: selectedModel || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
           effort,
@@ -4135,6 +4444,7 @@ function SideThreadSurface({
             }, {
               turnId: response.turn.id,
               text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
               attachments,
               createdAt,
               messageId: localMessageId,
@@ -4152,6 +4462,7 @@ function SideThreadSurface({
           return appendLocalUserMessage(started, {
             turnId: response.turn.id,
             text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
             attachments,
             createdAt,
             messageId: localMessageId,
@@ -4200,6 +4511,7 @@ function SideThreadSurface({
   }, [onTabUpdate, tab.payload]);
 
   return (
+    <ConversationHtmlScope api={api} project={{ id: projectId }} thread={snapshot} onOpen={onPreviewCustomTabOpen}>
     <section className="side-thread-surface" aria-label={`Side thread: ${title}`} data-composer-drop-scope="local">
       <header className="side-thread-header">
         <div>
@@ -4238,6 +4550,7 @@ function SideThreadSurface({
           </div>
         )}
       </div>
+      {threadId && api?.turns?.queueList && <MessageQueuePanel api={api} projectId={projectId} threadId={threadId} activeTurnId={activeTurn?.id} onEdit={entry => requestQueueEdit({ projectId, threadId, entry })} onError={onError} />}
       {surfaceError && <div className="side-thread-error" role="alert"><Warning size={13} />{surfaceError}</div>}
       <Composer
         disabled={!runtime?.connected || !models.length || !providerReady}
@@ -4248,8 +4561,12 @@ function SideThreadSurface({
         spellCheckComposer={preferences.spellCheckComposer}
         autoFocusComposer={false}
         showSlashCommands={preferences.showSlashCommands}
+        richTextEnabled={preferences.composerRichTextEnabled}
+        promptHistory={(snapshot?.turns ?? []).flatMap(turn => turn.items ?? [])}
+        activeTurnId={activeTurn?.id}
         showPermissionPicker={!enforcedPermissionMode}
         running={Boolean(activeTurn)}
+        queueEnabled={Boolean(api?.turns?.queue)}
         questionRequest={questionRequest}
         onQuestionResolve={onQuestionResolve}
         models={models}
@@ -4284,6 +4601,7 @@ function SideThreadSurface({
         attachmentContext={{ api, hostId: api?.remote?.hostId ?? "local", deviceId: api?.remote?.deviceId, projectId }}
       />
     </section>
+    </ConversationHtmlScope>
   );
 }
 
@@ -4312,13 +4630,20 @@ function TaskMapPreview({ thread, threads, plan, attention, onResolve }) {
             {agents.length === 0 && <p className="inspector-empty">No delegated agents yet.</p>}
           </div>
         </section>
-        {attention.filter((request) => request.params?.threadId === thread.id && !isQuestionRequest(request)).map((request) => <ApprovalCard request={request} onResolve={onResolve} key={request.id} />)}
+        {attention.filter((request) => request.params?.threadId === thread.id && !isQuestionRequest(request)).map((request) => <ApprovalCard request={request} onResolve={onResolve} key={attentionIdentity(request)} />)}
       </div>
     </section>
   );
 }
 
-function EmptyConversation({ project, runtime, onOpenProject }) {
+function EmptyConversation({ project, runtime, onOpenProject, workspaceLoadFailed = false }) {
+  if (!project && workspaceLoadFailed) {
+    return <div className="empty-state">
+      <span className="empty-mark"><FolderOpen size={25} /></span>
+      <h1>Your workspace hasn't loaded</h1>
+      <p>Pixice couldn't read your projects yet. Use Retry to reconnect.</p>
+    </div>;
+  }
   if (!project) {
     return (
       <div className="empty-state">
@@ -4610,7 +4935,7 @@ function FocusWorkspace({
   defaultEffort,
   defaultFastMode,
   providers,
-  attention,
+  attention = [],
   focusQuestions = [],
   preferences,
   plan,
@@ -4663,14 +4988,14 @@ function FocusWorkspace({
   const scrollRef = useRef(null);
   const followLatestRef = useRef(true);
   const projection = useMemo(() => projectConversation(thread), [thread]);
-  const hasConversation = projection.itemCount > 0 || focusQuestions.length > 0;
+  const hasConversation = projection.itemCount > 0 || focusQuestions.length > 0 || attention.length > 0;
   const progressTasks = useMemo(() => focusTaskProgressEntries(threads, thread?.id), [thread?.id, threads]);
   const taskRailVisible = !previewOpen && progressTasks.length > 0;
 
   useLayoutEffect(() => {
     const node = scrollRef.current;
     if (node && followLatestRef.current) node.scrollTop = node.scrollHeight;
-  }, [thread?.id, thread?.turns]);
+  }, [thread?.id, thread?.turns, attention, focusQuestions]);
 
   const previewAvailable = Boolean(
     browserState?.tabs?.length
@@ -4681,6 +5006,7 @@ function FocusWorkspace({
 
   return (
     <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
+    <ConversationHtmlScope api={api} project={project} thread={thread} onOpen={onPreviewCustomTabOpen}>
     <div className={`focus-layout${previewOpen ? " preview-open" : ""}`}>
     <main
       className="focus-workspace"
@@ -4721,7 +5047,7 @@ function FocusWorkspace({
           <div className="focus-loading"><SpinnerGap className="spin-icon" size={17} />Opening {project?.displayName ?? "project"}…</div>
         ) : hasConversation ? (
           <div className="focus-conversation-column">
-            {(thread.turns ?? []).map((turn, turnIndex) => (
+            {(thread?.turns ?? []).map((turn, turnIndex) => (
               <TurnConversation
                 thread={thread}
                 turn={turn}
@@ -4732,6 +5058,7 @@ function FocusWorkspace({
                 key={turn.renderId ?? turn.id}
               />
             ))}
+            {attention.map((request) => <ApprovalCard request={request} onResolve={onResolveAttention} key={attentionIdentity(request)} />)}
           </div>
         ) : (
           <div className="focus-intro" aria-live="polite">
@@ -4827,6 +5154,7 @@ function FocusWorkspace({
       )}
     </AnimatePresence>
     </div>
+    </ConversationHtmlScope>
     </WorkspaceOpenContext.Provider>
   );
 }
@@ -4876,6 +5204,7 @@ export function ConversationWorkspace({
   thread,
   threads,
   loading,
+  workspaceLoadFailed = false,
   runtime,
   plan,
   changedCount,
@@ -5064,6 +5393,7 @@ export function ConversationWorkspace({
 
   return (
     <WorkspaceOpenContext.Provider value={onOpenWorkspaceReference}>
+    <ConversationHtmlScope api={api} project={project} thread={thread} onOpen={onPreviewCustomTabOpen}>
     <div
       className={`task-workspace${previewLayoutOpen ? " preview-mode" : ""}`}
       data-question-active={Boolean(composerProps.questionRequest && composerProps.questionRequest.params?.isBlocking !== false)}
@@ -5092,9 +5422,9 @@ export function ConversationWorkspace({
         )}
         <div className="conversation-scroll" ref={scrollRef} onScroll={handleConversationScroll}>
           {loading ? (
-            <div className="loading-state"><SpinnerGap className="spin-icon" size={20} />Loading conversation…</div>
+            <div className="loading-state"><SpinnerGap className="spin-icon" size={20} />{project ? "Loading conversation…" : "Loading workspace…"}</div>
           ) : !thread ? (
-            <EmptyConversation project={project} runtime={runtime} onOpenProject={onOpenProject} />
+            <EmptyConversation project={project} runtime={runtime} onOpenProject={onOpenProject} workspaceLoadFailed={workspaceLoadFailed} />
           ) : (
             <div className="conversation-column">
               <div className="message-stream">
@@ -5110,6 +5440,7 @@ export function ConversationWorkspace({
                     onImageRevision={readOnly ? undefined : composerProps.onImageRevision}
                     imageRevisionDisabled={composerProps.busy}
                     onFork={readOnly || composerProps.running ? null : composerProps.onForkResponse}
+                    rewindTools={readOnly ? null : composerProps.rewindTools}
                     receipt={turnIndex === thread.turns.length - 1 ? receipt : null}
                     onReceiptCompare={onReceiptCompare}
                     key={turn.renderId ?? turn.id}
@@ -5137,6 +5468,7 @@ export function ConversationWorkspace({
             </div>
           )}
         </div>
+        {!readOnly && <div className="conversation-column task-workspace-controls">{composerProps.workspaceControl}{thread && <MessageQueuePanel api={api} projectId={project?.id} threadId={thread.id} activeTurnId={composerProps.running ? thread.turns?.findLast?.(turn => turn.status === "inProgress")?.id : null} onEdit={entry => requestQueueEdit({ projectId: project?.id, threadId: thread.id, entry })} onError={composerProps.onQueueError} />}</div>}
         {project && !readOnly && (executionTargetControl ? (
           <div className="composer-dock">
             <div className="execution-preflight">{executionTargetControl}</div>
@@ -5199,6 +5531,7 @@ export function ConversationWorkspace({
         )}
       </AnimatePresence>
     </div>
+    </ConversationHtmlScope>
     </WorkspaceOpenContext.Provider>
   );
 }
@@ -5226,11 +5559,15 @@ function coerceElicitationValue(field, value) {
 }
 
 export function ApprovalCard({ request, onResolve }) {
+  const response = useRequestResponse(request, onResolve);
   const method = request.method ?? "Approval";
   const params = request.params ?? {};
   const isApproval = method.includes("requestApproval") || method === "applyPatchApproval" || method === "execCommandApproval";
   const isUserInput = method.includes("requestUserInput");
   const isElicitation = method.toLowerCase().includes("elicitation");
+  const appApproval = isElicitation ? describeMcpElicitationApproval(params) : null;
+  const appApprovalDecisions = new Set(appApproval?.options.map((option) => option.decision) ?? []);
+  const providerName = attentionProvider(request) === "claude" ? "Claude" : "Codex";
   const questions = Array.isArray(params.questions) ? params.questions : [];
   const [answers, setAnswers] = useState({});
   const elicitationSchema = params.requestedSchema ?? {};
@@ -5238,11 +5575,11 @@ export function ApprovalCard({ request, onResolve }) {
   const requiredElicitationFields = new Set(elicitationSchema.required ?? []);
   const [elicitationValues, setElicitationValues] = useState(() => elicitationInitialValues(elicitationSchema));
   const summary = params.message || params.command || params.reason || params.cwd || method.replaceAll("/", " · ");
-  const submitAnswers = () => onResolve(request, Object.fromEntries(questions.map((question, index) => {
+  const submitAnswers = () => response.submit(Object.fromEntries(questions.map((question, index) => {
     const id = question.id ?? `question-${index + 1}`;
     return [id, { answers: [answers[id]?.trim()].filter(Boolean) }];
   })));
-  const submitElicitation = () => onResolve(request, {
+  const submitElicitation = () => response.submit({
     action: "accept",
     content: Object.fromEntries(elicitationFields.map(([name, field]) => [name, coerceElicitationValue(field, elicitationValues[name])]))
   });
@@ -5255,14 +5592,23 @@ export function ApprovalCard({ request, onResolve }) {
   });
   return (
     <section className="approval-card">
-      <div className="approval-title"><Warning size={17} weight="fill" /><strong>{isApproval ? "Approval required" : isElicitation ? (params.serverName ? `${params.serverName} needs input` : "Input required") : "Attention required"}</strong></div>
+      <div className="approval-title"><Warning size={17} weight="fill" /><strong>{isApproval || appApproval ? "Approval required" : isElicitation ? (params.serverName ? `${params.serverName} needs input` : "Input required") : "Attention required"}</strong></div>
       <p>{summary}</p>
+      {appApprovalDecisions.has("acceptAlways") && <p>Always allow lets {providerName} remember access to {appApproval.appName} across requests and chats.</p>}
       {(params.cwd || request.projectId) && <small className="approval-context">{params.cwd ?? `Project ${request.projectId}`}</small>}
+      <fieldset disabled={response.locked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       {isApproval ? (
         <div className="approval-actions">
-          <button className="approve" onClick={() => onResolve(request, "accept")}><Check size={15} />Approve</button>
-          <button onClick={() => onResolve(request, "decline")}><X size={15} />Decline</button>
-          {params.allowForSession !== false && <button onClick={() => onResolve(request, "acceptForSession")}>Allow for session</button>}
+          <button className="approve" onClick={() => response.submit("accept")}><Check size={15} />Approve</button>
+          <button onClick={() => response.submit("decline")}><X size={15} />Decline</button>
+          {params.allowForSession !== false && <button onClick={() => response.submit("acceptForSession")}>Allow for session</button>}
+        </div>
+      ) : appApproval ? (
+        <div className="approval-actions">
+          {appApprovalDecisions.has("accept") && <button className="approve" onClick={() => response.submit({ decision: "accept" })}><Check size={15} />Allow once</button>}
+          {appApprovalDecisions.has("acceptForSession") && <button onClick={() => response.submit({ decision: "acceptForSession" })}>Allow for session</button>}
+          {appApprovalDecisions.has("acceptAlways") && <button onClick={() => response.submit({ decision: "acceptAlways" })}>Always allow</button>}
+          <button onClick={() => response.submit({ decision: "decline" })}><X size={15} />Decline</button>
         </div>
       ) : isElicitation ? (
         <div className="approval-questions elicitation-form">
@@ -5322,9 +5668,9 @@ export function ApprovalCard({ request, onResolve }) {
             );
           })}
           <div className="approval-actions">
-            <button className="approve" disabled={elicitationFields.length > 0 && !elicitationComplete} onClick={() => params.mode === "url" || elicitationFields.length === 0 ? onResolve(request, { action: "accept" }) : submitElicitation()}><Check size={15} />Continue</button>
-            <button onClick={() => onResolve(request, { action: "decline" })}><X size={15} />Decline</button>
-            <button onClick={() => onResolve(request, { action: "cancel" })}>Cancel task</button>
+            <button className="approve" disabled={elicitationFields.length > 0 && !elicitationComplete} onClick={() => params.mode === "url" || elicitationFields.length === 0 ? response.submit({ action: "accept" }) : submitElicitation()}><Check size={15} />Continue</button>
+            <button onClick={() => response.submit({ action: "decline" })}><X size={15} />Decline</button>
+            <button onClick={() => response.submit({ action: "cancel" })}>Cancel task</button>
           </div>
         </div>
       ) : isUserInput && questions.length ? (
@@ -5347,6 +5693,8 @@ export function ApprovalCard({ request, onResolve }) {
           <button className="approve" disabled={questions.some((question, index) => !(answers[question.id ?? `question-${index + 1}`] ?? "").trim())} onClick={submitAnswers}><Check size={15} />Submit answers</button>
         </div>
       ) : <small>This request type is not supported by this Pixice version.</small>}
+      </fieldset>
+      <RequestResponseStatus response={response} className="approval-context" errorClassName="focus-coordination-error" actionsClassName="approval-actions" retryClassName="approve" />
     </section>
   );
 }
@@ -5426,7 +5774,7 @@ export function Inspector({ open, thread, threads, plan, attention, onResolve })
           {agents.length === 0 && <p className="inspector-empty">No delegated agents yet.</p>}
         </div>
       </section>
-      {attention.filter((request) => request.params?.threadId === thread.id && !isQuestionRequest(request)).map((request) => <ApprovalCard request={request} onResolve={onResolve} key={request.id} />)}
+      {attention.filter((request) => request.params?.threadId === thread.id && !isQuestionRequest(request)).map((request) => <ApprovalCard request={request} onResolve={onResolve} key={attentionIdentity(request)} />)}
     </motion.aside>}
     </AnimatePresence>
   );
@@ -5447,7 +5795,7 @@ function FileDiff({ file }) {
           <span className="del">−{file.minus}</span>
         </span>
       </div>
-      <div className="file-diff-body">
+      <div className="file-diff-body" data-context-kind="review" data-context-label={`Review ${file.path}`} data-context-path={file.path}>
         {rows.length ? rows.map((row, index) => (
           <div className={`file-diff-row ${row.type}`} key={`${index}-${row.old ?? ""}-${row.cur ?? ""}`}>
             <span className="line-number old-line">{row.old ?? ""}</span>
@@ -6797,6 +7145,7 @@ function SettingsWorkspace({
             <SettingsToggle label="Focus the composer automatically" checked={preferences.autoFocusComposer} onChange={(value) => onPreferenceChange("autoFocusComposer", value)} />
           </SettingsRow>
           <SettingsRow title="Check spelling" description="Use the operating system's spelling suggestions in prompts.">
+            <SettingsToggle label="Rich Markdown in the composer" checked={preferences.composerRichTextEnabled} onChange={(value) => onPreferenceChange("composerRichTextEnabled", value)} />
             <SettingsToggle label="Check spelling in prompts" checked={preferences.spellCheckComposer} onChange={(value) => onPreferenceChange("spellCheckComposer", value)} />
           </SettingsRow>
           <SettingsRow title="Slash command suggestions" description="Open Codex's command menu when a prompt begins with a slash.">
@@ -6902,7 +7251,7 @@ function SettingsWorkspace({
       </>
     );
   } else if (page === "about") {
-    const updateBusy = ["checking", "downloading", "protecting-data"].includes(updateStatus.state);
+    const updateBusy = ["checking", "downloading", "protecting-data", "preparing-install", "restarting"].includes(updateStatus.state);
     const action = updateStatus.state === "available"
       ? { label: `Download ${updateStatus.availableVersion}`, run: onDownloadUpdate }
       : updateStatus.state === "downloaded" || updateStatus.state === "install-error"
@@ -6912,12 +7261,13 @@ function SettingsWorkspace({
       <>
         <SettingsGroup title="Pixice updates" description="Packaged releases are downloaded directly from the official GitHub repository.">
           <SettingsRow title="Current version" description={`Pixice ${updateStatus.currentVersion}`}>
-            <span className="settings-value">{updateStatus.supported ? "Release build" : "Development build"}</span>
+            <span className="settings-value">{updateStatus.state === "unsupported" ? "Manual update required" : updateStatus.supported ? "Release build" : "Development build"}</span>
           </SettingsRow>
           <SettingsRow title={["downloaded", "install-error"].includes(updateStatus.state) ? "Ready to install" : "Update status"} description={updateStatus.message}>
+            {updateStatus.state === "unsupported" ? <a className="settings-action primary" href="https://github.com/Blumenwagen/Pixice/releases" target="_blank" rel="noreferrer">Get signed release</a> :
             <button className={`settings-action${action.primary ? " primary" : ""}`} disabled={!updateStatus.supported || updateBusy} onClick={action.run}>
-              {updateBusy && <SpinnerGap className="spin-icon" size={14} />}{updateStatus.state === "downloading" ? `${Math.round(updateStatus.percent)}%` : updateStatus.state === "protecting-data" ? "Preserving data…" : action.label}
-            </button>
+              {updateBusy && <SpinnerGap className="spin-icon" size={14} />}{updateStatus.state === "downloading" ? `${Math.round(updateStatus.percent)}%` : updateStatus.state === "protecting-data" ? "Preserving data…" : updateStatus.state === "preparing-install" ? "Verifying update…" : updateStatus.state === "restarting" ? "Restarting…" : action.label}
+            </button>}
           </SettingsRow>
           {updateStatus.state === "downloading" && (
             <div className="update-progress" role="progressbar" aria-label="Update download" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(updateStatus.percent)}>
@@ -6978,7 +7328,7 @@ function AttentionWorkspace({ attention, projects, onResolve }) {
   return <main className="main-canvas workspace">
     <AppToolbar icon={ShieldCheck} title="Attention" subtitle={`${approvals.length} approval${approvals.length === 1 ? "" : "s"}`} />
     <div className="attention-column">
-      {approvals.length ? approvals.map((request) => <div key={request.id}>
+      {approvals.length ? approvals.map((request) => <div key={attentionIdentity(request)}>
         <p className="approval-task-context">{projects.find((project) => project.id === request.projectId)?.displayName ?? "Pixice"} · {request.taskTitle || request.params?.threadId || "Task"}</p>
         <ApprovalCard request={request} onResolve={onResolve} />
       </div>) : <div className="empty-state compact"><ShieldCheck size={28} /><h2>No approvals waiting</h2><p>Requests for permission appear here.</p></div>}
@@ -7042,10 +7392,15 @@ function ExecutionTargetControl({ connect, value, projects, currentHostId, curre
 export function App({ readOnly = false } = {}) {
   const [serviceRevision, setServiceRevision] = useState(0);
   const bootstrapLoaded = useRef(false);
+  const [bootstrapRecovery, setBootstrapRecovery] = useState(null);
   const systemReducedMotion = useReducedMotion();
   const api = getPixiceApi();
   const connect = useConnect();
+  const workspaceConnectionState = connect ? (connect.active && connect.active !== "local" ? connect.state?.state : connect.localState?.state) : null;
+  const workspaceConnected = !workspaceConnectionState || workspaceConnectionState === "connected";
   const storage = connect?.storage ?? localStorage;
+  const [draftWorkspace, setDraftWorkspace] = useState({ mode: "project" });
+  const [restoredDraft, setRestoredDraft] = useState(null);
   const transcription = useTranscription(api);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [projects, setProjects] = useState([]);
@@ -7058,6 +7413,10 @@ export function App({ readOnly = false } = {}) {
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectCreateBusy, setProjectCreateBusy] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
+  useEffect(() => {
+    try { const saved = JSON.parse(storage.getItem(`pixice.taskWorkspace.${selectedProjectId}`) ?? "null"); setDraftWorkspace(saved?.mode === "worktree" ? saved : { mode: "project" }); }
+    catch { setDraftWorkspace({ mode: "project" }); }
+  }, [selectedProjectId, storage]);
   const selectedProjectIdRef = useRef(null);
   const [surfaceMode, setSurfaceMode] = useState(() => api?.focus && storage.getItem("pixice.surfaceMode") === "focus" ? "focus" : "workspace");
   const surfaceModeRef = useRef(surfaceMode);
@@ -7681,7 +8040,7 @@ export function App({ readOnly = false } = {}) {
     }
   }, [api, defaultEffort, defaultFastMode, defaultModel, models, storage]);
 
-  const refreshThread = useCallback(async (projectId, threadId) => {
+  const refreshThread = useCallback(async (projectId, threadId, { replaceHistory = false } = {}) => {
     if (!api || !projectId || !threadId) return;
     try {
       const response = await api.threads.read({ projectId, threadId });
@@ -7700,7 +8059,7 @@ export function App({ readOnly = false } = {}) {
           });
         }
         setThread((current) => {
-          return mergeThreadSnapshot(current, response.thread);
+          return replaceHistory ? response.thread : mergeThreadSnapshot(current, response.thread);
         });
       }
     } catch {
@@ -7741,11 +8100,13 @@ export function App({ readOnly = false } = {}) {
     const requestId = ++reviewLoadRequestRef.current;
     setLoading((state) => ({ ...state, review: true }));
     try {
-      const result = await api.review.read({ projectId });
+      const targetThreadId = selectedThreadIdRef.current;
+      const result = await api.review.read({ projectId, ...(targetThreadId ? { threadId: targetThreadId } : {}) });
+      if (selectedThreadIdRef.current !== targetThreadId) return;
       if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setReview({ ...result, projectId, fileDiffs: {} });
       if (result.repository?.git) setGitStatus(result.repository.git);
-      setProjects((current) => current.map((project) => project.id === projectId ? { ...project, repository: result.repository } : project));
+      if (!selectedThreadIdRef.current) setProjects((current) => current.map((project) => project.id === projectId ? { ...project, repository: result.repository } : project));
     } catch (cause) {
       if (requestId !== reviewLoadRequestRef.current || selectedProjectIdRef.current !== projectId) return;
       setError(cause.message);
@@ -7762,7 +8123,9 @@ export function App({ readOnly = false } = {}) {
     reviewFileRequestRef.current.set(filePath, requestId);
     setLoading((state) => ({ ...state, reviewFile: filePath }));
     try {
-      const result = await api.review.file({ projectId, path: filePath });
+      const targetThreadId = selectedThreadIdRef.current;
+      const result = await api.review.file({ projectId, ...(targetThreadId ? { threadId: targetThreadId } : {}), path: filePath });
+      if (selectedThreadIdRef.current !== targetThreadId) return;
       if (reviewFileRequestRef.current.get(filePath) !== requestId || selectedProjectIdRef.current !== projectId) return;
       setReview((current) => {
         if (current.projectId !== projectId || current.repository?.baseCommit !== result.baseCommit) return current;
@@ -7857,7 +8220,7 @@ export function App({ readOnly = false } = {}) {
   }, [api, selectedProjectId, selectedThreadId]);
 
   const loadProviders = useCallback(async () => {
-    if (!api?.providers) return;
+    if (!api?.providers || !workspaceConnected) return;
     setLoading((state) => ({ ...state, providers: true }));
     try {
       setProviders(await api.providers.list());
@@ -7866,7 +8229,7 @@ export function App({ readOnly = false } = {}) {
     } finally {
       setLoading((state) => ({ ...state, providers: false }));
     }
-  }, [api]);
+  }, [api, workspaceConnected]);
 
   const refreshProviders = useCallback(async () => {
     await loadProviders();
@@ -7940,7 +8303,7 @@ export function App({ readOnly = false } = {}) {
   }, [loadProviders]);
 
   useEffect(() => {
-    if (!api?.tasks?.receipts) return undefined;
+    if (!api?.tasks?.receipts || !workspaceConnected) return undefined;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       try {
@@ -7953,10 +8316,10 @@ export function App({ readOnly = false } = {}) {
       } catch (cause) { if (!cancelled) setError(`Could not refresh task requests or results: ${cause.message}`); }
     }, 100);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [api, selectedProjectId, selectedThreadId, receiptRefreshKey]);
+  }, [api, selectedProjectId, selectedThreadId, receiptRefreshKey, workspaceConnected]);
 
   useEffect(() => {
-    if (!api?.tasks?.interventions) return undefined;
+    if (!api?.tasks?.interventions || !workspaceConnected) return undefined;
     let cancelled = false;
     const readToken = ++attentionSnapshotReadTokenRef.current;
     const readRevision = attentionRevisionRef.current;
@@ -7972,7 +8335,7 @@ export function App({ readOnly = false } = {}) {
       cancelled = true;
       if (attentionSnapshotReadTokenRef.current === readToken) attentionSnapshotReadTokenRef.current += 1;
     };
-  }, [api]);
+  }, [api, workspaceConnected]);
 
   const loadUsage = useCallback(async (days = usageRangeDays) => {
     if (!api?.usage) return;
@@ -8011,13 +8374,23 @@ export function App({ readOnly = false } = {}) {
   useEffect(() => {
     if (!api) {
       setRuntime({ state: "unavailable", connected: false });
-      setError("Pixice’s desktop bridge is unavailable. Run the Electron app to connect projects and Codex.");
+      setBootstrapRecovery({ state: "failed", message: "The desktop connection is unavailable. Reopen Pixice to reconnect." });
       setLoading((state) => ({ ...state, app: false }));
       return;
     }
+    // Connect owns transport recovery. Do not race its initial handshake or
+    // duplicate its offline surface with a workspace error.
+    if (!workspaceConnected) return;
     let cancelled = false;
-    api.app.bootstrap().then((result) => {
+    const controller = new AbortController();
+    setLoading((state) => ({ ...state, app: !bootstrapLoaded.current }));
+    setBootstrapRecovery((current) => current ? { state: "recovering" } : null);
+    recoverWorkspaceBootstrap(() => api.app.bootstrap(), {
+      signal: controller.signal,
+      onRetry: () => { if (!cancelled) setBootstrapRecovery({ state: "recovering" }); }
+    }).then((result) => {
       if (cancelled) return;
+      setBootstrapRecovery(null);
       // Recover server data in place. Navigation, composer drafts, settings forms,
       // preview tabs, and their scroll positions belong to the mounted interface.
       if (bootstrapLoaded.current) {
@@ -8089,11 +8462,11 @@ export function App({ readOnly = false } = {}) {
       const saved = storage.getItem("pixice.activeProjectId");
       const selected = result.projects?.find((project) => project.id === saved)?.id ?? result.projects?.[0]?.id ?? null;
       setSelectedProjectId(selected);
-    }).catch((cause) => setError(cause.message)).finally(() => {
+    }).catch((cause) => { if (!cancelled) setBootstrapRecovery({ state: "failed", message: cause.message || "The workspace could not be read." }); }).finally(() => {
       if (!cancelled) setLoading((state) => ({ ...state, app: false }));
     });
-    return () => { cancelled = true; };
-  }, [api, savePersistentDefaults, serviceRevision, storage]);
+    return () => { cancelled = true; controller.abort(); };
+  }, [api, savePersistentDefaults, serviceRevision, storage, workspaceConnected]);
 
   useEffect(() => {
     if (!api?.threads?.list || !projectActivityKey) {
@@ -8356,6 +8729,10 @@ export function App({ readOnly = false } = {}) {
     if (activeView === "tools" && selectedProjectId) loadProjectTools(selectedProjectId);
   }, [activeView, loadExtensions, loadGitHubStatus, loadGitStatus, loadProjectTools, loadProviders, loadReview, loadUsage, loadUsageLimits, selectedProjectId, settingsPage, usageRangeDays, usageRefreshKey, usageLimitsRefreshKey, serviceRevision]);
 
+  useEffect(() => {
+    if (activeView === "review" && selectedProjectId) void loadReview(selectedProjectId);
+  }, [activeView, selectedProjectId, selectedThreadId, loadReview]);
+
   const refreshEventInstrumentSources = useCallback((capabilities, eventProjectId) => {
     if (!api?.instruments || !selectedProjectId || !previewApiWorkspaceId || eventProjectId && eventProjectId !== selectedProjectId) return;
     const requested = new Set(capabilities);
@@ -8378,6 +8755,13 @@ export function App({ readOnly = false } = {}) {
   useEffect(() => {
     if (!api) return;
     return api.events.subscribe((event) => {
+      // A first bootstrap can race service startup. Retry when it becomes usable,
+      // even if no earlier snapshot exists to emit ApplicationResync.
+      if ((event.type === "ServiceConnectionState" && event.payload?.state === "connected" && !bootstrapLoaded.current)
+        || (event.type === "ServiceState" && event.payload?.phase === "ready")) {
+        setServiceRevision((value) => value + 1);
+        return;
+      }
       if (event.type === "FocusPolicyUpdated") {
         const projectId = event.payload?.projectId;
         const coordinatorModel = event.payload?.policy?.coordinatorModel;
@@ -8750,6 +9134,19 @@ export function App({ readOnly = false } = {}) {
       }
 
       const payload = event.payload ?? {};
+      if (payload.method === "thread/rewound") {
+        const projectId = payload.projectId, threadId = payload.threadId;
+        optimisticThreadsRef.current.delete(threadId);
+        pendingRuntimeDeltasRef.current = [];
+        setTaskReceipts(current => current.filter(receipt => receipt.threadId !== threadId));
+        setThreads(current => current.map(candidate => candidate.id === threadId ? { ...candidate, planProgress: null, completionRevision: null } : candidate));
+        void refreshThread(projectId, threadId, { replaceHistory: true });
+        return;
+      }
+      if (["ThreadHistoryUpdated", "TaskWorkspacesUpdated"].includes(event.type)) {
+        if (selectedProjectIdRef.current && selectedThreadIdRef.current) void refreshThread(selectedProjectIdRef.current, selectedThreadIdRef.current);
+        return;
+      }
       const activityProjectId = payload.projectId;
       const activityThreadId = payload.threadId ?? payload.thread?.id;
       if (isBridgeThread(payload.thread)) bridgeThreadIdsRef.current.add(payload.thread.id);
@@ -9732,7 +10129,7 @@ export function App({ readOnly = false } = {}) {
     return instrument;
   }, [api, loadProjectTools, selectedProjectId, selectedThreadId]);
 
-  const openWorkspaceReference = useCallback(async (target) => {
+  const openWorkspaceReference = useCallback(async (target, { browserOnly = false } = {}) => {
     if (!api || !selectedProjectId || !previewWorkspaceId) return;
     setInspectorOpen(false);
     setActiveView("task");
@@ -9743,13 +10140,18 @@ export function App({ readOnly = false } = {}) {
       presentationTitle: null
     }));
     try {
+      if (!browserOnly && /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/[1-9]\d*(?:[/?#].*)?$/i.test(target) && selectedThreadIdRef.current && api.pullRequests) {
+        const tab = { id: `pull-requests:${selectedThreadIdRef.current}:${target.split(/[?#]/)[0]}`, kind: "pull-requests", title: "Pull request", payload: { projectId: selectedProjectId, threadId: selectedThreadIdRef.current, url: target } };
+        updatePreviewWorkspace(previewWorkspaceId, workspace => ({ ...workspace, customTabs: [...(workspace.customTabs ?? []).filter(candidate => candidate.id !== tab.id), tab], activeTabId: tab.id }));
+        return;
+      }
       if (/^https?:\/\//i.test(target)) {
         const next = await api.browser.create({ workspaceId: previewWorkspaceId, url: target });
         setBrowserState(next);
         setPreviewActiveTabId(next.activeTabId ?? null);
         return;
       }
-      const file = await (api.files.preview ?? api.files.read)({ projectId: selectedProjectId, path: target });
+      const file = await (api.files.preview ?? api.files.read)({ projectId: selectedProjectId, ...(selectedThreadIdRef.current ? { threadId: selectedThreadIdRef.current } : {}), path: target });
       const tab = fileTabFromPayload(file);
       setPreviewFileTabs((current) => current.some((candidate) => candidate.id === tab.id) ? current : [...current, tab]);
       setPreviewActiveTabId(tab.id);
@@ -9764,7 +10166,9 @@ export function App({ readOnly = false } = {}) {
       const status = await api.updates[action]();
       if (status?.state) setUpdateStatus(status);
     } catch (cause) {
-      setUpdateStatus((current) => ({ ...current, state: "error", message: cause.message }));
+      // The main process owns recovery and the retryable install state.
+      const status = await api.updates.status().catch(() => null);
+      setUpdateStatus((current) => status?.state ? status : { ...current, state: action === "install" ? "install-error" : "error", message: cause.message });
     }
   }, [api]);
 
@@ -9794,6 +10198,7 @@ export function App({ readOnly = false } = {}) {
         projectId: executionTarget.projectId,
         threadId: PROSPECTIVE_THREAD_ID,
         text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
         previewContext: currentPreviewContext,
         model: targetModelName || undefined,
         effort: targetEffort,
@@ -9811,6 +10216,7 @@ export function App({ readOnly = false } = {}) {
           originHostLabel: currentHostId === "local" ? "This device" : connect.instances.find((instance) => instance.id === currentHostId)?.name ?? currentHostId,
           originProjectId: selectedProjectId,
           initialPrompt: text,
+          initialContextRecords: draftLifecycle?.contextRecords ?? [],
           initialAttachments: attachments,
           initialPreparedAttachments: { attachments: initialPayload.attachments, attachmentIds: initialPayload.attachmentIds ?? [] },
           initialModel: targetModelName,
@@ -9849,6 +10255,7 @@ export function App({ readOnly = false } = {}) {
           projectId,
           threadId: PROSPECTIVE_THREAD_ID,
           text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
           previewContext: currentPreviewContext,
           model: targetModelName || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
@@ -9860,6 +10267,7 @@ export function App({ readOnly = false } = {}) {
       if (!targetThreadId) {
         const created = await api.threads.create({
           projectId,
+          ...(draftWorkspace.mode === "worktree" && surfaceModeRef.current !== "focus" ? { workspace: draftWorkspace } : {}),
           model: targetModelName || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
           permissionMode: targetPermissionMode
@@ -9867,7 +10275,7 @@ export function App({ readOnly = false } = {}) {
         assertSubmissionActive(signal);
         targetThreadId = created.thread.id;
         markThreadMessaged(targetThreadId);
-        draftLifecycle?.adoptDraftKey(`${projectId}:${targetThreadId}`);
+        draftLifecycle?.adoptDraftKey?.(`${projectId}:${targetThreadId}`);
         const draftWorkspaceId = `draft:${projectId}`;
         await api.browser?.adopt({ fromWorkspaceId: draftWorkspaceId, toWorkspaceId: targetThreadId });
         assertSubmissionActive(signal);
@@ -9892,17 +10300,26 @@ export function App({ readOnly = false } = {}) {
         }
       }
       if (activeTurn && targetThreadId === startingThreadId) {
+        if (draftLifecycle?.dispatchMode === "queue" && api.turns.queue) {
+          const queuePayload = requestPayloadWithAttachments({ projectId, threadId: targetThreadId, text, contextRecords: draftLifecycle?.contextRecords ?? [], previewContext: currentPreviewContext, model: targetModelName || undefined, effort: targetEffort, serviceTier, permissionMode: targetPermissionMode }, prepared);
+          assertSubmissionRequestBudget({ api, operation: "turns.queue", payload: queuePayload });
+          await api.turns.queue(queuePayload);
+          assertSubmissionActive(signal);
+          setError(null);
+          return true;
+        }
         optimisticTurnId = activeTurn.id;
         optimisticMessageId = `local-user:${activeTurn.id}:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
         if (selectedProjectIdRef.current === projectId && selectedThreadIdRef.current === targetThreadId) {
           setThread((current) => appendLocalUserMessage(current, {
             turnId: activeTurn.id,
             text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
             attachments,
             messageId: optimisticMessageId
           }));
         }
-        const steerPayload = requestPayloadWithAttachments({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, previewContext: currentPreviewContext }, prepared);
+        const steerPayload = requestPayloadWithAttachments({ projectId, threadId: targetThreadId, turnId: activeTurn.id, text, contextRecords: draftLifecycle?.contextRecords ?? [], previewContext: currentPreviewContext }, prepared);
         assertSubmissionRequestBudget({ api, operation: "turns.steer", payload: steerPayload });
         await api.turns.steer(steerPayload);
         assertSubmissionActive(signal);
@@ -9919,6 +10336,7 @@ export function App({ readOnly = false } = {}) {
           setThread((current) => appendLocalUserMessage(current, {
             turnId: optimisticTurnId,
             text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
             attachments,
             messageId: optimisticMessageId
           }));
@@ -9927,6 +10345,7 @@ export function App({ readOnly = false } = {}) {
           projectId,
           threadId: targetThreadId,
           text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
           previewContext: currentPreviewContext,
           model: targetModelName || undefined,
           ...(serviceTier !== undefined ? { serviceTier } : {}),
@@ -9955,6 +10374,7 @@ export function App({ readOnly = false } = {}) {
               }, {
                 turnId: response.turn.id,
                 text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
                 attachments,
                 createdAt,
                 messageId: localMessageId,
@@ -9977,6 +10397,7 @@ export function App({ readOnly = false } = {}) {
             return appendLocalUserMessage(started, {
               turnId: response.turn.id,
               text,
+        contextRecords: draftLifecycle?.contextRecords ?? [],
               attachments,
               createdAt,
               messageId: localMessageId,
@@ -10025,28 +10446,45 @@ export function App({ readOnly = false } = {}) {
     }
   };
 
+  const beginAttentionResponse = (request) => {
+    attentionRevisionRef.current += 1;
+    setAttention(current => current.map(candidate => sameAttentionRequest(candidate, request)
+      ? { ...candidate, responseState: "responding", responseError: null } : candidate));
+  };
+  const attentionResponseFailed = (request, cause) => {
+    attentionRevisionRef.current += 1;
+    setAttention(current => current.map(candidate => sameAttentionRequest(candidate, request)
+      ? { ...candidate, responseState: cause.uncertain || candidate.responseState === "uncertain" ? "uncertain" : "pending", responseError: cause.message } : candidate));
+  };
   const resolveAttention = async (request, decision) => {
+    beginAttentionResponse(request);
     try {
       const generation = requestGenerationPayload(request);
-      if (request.method === "workflow/taskEvent/requestApproval") await api.workflows.resolveMissedTrigger({ projectId: request.projectId, requestId: request.id, ...generation, decision: decision === "accept" ? "accept" : "decline" });
-      else if (request.method?.includes("requestUserInput")) await api.requests.respond({ requestId: request.id, ...generation, answers: decision });
-      else if (request.method?.toLowerCase().includes("elicitation")) await api.elicitations.respond({ requestId: request.id, ...generation, ...decision });
-      else await api.approvals.resolve({ requestId: request.id, ...generation, decision });
+      let result;
+      if (request.method === "workflow/taskEvent/requestApproval") result = await api.workflows.resolveMissedTrigger({ projectId: request.projectId, requestId: request.id, ...generation, decision: decision === "accept" ? "accept" : "decline" });
+      else if (request.method?.includes("requestUserInput")) result = await api.requests.respond({ requestId: request.id, ...generation, answers: decision });
+      else if (request.method?.toLowerCase().includes("elicitation")) result = await api.elicitations.respond({ requestId: request.id, ...generation, ...decision });
+      else result = await api.approvals.resolve({ requestId: request.id, ...generation, decision });
+      if (result?.resolved === false) return false;
       attentionRevisionRef.current += 1;
-      setAttention((current) => current.filter((candidate) => !sameAttentionRequest(candidate, request)));
+      setAttention(current => current.filter(candidate => !sameAttentionRequest(candidate, request)));
+      return true;
     } catch (cause) {
-      setError(cause.message);
+      attentionResponseFailed(request, cause);
+      return false;
     }
   };
 
   const resolveQuestion = async (request, response) => {
+    beginAttentionResponse(request);
     try {
-      await api.questions.respond({ requestId: request.id, ...response, ...requestGenerationPayload(request) });
+      const result = await api.questions.respond({ requestId: request.id, ...response, ...requestGenerationPayload(request) });
+      if (result?.resolved === false) return false;
       attentionRevisionRef.current += 1;
-      setAttention((current) => current.filter((candidate) => !sameAttentionRequest(candidate, request)));
+      setAttention(current => current.filter(candidate => !sameAttentionRequest(candidate, request)));
       return true;
     } catch (cause) {
-      if (!request.focusCoordinatorQuestion) setError(cause.message);
+      attentionResponseFailed(request, cause);
       return false;
     }
   };
@@ -10071,18 +10509,39 @@ export function App({ readOnly = false } = {}) {
   };
 
   const operationItems = [];
+  if (bootstrapRecovery && workspaceConnected) {
+    const failed = bootstrapRecovery.state === "failed";
+    operationItems.push({
+      id: "workspace-bootstrap",
+      title: "Workspace",
+      tone: failed ? "error" : "working",
+      label: failed
+        ? bootstrapLoaded.current ? "Workspace refresh failed" : "Workspace could not load"
+        : bootstrapLoaded.current ? "Reconnecting to workspace…" : "Connecting to workspace…",
+      status: failed ? "Loading failed" : "Connecting",
+      detail: failed ? bootstrapLoaded.current ? "Your open workspace is preserved. Try again." : "Pixice could not read your saved workspace. Try again." : undefined,
+      technicalDetail: failed ? bootstrapRecovery.message : undefined,
+      indeterminate: !failed,
+      dismissible: failed && bootstrapLoaded.current,
+      actionLabel: failed ? "Retry" : undefined,
+      onAction: () => setServiceRevision((value) => value + 1),
+      onDismiss: () => setBootstrapRecovery(null)
+    });
+  }
   const updateVersion = updateStatus.availableVersion ? ` ${updateStatus.availableVersion}` : "";
-  if (["checking", "downloading", "protecting-data", "available", "downloaded", "install-error", "error"].includes(updateStatus.state)) {
+  if (["checking", "downloading", "protecting-data", "preparing-install", "restarting", "available", "downloaded", "install-error", "error"].includes(updateStatus.state)) {
     const appUpdateOperation = {
       id: "pixice-update",
       kind: "update",
       title: updateStatus.state === "downloading" ? `Downloading Pixice${updateVersion}` : `Pixice${updateVersion}`,
       detail: updateStatus.message,
-      dismissible: !["checking", "downloading", "protecting-data"].includes(updateStatus.state)
+      dismissible: !["checking", "downloading", "protecting-data", "preparing-install", "restarting"].includes(updateStatus.state)
     };
     if (updateStatus.state === "checking") Object.assign(appUpdateOperation, { tone: "working", status: "Checking for updates", label: "Checking Pixice updates", indeterminate: true });
     if (updateStatus.state === "downloading") Object.assign(appUpdateOperation, { tone: "working", status: `${Math.round(updateStatus.percent)}% downloaded`, label: `Downloading Pixice · ${Math.round(updateStatus.percent)}%`, progress: updateStatus.percent });
     if (updateStatus.state === "protecting-data") Object.assign(appUpdateOperation, { tone: "working", status: "Protecting your data", label: "Preparing Pixice update", indeterminate: true });
+    if (updateStatus.state === "preparing-install") Object.assign(appUpdateOperation, { tone: "working", status: "Verifying update", label: "Preparing Pixice update", indeterminate: true });
+    if (updateStatus.state === "restarting") Object.assign(appUpdateOperation, { tone: "working", status: "Restarting Pixice", label: "Installing Pixice update", indeterminate: true });
     if (updateStatus.state === "available") Object.assign(appUpdateOperation, { tone: "working", status: "Update available", label: `Pixice${updateVersion} available`, actionLabel: "Download", onAction: () => runUpdateAction("download") });
     if (updateStatus.state === "downloaded") Object.assign(appUpdateOperation, { tone: "success", status: "Ready to install", label: `Pixice${updateVersion} downloaded`, progress: 100, actionLabel: "Restart", onAction: () => runUpdateAction("install") });
     if (updateStatus.state === "install-error") Object.assign(appUpdateOperation, { tone: "error", status: "Install failed", actionLabel: "Retry", onAction: () => runUpdateAction("install") });
@@ -10120,9 +10579,9 @@ export function App({ readOnly = false } = {}) {
   const openExternal = async (kind, path) => {
     if (!api || !selectedProjectId) return;
     try {
-      if (kind === "terminal") await api.external.openTerminal({ projectId: selectedProjectId });
-      if (kind === "editor") await api.external.openEditor({ projectId: selectedProjectId, ...(path ? { path } : {}) });
-      if (kind === "reveal") await api.external.reveal({ projectId: selectedProjectId });
+      if (kind === "terminal") await api.external.openTerminal({ projectId: selectedProjectId, ...(selectedThreadId ? { threadId: selectedThreadId } : {}) });
+      if (kind === "editor") await api.external.openEditor({ projectId: selectedProjectId, ...(selectedThreadId ? { threadId: selectedThreadId } : {}), ...(path ? { path } : {}) });
+      if (kind === "reveal") await api.external.reveal({ projectId: selectedProjectId, ...(selectedThreadId ? { threadId: selectedThreadId } : {}) });
     } catch (cause) {
       setError(cause.message);
     }
@@ -10194,7 +10653,8 @@ export function App({ readOnly = false } = {}) {
     api: targetAttachmentApi,
     hostId: targetAttachmentApi?.remote?.hostId ?? executionTarget.hostId,
     deviceId: targetAttachmentApi?.remote?.deviceId,
-    projectId: targetIsOrigin ? selectedProjectId : executionTarget.projectId
+    projectId: targetIsOrigin ? selectedProjectId : executionTarget.projectId,
+    threadId: targetIsOrigin ? selectedThreadId : null
   };
   const updateExecutionTargetConfig = (patch) => {
     if (targetIsOrigin) return;
@@ -10208,6 +10668,40 @@ export function App({ readOnly = false } = {}) {
     disabled: !targetConnected || !targetProjectReady || !targetProviderReady,
     busy: submitting,
     draftKey: `${selectedProjectId ?? "none"}:${selectedThreadId ?? "new"}`,
+    restoredDraft,
+    activeTurnId: activeTurn?.id ?? null,
+    promptHistory: (thread?.turns ?? []).flatMap(turn => turn.items ?? []),
+    richTextEnabled: preferences.composerRichTextEnabled,
+    contextOptions: { threads: targetIsOrigin ? threads : [], skills: targetIsOrigin ? extensions.skills : [], preview: currentPreviewContext, onOpenSource: record => { if (record.source.path || record.source.url) void openWorkspaceReference(record.source.path || record.source.url); else if (record.source.threadId && record.source.threadId !== selectedThreadId) void selectThread(record.source.threadId); else if (record.source.itemId) document.querySelector(`[data-context-item="${CSS.escape(record.source.itemId)}"]`)?.scrollIntoView({ block: "center", behavior: preferences.reduceMotion ? "instant" : "smooth" }); } },
+    workspaceControl: !focusActive && targetIsOrigin && api?.taskWorkspaces ? selectedThreadId ? <TaskWorkspaceBadge workspace={thread?.workspace} disabled={Boolean(activeTurn) || submitting} onRemove={async () => { await api.taskWorkspaces.remove({ projectId: selectedProjectId, threadId: selectedThreadId }); await refreshThread(selectedProjectId, selectedThreadId); }} /> : <TaskWorkspacePicker value={draftWorkspace} repository={selectedProject?.repository} disabled={submitting} onChange={value => { setDraftWorkspace(value); storage.setItem(`pixice.taskWorkspace.${selectedProjectId}`, JSON.stringify(value)); }} /> : null,
+    rewindTools: api?.history ? { api: api.history, projectId: selectedProjectId, disabled: Boolean(activeTurn) || submitting, onRewound: async result => {
+      const projectId = selectedProjectId; const threadId = selectedThreadId;
+      const input = result.input ?? {};
+      const images = input.images ?? (Array.isArray(input) ? input : input.providerInput ?? []).filter(part => part.type === "image").map(part => part.url);
+      const records = normalizeContextRecords(input.contextRecords);
+      const scope = createAttachmentScope({ projectId, hostId: "local" });
+      const imageRecords = records.filter(record => record.kind === "image");
+      const attachments = images.map((dataUrl, index) => attachmentFromDraft({ name: imageRecords[index]?.source?.name || imageRecords[index]?.label || `Image ${index + 1}`, dataUrl }, scope, imageRecords[index]));
+      const usedRecords = new Set(imageRecords.map(record => record.id));
+      for (const file of input.attachments ?? []) {
+        const record = records.find(record => !usedRecords.has(record.id) && (record.source?.name === file.name || record.label === file.name) && (record.attachmentId || record.source?.attachmentId));
+        if (record) usedRecords.add(record.id);
+        try {
+          const restored = await api.history.attachment({ projectId, threadId, checkpointId: result.checkpointId, path: file.path });
+          attachments.push(attachmentFromDraft({ ...restored, type: restored.type ?? restored.mimeType }, scope, record));
+        } catch (cause) {
+          attachments.push(attachmentFromDraft({ ...file, type: file.mimeType }, scope, record));
+          setError(`The prompt was restored, but ${file.name ?? "an attachment"} could not be loaded: ${cause.message}`);
+        }
+      }
+      const original = input.text ?? (Array.isArray(input) ? input : input.providerInput ?? []).filter(part => part.type === "text").map(part => part.text).join("\n");
+      setRestoredDraft({ id: globalThis.crypto.randomUUID(), draftKey: `${projectId}:${threadId}`, text: stripPreviewContext(original), contextRecords: records, attachments });
+      if (result.restoreError) setError(result.restoreError);
+      optimisticThreadsRef.current.delete(threadId);
+      setTaskReceipts(current => current.filter(receipt => receipt.threadId !== threadId));
+      await refreshThread(projectId, threadId, { replaceHistory: true });
+      await loadReview(projectId);
+    } } : null,
     preserveDrafts: preferences.preserveDrafts,
     sendShortcut: preferences.sendShortcut,
     spellCheckComposer: preferences.spellCheckComposer,
@@ -10215,6 +10709,8 @@ export function App({ readOnly = false } = {}) {
     showSlashCommands: preferences.showSlashCommands,
     showPermissionPicker: !focusActive,
     running: Boolean(activeTurn),
+    queueEnabled: Boolean(api?.turns?.queue),
+    onQueueError: setError,
     questionRequest,
     onQuestionResolve: resolveQuestion,
     models: targetModels,
@@ -10301,7 +10797,7 @@ export function App({ readOnly = false } = {}) {
       />
     );
   } else if (activeView === "review") {
-    content = <ReviewWorkspace project={selectedProject} review={review} loading={loading.review} fileLoadingPath={loading.reviewFile} gitStatus={gitStatus} gitBusy={loading.git} onLoadFile={(filePath) => loadReviewFile(selectedProjectId, filePath)} onRefresh={async () => { await loadGitStatus(); await loadReview(selectedProjectId); }} onInstallGit={installCommandLineTools} onExternal={openExternal} />;
+    content = <SelectionContextMenu projectId={selectedProjectId} threadId={selectedThreadId} hostId={api?.remote?.hostId ?? "local"} onAttached={() => setActiveView("task")}><ReviewWorkspace project={selectedProject} review={review} loading={loading.review} fileLoadingPath={loading.reviewFile} gitStatus={gitStatus} gitBusy={loading.git} onLoadFile={(filePath) => loadReviewFile(selectedProjectId, filePath)} onRefresh={async () => { await loadGitStatus(); await loadReview(selectedProjectId); }} onInstallGit={installCommandLineTools} onExternal={openExternal} /></SelectionContextMenu>;
   } else if (activeView === "settings") {
     content = (
       <SettingsWorkspace
@@ -10388,6 +10884,7 @@ export function App({ readOnly = false } = {}) {
             thread={thread}
             threads={threads}
             loading={loading.app || loading.thread}
+            workspaceLoadFailed={!bootstrapLoaded.current && bootstrapRecovery?.state === "failed"}
             runtime={runtime}
             plan={plan}
             changedCount={changedCount}
@@ -10518,7 +11015,12 @@ export function App({ readOnly = false } = {}) {
             defaultEffort={defaultEffort}
             defaultFastMode={defaultFastMode}
             providers={providers}
-            attention={[]}
+            attention={attention.filter((request) => {
+              if (isQuestionRequest(request)) return false;
+              if (request.projectId) return request.projectId === selectedProjectId;
+              const requestingThreadId = request.params?.threadId;
+              return Boolean(requestingThreadId && (requestingThreadId === focusThreadId || threads.some((candidate) => candidate.id === requestingThreadId)));
+            })}
             focusQuestions={attention.filter((request) => isQuestionRequest(request) && request.params?.threadId === focusThreadId)}
             preferences={preferences}
             plan={plan}
@@ -10628,7 +11130,7 @@ export function App({ readOnly = false } = {}) {
         {activeView === "task" && !originPreviewOpen && !executionActive && <Inspector open={inspectorOpen} thread={thread} threads={threads} plan={plan} attention={attention} onResolve={resolveAttention} />}
         </>}
       </div>
-      <OperationCapsuleStack operations={operationItems} taskOffset={!focusActive && activeView === "task"} />
+      <OperationCapsuleStack operations={operationItems} taskOffset={!focusActive && activeView === "task" && Boolean(selectedProject)} />
       <ProjectCreationDialog
         open={projectDialogOpen}
         busy={projectCreateBusy}

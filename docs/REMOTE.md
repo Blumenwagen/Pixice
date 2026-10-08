@@ -50,7 +50,11 @@ On a host without an OS credential helper, set `PIXICE_CREDENTIAL_KEY` to a secu
 
 ## Reconnection recovery
 
-A transport interruption keeps the current screen, task draft, and preview tabs mounted. The client resumes from its last event cursor; a backend restart or lost event history refreshes server data in place. Interrupted commands are never automatically retried. Large event payloads request a snapshot without disconnecting the transport. The private desktop/native listener has a separate request budget from the public remote API.
+A transport interruption keeps the current screen, task draft, and preview tabs mounted. Settings and recovery controls remain accessible. The desktop resumes from its last event cursor and automatically starts a replacement if the backend has died; an intentional Stop disables this recovery. A backend restart or lost event history refreshes server data in place. Interrupted commands are never automatically retried. Large event payloads request a snapshot without disconnecting the transport. The private desktop/native listener has a separate request budget from the public remote API.
+
+If ordinary Restart or Stop cannot finish, use **Recovery options → Force restart / Force stop**, or the force controls in Connections. The desktop asks before interrupting work. Forced recovery verifies the backend process identity before terminating it and preserves saved projects and conversations. A stale descriptor is removed only after obtaining the exclusive ownership lock.
+
+Saved projects load independently of provider startup. Missing folders, invalid Git repositories, and timed-out repository or model checks do not discard project records or prevent the rest of the project list from loading. Restore access to an unavailable folder to resume work in that existing project.
 
 Desktop connection transitions and HTTP/network error codes are written to `service/desktop-connection.log` inside the Pixice application-data directory (on macOS, `~/Library/Application Support/pixice`). The log rotates at 512 KB and contains connection metadata only. This log comes from the machine experiencing the disconnects; a healthy connection on another machine does not rule out a local failure.
 

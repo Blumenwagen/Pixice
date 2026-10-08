@@ -3,11 +3,25 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { CodexRuntime } from "../runtime/codex-runtime.mjs";
 import { ThreadSessionRegistry } from "../runtime/thread-session-registry.mjs";
 import { ThreadNamer } from "../runtime/thread-namer.mjs";
 import { TaskResults } from "../runtime/task-results.mjs";
+import { ExecutionJournal, EXECUTION_TERMINAL_STATUSES } from "../runtime/execution-journal.mjs";
+import { RequestResponseDelivery } from "../runtime/request-response-delivery.mjs";
+import { mcpElicitationApprovalResponse } from "../runtime/mcp-elicitation.mjs";
+import { MessageQueue } from "../runtime/message-queue.mjs";
+import { listComposerFiles } from "../runtime/composer-files.mjs";
+import { normalizeContextRecords, parseContextTokens, contextSendIssues, serializeContextForProvider } from "../../src/composer/context.js";
+import { HtmlReplies, PIXICE_HTML_NAMESPACE, htmlReplyDynamicTools, htmlReplyReadSchema } from "../runtime/html-replies.mjs";
+import { PullRequestService } from "../github/pull-request-service.mjs";
+import { PullRequestWatchHost } from "../github/pull-request-watch-host.mjs";
+import { PixicePullRequests, PIXICE_PULL_REQUEST_NAMESPACE, pullRequestDynamicTools } from "../github/pull-request-tools.mjs";
+import { renameSync } from "node:fs";
+import { ManagedTaskWorkspaceStore } from "../git/managed-task-workspaces.mjs";
+import { ThreadHistoryStore, revertProviderThread, createRewindSupportProbe } from "../runtime/thread-history.mjs";
 import { buildCodexUserInput } from "../runtime/user-input.mjs";
 import {
   MAX_PROMPT_ATTACHMENTS,
@@ -38,6 +52,7 @@ import {
 } from "../runtime/question-tool.mjs";
 import { PixiceBridge, PIXICE_BRIDGE_NAMESPACE, pixiceBridgeDynamicTools } from "../runtime/pixice-bridge.mjs";
 import { BridgeParentContinuation } from "../runtime/bridge-parent-continuation.mjs";
+import { BridgeJobStore } from "../persistence/bridge-job-store.mjs";
 import { FocusStore } from "../persistence/focus-store.mjs";
 import { FocusSupervisor } from "../runtime/focus-supervisor.mjs";
 import { FocusCoordinationTools } from "../runtime/focus-coordination-tools.mjs";
@@ -90,7 +105,7 @@ import { installWorkflowRuntimeHost } from "../workflows/workflow-runtime-host.m
 
 // Application state lives in this service instance. Native UI and network transports
 // are adapters; neither owns provider execution, projects, approvals, or workflows.
-export function createApplication({ userDataPath, resourcesPath, version, platform, handlers, providerFactories = {}, nativeReadiness = () => ({ available: false, reason: "The Pixice native helper is unavailable." }), transferStore = null }) {
+export function createApplication({ userDataPath, resourcesPath, version, platform, handlers, providerFactories = {}, nativeReadiness = () => ({ available: false, reason: "The Pixice native helper is unavailable." }), transferStore = null, onCoreReady = () => {} }) {
   const events = new EventEmitter();
   let stopped = false;
   let started = false;
@@ -125,17 +140,32 @@ let transcriptionService;
 let proactiveStewardship;
 let database;
 let taskResults;
+let executionJournal;
+let requestDelivery;
+let recoveryPromise;
+let messageQueue;
+let htmlReplies;
+let pixicePullRequests;
+let rewindSupportProbe;
+let pullRequests;
+let pullRequestWatches;
+let taskWorkspaces;
+let threadHistory;
+const archivedThreadIds = new Set();
 let runtimeStatus = { state: "starting" };
 const activeTurns = new Map();
 const startingTurns = new Set();
+const earlyTerminalTiming = new Map();
 const turnUsageMetadata = new Map();
 const threadSessions = new ThreadSessionRegistry();
 const threadPlans = new Map();
 const trayCompletionRevisions = new Map();
 const threadMonitorCache = new Map();
 const threadProjects = new Map();
+const composerThreadReferences = new Map();
 const projectDeletionTombstones = new Map();
 const pendingRequests = new Map();
+const pendingBridgeToolResponses = new Map();
 const pendingTaskNames = new Set();
 const scheduledThreadNames = new Set();
 const focusSessionEnsures = new Map();
@@ -157,11 +187,13 @@ const pixiceDynamicTools = [
   ...pixiceBoardDynamicTools,
   ...pixiceFocusDynamicTools,
   ...instrumentDynamicTools,
+  ...htmlReplyDynamicTools,
+  ...pullRequestDynamicTools,
   ...iosDynamicTools
 ];
 const focusBridgeDynamicTools = pixiceBridgeDynamicTools.map((namespace) => ({
   ...namespace,
-  tools: namespace.tools.filter((tool) => tool.name === "list_models")
+  tools: namespace.tools.filter((tool) => ["list_models", "read_thread"].includes(tool.name))
 }));
 const focusDynamicTools = [
   ...questionDynamicTools,
@@ -169,10 +201,11 @@ const focusDynamicTools = [
   ...pixiceBoardDynamicTools,
   ...pixiceFocusDynamicTools,
   ...previewContextDynamicTools,
-  ...browserDynamicTools
+  ...browserDynamicTools,
+  ...htmlReplyDynamicTools,
+  ...pullRequestDynamicTools
 ];
 let runtimeGeneration = 0;
-let nextAttentionGeneration = 0;
 let developerInstructionsPath;
 let agentBehaviorsDirectory;
 
@@ -308,7 +341,8 @@ const promptInputSchema = {
   images: z.array(imageDataUrlSchema).max(10).default([]),
   attachments: z.array(promptAttachmentSchema).max(MAX_PROMPT_ATTACHMENTS).default([]),
   attachmentIds: z.array(z.string().uuid()).max(MAX_PROMPT_ATTACHMENTS).default([]),
-  previewContext: previewContextSchema.optional()
+  previewContext: previewContextSchema.optional(),
+  contextRecords: z.array(z.unknown()).max(64).refine(records => JSON.stringify(records).length <= 512 * 1024, "Composer context is too large").transform(normalizeContextRecords).default([])
 };
 const requirePromptInput = (value, context) => {
   if (!value.text && value.images.length === 0 && value.attachments.length === 0 && value.attachmentIds.length === 0) {
@@ -443,6 +477,10 @@ function runtimeRoots(project) {
 }
 
 async function preparePromptInput(value, project, threadId, context = {}) {
+  const issues = contextSendIssues(value.text, value.contextRecords, { projectId: project.id });
+  if (issues.length) throw new Error(issues[0].message);
+  const promptText = serializeContextForProvider(value.text, value.contextRecords);
+  if (promptText.length > 600_000) throw new Error("The prompt and selected context are too large. Remove some context before sending.");
   if (value.previewContext) previewContextRegistry?.set(threadId, value.previewContext);
   if (value.attachmentIds.length && !Array.isArray(context.stagedFiles)) throw new Error("Uploaded attachment IDs require an authenticated remote Connect request.");
   const staged = await stagePromptAttachmentsAsync({
@@ -454,10 +492,11 @@ async function preparePromptInput(value, project, threadId, context = {}) {
   });
   return {
     text: appendPreviewContextHint(
-      appendAttachmentContext(value.text, staged.files),
+      appendAttachmentContext(promptText, staged.files),
       previewContextRegistry?.current(threadId)
     ),
-    images: [...value.images, ...staged.images]
+    images: [...value.images, ...staged.images],
+    files: staged.files
   };
 }
 
@@ -477,17 +516,19 @@ function isWithin(root, target) {
 }
 
 function projectRootForTarget(project, target) {
-  return projectRoots(project)
+  const workspace = taskWorkspaces?.findByPathSync(target);
+  return [...projectRoots(project), ...(workspace?.projectId === project.id && workspace.status !== "removed" ? workspace.folders : [])]
     .filter((root) => isWithin(root, target))
     .sort((left, right) => right.length - left.length)[0] ?? null;
 }
 
-function isWithinProject(project, target) {
-  return Boolean(projectRootForTarget(project, target));
+function isWithinProject(project, target, threadId = null) {
+  const workspace = threadId ? taskWorkspaces?.getSync(threadId) : null;
+  return Boolean(projectRootForTarget(project, target)) || Boolean(workspace?.projectId === project.id && workspace.folders.some(root => isWithin(root, target)));
 }
 
-function projectTarget(projectId, target) {
-  const project = getProject(projectId);
+function projectTarget(projectId, target, threadId = null) {
+  const project = threadId ? workspaceProject(getProject(projectId), threadId) : getProject(projectId);
   const primaryRoot = projectPrimaryRoot(project);
   const candidate = target
     ? path.isAbsolute(target) ? path.resolve(target) : path.resolve(primaryRoot, target)
@@ -497,21 +538,50 @@ function projectTarget(projectId, target) {
   return resolved;
 }
 
-function previewFileOptions(projectId, reference, allowExternal = false) {
-  const project = getProject(projectId);
+function previewFileOptions(projectId, reference, allowExternal = false, threadId = null) {
+  const project = threadId ? workspaceProject(getProject(projectId), threadId) : getProject(projectId);
   return { reference, primaryRoot: projectPrimaryRoot(project), roots: projectRoots(project), allowExternal };
 }
 
-function readProjectFile(projectId, reference) {
-  return readPreviewFile(previewFileOptions(projectId, reference));
+function readProjectFile(projectId, reference, threadId = null) {
+  return readPreviewFile(previewFileOptions(projectId, reference, false, threadId));
 }
 
-function readLocalPreviewFile(projectId, reference) {
-  return readPreviewFile(previewFileOptions(projectId, reference, true));
+function readLocalPreviewFile(projectId, reference, threadId = null) {
+  return readPreviewFile(previewFileOptions(projectId, reference, true, threadId));
 }
 
-function requestKey(id) {
-  return `${typeof id}:${id}`;
+async function invokeHtmlReply(params) {
+  const projectId = authoritativeThreadProjectId(params.threadId);
+  if (!projectId) throw new Error("The HTML reply must belong to a Pixice conversation.");
+  const project = workspaceProject(getProject(projectId), params.threadId);
+  await ensureThreadLoaded(project, params.threadId);
+  return htmlReplies.invokeTool({ ...params, projectId, primaryRoot: projectPrimaryRoot(project), roots: runtimeRoots(project) });
+}
+
+function requestKey(id, provider = "codex") {
+  return `${provider}\0${typeof id}:${id}`;
+}
+
+function pendingRequestById(id, generation) {
+  const matches = [...pendingRequests.values()].filter(pending => pending.request.id === id && (generation === undefined || pending.generation === generation));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function respondNativeTool(request, handle) {
+  void Promise.resolve().then(handle)
+    .catch(error => ({ success: false, contentItems: [{ type: "inputText", text: error.message }] }))
+    .then(response => runtime.respond(request.id, response, { provider: request.provider, generation: request.providerRequestGeneration }))
+    .catch(error => codexRuntime.emit("diagnostic", `Tool response awaits provider confirmation: ${error.message}`));
+}
+
+function activeExecutionCount() {
+  if (stopped || !database || !executionJournal) return activeTurns.size;
+  const reserved = database.db.prepare(`SELECT COUNT(*) AS count FROM (
+    SELECT DISTINCT thread_id AS id FROM execution_commands WHERE kind='turn-start' AND status IN ('accepted','dispatching','running','uncertain')
+    ${pixiceBridge ? "UNION SELECT child_thread_id AS id FROM bridge_jobs WHERE child_thread_id IS NOT NULL AND status NOT IN ('completed','failed')" : ""}
+  )`).get().count;
+  return Number(reserved) + [...activeTurns.keys()].filter(threadId => !executionJournal.getActive(threadId) && !(pixiceBridge?.jobStore.getByChild(threadId) && !["completed", "failed"].includes(pixiceBridge.jobStore.getByChild(threadId).status))).length;
 }
 
 function projectForPath(target) {
@@ -530,6 +600,8 @@ function projectForPath(target) {
 
 function authoritativeThreadProjectId(threadId, cwd = null) {
   if (!threadId || !database) return null;
+  const workspace = taskWorkspaces?.getSync(threadId);
+  if (workspace && database.getProject(workspace.projectId)) return workspace.projectId;
   const focusProjectId = database.getProjectFocusSessionByThread(threadId)?.projectId;
   if (focusProjectId && database.getProject(focusProjectId)) return focusProjectId;
   const receiptProjectId = taskResults?.get(threadId)?.projectId;
@@ -543,12 +615,15 @@ function authoritativeThreadProjectId(threadId, cwd = null) {
 function rememberThread(project, thread, { loaded = false } = {}) {
   if (!thread?.id) return;
   const binding = database.getThreadProviderBinding(thread.id);
-  const cwd = realpathSync(thread.cwd ?? binding?.cwd ?? projectPrimaryRoot(project));
-  if (!isWithinProject(project, cwd)) throw new Error("Thread is outside the selected project");
+  const candidate = thread.cwd ?? binding?.cwd ?? projectPrimaryRoot(project);
+  const workspace = taskWorkspaces?.getSync(thread.id);
+  const cwd = workspace?.status === "removed" ? path.resolve(candidate) : realpathSync(candidate);
+  if (!isWithinProject(project, cwd, thread.id)) throw new Error("Thread is outside the selected project");
   const ownerProjectId = authoritativeThreadProjectId(thread.id, cwd);
   if (ownerProjectId && ownerProjectId !== project.id) return false;
   threadSessions.remember(thread.id, cwd, { loaded });
   threadProjects.set(thread.id, project.id);
+  taskWorkspaces?.rememberThreadSync(thread.id, cwd).catch(error => send("NativeError", { message: `Task worktree ownership: ${error.message}` }));
   return true;
 }
 
@@ -648,7 +723,25 @@ function scheduleDelegatedThreadNames(event) {
 }
 
 async function projectWithRepository(project) {
-  return { ...project, repository: await inspectRepository(projectPrimaryRoot(project)) };
+  // Repository metadata is optional. A missing drive, permission error, corrupt
+  // repository, or stalled Git process must never hide durable project records.
+  const abort = new AbortController();
+  try {
+    const repository = await boundedStartupRead(() => inspectRepository(projectPrimaryRoot(project), { signal: abort.signal }));
+    return { ...project, repository };
+  } catch (error) {
+    return { ...project, repository: { kind: "unavailable", root: projectPrimaryRoot(project), baseCommit: null, dirtyPaths: [], error: error.message } };
+  } finally { abort.abort(); }
+}
+
+async function boundedStartupRead(read, timeoutMs = 3000) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(read),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("This startup check timed out. The saved project is still available.")), timeoutMs); })
+    ]);
+  } finally { clearTimeout(timer); }
 }
 
 async function listProjects(projectIds = null) {
@@ -766,7 +859,8 @@ function connectProjectIdForEvent(event) {
 }
 
 async function listProjectThreads(project, parameters = {}) {
-  const responses = await Promise.all(projectRoots(project).map((cwd) => runtime.request("thread/list", {
+  const workspaceFolders = (await taskWorkspaces?.list(project.id) ?? []).filter(workspace => workspace.status !== "archived").flatMap(workspace => workspace.folders);
+  const responses = await Promise.all([...new Set([...projectRoots(project), ...workspaceFolders])].map((cwd) => runtime.request("thread/list", {
     cwd,
     limit: 200,
     sourceKinds: threadSourceKinds,
@@ -1019,6 +1113,7 @@ async function pickProjectFolders({ multiple = true } = {}) {
 }
 
 async function ensureThreadLoaded(project, threadId) {
+  await taskWorkspaces?.ensure(threadId);
   const cwd = await threadSessions.ensure(threadId, async () => {
     const focus = database.getProjectFocusSessionByThread(threadId)?.projectId === project.id;
     const response = await runtime.request("thread/resume", {
@@ -1034,37 +1129,113 @@ async function ensureThreadLoaded(project, threadId) {
   const ownerProjectId = authoritativeThreadProjectId(threadId, cwd);
   if (ownerProjectId && ownerProjectId !== project.id) throw new Error("Thread is outside the selected project");
   threadProjects.set(threadId, project.id);
+  await taskWorkspaces?.rememberThread(threadId, cwd);
   return cwd;
 }
 
-async function startTrackedTurn({ project, threadId, input, text, model, effort, serviceTier, frozenAttachments, permissionMode = "workspace-write", trackTask = true }) {
+function workspaceProject(project, threadId) {
+  const bindingCwd = threadId ? database.getThreadProviderBinding(threadId)?.cwd : null;
+  const workspace = taskWorkspaces?.getSync(threadId) ?? (bindingCwd ? taskWorkspaces?.findByPathSync(bindingCwd) : null);
+  if (!workspace) return project;
+  if (workspace.projectId !== project.id) throw new Error("Task worktree belongs to another project.");
+  return { ...project, folders: workspace.folders, canonicalPath: workspace.cwd };
+}
+async function startTrackedTurn(options) {
+  return threadHistory.withThreadLock(options.threadId, () => startTrackedTurnLocked(options));
+}
+function usedThreadReferences(text, records) {
+  const used = new Set(parseContextTokens(text ?? "").filter(token => token.kind === "thread").map(token => token.id));
+  return [...new Set(normalizeContextRecords(records).filter(record => record.kind === "thread" && used.has(record.id)).map(record => record.source?.threadId).filter(Boolean))];
+}
+async function withComposerThreadReferences(threadId, turnId, text, records, action) {
+  const previous = composerThreadReferences.get(threadId);
+  const next = { turnId, ids: [...new Set([...(turnId && previous?.turnId === turnId ? previous.ids : []), ...usedThreadReferences(text, records)])].slice(-64) };
+  composerThreadReferences.delete(threadId);
+  composerThreadReferences.set(threadId, next);
+  while (composerThreadReferences.size > 256) composerThreadReferences.delete(composerThreadReferences.keys().next().value);
+  try {
+    const response = await action();
+    if (composerThreadReferences.get(threadId) === next && response?.turn?.id) next.turnId = response.turn.id;
+    return response;
+  } catch (error) {
+    if (composerThreadReferences.get(threadId) === next) {
+      if (previous) composerThreadReferences.set(threadId, previous);
+      else composerThreadReferences.delete(threadId);
+    }
+    throw error;
+  }
+}
+async function startTrackedTurnLocked({ project, threadId, input, text, checkpointInput, model, effort, serviceTier, frozenAttachments, permissionMode = "workspace-write", trackTask = true, commandId = randomUUID(), deliveryId, messageId, retryRejected = false }) {
+  let previous = executionJournal.get(commandId);
+  if (previous && (previous.threadId !== threadId || previous.kind !== "turn-start")) throw new Error("This execution identity belongs to another operation.");
+  if ((deliveryId || retryRejected) && previous?.status === "failed" && executionJournal.retryRejected(commandId)) previous = null;
+  if (previous) {
+    if (previous.threadId !== threadId || previous.kind !== "turn-start") throw new Error("This execution identity belongs to another operation.");
+    if (previous.turnId && previous.status !== "uncertain") {
+      const response = await runtime.request("thread/read", { threadId, includeTurns: true });
+      const turn = response?.thread?.turns?.find(candidate => candidate.id === previous.turnId);
+      if (turn) return { turn };
+    }
+    throw Object.assign(new Error(previous.error ?? "This request was already accepted. Its provider state must be reconciled before continuing."), { uncertain: true });
+  }
   if (!acceptingWork) throw new Error("The Pixice service is stopping. Your task was not started.");
-  if (activeTurns.has(threadId) || startingTurns.has(threadId)) throw new Error("This task is already running.");
+  if (archivedThreadIds.has(threadId)) throw new Error("This chat has been archived.");
+  const reservation = executionJournal.getActive(threadId);
+  const bridgeJob = pixiceBridge?.jobStore?.getByChild(threadId);
+  if (activeTurns.has(threadId) || startingTurns.has(threadId) || reservation && reservation.commandId !== commandId || bridgeJob && !["completed", "failed"].includes(bridgeJob.status)) throw Object.assign(new Error("This task is running or awaiting provider reconciliation."), { executionDisposition: "rejected", definitelyNotSent: true });
   runtime.assertModelForThread(threadId, model);
   startingTurns.add(threadId);
   try {
     const cwd = await ensureThreadLoaded(project, threadId);
+    project = workspaceProject(project, threadId);
     const permissions = permissionSettings(permissionMode, project);
-    if (trackTask) {
-      await taskResults.begin({ project, threadId, input, prompt: text, model, effort, serviceTier, frozenAttachments,
-        attachmentRoot: attachmentProjectRoot(userDataPath, project.id) });
-    }
+    executionJournal.accept({ commandId, threadId, metadata: { projectId: project.id, provider: runtime.providerForThread(threadId), ...(deliveryId ? { deliveryId } : {}), ...(messageId ? { messageId } : {}) } });
+    let checkpoint;
+    try { checkpoint = await threadHistory.capture({ projectId: project.id, threadId, folders: projectRoots(project), input: checkpointInput ?? { text: text ?? "", providerInput: input } }); }
+    catch (error) { executionJournal.failed(commandId, error, { uncertain: false }); throw Object.assign(error, { executionDisposition: "rejected", definitelyNotSent: true }); }
     turnUsageMetadata.set(threadId, { turnId: null, model: model || null, serviceTier: serviceTier ?? null,
       effort: effort || null, permissionMode, provider: runtime.providerForThread(threadId) });
+    let providerRequested = false;
     try {
-      const response = await runtime.request("turn/start", {
+      if (trackTask) {
+        await taskResults.begin({ project, threadId, input, prompt: text, model, effort, serviceTier, frozenAttachments,
+          attachmentRoot: attachmentProjectRoot(userDataPath, project.id) });
+      }
+      if (!executionJournal.beforeDispatch(commandId)) throw Object.assign(new Error("The accepted request could not claim this thread."), { executionDisposition: "rejected" });
+      threadPlans.set(threadId, []);
+      database.saveThreadPlan(threadId, []);
+      providerRequested = true;
+      const response = await withComposerThreadReferences(threadId, null, text ?? checkpointInput?.text, checkpointInput?.contextRecords, () => runtime.request("turn/start", {
         threadId, input, cwd, runtimeWorkspaceRoots: runtimeRoots(project), model: model || null,
         ...(serviceTier !== undefined ? { serviceTier } : {}), effort: effort || null, permissionMode,
         approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer, sandboxPolicy: permissions.sandboxPolicy
-      });
-      if (trackTask) taskResults.started(threadId, response.turn.id);
-      if (!response.turn.status || response.turn.status === "inProgress") activeTurns.set(threadId, response.turn.id);
+      }));
+      const receipt = executionJournal.started(commandId, response.turn.id);
+      const terminal = EXECUTION_TERMINAL_STATUSES.has(receipt?.status) || EXECUTION_TERMINAL_STATUSES.has(response.turn.status);
+      const terminalKey = JSON.stringify([threadId, response.turn.id]);
+      const completedTiming = earlyTerminalTiming.get(terminalKey);
+      earlyTerminalTiming.delete(terminalKey);
+      const timing = database.getThreadTurnTiming(threadId, response.turn.id);
+      database.saveThreadTurnTiming({ threadId, turnId: response.turn.id, startedAt: response.turn.startedAt ?? timing?.startedAt ?? receipt?.dispatchedAt ?? new Date().toISOString(), completedAt: terminal ? completedTiming ?? response.turn.completedAt ?? timing?.completedAt ?? new Date().toISOString() : null });
+      if (terminal) executionJournal.observeCompleted(threadId, { ...response.turn, status: receipt?.status ?? response.turn.status });
+      else activeTurns.set(threadId, response.turn.id);
+      // An accepted provider turn must never be reported as rejected because local bookkeeping failed.
+      try { if (trackTask) taskResults.started(threadId, response.turn.id); await threadHistory.started(checkpoint.id, response.turn.id); }
+      catch (error) { send("NativeError", { message: `Task history could not be saved: ${error.message}` }); }
+      if (terminal && trackTask) void taskResults.complete(threadId, { ...response.turn, status: receipt?.status ?? response.turn.status }, threadPlans.get(threadId) ?? []).catch(error => codexRuntime.emit("diagnostic", `Task receipt: ${error.message}`));
       const metadata = turnUsageMetadata.get(threadId);
       if (metadata) metadata.turnId = response.turn.id;
+      const acceptedTurn = terminal ? { ...response.turn, status: receipt?.status ?? response.turn.status } : response.turn;
+      if (terminal) runtime.emit("event", { reconciled: true, type: "TaskUpdated", payload: { method: "turn/completed", threadId, turn: { ...acceptedTurn, completedAt: completedTiming ?? acceptedTurn.completedAt }, provider: runtime.providerForThread(threadId) } });
+      else sendRuntimeEvent("TaskUpdated", { method: "turn/started", threadId, turn: acceptedTurn, projectId: project.id });
       updateTrayMenu();
-      return response;
+      return { ...response, turn: acceptedTurn };
     } catch (error) {
-      if (trackTask) taskResults.failed(threadId, error);
+      if (providerRequested && !(error.definitelyNotSent || error.providerRejected || error.executionDisposition === "rejected")) error.uncertain = true;
+      if (!error.uncertain) error.executionDisposition = "rejected";
+      executionJournal.failed(commandId, error, { uncertain: error.uncertain === true });
+      try { await threadHistory.failed(checkpoint.id); if (trackTask) taskResults.failed(threadId, error); }
+      catch (historyError) { send("NativeError", { message: historyError.message }); }
       throw error;
     }
   } finally {
@@ -1259,7 +1430,7 @@ function recordFocusQuestionAnswer(pending, members, source) {
   const focusContext = pending.focusContext;
   if (!focusContext?.projectId || !focusStore) return;
   const leaderQuestions = pending.displayRequest.params?.questions ?? [];
-  const leaderAnswers = members.find((member) => member.key === requestKey(pending.request.id))?.answers ?? {};
+  const leaderAnswers = members.find((member) => member.key === requestKey(pending.request.id, pending.request.provider))?.answers ?? {};
   const safeQuestions = leaderQuestions.filter((question) => !secretFocusQuestion(question)).map(boundedFocusQuestion);
   const safeIds = new Set(safeQuestions.map((question) => question.id));
   const answers = Object.fromEntries(Object.entries(leaderAnswers)
@@ -1301,32 +1472,27 @@ function recordFocusQuestionAnswer(pending, members, source) {
 function respondToPendingQuestion(pending, { action = "answer", answers = {} } = {}) {
   const textAnswers = Object.fromEntries(Object.entries(answers).map(([id, answer]) => [id, Array.isArray(answer) ? answer.join("\n") : answer]));
   if (pending.kind === "pixice-question-tool") {
-    runtime.respond(pending.request.id, pixiceQuestionToolResult({ action, answers: textAnswers }));
-    return;
+    return requestDelivery.send(pending, pixiceQuestionToolResult({ action, answers: textAnswers }));
   }
   if (pending.kind === "pixice-question") {
-    runtime.respond(pending.request.id, { action, answers: textAnswers });
-    return;
+    return requestDelivery.send(pending, { action, answers: textAnswers });
   }
   if (pending.request.method?.includes("requestUserInput")) {
     const nativeAnswers = Object.fromEntries(Object.entries(answers).map(([id, answer]) => [id, { answers: Array.isArray(answer) ? answer : [answer] }]));
-    runtime.respond(pending.request.id, { answers: nativeAnswers });
-    return;
+    return requestDelivery.send(pending, { answers: nativeAnswers });
   }
   throw new Error("Pending request is not a question");
 }
 
-function respondToFocusQuestion(pending, result, { source = "coordinator" } = {}) {
-  const key = requestKey(pending.request.id);
-  const grouped = focusQuestionGroups.resolve(key, pending.generation, result.answers ?? {});
+async function respondToFocusQuestion(pending, result, { source = "coordinator" } = {}) {
+  const key = requestKey(pending.request.id, pending.request.provider);
+  const grouped = focusQuestionGroups.resolve(key, pending.generation, result.answers ?? {}, { consume: false });
   const members = grouped.length ? grouped : [{ key, generation: pending.generation, answers: result.answers ?? {} }];
-  for (const member of members) {
+  await Promise.all(members.map(async (member) => {
     const current = pendingRequests.get(member.key);
-    if (current?.generation !== member.generation) continue;
-    respondToPendingQuestion(current, { ...result, answers: member.answers });
-    pendingRequests.delete(member.key);
-    send("AttentionResolved", { requestId: current.request.id, requestGeneration: current.generation, threadId: current.request.params?.threadId });
-  }
+    if (current?.generation !== member.generation) return;
+    await respondToPendingQuestion(current, { ...result, answers: member.answers });
+  }));
   recordFocusQuestionAnswer(pending, members, source);
 }
 
@@ -1335,12 +1501,16 @@ function removeFocusQuestionMember(key, generation) {
   if (!next?.promoted) return;
   const promoted = pendingRequests.get(next.leaderKey);
   if (promoted?.generation !== next.leaderGeneration || !promoted.focusContext) return;
+  if (["responding", "uncertain"].includes(promoted.responseState)) {
+    if (promoted.responseState === "uncertain") showFocusCoordinatorQuestion(promoted, promoted.focusContext);
+    return;
+  }
   void scheduleFocusQuestionReview(next.leaderKey, promoted.focusContext);
 }
 
 function showFocusCoordinatorQuestion(pending, focusContext, escalation = "") {
   const detail = typeof escalation === "string" ? { reason: escalation } : escalation ?? {};
-  const memberCount = focusQuestionGroups.members(requestKey(pending.request.id)).length;
+  const memberCount = focusQuestionGroups.members(requestKey(pending.request.id, pending.request.provider)).length;
   const taskTitle = memberCount > 1 ? `${memberCount} workers need this decision` : focusContext.worker ? database.getThreadName(focusContext.sourceThreadId) : null;
   const originalQuestions = pending.displayRequest.params?.questions ?? [];
   const questions = originalQuestions.map((question, index) => {
@@ -1395,7 +1565,7 @@ function listFocusCoordinatorQuestions(projectId) {
     }));
 }
 
-function answerFocusCoordinatorQuestion(projectId, input) {
+async function answerFocusCoordinatorQuestion(projectId, input) {
   const pending = [...pendingRequests.values()].find((candidate) =>
     candidate.visible === true
     && candidate.displayRequest?.focusCoordinatorQuestion === true
@@ -1409,8 +1579,7 @@ function answerFocusCoordinatorQuestion(projectId, input) {
   if (requiredIds.some((id) => !String(answers[id] ?? "").trim())) {
     throw new Error("Answer every worker question using its original question ID");
   }
-  respondToFocusQuestion(pending, { action: "answer", answers }, { source: "coordinator" });
-  pendingRequests.delete(requestKey(pending.request.id));
+  await respondToFocusQuestion(pending, { action: "answer", answers }, { source: "coordinator" });
   return { ok: true, requestId: String(pending.request.id), requestGeneration: pending.generation };
 }
 
@@ -1434,8 +1603,7 @@ async function completeFocusQuestionReview(threadId, turn) {
     }
     const result = parseFocusQuestionReview(answer, pending.displayRequest);
     if (result.action === "answer") {
-      respondToFocusQuestion(pending, result);
-      pendingRequests.delete(review.requestKey);
+      await respondToFocusQuestion(pending, result);
     } else {
       showFocusCoordinatorQuestion(pending, review.focusContext, result);
     }
@@ -1680,24 +1848,36 @@ async function focusModel(model, task = "", { bridgeOnly = true } = {}) {
   return selected;
 }
 
-async function deliverFocusEvents({ projectId, coordinatorThreadId, events: updates }) {
+async function deliverFocusEvents({ projectId, coordinatorThreadId, events: updates, metadata = {} }) {
   const project = getProject(projectId);
-  if (!acceptingWork) throw new Error("The host is stopping; Focus updates remain saved.");
-  if (startingTurns.has(coordinatorThreadId)) throw new Error("Coordinator is starting a turn; delivery remains pending.");
+  if (!acceptingWork) throw Object.assign(new Error("The host is stopping; Focus updates remain saved."), { definitelyNotSent: true });
+  if (startingTurns.has(coordinatorThreadId)) throw Object.assign(new Error("Coordinator is starting a turn; delivery remains pending."), { definitelyNotSent: true });
   const prompt = [
     "[Pixice Focus work updates]",
+    `[Pixice delivery: ${metadata.deliveryId}]`,
     "These are persisted worker lifecycle notifications, not new user instructions. Review the outcomes with read_work, verify evidence, reconcile current decisions, and integrate a useful response into this project conversation. A worker finishing is not proof that the user's goal is met. Do not echo routine status or start duplicate work.",
     JSON.stringify(updates.map(({ id, workId, kind, message }) => ({ id, workId, kind, message: String(message ?? "").slice(0, 1500) })))
   ].join("\n\n");
   const input = buildCodexUserInput(prompt, []);
   const activeTurn = activeTurns.get(coordinatorThreadId);
   if (activeTurn) {
-    await steerBridgeParentTurn(coordinatorThreadId, activeTurn, input);
-    return { action: "steered", turnId: activeTurn };
+    await steerBridgeParentTurn(coordinatorThreadId, activeTurn, input, metadata);
+    return { accepted: true, action: "steered", turnId: activeTurn, messageId: metadata.messageId };
   }
   const previous = turnUsageMetadata.get(coordinatorThreadId) ?? {};
   const model = previous.model ?? focusStore.getPolicy(projectId).coordinatorModel ?? undefined;
-  return startTrackedTurn({ project, threadId: coordinatorThreadId, input, text: prompt, model, effort: previous.effort, permissionMode: FOCUS_PERMISSION_MODE, trackTask: false });
+  const response = await startTrackedTurn({ project, threadId: coordinatorThreadId, input, text: prompt, model, effort: previous.effort, permissionMode: FOCUS_PERMISSION_MODE, trackTask: false, commandId: metadata.deliveryId, ...metadata });
+  return { accepted: true, turnId: response.turn.id, messageId: metadata.messageId };
+}
+
+async function resolveFocusDelivery({ coordinatorThreadId, deliveryId }) {
+  const receipt = executionJournal.get(deliveryId);
+  if (receipt?.turnId && (receipt.kind === "turn-steer" ? receipt.status === "completed" : receipt.status === "running" || EXECUTION_TERMINAL_STATUSES.has(receipt.status))) return { state: "accepted", turnId: receipt.turnId };
+  if (receipt && !receipt.dispatchedAt) return { state: "not-delivered" };
+  const response = await runtime.request("thread/read", { threadId: coordinatorThreadId, includeTurns: true });
+  const marker = `[Pixice delivery: ${deliveryId}]`;
+  const turn = response?.thread?.turns?.find(candidate => (candidate.items ?? []).some(item => item.type === "userMessage" && (item.text ?? (item.content ?? item.input ?? []).filter(part => part.type === "text" || part.type === "inputText").map(part => part.text).join("\n")).includes(marker)));
+  return turn ? { state: "accepted", turnId: turn.id } : { state: "unknown" };
 }
 
 function boundedTextResult(value, maximumBytes) {
@@ -1919,96 +2099,88 @@ function instrumentEventPrompt(instrument, event) {
   ].join("\n");
 }
 
-async function deliverInstrumentAgentEvent({ instrument, event, runtimeOptions }) {
+async function deliverInstrumentAgentEvent(options) {
+  return threadHistory.withThreadLock(options.instrument.threadId, () => deliverInstrumentAgentEventLocked(options));
+}
+async function deliverInstrumentAgentEventLocked({ instrument, event, runtimeOptions }) {
   const project = getProject(instrument.projectId);
-  const cwd = await ensureThreadLoaded(project, instrument.threadId);
   const prompt = instrumentEventPrompt(instrument, event);
   const activeTurnId = activeTurns.get(instrument.threadId);
   if (activeTurnId) {
-    return runtime.request("turn/steer", {
-      threadId: instrument.threadId,
-      expectedTurnId: activeTurnId,
-      input: buildCodexUserInput(prompt, [])
-    });
+    await ensureThreadLoaded(project, instrument.threadId);
+    return runtime.request("turn/steer", { threadId: instrument.threadId, expectedTurnId: activeTurnId, input: buildCodexUserInput(prompt, []) });
   }
   const defaults = database.getAppSettings();
-  const permissionMode = runtimeOptions.permissionMode ?? defaults.defaultPermissionMode ?? "workspace-write";
-  const permissions = permissionSettings(permissionMode, project);
-  const model = runtimeOptions.model ?? defaults.defaultModel ?? null;
-  const effort = runtimeOptions.effort ?? defaults.defaultEffort ?? null;
-  const serviceTier = runtimeOptions.serviceTier ?? null;
-  const response = await runtime.request("turn/start", {
-    threadId: instrument.threadId,
-    input: buildCodexUserInput(prompt, []),
-    cwd,
-    runtimeWorkspaceRoots: runtimeRoots(project),
-    model,
-    ...(runtimeOptions.serviceTier !== undefined ? { serviceTier } : {}),
-    effort,
-    permissionMode,
-    approvalPolicy: permissions.approvalPolicy,
-    approvalsReviewer: permissions.approvalsReviewer,
-    sandboxPolicy: permissions.sandboxPolicy
-  });
-  activeTurns.set(instrument.threadId, response.turn.id);
-  turnUsageMetadata.set(instrument.threadId, {
-    turnId: response.turn.id,
-    model,
-    serviceTier,
-    effort,
-    permissionMode,
-    provider: runtime.providerForThread(instrument.threadId)
-  });
-  updateTrayMenu();
-  return response;
+  return startTrackedTurnLocked({ project, threadId: instrument.threadId, input: buildCodexUserInput(prompt, []), text: prompt,
+    checkpointInput: { text: prompt, images: [], attachments: [] }, model: runtimeOptions.model ?? defaults.defaultModel ?? null,
+    effort: runtimeOptions.effort ?? defaults.defaultEffort ?? null, serviceTier: runtimeOptions.serviceTier,
+    permissionMode: runtimeOptions.permissionMode ?? defaults.defaultPermissionMode ?? "workspace-write" });
 }
 
-async function startBridgeParentTurn(parentThreadId, input) {
+async function startBridgeParentTurn(parentThreadId, input, metadata = {}) {
   const project = trayProjectForThread(parentThreadId);
   if (!project) throw new Error("The bridge parent is not linked to a Pixice project");
-  const cwd = await ensureThreadLoaded(project, parentThreadId);
-  const defaults = database.getAppSettings();
-  const previous = turnUsageMetadata.get(parentThreadId) ?? {};
-  const permissionMode = previous.permissionMode ?? defaults.defaultPermissionMode ?? "workspace-write";
-  const permissions = permissionSettings(permissionMode, project);
-  const model = previous.model ?? defaults.defaultModel ?? null;
-  const effort = previous.effort ?? defaults.defaultEffort ?? null;
-  const serviceTier = previous.serviceTier ?? null;
-  const response = await runtime.request("turn/start", {
-    threadId: parentThreadId,
-    input,
-    cwd,
-    runtimeWorkspaceRoots: runtimeRoots(project),
-    model,
-    serviceTier,
-    effort,
-    permissionMode,
-    approvalPolicy: permissions.approvalPolicy,
-    approvalsReviewer: permissions.approvalsReviewer,
-    sandboxPolicy: permissions.sandboxPolicy
-  });
-  activeTurns.set(parentThreadId, response.turn.id);
-  turnUsageMetadata.set(parentThreadId, {
-    ...previous,
-    turnId: response.turn.id,
-    model,
-    serviceTier,
-    effort,
-    permissionMode,
-    provider: runtime.providerForThread(parentThreadId)
-  });
-  updateTrayMenu();
+  const defaults = database.getAppSettings(), previous = turnUsageMetadata.get(parentThreadId) ?? {};
+  const response = await startTrackedTurn({ project, threadId: parentThreadId, input,
+    text: input.filter(part => part.type === "text").map(part => part.text).join("\n"),
+    model: previous.model ?? defaults.defaultModel ?? null, effort: previous.effort ?? defaults.defaultEffort ?? null,
+    serviceTier: previous.serviceTier, permissionMode: previous.permissionMode ?? defaults.defaultPermissionMode ?? "workspace-write", commandId: metadata.deliveryId, ...metadata });
   return response.turn;
 }
 
-async function steerBridgeParentTurn(parentThreadId, turnId, input) {
-  const project = trayProjectForThread(parentThreadId);
-  if (!project) throw new Error("The bridge parent is not linked to a Pixice project");
-  await ensureThreadLoaded(project, parentThreadId);
-  return runtime.request("turn/steer", {
-    threadId: parentThreadId,
-    expectedTurnId: turnId,
-    input
+function recoverExecutionState() {
+  if (recoveryPromise) return recoveryPromise;
+  recoveryPromise = (async () => {
+    await executionJournal.reconcile({
+      readThread: threadId => runtime.request("thread/read", { threadId, includeTurns: true }),
+      onRunning: (record) => {
+        activeTurns.set(record.threadId, record.turnId);
+        taskResults.started(record.threadId, record.turnId);
+      },
+      onTerminal: async (record, turn) => {
+        if (activeTurns.get(record.threadId) === record.turnId) activeTurns.delete(record.threadId);
+        requestDelivery.terminal(record.threadId, record.turnId);
+        await taskResults.complete(record.threadId, turn, database.getThreadPlan(record.threadId) ?? []);
+        sendRuntimeEvent("TaskUpdated", { method: "turn/completed", threadId: record.threadId, turn, projectId: authoritativeThreadProjectId(record.threadId) });
+      },
+      onUncertain: record => {
+        const projectId = record.metadata?.projectId ?? authoritativeThreadProjectId(record.threadId);
+        if (projectId) messageQueue.hold(projectId, record.threadId);
+        send("ExecutionRecoveryUpdated", { threadId: record.threadId, projectId, turnId: record.turnId, status: "uncertain", error: record.error });
+      }
+    });
+    await pixiceBridge.recover();
+    await focusSupervisor.recover();
+  })().finally(() => { recoveryPromise = null; });
+  return recoveryPromise;
+}
+
+async function steerBridgeParentTurn(parentThreadId, turnId, input, metadata = {}) {
+  return threadHistory.withThreadLock(parentThreadId, async () => {
+    const project = trayProjectForThread(parentThreadId);
+    if (!project) throw new Error("The bridge parent is not linked to a Pixice project");
+    await ensureThreadLoaded(project, parentThreadId);
+    const commandId = metadata.deliveryId ?? randomUUID();
+    let receipt = executionJournal.accept({ commandId, threadId: parentThreadId, kind: "turn-steer", turnId, metadata: { projectId: project.id, provider: runtime.providerForThread(parentThreadId), ...metadata } });
+    if (receipt.duplicate && receipt.status === "failed") {
+      const retried = executionJournal.retryRejected(commandId);
+      if (retried) receipt = { ...retried, duplicate: false };
+    }
+    if (receipt.duplicate) {
+      if (receipt.status === "completed") return { turnId };
+      throw Object.assign(new Error(receipt.error ?? "This delivery is awaiting provider confirmation."), { uncertain: true });
+    }
+    if (!executionJournal.beforeDispatch(commandId)) throw Object.assign(new Error("This delivery could not claim its execution receipt."), { executionDisposition: "rejected", definitelyNotSent: true });
+    try {
+      const response = await runtime.request("turn/steer", { threadId: parentThreadId, expectedTurnId: turnId, input });
+      executionJournal.acknowledge(commandId, { turnId });
+      return response;
+    } catch (error) {
+      error.uncertain = !(error.definitelyNotSent || error.providerRejected || error.executionDisposition === "rejected");
+      if (!error.uncertain) error.executionDisposition = "rejected";
+      executionJournal.failed(commandId, error, { uncertain: error.uncertain });
+      throw error;
+    }
   });
 }
 
@@ -2021,7 +2193,7 @@ function registerHandlers() {
     if (!project) throw new Error("This thread is not linked to a Pixice project");
     return { view: "task", projectId: project.id, threadId };
   });
-  handlers.handle("tray:follow-up", async (_event, payload) => {
+  handlers.handle("tray:follow-up", async (_event, payload) => threadHistory.withThreadLock(payload?.threadId, async () => {
     const { threadId, text } = z.object({ threadId: z.string().min(1), text: z.string().trim().min(1).max(100_000) }).strict().parse(payload);
     const turnId = activeTurns.get(threadId);
     if (!turnId) throw new Error("This turn finished before the follow-up could be queued.");
@@ -2031,14 +2203,14 @@ function registerHandlers() {
     taskResults.stopReplay(threadId, true);
     await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(text, []) });
     return { queued: true, threadId, turnId };
-  });
-  handlers.handle("app:bootstrap", async (context = {}, _payload) => ({
-    projects: await listProjects(context.remote && context.access?.role === "observer" ? context.access.projectIds : null),
-    models: await listModels().catch(() => []),
-    runtime: { ...runtimeStatus, connected: runtime.connected },
-    settings: database.getAppSettings(),
-    agentBehaviors: agentBehaviorCatalog()
   }));
+  handlers.handle("app:bootstrap", async (context = {}, _payload) => {
+    const [projects, models] = await Promise.all([
+      listProjects(context.remote && context.access?.role === "observer" ? context.access.projectIds : null),
+      boundedStartupRead(listModels).catch(() => [])
+    ]);
+    return { projects, models, runtime: { ...runtimeStatus, connected: runtime.connected }, settings: database.getAppSettings(), agentBehaviors: agentBehaviorCatalog() };
+  });
   handlers.handle("app:overview", () => connectOverview());
   handlers.handle("app:settings:update", async (_event, payload) => {
     const value = appDefaultsSchema.parse(payload);
@@ -2125,6 +2297,26 @@ function registerHandlers() {
   handlers.handle("github:status", () => githubCli.status());
   handlers.handle("github:login", () => githubCli.login());
   handlers.handle("github:logout", () => githubCli.logout());
+  handlers.handle("html-replies:read", async (_event, payload) => {
+    const value = htmlReplyReadSchema.parse(payload);
+    getProject(value.projectId);
+    if (authoritativeThreadProjectId(value.threadId) !== value.projectId) throw new Error("This HTML reply belongs to another conversation or project.");
+    return htmlReplies.read(value);
+  });
+  handlers.handle("html-replies:list", async (_event, payload) => {
+    const value = threadPayload.strict().parse(payload);
+    getProject(value.projectId);
+    if (authoritativeThreadProjectId(value.threadId) !== value.projectId) throw new Error("This HTML reply belongs to another conversation or project.");
+    return htmlReplies.list(value);
+  });
+  for (const name of ["workspace", "list", "read", "link", "unlink", "diff", "commit", "push", "create", "update", "watch", "stopWatch"]) {
+    const channel = name === "stopWatch" ? "stop-watch" : name;
+    handlers.handle(`pull-requests:${channel}`, async (_event, payload) => {
+      const value = threadPayload.passthrough().parse(payload);
+      if (name === "stopWatch") messageQueue.cancelSource(value.projectId, value.threadId, "watch");
+      return pullRequests[name](value);
+    });
+  }
   const browserScope = z.object({ workspaceId: z.string().trim().min(1) });
   handlers.handle("browser:remote-frame", (_event, payload) => browserWorkspace.remoteFrame(payload));
   handlers.handle("browser:remote-input", (_event, payload) => browserWorkspace.remoteInput(payload));
@@ -2332,6 +2524,12 @@ function registerHandlers() {
     integration.workflows.deleteProject(projectId);
     integration.credentialStore.deleteProject(projectId);
     pixiceInstruments.deleteProject(projectId);
+    pullRequests?.removeProject(projectId);
+    for (const binding of database.listThreadProviderBindings()) {
+      if (authoritativeThreadProjectId(binding.threadId, binding.cwd) !== projectId) continue;
+      messageQueue.clear(projectId, binding.threadId);
+      await htmlReplies.deleteThread(binding.threadId);
+    }
     database.deleteProject(projectId);
     for (const [threadId, knownProjectId] of threadProjects) {
       if (knownProjectId === projectId) threadProjects.delete(threadId);
@@ -2746,15 +2944,58 @@ function registerHandlers() {
     const { projectId, threadId } = threadPayload.parse(payload);
     const project = getProject(projectId);
     const response = await runtime.request("thread/read", { threadId, includeTurns: true });
-    if (!isWithinProject(project, response.thread.cwd)) throw new Error("Thread is outside the selected project");
+    if (!isWithinProject(project, response.thread.cwd, threadId)) throw new Error("Thread is outside the selected project");
     const ownerProjectId = authoritativeThreadProjectId(threadId, response.thread.cwd);
     if (context.remote && context.access?.role === "observer" && ownerProjectId !== project.id) throw new Error("Thread is outside the selected project");
     if (!ownerProjectId || ownerProjectId === project.id) {
       await taskResults.observeThread(project, response.thread);
       rememberThread(project, response.thread);
     }
-    const thread = projectRendererThread(withPersistedThreadName(response.thread));
+    const thread = { ...projectRendererThread(withPersistedThreadName(response.thread)), workspace: taskWorkspaces.getSync(threadId), checkpoints: await threadHistory.list(threadId, response.thread), htmlReplySourceThreadIds: [...new Set((await htmlReplies.list({ projectId, threadId })).flatMap(reply => reply.copiedFromThreadIds ?? []))] };
     return { ...response, thread, plan: threadPlans.get(threadId) ?? database.getThreadPlan(threadId) };
+  });
+  handlers.handle("task-workspaces:read", async (_event, payload) => {
+    const value = threadPayload.strict().parse(payload);
+    if (authoritativeThreadProjectId(value.threadId) !== value.projectId) throw new Error("Task worktree is outside this project.");
+    getProject(value.projectId);
+    return taskWorkspaces.get(value.threadId);
+  });
+  handlers.handle("task-workspaces:remove", async (_event, payload) => {
+    const value = threadPayload.strict().parse(payload);
+    if (authoritativeThreadProjectId(value.threadId) !== value.projectId) throw new Error("Task worktree is outside this project.");
+    getProject(value.projectId);
+    return threadHistory.withThreadLock(value.threadId, async () => {
+      if (activeTurns.has(value.threadId) || startingTurns.has(value.threadId) || executionJournal.getActive(value.threadId)) throw new Error("Stop or reconcile this task before removing its checkout.");
+      messageQueue.hold(value.projectId, value.threadId);
+      const result = await taskWorkspaces.remove(value.threadId, { ownerStopped: true });
+      threadSessions.delete(value.threadId);
+      return result;
+    });
+  });
+  for (const action of ["list", "preview", "rewind", "restoreFile"]) {
+    handlers.handle(`history:${action === "restoreFile" ? "restore-file" : action}`, async (_event, payload) => {
+      const value = threadPayload.extend({ checkpointId: z.string().uuid().optional(), conversationRevision: z.string().optional(), workspaceRevision: z.string().nullable().optional(), restoreFiles: z.boolean().optional(), file: z.object({ root: z.string().min(1), path: z.string().min(1) }).strict().optional() }).strict().parse(payload);
+      await ensureThreadLoaded(getProject(value.projectId), value.threadId);
+      if (action === "list") return threadHistory.list(value.threadId);
+      if (!value.checkpointId || threadHistory.records.get(value.checkpointId)?.projectId !== value.projectId) throw new Error("The checkpoint belongs to another project.");
+      if (["rewind", "restoreFile"].includes(action)) { messageQueue.hold(value.projectId, value.threadId); messageQueue.cancelSource(value.projectId, value.threadId, "watch"); pullRequests.stopThread(value.threadId, "Conversation rewound"); }
+      const result = await threadHistory[action](value);
+      if (action === "rewind") composerThreadReferences.delete(value.threadId);
+      return result;
+    });
+  }
+  handlers.handle("history:attachment", async (_event, payload) => {
+    const value = threadPayload.extend({ checkpointId: z.string().uuid(), path: z.string().min(1).max(4096) }).strict().parse(payload);
+    await ensureThreadLoaded(getProject(value.projectId), value.threadId);
+    const checkpoint = threadHistory.records.get(value.checkpointId);
+    const attachment = checkpoint?.input?.attachments?.find(file => file.path === value.path);
+    if (checkpoint?.projectId !== value.projectId || checkpoint?.threadId !== value.threadId || !attachment) throw new Error("Attachment is outside this checkpoint.");
+    const root = realpathSync(attachmentProjectRoot(userDataPath, value.projectId));
+    const target = realpathSync(attachment.path);
+    if (!isWithin(root, target)) throw new Error("Attachment is outside the project attachment store.");
+    const bytes = readFileSync(target);
+    if (bytes.length > MAX_PROMPT_ATTACHMENT_BYTES) throw new Error("Attachment is too large to restore.");
+    return { name: attachment.name, type: attachment.mimeType, size: bytes.length, dataUrl: `data:${attachment.mimeType};base64,${bytes.toString("base64")}` };
   });
   handlers.handle("threads:children", async (context = {}, payload) => {
     const { projectId, threadId } = threadPayload.parse(payload);
@@ -2794,16 +3035,19 @@ function registerHandlers() {
       model: z.string().optional(),
       serviceTier: z.string().nullable().optional(),
       permissionMode: permissionModeSchema.default("workspace-write"),
-      parentThreadId: z.string().min(1).optional()
+      parentThreadId: z.string().min(1).optional(),
+      workspace: z.object({ mode: z.enum(["project", "worktree"]), startingState: z.discriminatedUnion("type", [z.object({ type: z.literal("working-tree") }).strict(), z.object({ type: z.literal("ref"), ref: z.string().trim().min(1).max(1000) }).strict()]).optional(), branch: z.string().trim().max(1000).optional() }).strict().optional()
     }).parse(payload);
     const project = getProject(value.projectId);
     const focusContext = value.parentThreadId ? projectFocusContextForThread(value.parentThreadId) : null;
     if (focusContext && focusContext.projectId !== project.id) throw new Error("Focus parent belongs to another project");
     if (value.parentThreadId && managedFocusAncestor(value.parentThreadId)) throw new Error("Managed Focus workers cannot create unsupervised children. Ask the coordinator to delegate the outcome.");
     const permissionMode = focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode;
-    const permissions = permissionSettings(permissionMode, project);
-    const roots = runtimeRoots(project);
-    const cwd = projectPrimaryRoot(project);
+    const workspace = value.workspace?.mode === "worktree" ? await taskWorkspaces.create({ projectId: project.id, folders: projectRoots(project), startingState: value.workspace.startingState, branch: value.workspace.branch || null }) : null;
+    const executionProject = workspace ? { ...project, folders: workspace.folders, canonicalPath: workspace.cwd } : project;
+    const permissions = permissionSettings(permissionMode, executionProject);
+    const roots = runtimeRoots(executionProject);
+    const cwd = projectPrimaryRoot(executionProject);
     const response = await runtime.request("thread/start", {
       cwd,
       runtimeWorkspaceRoots: roots,
@@ -2818,6 +3062,7 @@ function registerHandlers() {
       dynamicTools: pixiceDynamicTools,
       threadSource: "pixice"
     });
+    if (workspace) await taskWorkspaces.attachThread(workspace.id, response.thread.id);
     rememberThread(project, response.thread, { loaded: true });
     if (focusContext) {
       database.saveThreadLink({
@@ -2828,7 +3073,7 @@ function registerHandlers() {
       });
     }
     pendingTaskNames.add(response.thread.id);
-    return response;
+    return { ...response, thread: { ...response.thread, workspace } };
   });
   handlers.handle("threads:fork", async (_event, payload) => {
     const value = threadForkPayload.parse(payload);
@@ -2851,6 +3096,7 @@ function registerHandlers() {
     if (!isWithinProject(project, response.thread.cwd)) throw new Error("Forked thread is outside the selected project");
 
     let thread = independentForkThread(response.thread, sourceThread.id);
+    await htmlReplies.copyThread({ projectId: project.id, sourceThreadId: sourceThread.id, threadId: thread.id });
     rememberThread(project, thread, { loaded: true });
     const binding = database.getThreadProviderBinding(thread.id);
     if (binding) database.saveThreadProviderBinding({ ...binding, forkedFromId: sourceThread.id });
@@ -2870,18 +3116,25 @@ function registerHandlers() {
         codexRuntime.emit("diagnostic", `Fork name could not be saved to the provider: ${error.message}`);
       }
     }
-    return { ...response, thread: projectRendererThread(withPersistedThreadName(thread)) };
+    return { ...response, thread: { ...projectRendererThread(withPersistedThreadName(thread)), htmlReplySourceThreadIds: [...new Set((await htmlReplies.list({ projectId: project.id, threadId: thread.id })).flatMap(reply => reply.copiedFromThreadIds ?? []))] } };
   });
-  handlers.handle("threads:archive", async (_event, payload) => {
+  handlers.handle("threads:archive", async (_event, payload) => threadHistory.withThreadLock(payload?.threadId, async () => {
     const { projectId, threadId } = threadPayload.parse(payload);
     const project = getProject(projectId);
     if (database.getProjectFocusSession(projectId)?.threadId === threadId) {
       throw new Error("The project Focus coordinator cannot be deleted. Switch back to Workspace to manage worker threads.");
     }
     await ensureThreadLoaded(project, threadId);
+    messageQueue.hold(projectId, threadId);
+    if (messageQueue.list(projectId, threadId).entries.some(entry => entry.state === "dispatching")) throw new Error("Wait for message dispatch before archiving.");
     const response = await runtime.request("thread/archive", { threadId });
+    archivedThreadIds.add(threadId);
+    await taskWorkspaces.archive(threadId);
+    pullRequests?.stopThread(threadId, "Chat archived");
+    messageQueue.clear(projectId, threadId);
     threadSessions.delete(threadId);
     threadProjects.delete(threadId);
+    composerThreadReferences.delete(threadId);
     turnUsageMetadata.delete(threadId);
     await browserWorkspace.destroyWorkspace(threadId);
     previewContextRegistry.clear(threadId);
@@ -2890,11 +3143,12 @@ function registerHandlers() {
     database.deleteThreadBoardState(threadId);
     database.detachBoardTasksForThread(threadId);
     return response;
-  });
+  }));
 
   handlers.handle("turns:start", async (context = {}, payload) => {
     const value = threadPayload.extend({
       ...promptInputSchema,
+      commandId: z.string().trim().min(1).max(512).optional(),
       model: z.string().optional(),
       serviceTier: z.string().nullable().optional(),
       effort: z.string().optional(),
@@ -2913,8 +3167,10 @@ function registerHandlers() {
       throw new Error("The Focus coordinator changed while preparing your message. Your message was not submitted; retry now.");
     }
     const response = await startTrackedTurn({
+      commandId: value.commandId,
       project, threadId: value.threadId, input: buildCodexUserInput(prompt.text, prompt.images),
       text: value.text, model: value.model, effort: value.effort, serviceTier: value.serviceTier,
+      checkpointInput: { text: value.text, images: prompt.images, attachments: prompt.files, contextRecords: value.contextRecords },
       permissionMode: focusStore.getWorkByThread(value.threadId)?.permissionMode ?? (focusContext ? FOCUS_PERMISSION_MODE : value.permissionMode), trackTask: !isFocus
     });
     if (isFocus) {
@@ -2937,6 +3193,66 @@ function registerHandlers() {
     }
     return response;
   });
+  handlers.handle("turns:queue", async (context = {}, payload) => {
+    const value = threadPayload.extend({ ...promptInputSchema, model: z.string().optional(), serviceTier: z.string().nullable().optional(), effort: z.string().optional(), permissionMode: permissionModeSchema.default("workspace-write") }).superRefine(requirePromptInput).parse(payload);
+    const project = getProject(value.projectId);
+    if (focusStore.getWorkByThread(value.threadId)) throw new Error("Redirect this managed worker through its Focus coordinator.");
+    await ensureThreadLoaded(project, value.threadId);
+    runtime.assertModelForThread(value.threadId, value.model);
+    const prompt = await preparePromptInput(value, project, value.threadId, context);
+    return messageQueue.enqueue({ ...value, input: buildCodexUserInput(prompt.text, prompt.images), checkpointInput: { text: value.text, images: prompt.images, attachments: prompt.files, contextRecords: value.contextRecords }, attachments: [...prompt.images.map((image, index) => ({ name: `Image ${index + 1}`, mimeType: image.match(/^data:([^;]+)/)?.[1] ?? "image/png", size: Math.floor(image.length * 0.75) })), ...prompt.files.map(({ name, mimeType, size }) => ({ name, mimeType, size }))] });
+  });
+  handlers.handle("turns:queue:draft", async (_event, payload) => {
+    const value = threadPayload.extend({ id: z.string().min(1) }).strict().parse(payload);
+    const project = getProject(value.projectId);
+    const owner = authoritativeThreadProjectId(value.threadId);
+    if (owner && owner !== project.id) throw new Error("Queue belongs to another project.");
+    if (!owner) await ensureThreadLoaded(project, value.threadId);
+    const { entry } = messageQueue.find(value.projectId, value.threadId, value.id);
+    if (entry.source !== "user") throw new Error("Background notifications cannot be edited.");
+    const attachments = [];
+    let bytes = 0;
+    for (const [index, dataUrl] of (entry.checkpointInput?.images ?? []).entries()) {
+      const type = dataUrl.match(/^data:([^;]+)/)?.[1] ?? "image/png";
+      const size = Math.floor((dataUrl.split(",")[1]?.length ?? 0) * 0.75);
+      bytes += size;
+      attachments.push({ name: `image-${index + 1}.${type.split("/")[1]}`, type, size, ...(bytes <= MAX_PROMPT_ATTACHMENT_BYTES ? { dataUrl } : { unavailable: true }) });
+    }
+    for (const file of entry.checkpointInput?.attachments ?? []) {
+      const metadata = { name: file.name, type: file.mimeType, size: file.size };
+      try {
+        const target = realpathSync(file.path);
+        if (!isWithin(realpathSync(attachmentProjectRoot(userDataPath, project.id)), target)) throw new Error("Attachment is outside this project.");
+        const size = statSync(target).size;
+        bytes += size;
+        if (bytes > MAX_PROMPT_ATTACHMENT_BYTES) throw new Error("Attachment draft is too large.");
+        attachments.push({ ...metadata, size, dataUrl: `data:${file.mimeType};base64,${readFileSync(target).toString("base64")}` });
+      } catch { attachments.push({ ...metadata, unavailable: true }); }
+    }
+    return { id: entry.id, text: entry.text, contextRecords: entry.contextRecords ?? [], attachments };
+  });
+  for (const [name, action] of Object.entries({ list: "list", edit: "edit", remove: "remove", reorder: "reorder", hold: "hold", resume: "resume", steer: "steerEntry" })) {
+    handlers.handle(`turns:queue:${name}`, async (context = {}, payload) => {
+      const replacingInput = name === "edit" && (payload?.replaceAttachments === true || payload?.contextRecords !== undefined);
+      const value = threadPayload.extend({ id: z.string().min(1).optional(), text: z.string().trim().max(100_000).optional(), ids: z.array(z.string().min(1)).max(50).optional(), turnId: z.string().min(1).optional(), retryUncertain: z.boolean().default(false), ...(name === "edit" ? { replaceAttachments: z.boolean().optional(), ...promptInputSchema } : {}) }).strict().parse(payload);
+      const project = getProject(value.projectId);
+      const owner = authoritativeThreadProjectId(value.threadId);
+      if (owner && owner !== project.id) throw new Error("Queue belongs to another project.");
+      if (!owner) await ensureThreadLoaded(project, value.threadId);
+      if (["edit", "remove", "steer"].includes(name) && !value.id) throw new Error("A queued message is required.");
+      if (name === "edit" && !value.text && !value.attachments?.length && !value.images?.length && !value.attachmentIds?.length) throw new Error("A message or attachment is required.");
+      if (name === "reorder" && !value.ids) throw new Error("Queue order is required.");
+      if (name === "steer" && activeTurns.get(value.threadId) !== value.turnId) throw new Error("That turn is no longer active.");
+      if (["list", "hold"].includes(name)) return messageQueue[action](value.projectId, value.threadId);
+      if (name === "resume") return messageQueue.resume(value.projectId, value.threadId, value.retryUncertain);
+      if (replacingInput) {
+        messageQueue.find(value.projectId, value.threadId, value.id);
+        const prompt = await preparePromptInput(value, project, value.threadId, context);
+        return messageQueue.edit({ ...value, input: buildCodexUserInput(prompt.text, prompt.images), checkpointInput: { text: value.text, images: prompt.images, attachments: prompt.files, contextRecords: value.contextRecords }, attachments: [...prompt.images.map((image, index) => ({ name: `Image ${index + 1}`, mimeType: image.match(/^data:([^;]+)/)?.[1] ?? "image/png", size: Math.floor(image.length * 0.75) })), ...prompt.files.map(({ name, mimeType, size }) => ({ name, mimeType, size }))] });
+      }
+      return messageQueue[action]({ ...value, contextRecords: payload?.contextRecords });
+    });
+  }
   handlers.handle("turns:steer", async (context = {}, payload) => {
     const value = threadPayload.extend({
       turnId: z.string().min(1),
@@ -2952,11 +3268,8 @@ function registerHandlers() {
     await ensureThreadLoaded(project, value.threadId);
     const prompt = await preparePromptInput(value, project, value.threadId, context);
     taskResults.stopReplay(value.threadId, true);
-    const response = await runtime.request("turn/steer", {
-      threadId: value.threadId,
-      expectedTurnId: value.turnId,
-      input: buildCodexUserInput(prompt.text, prompt.images)
-    });
+    if (activeTurns.get(value.threadId) !== value.turnId) throw new Error("That turn is no longer active.");
+    const response = await withComposerThreadReferences(value.threadId, value.turnId, value.text, value.contextRecords, () => steerBridgeParentTurn(value.threadId, value.turnId, buildCodexUserInput(prompt.text, prompt.images)));
     if (database.getProjectFocusSessionByThread(value.threadId)?.projectId === project.id) {
       database.incrementProjectFocusTurn(project.id, value.threadId);
     }
@@ -2971,77 +3284,87 @@ function registerHandlers() {
     }
     const project = getProject(value.projectId);
     await ensureThreadLoaded(project, value.threadId);
+    const currentTurn = activeTurns.get(value.threadId) ?? executionJournal.getActive(value.threadId)?.turnId;
+    if (currentTurn && currentTurn !== value.turnId) throw new Error("That turn is no longer the active execution.");
+    messageQueue.hold(value.projectId, value.threadId);
+    messageQueue.cancelSource(value.projectId, value.threadId, "watch");
+    pullRequests?.stopThread(value.threadId, "Task stopped");
     taskResults.stopReplay(value.threadId);
     const response = await runtime.request("turn/interrupt", { threadId: value.threadId, turnId: value.turnId });
-    activeTurns.delete(value.threadId);
     updateTrayMenu();
-    return response;
+    return { ...response, stopping: activeTurns.get(value.threadId) === value.turnId };
   });
 
-  handlers.handle("approvals:resolve", (_event, payload) => {
+  handlers.handle("approvals:resolve", async (_event, payload) => {
     const value = z.object({
       requestId: z.union([z.string(), z.number()]),
       requestGeneration: z.number().int().nonnegative(),
       decision: z.enum(["accept", "decline", "acceptForSession", "cancel"])
     }).parse(payload);
-    const key = requestKey(value.requestId);
-    const pending = pendingRequests.get(key);
+    const pending = pendingRequestById(value.requestId, value.requestGeneration);
     if (!pending || value.requestGeneration !== pending.generation) throw new Error("Approval request is no longer pending");
     if (!pending.request.method?.toLowerCase().includes("approval")) throw new Error("Pending request is not an approval");
-    runtime.respond(value.requestId, { decision: value.decision });
-    pendingRequests.delete(key);
-    return { ok: true };
+    return requestDelivery.send(pending, { decision: value.decision });
   });
-  handlers.handle("requests:respond", (_event, payload) => {
+  handlers.handle("requests:respond", async (_event, payload) => {
     const value = z.object({
       requestId: z.union([z.string(), z.number()]),
       requestGeneration: z.number().int().nonnegative(),
       answers: z.record(z.object({ answers: z.array(z.string().trim().min(1)).min(1).max(20) }))
     }).parse(payload);
-    const key = requestKey(value.requestId);
-    const pending = pendingRequests.get(key);
+    const pending = pendingRequestById(value.requestId, value.requestGeneration);
     if (!pending || value.requestGeneration !== pending.generation) throw new Error("Input request is no longer pending");
     if (!pending.request.method?.includes("requestUserInput")) throw new Error("Pending request does not accept user input");
-    respondToFocusQuestion(pending, { answers: Object.fromEntries(Object.entries(value.answers).map(([id, answer]) => [id, answer.answers])) }, { source: "user" });
-    pendingRequests.delete(key);
+    await respondToFocusQuestion(pending, { answers: Object.fromEntries(Object.entries(value.answers).map(([id, answer]) => [id, answer.answers])) }, { source: "user" });
     return { ok: true };
   });
-  handlers.handle("questions:respond", (_event, payload) => {
+  handlers.handle("questions:respond", async (_event, payload) => {
     const value = z.object({
       requestId: z.union([z.string(), z.number()]),
       requestGeneration: z.number().int().nonnegative(),
       action: z.enum(["answer", "cancel"]).default("answer"),
       answers: z.record(z.string().trim().min(1).max(10_000)).default({})
     }).parse(payload);
-    const key = requestKey(value.requestId);
-    const pending = pendingRequests.get(key);
+    const pending = pendingRequestById(value.requestId, value.requestGeneration);
     if (!pending || value.requestGeneration !== pending.generation) throw new Error("Question is no longer pending");
-    respondToFocusQuestion(pending, value, { source: "user" });
-    pendingRequests.delete(key);
+    await respondToFocusQuestion(pending, value, { source: "user" });
     return { ok: true };
   });
-  handlers.handle("elicitations:respond", (_event, payload) => {
+  handlers.handle("elicitations:respond", async (_event, payload) => {
     const value = z.object({
       requestId: z.union([z.string(), z.number()]),
       requestGeneration: z.number().int().nonnegative(),
-      action: z.enum(["accept", "decline", "cancel"]),
-      content: z.record(z.unknown()).optional()
-    }).parse(payload);
-    const key = requestKey(value.requestId);
-    const pending = pendingRequests.get(key);
+      decision: z.enum(["accept", "acceptForSession", "acceptAlways", "decline", "cancel"]).optional(),
+      action: z.enum(["accept", "decline", "cancel"]).optional(),
+      content: z.record(z.unknown()).optional(),
+      _meta: z.object({ persist: z.enum(["session", "always"]) }).strict().optional()
+    }).refine(value => Boolean(value.decision) !== Boolean(value.action), "Choose an approval decision or a form response.")
+      .refine(value => !value.decision || value.content === undefined && value._meta === undefined, "Approval content is supplied by the provider request.")
+      .parse(payload);
+    const pending = pendingRequestById(value.requestId, value.requestGeneration);
     if (!pending || value.requestGeneration !== pending.generation) throw new Error("Elicitation request is no longer pending");
     if (!pending.request.method?.toLowerCase().includes("elicitation")) throw new Error("Pending request is not an elicitation");
-    runtime.respond(value.requestId, {
+    // Computer Use grants are per-app provider permissions. Return the actual
+    // advertised enum/boolean and persistence metadata; do not widen Pixice's
+    // project, worker, or sandbox policy to simulate a remembered approval.
+    if (value.decision) return requestDelivery.send(pending, mcpElicitationApprovalResponse(pending.request.params, value.decision));
+    const response = {
       action: value.action,
       ...(value.action === "accept" && value.content ? { content: value.content } : {})
-    });
-    pendingRequests.delete(key);
-    return { ok: true };
+    };
+    if (value._meta) {
+      if (value.action !== "accept") throw new Error("Only an accepted approval can be remembered.");
+      const advertised = mcpElicitationApprovalResponse(pending.request.params, value._meta.persist === "always" ? "acceptAlways" : "acceptForSession");
+      if (!isDeepStrictEqual(response.content, advertised.content)) throw new Error("The remembered approval must match the provider's advertised choice.");
+      response._meta = advertised._meta;
+    }
+    return requestDelivery.send(pending, response);
   });
 
   handlers.handle("review:read", async (_event, payload) => {
-    const { projectId } = idPayload.parse(payload);
-    const project = getProject(projectId);
+    const { projectId, threadId } = idPayload.extend({ threadId: z.string().optional() }).parse(payload);
+    if (threadId) await ensureThreadLoaded(getProject(projectId), threadId);
+    const project = workspaceProject(getProject(projectId), threadId);
     const primaryRoot = projectPrimaryRoot(project);
     const repository = await inspectRepository(primaryRoot);
     const files = repository.kind === "git"
@@ -3050,8 +3373,9 @@ function registerHandlers() {
     return { repository, files };
   });
   handlers.handle("review:file", async (_event, payload) => {
-    const value = idPayload.extend({ path: z.string().trim().min(1).max(10_000) }).parse(payload);
-    const project = getProject(value.projectId);
+    const value = idPayload.extend({ path: z.string().trim().min(1).max(10_000), threadId: z.string().optional() }).parse(payload);
+    if (value.threadId) await ensureThreadLoaded(getProject(value.projectId), value.threadId);
+    const project = workspaceProject(getProject(value.projectId), value.threadId);
     const primaryRoot = projectPrimaryRoot(project);
     const repository = await inspectRepository(primaryRoot);
     if (repository.kind !== "git") return { path: value.path, diff: "", baseCommit: null };
@@ -3064,21 +3388,26 @@ function registerHandlers() {
     });
     return { path: value.path, diff, baseCommit: repository.baseCommit };
   });
+  handlers.handle("files:list", async (_event, payload) => {
+    const value = idPayload.extend({ threadId: z.string().optional(), query: z.string().max(500).default(""), limit: z.number().int().min(1).max(100).default(50) }).strict().parse(payload);
+    return listComposerFiles({ ...previewFileOptions(value.projectId, ".", false, value.threadId), query: value.query, limit: value.limit });
+  });
   handlers.handle("files:read", (_event, payload) => {
-    const value = idPayload.extend({ path: z.string().trim().min(1) }).parse(payload);
-    return readProjectFile(value.projectId, value.path);
+    const value = idPayload.extend({ path: z.string().trim().min(1), threadId: z.string().optional() }).parse(payload);
+    return readProjectFile(value.projectId, value.path, value.threadId);
   });
   handlers.handle("files:preview", (_event, payload) => {
-    const value = idPayload.extend({ path: z.string().trim().min(1).max(10_000) }).parse(payload);
-    return readLocalPreviewFile(value.projectId, value.path);
+    const value = idPayload.extend({ path: z.string().trim().min(1).max(10_000), threadId: z.string().optional() }).parse(payload);
+    return readLocalPreviewFile(value.projectId, value.path, value.threadId);
   });
   handlers.handle("files:write", (_event, payload) => {
     const value = idPayload.extend({
       path: z.string().trim().min(1),
       content: z.string(),
+      threadId: z.string().optional(),
       expectedMtimeMs: z.number().nonnegative().optional()
     }).parse(payload);
-    const current = previewFileTarget(previewFileOptions(value.projectId, value.path, true));
+    const current = previewFileTarget(previewFileOptions(value.projectId, value.path, true, value.threadId));
     const file = readLocalPreviewFile(value.projectId, current.resolved);
     if (!file.editable) throw new Error("This file cannot be edited in Pixice");
     if (Buffer.byteLength(value.content, "utf8") > MAX_EDITABLE_BYTES) throw new Error("Edited file is too large to save in Pixice");
@@ -3089,17 +3418,17 @@ function registerHandlers() {
     return readLocalPreviewFile(value.projectId, current.resolved);
   });
   handlers.handle("external:editor", async (_event, payload) => {
-    const value = idPayload.extend({ path: z.string().optional() }).parse(payload);
-    const target = projectTarget(value.projectId, value.path);
+    const value = idPayload.extend({ path: z.string().optional(), threadId: z.string().min(1).optional() }).parse(payload);
+    const target = projectTarget(value.projectId, value.path, value.threadId);
     return platform.openExternal(`vscode://file/${encodeURI(target)}`);
   });
   handlers.handle("external:terminal", async (_event, payload) => {
-    const value = idPayload.extend({ path: z.string().optional() }).parse(payload);
-    return platform.openTerminal(projectTarget(value.projectId, value.path));
+    const value = idPayload.extend({ path: z.string().optional(), threadId: z.string().min(1).optional() }).parse(payload);
+    return platform.openTerminal(projectTarget(value.projectId, value.path, value.threadId));
   });
   handlers.handle("external:reveal", (_event, payload) => {
-    const value = idPayload.extend({ path: z.string().optional() }).parse(payload);
-    platform.reveal(projectTarget(value.projectId, value.path));
+    const value = idPayload.extend({ path: z.string().optional(), threadId: z.string().min(1).optional() }).parse(payload);
+    platform.reveal(projectTarget(value.projectId, value.path, value.threadId));
     return { ok: true };
   });
 
@@ -3133,6 +3462,59 @@ function registerHandlers() {
   if (recordedDataVersion && recordedDataVersion !== version) recoverUpdateDataFromBackup({ userDataPath });
   await ensureVersionUpdateDataBackup({ userDataPath, currentVersion: version });
   database = new PixiceDatabase(userDataPath);
+  executionJournal = new ExecutionJournal({ database });
+  requestDelivery = new RequestResponseDelivery({ database, respond: (id, result, options) => runtime.respond(id, result, options),
+    onState: (pending) => {
+      if (pending.responseState === "uncertain" && pending.focusContext?.worker && (pending.displayRequest ?? pending.request).method?.includes("requestUserInput")) showFocusCoordinatorQuestion(pending, pending.focusContext, "The answer is awaiting provider confirmation. Retry the same answer when ready.");
+      if (pending.visible !== false && !["resolved", "unavailable"].includes(pending.responseState)) send("AttentionRequired", { ...(pending.displayRequest ?? pending.request), requestGeneration: pending.generation, responseState: pending.responseState, responseError: pending.responseError, projectId: authoritativeThreadProjectId(pending.request.params?.threadId) });
+    },
+    onResolved: (pending) => {
+      const key = requestKey(pending.request.id, pending.request.provider);
+      if (pendingRequests.get(key)?.generation !== pending.generation) return;
+      pendingRequests.delete(key);
+      removeFocusQuestionMember(key, pending.generation);
+      send("AttentionResolved", { requestId: pending.request.id, requestGeneration: pending.generation, threadId: pending.request.params?.threadId });
+    }
+  });
+  taskWorkspaces = new ManagedTaskWorkspaceStore({ directory: path.join(userDataPath, "task-workspaces"), getUsers: async () => [...database.listThreadProviderBindings().map(binding => ({ threadId: binding.threadId, cwd: binding.cwd })), ...[...threadProjects.keys()].map(threadId => ({ threadId, cwd: threadSessions.loaded.get(threadId) ?? database.getThreadProviderBinding(threadId)?.cwd })).filter(entry => entry.cwd)], onChange: () => send("TaskWorkspacesUpdated", {}) });
+  await taskWorkspaces.ready;
+  rewindSupportProbe = createRewindSupportProbe({ readThread: (threadId, options) => runtime.request("thread/read", { threadId, ...options }), providerForThread: id => runtime.providerForThread(id) });
+  threadHistory = new ThreadHistoryStore({ directory: path.join(userDataPath, "thread-history"), workspaceStore: taskWorkspaces,
+    readThread: threadId => runtime.request("thread/read", { threadId, includeTurns: true }),
+    rewindProvider: async ({ threadId, numTurns, checkpoint }) => {
+      const response = await revertProviderThread(runtime, { threadId, numTurns, checkpoint });
+      threadSessions.delete(threadId); threadMonitorCache.delete(threadId); threadPlans.delete(threadId);
+      database.saveThreadPlan(threadId, []);
+      try { await taskResults?.rewound(threadId, response.thread ?? (await runtime.request("thread/read", { threadId, includeTurns: true })).thread); }
+      catch (error) { send("NativeError", { message: `Task result refresh: ${error.message}` }); }
+      send("TaskUpdated", { method: "thread/rewound", threadId, projectId: authoritativeThreadProjectId(threadId) });
+      return response;
+    }, getActiveTurn: threadId => activeTurns.get(threadId) ?? (startingTurns.has(threadId) ? "starting" : executionJournal.getActive(threadId) ? "reconciling" : null),
+    supportsRewind: rewindSupportProbe,
+    onChange: () => send("ThreadHistoryUpdated", {}) });
+  await threadHistory.ready;
+  htmlReplies = new HtmlReplies({ userDataPath });
+  messageQueue = new MessageQueue({
+    storagePath: path.join(userDataPath, "message-queue.json"),
+    isBusy: (threadId) => !acceptingWork || !runtime?.connected || activeTurns.has(threadId) || startingTurns.has(threadId) || Boolean(executionJournal.getActive(threadId)),
+    emit: (payload) => send("MessageQueueUpdated", payload),
+    start: async (entry) => {
+      const project = getProject(entry.projectId);
+      const isFocus = database.getProjectFocusSessionByThread(entry.threadId)?.projectId === project.id;
+      const response = await startTrackedTurn({ ...entry, commandId: `queue:${entry.id}`, retryRejected: true, project, trackTask: !isFocus });
+      try {
+        if (isFocus) database.incrementProjectFocusTurn(project.id, entry.threadId);
+        if (pendingTaskNames.delete(entry.threadId)) scheduleThreadName({ project, threadId: entry.threadId, source: entry.text, kind: "task" });
+        if (!isFocus) proactiveStewardship?.startTurn({ projectId: project.id, threadId: entry.threadId, turnId: response.turn.id, prompt: entry.text, threadName: database.getThreadName(entry.threadId) ?? "" });
+      } catch (error) { send("NativeError", { message: error.message }); }
+      return response;
+    },
+    steer: async entry => {
+      await ensureThreadLoaded(getProject(entry.projectId), entry.threadId);
+      taskResults.stopReplay(entry.threadId, true);
+      return withComposerThreadReferences(entry.threadId, entry.turnId, entry.text, entry.contextRecords, () => steerBridgeParentTurn(entry.threadId, entry.turnId, entry.input, { deliveryId: `queue-steer:${entry.id}` }));
+    }
+  });
   focusStore = new FocusStore(database);
   pixiceFocusMemory = new PixiceFocusMemory({
     database,
@@ -3158,6 +3540,15 @@ function registerHandlers() {
       return response;
     }
   });
+  for (const receipt of taskResults.records().slice(0, 128)) {
+    if (!receipt.recoveryPending || !receipt.activeTurnId || executionJournal.getActive(receipt.threadId)) continue;
+    const commandId = `legacy-task:${receipt.threadId}:${receipt.activeTurnId}`;
+    const accepted = executionJournal.accept({ commandId, threadId: receipt.threadId, metadata: { projectId: receipt.projectId, provider: database.getThreadProviderBinding(receipt.threadId)?.provider ?? "codex" } });
+    if (!accepted.duplicate && executionJournal.beforeDispatch(commandId)) {
+      executionJournal.started(commandId, receipt.activeTurnId);
+      executionJournal.failed(commandId, new Error("Saved task requires exact-turn startup reconciliation."), { uncertain: true });
+    }
+  }
   const previewThreadContext = (threadId) => {
     const binding = database.getThreadProviderBinding(threadId);
     const project = resolveThreadProject({
@@ -3231,6 +3622,34 @@ function registerHandlers() {
   githubCli = new GitHubCli({ resourcesPath });
   prependGitHubCliToPath(process.env, githubCli.resolved);
   githubCli.on("progress", (payload) => send("GitHubAuthProgress", payload));
+  const pullRequestStatePath = path.join(userDataPath, "pull-request-state.json");
+  pullRequests = new PullRequestService({
+    githubCli,
+    loadState: () => { try { return JSON.parse(readFileSync(pullRequestStatePath, "utf8")); } catch (error) { if (error.code === "ENOENT") return null; if (error instanceof SyntaxError) { send("NativeError", { message: "Saved pull request state could not be read. PR monitoring is paused." }); return null; } throw error; } },
+    saveState: (state) => { const temporary = `${pullRequestStatePath}.${randomUUID()}.tmp`; writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 }); renameSync(temporary, pullRequestStatePath); },
+    resolveContext: async ({ projectId, threadId }) => {
+      const project = getProject(projectId);
+      const workspace = taskWorkspaces.getSync(threadId);
+      const binding = database.getThreadProviderBinding(threadId);
+      const cwd = workspace?.cwd ?? binding?.cwd ?? await ensureThreadLoaded(project, threadId);
+      if (!isWithinProject(project, cwd, threadId)) throw new Error("The pull request workspace is outside this project.");
+      const owner = authoritativeThreadProjectId(threadId, cwd);
+      if (owner !== projectId) throw new Error("The pull request chat belongs to another project.");
+      const previous = turnUsageMetadata.get(threadId);
+      return { projectId, threadId, cwd, parentThreadId: database.getThreadLink(threadId)?.parentThreadId ?? null, archived: archivedThreadIds.has(threadId), permissionMode: previous?.permissionMode ?? database.getAppSettings().defaultPermissionMode ?? "workspace-write" };
+    },
+    emit: payload => send("PullRequestsUpdated", payload)
+  });
+  pullRequestWatches = new PullRequestWatchHost({ service: pullRequests, onError: error => send("NativeError", { message: `Pull request watch: ${error.message}` }), enqueueWake: async ({ projectId, threadId, message, eventId }) => {
+    if (!acceptingWork || archivedThreadIds.has(threadId)) return false;
+    const context = await pullRequests.context({ projectId, threadId });
+    if (context.parentThreadId) return false;
+    const previous = turnUsageMetadata.get(threadId) ?? {};
+    const model = previous.model ?? database.getProviderThreadSnapshot?.(threadId)?.model ?? undefined;
+    messageQueue.enqueue({ projectId, threadId, text: message, input: buildCodexUserInput(message, []), source: "watch", dedupeKey: eventId, model, effort: previous.effort ?? undefined, serviceTier: previous.serviceTier ?? undefined, permissionMode: "read-only" });
+    return true;
+  } });
+  pixicePullRequests = new PixicePullRequests({ service: pullRequests, threadContext: previewThreadContext, onStopWatch: ({ projectId, threadId }) => messageQueue.cancelSource(projectId, threadId, "watch") });
   const codexRuntimeLifecycle = new ProviderRuntimeLifecycle({ provider: "codex", database });
   codexRuntime = new CodexRuntime({
     executablePath: null,
@@ -3262,7 +3681,9 @@ function registerHandlers() {
     onOpen: (payload) => send("InstrumentOpenRequested", payload),
     onEventChange: (payload) => send("InstrumentInteractionUpdated", payload)
   });
+  const bridgeJobStore = new BridgeJobStore(database);
   bridgeParentContinuation = new BridgeParentContinuation({
+    jobStore: bridgeJobStore,
     activeTurnId: (threadId) => activeTurns.get(threadId) ?? null,
     startTurn: startBridgeParentTurn,
     steerTurn: steerBridgeParentTurn,
@@ -3272,10 +3693,19 @@ function registerHandlers() {
     )
   });
   pixiceBridge = new PixiceBridge({
+    jobStore: bridgeJobStore,
     installWorkflows: (options) => runtimeReady.then(() => installWorkflowRuntimeHost({ ...options, userDataPath, resourcesPath, handlers,
       send, credentialCrypto: platform.credentialCrypto, notify: platform.notify })),
     runtime,
     database,
+    resolveThreadProjectId: (threadId) => boardThreadContext(threadId)?.projectId ?? null,
+    referencedThreadIds: async ({ threadId, turnId }) => {
+      const current = composerThreadReferences.get(threadId);
+      if (current && (!turnId || !current.turnId || current.turnId === turnId)) return current.ids;
+      await threadHistory.ready;
+      const checkpoint = [...threadHistory.records.values()].findLast(record => record.threadId === threadId && record.status === "ready" && (!turnId || record.turnId === turnId));
+      return usedThreadReferences(checkpoint?.input?.text, checkpoint?.input?.contextRecords);
+    },
     dynamicTools: () => pixiceDynamicTools,
     threadContext: (threadId) => {
       const binding = database.getThreadProviderBinding(threadId);
@@ -3329,14 +3759,14 @@ function registerHandlers() {
       return pixiceBridge.startDetached({ threadId: coordinatorThreadId }, {
         prompt, model: selected.id, ...(effort ? { effort } : {}), permissionMode
       }, { onCreated: (thread) => {
-        if (workId) focusStore.updateWork(projectId, workId, { threadId: thread.id, model: selected.id });
+        if (workId) focusStore.transitionWork(projectId, workId, { threadId: thread.id, model: selected.id }, { id: `focus:${workId}:thread:${thread.id}:created`, kind: "worker-created", message: "Worker thread created before turn dispatch." });
       } });
     },
     continueWorker: async ({ projectId, threadId, turnId, prompt, model, effort, permissionMode }) => {
       const project = getProject(projectId);
       await ensureThreadLoaded(project, threadId);
       if (turnId) {
-        await runtime.request("turn/steer", { threadId, expectedTurnId: turnId, input: buildCodexUserInput(prompt, []) });
+        await steerBridgeParentTurn(threadId, turnId, buildCodexUserInput(prompt, []));
         return { turnId };
       }
       const response = await startTrackedTurn({ project, threadId, input: buildCodexUserInput(prompt, []), text: prompt, model: model ?? undefined, effort, permissionMode });
@@ -3347,6 +3777,7 @@ function registerHandlers() {
       if (turnId) await runtime.request("turn/interrupt", { threadId, turnId });
     },
     deliver: deliverFocusEvents,
+    resolveDelivery: resolveFocusDelivery,
     onChange: (projectId) => send("FocusUpdated", { projectId })
   });
   pixiceFocusMemory.coordination = new FocusCoordinationTools({
@@ -3415,6 +3846,8 @@ function registerHandlers() {
       }
     },
     pixicePreview: previewContextRegistry,
+    pixiceHtml: { handleToolCall: invokeHtmlReply },
+    pixicePullRequests,
     pixiceIos: iosTools,
     pathToClaudeCodeExecutable: null,
     requireExternalExecutable: true,
@@ -3439,9 +3872,21 @@ function registerHandlers() {
     const providerState = status.provider ? status.providers?.[status.provider]?.state ?? status.state : status.state;
     if (status.provider && ["connecting", "reconnecting", "stopped", "unavailable"].includes(providerState)) {
       const provider = status.provider;
+      if (provider === "codex") rewindSupportProbe?.clear();
       const affectedThreadIds = new Set(database.listThreadProviderBindings({ provider }).map((binding) => binding.threadId));
       focusSupervisor?.providerUnavailable(provider);
+      requestDelivery.unavailable(provider);
+      for (const record of executionJournal.listRecoverable()) {
+        if (record.metadata?.provider === provider) {
+          const error = Object.assign(new Error("The provider became unavailable; its exact turn is reserved for reconciliation."), { uncertain: true });
+          executionJournal.failed(record.commandId, error, { uncertain: true });
+          taskResults.failed(record.threadId, error, { turnId: record.turnId });
+        }
+      }
+      for (const [key, receipt] of pendingBridgeToolResponses) if (receipt.provider === provider) pendingBridgeToolResponses.delete(key);
       for (const threadId of affectedThreadIds) {
+        const queueProjectId = authoritativeThreadProjectId(threadId);
+        if (queueProjectId && messageQueue.list(queueProjectId, threadId).entries.length) messageQueue.hold(queueProjectId, threadId);
         threadSessions.delete(threadId);
         threadProjects.delete(threadId);
         activeTurns.delete(threadId);
@@ -3455,7 +3900,7 @@ function registerHandlers() {
         if (!threadId || runtime.providerForThread(threadId) !== provider) continue;
         pendingRequests.delete(key);
         removeFocusQuestionMember(key, pending.generation);
-        send("AttentionResolved", { requestId: pending.request?.id, threadId });
+        send("AttentionResolved", { requestId: pending.request?.id, requestGeneration: pending.generation, threadId });
       }
       for (const [projectId] of focusSessionEnsures) {
         const threadId = database.getProjectFocusSession(projectId)?.threadId;
@@ -3487,13 +3932,35 @@ function registerHandlers() {
     runtimeStatus = status;
     send("RuntimeStatus", { ...status, connected: runtime.connected });
     if (focusSupervisor && providerState === "ready") {
-      void focusSupervisor.recover().catch((error) => codexRuntime.emit("diagnostic", `Focus recovery: ${error.message}`));
+      void recoverExecutionState().catch((error) => codexRuntime.emit("diagnostic", `Runtime recovery: ${error.message}`));
     }
   });
   runtime.on("event", containListenerErrors((event) => {
     const receivedAt = event.payload?.receivedAt ?? new Date().toISOString();
     event.payload = { ...event.payload, receivedAt };
     const { method, threadId, turn } = event.payload ?? {};
+    const eventTurnId = turn?.id ?? event.payload.turnId;
+    const ownedTurnId = threadId && (activeTurns.get(threadId) ?? executionJournal.getActive(threadId)?.turnId);
+    if (eventTurnId && ownedTurnId && eventTurnId !== ownedTurnId && !["turn/completed", "turn/started", "serverRequest/resolved"].includes(method)) return;
+    // A delayed lifecycle notification owns only its exact execution. Preserve
+    // its receipt without clearing a newer turn, resetting plans or draining it.
+    if (threadId && turn?.id && ["turn/started", "turn/completed"].includes(method)) {
+      const prior = executionJournal.forTurn(threadId, turn.id);
+      const known = method === "turn/completed"
+        ? executionJournal.observeCompleted(threadId, { ...turn, status: turn.status ?? "completed" })
+        : executionJournal.observeStarted(threadId, turn.id);
+      const reservation = executionJournal.getActive(threadId);
+      if (method === "turn/completed" && EXECUTION_TERMINAL_STATUSES.has(prior?.status) && !event.reconciled) return;
+      if (reservation && !reservation.turnId && (!known || known.commandId !== reservation.commandId)) {
+        if (method === "turn/completed" && !known) {
+          earlyTerminalTiming.set(JSON.stringify([threadId, turn.id]), turn.completedAt ?? receivedAt);
+          while (earlyTerminalTiming.size > 128) earlyTerminalTiming.delete(earlyTerminalTiming.keys().next().value);
+        }
+        return;
+      }
+      const current = activeTurns.get(threadId) ?? reservation?.turnId;
+      if (current && current !== turn.id || method === "turn/started" && EXECUTION_TERMINAL_STATUSES.has(known?.status)) return;
+    }
     if (event.payload?.thread?.source === "pixiceFocusMemory") {
       if (event.payload.thread.id) focusMemoryInternalThreadIds.add(event.payload.thread.id);
       return;
@@ -3522,11 +3989,13 @@ function registerHandlers() {
     }
     const focusSession = threadId ? database.getProjectFocusSessionByThread(threadId) : null;
     if (method === "serverRequest/resolved") {
-      const key = requestKey(event.payload.requestId);
-      const pending = pendingRequests.get(key);
-      pendingRequests.delete(key);
-      if (pending) removeFocusQuestionMember(key, pending.generation);
-      send("AttentionResolved", { requestId: event.payload.requestId, threadId });
+      const key = requestKey(event.payload.requestId, event.payload.provider);
+      requestDelivery.confirm(event.payload.requestId, { provider: event.payload.provider, threadId, providerRequestGeneration: event.payload.providerRequestGeneration });
+      const bridgeResponse = pendingBridgeToolResponses.get(key);
+      if (bridgeResponse && (!event.payload.provider || bridgeResponse.provider === event.payload.provider) && (event.payload.providerRequestGeneration == null || bridgeResponse.generation === event.payload.providerRequestGeneration) && (!threadId || bridgeResponse.params.threadId === threadId)) {
+        pixiceBridge.acknowledgeToolResult(bridgeResponse.params);
+        pendingBridgeToolResponses.delete(key);
+      }
     }
     if (method === "account/rateLimits/updated") {
       trayLimits = null;
@@ -3572,7 +4041,7 @@ function registerHandlers() {
       database.saveThreadName(threadId, event.payload.name);
     }
     if (method === "turn/started" && threadId) {
-      if (!focusSession) taskResults.observeStart(threadId, turn?.id);
+      if (!focusSession && !startingTurns.has(threadId)) taskResults.observeStart(threadId, turn?.id);
       threadPlans.set(threadId, []);
       database.saveThreadPlan(threadId, []);
     }
@@ -3607,7 +4076,7 @@ function registerHandlers() {
           taskResults.importThread(project, response.thread);
         });
       void completed
-        .catch((error) => { taskResults.failed(threadId, error); codexRuntime.emit("diagnostic", `Task receipt failed: ${error.message}`); });
+        .catch((error) => { taskResults.failed(threadId, error, { turnId: event.payload.turn.id }); codexRuntime.emit("diagnostic", `Task receipt failed: ${error.message}`); });
     }
     if (method === "turn/completed" && threadId && event.payload.turn && !database.getThreadLink(threadId) && !focusSession) {
       const projectId = threadProjects.get(threadId) ?? boardThreadContext(threadId)?.projectId;
@@ -3643,7 +4112,15 @@ function registerHandlers() {
       turnUsageMetadata.delete(threadId);
       database.deleteThreadRuntimeState(threadId);
       if (method === "thread/deleted") database.deleteThreadTurnTimings(threadId);
-      database.deleteThreadProviderBinding(threadId);
+      if (method === "thread/deleted") {
+        database.deleteThreadProviderBinding(threadId);
+        void taskWorkspaces.forgetThread(threadId).catch(error => send("NativeError", { message: error.message }));
+        void htmlReplies.deleteThread(threadId).catch(error => send("NativeError", { message: error.message }));
+      }
+      archivedThreadIds.add(threadId);
+      const ownerProjectId = authoritativeThreadProjectId(threadId);
+      if (ownerProjectId) messageQueue.clear(ownerProjectId, threadId);
+      pullRequests?.stopThread(threadId, "Chat archived");
       database.deleteThreadLink(threadId);
       database.detachBoardTasksForThread(threadId);
       void browserWorkspace.destroyWorkspace(threadId).catch((error) => send("NativeError", { message: error.message }));
@@ -3662,7 +4139,10 @@ function registerHandlers() {
       trayCompletionRevisions.delete(threadId);
     }
     if (method === "turn/completed" && threadId) {
-      activeTurns.delete(threadId);
+      if (activeTurns.get(threadId) === turn?.id) activeTurns.delete(threadId);
+      requestDelivery.terminal(threadId, turn?.id);
+      queueMicrotask(() => void messageQueue?.drain(threadId));
+      queueMicrotask(() => void pixiceBridge?.drainCompletions().catch(error => codexRuntime.emit("diagnostic", `Bridge delivery: ${error.message}`)));
       trayCompletionRevisions.set(threadId, {
         completionRevision: `turn:${turn?.id ?? event.payload?.turnId ?? receivedAt}`,
         updatedAt: turn?.completedAt ?? receivedAt
@@ -3683,53 +4163,42 @@ function registerHandlers() {
     codexRuntime.emit("diagnostic", `Runtime event ${method} failed: ${error.message}`);
   }));
   runtime.on("server-request", (request) => {
-    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_FOCUS_NAMESPACE) {
-      void pixiceFocusMemory.handleToolCall(request.params)
-        .then((response) => runtime.respond(request.id, response))
-        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
-      return;
-    }
-    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_BOARD_NAMESPACE) {
-      void pixiceBoard.handleToolCall(request.params)
-        .then((response) => runtime.respond(request.id, response))
-        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
-      return;
-    }
-    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_INSTRUMENTS_NAMESPACE) {
-      void pixiceInstruments.handleToolCall(request.params)
-        .then((response) => runtime.respond(request.id, response))
-        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
+    const toolHandlers = {
+      [PIXICE_PULL_REQUEST_NAMESPACE]: params => pixicePullRequests.handleToolCall(params),
+      [PIXICE_HTML_NAMESPACE]: invokeHtmlReply,
+      [PIXICE_FOCUS_NAMESPACE]: params => pixiceFocusMemory.handleToolCall(params),
+      [PIXICE_BOARD_NAMESPACE]: params => pixiceBoard.handleToolCall(params),
+      [PIXICE_INSTRUMENTS_NAMESPACE]: params => pixiceInstruments.handleToolCall(params),
+      pixice_browser: params => browserWorkspace.handleToolCall(params),
+      [PIXICE_PREVIEW_NAMESPACE]: params => previewContextRegistry.handleToolCall(params),
+      [PIXICE_IOS_NAMESPACE]: params => iosTools.handleToolCall(params)
+    };
+    const toolHandler = request.method === "item/tool/call" && toolHandlers[request.params?.namespace];
+    if (toolHandler) {
+      respondNativeTool(request, () => toolHandler(request.params));
       return;
     }
     if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_BRIDGE_NAMESPACE) {
-      void pixiceBridge.handleToolCall(request.params)
-        .then((response) => runtime.respond(request.id, response))
-        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
-      return;
-    }
-    if (request.method === "item/tool/call" && request.params?.namespace === "pixice_browser") {
-      void browserWorkspace.handleToolCall(request.params)
-        .then((response) => runtime.respond(request.id, response))
-        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
-      return;
-    }
-    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_PREVIEW_NAMESPACE) {
-      void Promise.resolve(previewContextRegistry.handleToolCall(request.params))
-        .then((response) => runtime.respond(request.id, response))
-        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
-      return;
-    }
-    if (request.method === "item/tool/call" && request.params?.namespace === PIXICE_IOS_NAMESPACE) {
-      void iosTools.handleToolCall(request.params)
-        .then((response) => runtime.respond(request.id, response))
-        .catch((error) => runtime.respond(request.id, { success: false, contentItems: [{ type: "inputText", text: error.message }] }));
+      const params = { ...request.params, requestId: requestKey(request.id, request.provider), provider: request.provider };
+      const key = requestKey(request.id, request.provider);
+      const receipt = { params, provider: request.provider ?? runtime.providerForThread(params.threadId), generation: request.providerRequestGeneration };
+      pendingBridgeToolResponses.set(key, receipt);
+      void pixiceBridge.handleToolCall(params)
+        .catch(error => ({ success: false, contentItems: [{ type: "inputText", text: error.message }] }))
+        .then(async response => {
+          const ack = await runtime.respond(request.id, response, { provider: request.provider, generation: request.providerRequestGeneration });
+          if (ack?.resolved === true && pendingBridgeToolResponses.get(key) === receipt) {
+            pixiceBridge.acknowledgeToolResult(params);
+            pendingBridgeToolResponses.delete(key);
+          }
+        }).catch(error => codexRuntime.emit("diagnostic", `Bridge tool response awaits confirmation: ${error.message}`));
       return;
     }
     const threadId = request.params?.threadId;
     const focusContext = threadId ? projectFocusContextForThread(threadId) : null;
     const focusAccess = focusContext ? managedFocusAncestor(threadId)?.permissionMode ?? FOCUS_PERMISSION_MODE : null;
     if (focusContext && focusAccess === "full-access" && request.method?.toLowerCase().includes("approval")) {
-      runtime.respond(request.id, { decision: "accept" });
+      respondNativeTool(request, () => ({ decision: "accept" }));
       return;
     }
     let displayRequest = request;
@@ -3739,17 +4208,18 @@ function registerHandlers() {
         displayRequest = pixiceQuestionRequest(request);
         kind = "pixice-question-tool";
       } catch (error) {
-        runtime.respond(request.id, {
+        respondNativeTool(request, () => ({
           success: false,
           contentItems: [{ type: "inputText", text: `Invalid Pixice question: ${error.message}` }]
-        });
+        }));
         return;
       }
     } else if (request.method === PIXICE_QUESTION_METHOD) kind = "pixice-question";
-    const key = requestKey(request.id);
+    const key = requestKey(request.id, request.provider);
     const question = displayRequest.method?.includes("requestUserInput") && Array.isArray(displayRequest.params?.questions);
-    const pending = { request, displayRequest, kind, generation: ++nextAttentionGeneration, visible: !(focusContext?.worker && question), focusContext };
+    const pending = { request, displayRequest, kind, generation: requestDelivery.nextGeneration(), visible: !(focusContext?.worker && question), focusContext };
     pendingRequests.set(key, pending);
+    requestDelivery.register(pending);
     if (focusContext && question) {
       if (focusContext.worker) {
         const group = focusQuestionGroups.add({ key, generation: pending.generation, projectId: focusContext.projectId, questions: displayRequest.params.questions });
@@ -3775,9 +4245,13 @@ function registerHandlers() {
   runtime.on("provider-lifecycle", (state) => send("ProviderLifecycleState", state));
 
   registerHandlers();
-  await runtime.start();
+  // The registry and its project context are usable before external providers
+  // finish connecting. Workflow storage must not inherit that startup dependency.
   resolveRuntimeReady();
-  await focusSupervisor.recover();
+  onCoreReady();
+  await runtime.start();
+  pullRequestWatches.start();
+  await recoverExecutionState();
   runtime.startProviderUpdateChecks({ enabled: database.getAppSettings().checkProviderUpdates !== false });
   await pixiceBridge.workflowReady;
   if (!pixiceBridge.workflowError) markUpdateDataVersion(userDataPath, version);
@@ -3785,21 +4259,28 @@ function registerHandlers() {
 
   async function quiesce() {
     acceptingWork = false;
+    messageQueue?.close();
+    pullRequestWatches?.stop();
     const workflows = pixiceBridge?.workflowIntegration?.workflows;
     if (workflows) await workflows.close();
     await Promise.allSettled([...activeTurns].map(([threadId, turnId]) => runtime.request("turn/interrupt", { threadId, turnId })));
   }
   async function stop({ force = false } = {}) {
     if (stopped) return;
-    if ((activeTurns.size || startingTurns.size || pixiceBridge?.workflowIntegration?.workflows.activeRuns.size) && !force) throw new Error("Active work is still running. Stop it first or explicitly interrupt it.");
+    if ((activeExecutionCount() || startingTurns.size || pixiceBridge?.workflowIntegration?.workflows.activeRuns.size) && !force) throw new Error("Active work is running or awaiting reconciliation. Stop it first or explicitly interrupt it.");
     stopped = true;
     acceptingWork = false;
+    messageQueue?.close();
+    pullRequestWatches?.stop();
     focusSupervisor?.dispose();
+    requestDelivery?.dispose();
+    pixiceBridge?.dispose();
     flushRendererDeltas();
     await pixiceBridge?.workflowIntegration?.close();
     await iosRuntimeService?.destroy();
     if (force) await Promise.allSettled([...activeTurns].map(([threadId, turnId]) => runtime.request("turn/interrupt", { threadId, turnId })));
     await runtime?.stop();
+    await recoveryPromise?.catch(() => {});
     await Promise.allSettled([...(taskResults?.finishing.values() ?? [])]);
     pixiceInstruments?.close();
     await transcriptionService?.close().catch(() => {});
@@ -3810,10 +4291,10 @@ function registerHandlers() {
     handlers, events, start, stop, quiesce,
     backup: ({ currentVersion, targetVersion }) => createUpdateDataBackup({ userDataPath, currentVersion, targetVersion, reason: "app-update" }),
     freeze: (value) => { acceptingWork = !value; if (pixiceBridge?.workflowIntegration) pixiceBridge.workflowIntegration.workflows.acceptingRuns = !value; },
-    state: () => ({ activeTurns: activeTurns.size, startingTurns: startingTurns.size, activeWorkflows: pixiceBridge?.workflowIntegration?.workflows.activeRuns.size ?? 0, runtime: { ...runtimeStatus, connected: Boolean(runtime?.connected) }, workflowError: pixiceBridge?.workflowError?.message ?? null }),
-    attention: () => [...pendingRequests.values()].filter((pending) => pending.visible !== false).map(({ request, displayRequest, generation }) => {
+    state: () => ({ activeTurns: activeExecutionCount(), startingTurns: startingTurns.size, activeWorkflows: pixiceBridge?.workflowIntegration?.workflows.activeRuns.size ?? 0, runtime: { ...runtimeStatus, connected: Boolean(runtime?.connected) }, workflowError: pixiceBridge?.workflowError?.message ?? null }),
+    attention: () => [...pendingRequests.values()].filter((pending) => pending.visible !== false).map(({ request, displayRequest, generation, responseState, responseError }) => {
       const threadId = request.params?.threadId;
-      return { ...(displayRequest ?? request), requestGeneration: generation, projectId: threadId ? authoritativeThreadProjectId(threadId) : null };
+      return { ...(displayRequest ?? request), requestGeneration: generation, responseState, responseError, projectId: threadId ? authoritativeThreadProjectId(threadId) : null };
     }),
     knownProjectIds: () => database?.listProjects().map((project) => project.id) ?? [],
     connectReadiness: () => {
@@ -3835,8 +4316,8 @@ function registerHandlers() {
     connectFileOptions: (projectId, reference, allowExternal = false) => previewFileOptions(projectId, reference, allowExternal),
     connectTaskReceipt: (threadId) => taskResults?.get(threadId) ?? null,
     remoteInvoker: (hostId) => createRemoteInvoker({ handlers: { get: (channel) => handlers.entries.has(channel) ? (_event, payload, context) => handlers.invoke(channel, payload, { remote: true, ...context }) : undefined },
-      validateThread: createRemoteThreadValidator({ getProject, contains: isWithinProject, request: (method, payload) => runtime.request(method, payload), resolveOwner: ({ threadId, thread }) => authoritativeThreadProjectId(threadId, thread.cwd) }),
-      pendingRequest: (id) => pendingRequests.get(requestKey(id)), generation: () => runtimeGeneration,
+      validateThread: createRemoteThreadValidator({ getProject, contains: isWithinProject, resolveThread: threadId => { const binding = database.getThreadProviderBinding(threadId); const workspace = taskWorkspaces.getSync(threadId); return binding?.cwd || workspace?.cwd ? { id: threadId, cwd: workspace?.cwd ?? binding.cwd } : null; }, request: (method, payload) => runtime.request(method, payload), resolveOwner: ({ threadId, thread }) => authoritativeThreadProjectId(threadId, thread.cwd) }),
+      pendingRequest: (id, generation) => pendingRequestById(id, generation), generation: () => runtimeGeneration,
       activeTurnId: (id) => activeTurns.get(id), fileOptions: previewFileOptions, hostId, transferStore })
   };
 }

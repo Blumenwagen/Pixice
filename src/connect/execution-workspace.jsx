@@ -189,6 +189,7 @@ export function ExecutionThreadWorkspace({
   project: suppliedProject = null,
   threadId: suppliedThreadId = null,
   initialPrompt = '',
+  initialContextRecords = [],
   initialAttachments = [],
   initialPreparedAttachments = null,
   initialModel = '',
@@ -231,6 +232,7 @@ export function ExecutionThreadWorkspace({
   const deltaFrameRef = useRef(null);
   const previewRef = useRef(preview);
   const initialPromptRef = useRef(initialPrompt);
+  const initialContextRecordsRef = useRef(initialContextRecords);
   const initialAttachmentsRef = useRef(initialAttachments);
   const initialPreparedAttachmentsRef = useRef(initialPreparedAttachments);
   const initialSubmitStartedRef = useRef(false);
@@ -539,7 +541,7 @@ export function ExecutionThreadWorkspace({
     else submissionSignal?.addEventListener?.('abort', abortInitial, { once: true });
     storage.setItem(draftKey, prompt);
     try { storage.setItem(`${draftKey}.attachments`, JSON.stringify(attachments)); } catch { /* In-memory submission still carries the files. */ }
-    void submit(prompt, attachments, initialPreparedAttachmentsRef.current, attachments, signal).then((accepted) => {
+    void submit(prompt, attachments, initialPreparedAttachmentsRef.current, attachments, signal, { contextRecords: initialContextRecordsRef.current }).then((accepted) => {
       if (!mountedRef.current) return;
       if (signal.aborted) {
         reportInitialOutcome(false);
@@ -651,6 +653,7 @@ export function ExecutionThreadWorkspace({
           projectId: fixedProjectId,
           threadId: '00000000-0000-0000-0000-000000000000',
           text,
+          contextRecords: draftLifecycle?.contextRecords ?? [],
           previewContext: previewContextForWorkspace(previewRef.current),
           model: selectedModel || undefined,
           ...(serviceTier ? { serviceTier } : {}),
@@ -663,7 +666,7 @@ export function ExecutionThreadWorkspace({
         const created = await api.threads.create({ projectId: fixedProjectId, model: selectedModel || undefined, ...(serviceTier ? { serviceTier } : {}), permissionMode });
         if (signal?.aborted) return false;
         targetThreadId = created.thread.id;
-        draftLifecycle?.adoptDraftKey(`${hostId}:${fixedProjectId}:${targetThreadId}`);
+        draftLifecycle?.adoptDraftKey?.(`${hostId}:${fixedProjectId}:${targetThreadId}`);
         threadIdRef.current = targetThreadId;
         setThread(created.thread);
         setThreads((current) => [created.thread, ...current.filter((item) => item.id !== targetThreadId)]);
@@ -681,13 +684,19 @@ export function ExecutionThreadWorkspace({
         linkTargetThread(created.thread);
       }
       const activeTurn = activeTurnFor(existingThread);
+      if (activeTurn && draftLifecycle?.dispatchMode === 'queue' && api.turns.queue) {
+        const queued = requestPayloadWithAttachments({ projectId: fixedProjectId, threadId: targetThreadId, text, contextRecords: draftLifecycle?.contextRecords ?? [], previewContext: previewContextForWorkspace(previewRef.current), model: selectedModel || undefined, effort, permissionMode, ...(serviceTier ? { serviceTier } : {}) }, prepared);
+        assertSubmissionRequestBudget({ api, operation: 'turns.queue', payload: queued });
+        await api.turns.queue(queued);
+        return !signal?.aborted;
+      }
       optimisticTurnId = activeTurn?.id ?? `local-turn:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
       optimisticMessageId = `local-user:${optimisticTurnId}:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
       setThread((current) => appendLocalUserMessage(current, { turnId: optimisticTurnId, text, attachments, messageId: optimisticMessageId }));
       const previewContext = previewContextForWorkspace(previewRef.current);
       const payload = requestPayloadWithAttachments(activeTurn
-        ? { projectId: fixedProjectId, threadId: targetThreadId, turnId: activeTurn.id, text, previewContext }
-        : { projectId: fixedProjectId, threadId: targetThreadId, text, previewContext, model: selectedModel || undefined, ...(serviceTier ? { serviceTier } : {}), effort, permissionMode }, prepared);
+        ? { projectId: fixedProjectId, threadId: targetThreadId, turnId: activeTurn.id, text, contextRecords: draftLifecycle?.contextRecords ?? [], previewContext }
+        : { projectId: fixedProjectId, threadId: targetThreadId, text, contextRecords: draftLifecycle?.contextRecords ?? [], previewContext, model: selectedModel || undefined, ...(serviceTier ? { serviceTier } : {}), effort, permissionMode }, prepared);
       assertSubmissionRequestBudget({ api, operation: activeTurn ? 'turns.steer' : 'turns.start', payload });
       const operation = activeTurn ? api.turns.steer(payload) : api.turns.start(payload);
       const response = await operation;
@@ -801,7 +810,12 @@ export function ExecutionThreadWorkspace({
     draftReloadToken,
     preserveDrafts: true,
     storage,
-    attachmentContext: { api, hostId, deviceId: api?.remote?.deviceId, projectId },
+    attachmentContext: { api, hostId, deviceId: api?.remote?.deviceId, projectId, threadId: thread?.id ?? null },
+    promptHistory: (thread?.turns ?? []).flatMap(turn => turn.items ?? []),
+    contextOptions: { threads, preview: previewContextForWorkspace(previewRef.current), onOpenSource: record => { if (record.source.path || record.source.url) void openResource(record.source.path || record.source.url); } },
+    activeTurnId: activeTurnFor(thread)?.id,
+    queueEnabled: Boolean(api?.turns?.queue),
+    onQueueError: setError,
     sendShortcut: 'enter',
     spellCheckComposer: true,
     autoFocusComposer: true,

@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "../src/App.jsx";
+import { installPromptEditorGeometry, changeEditable, editableValue } from "./helpers/prompt-editor.js";
+import { parseContextTokens } from "../src/composer/context.js";
 
 const scope = { hostId: "host-a", deviceId: "device-a", projectId: "project-a" };
 const model = { model: "model-a", displayName: "Model A", provider: "codex", supportedReasoningEfforts: [{ reasoningEffort: "high" }] };
@@ -57,6 +59,7 @@ function fileFrom(text, name) {
 }
 
 beforeEach(() => {
+  installPromptEditorGeometry();
   vi.restoreAllMocks();
   vi.stubGlobal("crypto", webcrypto);
 });
@@ -66,6 +69,32 @@ afterEach(() => {
 });
 
 describe("Composer transfer UI", () => {
+  it("copies an inline file reference into another task with its exact native file bytes", async () => {
+    const storage = storageAdapter();
+    const onSubmit = vi.fn(async () => true);
+    const context = { scope, hostId: scope.hostId, deviceId: scope.deviceId, projectId: scope.projectId, threadId: "thread-a" };
+    const view = render(<Composer {...composerProps({ storage, onSubmit, draftKey: "project-a:thread-a", attachmentContext: context })} />);
+    const prompt = screen.getByRole("textbox", { name: "Task prompt" });
+    changeEditable(prompt, { target: { value: "Use this source " } });
+    fireEvent.change(view.container.querySelector('input[type="file"]'), { target: { files: [fileFrom("exact bytes", "source.txt")] } });
+    await screen.findByRole("button", { name: "Remove source.txt" });
+    const copied = new Map();
+    const clipboardData = { files: [], items: [], setData: (type, value) => copied.set(type, value), getData: type => copied.get(type) || "" };
+    act(() => { prompt.editor.commands.setTextSelection({ from: 1, to: prompt.editor.state.doc.content.size - 1 }); });
+    fireEvent.copy(prompt, { clipboardData });
+
+    view.rerender(<Composer {...composerProps({ storage, onSubmit, draftKey: "project-a:thread-b", attachmentContext: { ...context, threadId: "thread-b" } })} />);
+    const receivingPrompt = screen.getByRole("textbox", { name: "Task prompt" });
+    fireEvent.paste(receivingPrompt, { clipboardData });
+    expect(await screen.findByRole("button", { name: "Remove source.txt" })).toBeInTheDocument();
+    expect(editableValue(receivingPrompt)).toMatch(/^Use this source /);
+    expect(parseContextTokens(editableValue(receivingPrompt)).some(token => token.label === "source.txt")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][2].attachments[0]).toMatchObject({ name: "source.txt", dataUrl: "data:text/plain;base64,ZXhhY3QgYnl0ZXM=" });
+    expect(onSubmit.mock.calls[0][5].contextRecords).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "file", label: "source.txt" })]));
+  });
+
   it("keeps a failed partial upload resumable and completes it only after an explicit send", async () => {
     const transferId = "11111111-1111-4111-8111-111111111111";
     const transferApi = {
@@ -105,9 +134,9 @@ describe("Composer transfer UI", () => {
       attachmentContext: { api: transferApi, scope, hostId: scope.hostId, deviceId: scope.deviceId, projectId: scope.projectId }
     })} />);
     const prompt = screen.getByRole("textbox", { name: "Task prompt" });
-    fireEvent.change(prompt, { target: { value: "Ship the upload" } });
+    changeEditable(prompt, { target: { value: "Ship the upload" } });
     fireEvent.change(view.container.querySelector('input[type="file"]'), { target: { files: [fileFrom("abcd", "upload.txt")] } });
-    await waitFor(() => expect(screen.getByText("upload.txt")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remove upload.txt" })).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(screen.getByText("Upload failed")).toBeInTheDocument());
@@ -133,17 +162,18 @@ describe("Composer transfer UI", () => {
     const view = render(<Composer {...composerProps({ onSubmit })} />);
     const prompt = screen.getByRole("textbox", { name: "Task prompt" });
 
-    fireEvent.change(prompt, { target: { value: "First message" } });
+    changeEditable(prompt, { target: { value: "First message" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("First message", [], expect.anything(), [], expect.anything(), expect.objectContaining({ adoptDraftKey: expect.any(Function) })));
 
-    fireEvent.change(prompt, { target: { value: "Later edit" } });
+    changeEditable(prompt, { target: { value: "Later edit" } });
     const file = new File(["new"], "later.txt", { type: "text/plain" });
     fireEvent.change(view.container.querySelector('input[type="file"]'), { target: { files: [file] } });
 
     await act(async () => { resolveSubmit(true); });
-    expect(screen.getByDisplayValue("Later edit")).toBeInTheDocument();
-    expect(screen.getByText("later.txt")).toBeInTheDocument();
+    expect(editableValue(prompt)).toMatch(/^Later edit/);
+    expect(parseContextTokens(editableValue(prompt)).some(token => token.label === "later.txt")).toBe(true);
+    expect(screen.getByRole("button", { name: "Remove later.txt" })).toBeInTheDocument();
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
@@ -213,15 +243,24 @@ describe("Composer transfer UI", () => {
 
   it("preserves selected text and files when the upload target changes", async () => {
     const storage = storageAdapter();
+    const onSubmit = vi.fn(async () => true);
     const scopeB = { hostId: "host-b", deviceId: "device-b", projectId: "project-b" };
-    const view = render(<Composer {...composerProps({ storage, attachmentContext: { scope, hostId: scope.hostId, deviceId: scope.deviceId, projectId: scope.projectId } })} />);
-    fireEvent.change(screen.getByRole("textbox", { name: "Task prompt" }), { target: { value: "Keep this draft" } });
+    const view = render(<Composer {...composerProps({ storage, onSubmit, attachmentContext: { scope, hostId: scope.hostId, deviceId: scope.deviceId, projectId: scope.projectId } })} />);
+    changeEditable(screen.getByRole("textbox", { name: "Task prompt" }), { target: { value: "Keep this draft" } });
     fireEvent.change(view.container.querySelector('input[type="file"]'), { target: { files: [fileFrom("keep", "keep.txt")] } });
-    await waitFor(() => expect(screen.getByText("keep.txt")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remove keep.txt" })).toBeInTheDocument());
 
-    view.rerender(<Composer {...composerProps({ storage, attachmentContext: { scope: scopeB, hostId: scopeB.hostId, deviceId: scopeB.deviceId, projectId: scopeB.projectId } })} />);
-    expect(await screen.findByDisplayValue("Keep this draft")).toBeInTheDocument();
-    expect(screen.getByText("keep.txt")).toBeInTheDocument();
+    view.rerender(<Composer {...composerProps({ storage, onSubmit, attachmentContext: { scope: scopeB, hostId: scopeB.hostId, deviceId: scopeB.deviceId, projectId: scopeB.projectId } })} />);
+    await waitFor(() => expect(editableValue(screen.getByRole("textbox", { name: "Task prompt" }))).toMatch(/^Keep this draft/));
+    expect(parseContextTokens(editableValue(screen.getByRole("textbox", { name: "Task prompt" }))).some(token => token.label === "keep.txt")).toBe(true);
+    expect(screen.getByRole("button", { name: "Remove keep.txt" })).toBeInTheDocument();
     await waitFor(() => expect(storage.getItem("pixice.draft.project-a:new.attachments")).toContain("host-b:device-b:project-b"));
+
+    // Files explicitly retained for the new target must remain sendable, with
+    // their bytes and inline context agreeing on the new destination scope.
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][2].attachments[0]).toMatchObject({ name: "keep.txt", dataUrl: "data:text/plain;base64,a2VlcA==" });
+    expect(onSubmit.mock.calls[0][5].contextRecords.find(record => record.label === "keep.txt").source).toMatchObject({ hostId: "host-b", projectId: "project-b" });
   });
 });

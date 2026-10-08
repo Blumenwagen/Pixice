@@ -1,7 +1,10 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { installPromptEditorGeometry, toHaveEditableValue, createEditorAwareUser } from "./helpers/prompt-editor.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "../src/App.jsx";
+
+expect.extend({ toHaveValue: toHaveEditableValue });
+let user;
 
 const model = { model: "model-a", displayName: "Model A", provider: "codex", supportedReasoningEfforts: [{ reasoningEffort: "high" }] };
 
@@ -122,6 +125,8 @@ let cleanups = [];
 let restoreMicrophone = () => {};
 
 beforeEach(() => {
+  installPromptEditorGeometry();
+  user = createEditorAwareUser();
   const originalDevices = navigator.mediaDevices;
   const originalSecure = window.isSecureContext;
   Object.defineProperty(navigator, "mediaDevices", { value: { getUserMedia: vi.fn(), enumerateDevices: vi.fn(async () => []) }, configurable: true });
@@ -171,14 +176,14 @@ describe("composer dictation integration", () => {
     render(<Composer {...composerProps({ onSubmit, dictationApi: { transcription } })} />);
 
     const textarea = screen.getByRole("textbox", { name: "Task prompt" });
-    await userEvent.type(textarea, "please fix");
+    await user.type(textarea, "please fix");
 
-    await userEvent.click(screen.getByRole("button", { name: "Dictate a message" }));
+    await user.click(screen.getByRole("button", { name: "Dictate a message" }));
     await waitFor(() => expect(transcription.start).toHaveBeenCalled());
 
     // One second of audio, then stop.
     audio.pushFrame(new Float32Array(16000).fill(0.2));
-    await userEvent.click(await screen.findByRole("button", { name: /stop recording and transcribe/i }));
+    await user.click(await screen.findByRole("button", { name: /stop recording and transcribe/i }));
 
     await waitFor(() => expect(textarea).toHaveValue("please fix the failing test"));
     expect(transcription.chunk).toHaveBeenCalled();
@@ -200,7 +205,7 @@ describe("composer dictation integration", () => {
 
     expect(container.querySelector("[data-voice-beam]")).toBeNull();
 
-    await userEvent.click(screen.getByRole("button", { name: "Dictate a message" }));
+    await user.click(screen.getByRole("button", { name: "Dictate a message" }));
     const beam = await waitFor(() => {
       const element = container.querySelector("[data-voice-beam]");
       expect(element).not.toBeNull();
@@ -209,7 +214,7 @@ describe("composer dictation integration", () => {
     await waitFor(() => expect(beam).toHaveAttribute("data-active"));
     expect(beam).not.toHaveAttribute("data-processing");
 
-    await userEvent.click(screen.getByRole("button", { name: /stop recording and transcribe/i }));
+    await user.click(screen.getByRole("button", { name: /stop recording and transcribe/i }));
     await waitFor(() => expect(beam).toHaveAttribute("data-processing"));
 
     completeTranscription({ sessionId: "s-glow", modelId: "m", text: "captured", durationSeconds: 1 });
@@ -226,7 +231,7 @@ describe("composer dictation integration", () => {
     };
     const { container } = render(<Composer {...composerProps({ accentColor: "teal", dictationApi: { transcription } })} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Dictate a message" }));
+    await user.click(screen.getByRole("button", { name: "Dictate a message" }));
     const beam = await waitFor(() => {
       const element = container.querySelector("[data-voice-beam]");
       expect(element).not.toBeNull();
@@ -248,11 +253,11 @@ describe("composer dictation integration", () => {
     };
     render(<Composer {...composerProps({ dictationApi: { transcription } })} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Dictate a message" }));
+    await user.click(screen.getByRole("button", { name: "Dictate a message" }));
     await waitFor(() => expect(transcription.start).toHaveBeenCalled());
     audio.pushFrame(new Float32Array(16000).fill(0.2));
 
-    await userEvent.click(await screen.findByRole("button", { name: /discard recording/i }));
+    await user.click(await screen.findByRole("button", { name: /discard recording/i }));
 
     await waitFor(() => expect(transcription.abort).toHaveBeenCalledWith({ sessionId: "s2" }));
     expect(transcription.finish).not.toHaveBeenCalled();
@@ -265,7 +270,7 @@ describe("composer dictation integration", () => {
 
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
 
-    await userEvent.type(screen.getByRole("textbox", { name: "Task prompt" }), "hello");
+    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "hello");
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
   });

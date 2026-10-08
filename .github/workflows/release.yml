@@ -92,6 +92,9 @@ jobs:
       - name: Verify notarized macOS application
         if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
         run: pnpm release:verify:macos -- --require-gatekeeper
+      - name: Verify signed macOS update and relaunch
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/verify-macos-update.mjs
       - name: Preserve architecture-specific macOS update metadata
         if: runner.os == 'macOS'
         run: mv release/latest-mac.yml release/latest-mac-${{ matrix.arch }}.yml

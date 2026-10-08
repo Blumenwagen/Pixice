@@ -32,7 +32,12 @@ type PixiceEvent = {
     | "TraySettingsUpdated"
     | "UsageUpdated"
     | "TaskReceiptUpdated"
+    | "ExecutionRecoveryUpdated"
     | "CodexLimitsUpdated"
+    | "PullRequestsUpdated"
+    | "MessageQueueUpdated"
+    | "TaskWorkspacesUpdated"
+    | "ThreadHistoryUpdated"
     | "ProjectDeleted";
   payload: any;
   at: string;
@@ -71,6 +76,83 @@ type PixiceTranscriptionState = {
   settings: { numThreads: number; provider: "cpu" | "coreml"; language: string };
 };
 type ThreadScope = ProjectScope & { threadId: string };
+type PixicePermissionMode = "read-only" | "workspace-write" | "auto-approve" | "full-access";
+type PixicePromptInput = {
+  text: string;
+  images?: string[];
+  attachments?: Array<{ name: string; type: string; size: number; dataUrl: string }>;
+  attachmentIds?: string[];
+  contextRecords?: Array<Record<string, unknown>>;
+};
+type PixiceTurnOptions = { model?: string; serviceTier?: string | null; effort?: string; permissionMode?: PixicePermissionMode };
+type PixiceQueuedMessage = ThreadScope & PixiceTurnOptions & {
+  id: string; text: string; source: "user" | "watch";
+  state: "queued" | "dispatching" | "uncertain" | "failed";
+  createdAt: string; error?: string; dedupeKey?: string | null;
+  attachments: Array<{ name: string; mimeType: string; size: number }>;
+  contextRecords?: Array<Record<string, unknown>>;
+};
+type PixiceMessageQueue = { held: boolean; entries: PixiceQueuedMessage[] };
+type PixiceTaskWorkspace = {
+  id: string; projectId: string; threadId: string | null; kind: "worktree";
+  status: "ready" | "archived" | "removed" | "failed"; destination: string; cwd: string;
+  folders: string[]; runtimeRoots: string[]; sourceFolders: string[];
+  repositories: Array<{ root: string; sourceRoot: string; branch: string; baseCommit: string; executable: string }>;
+  mappedFolders: Array<{ repository: number; relative: string; original: string }>;
+  users: Array<{ threadId: string; cwd: string }>;
+  startingState: { type: "working-tree" } | { type: "ref"; ref: string };
+  createdAt: string; updatedAt: string;
+};
+type PixiceCheckpoint = ThreadScope & {
+  id: string; turnId: string; ordinal: number; provider: string | null; providerThreadId: string | null;
+  status: "ready"; createdAt: string; snapshotError: string | null;
+  hasFiles: boolean; supportsRewind: boolean;
+};
+type PixiceCheckpointInput = { text: string; images?: string[]; attachments?: Array<{ name: string; path: string; mimeType: string; size: number }> };
+type PixiceRestoreFile = { root: string; path: string };
+type PixiceHistoryPreview = {
+  checkpointId: string; threadId: string; turnId: string; input: PixiceCheckpointInput;
+  removedTurns: number; conversationRevision: string; workspaceRevision: string | null;
+  files: Array<PixiceRestoreFile & { status?: string; plus?: number; minus?: number; binary?: boolean }>;
+  fileCount: number; truncated: boolean; restoreAllowed: boolean; restoreReason: string | null;
+};
+type PixiceHtmlReply = {
+  id: string; threadId: string; title: string; height: number; createdAt: string;
+  reference: string; copiedFromThreadIds?: string[];
+};
+type PixicePullRequestCheck = { name: string; status: "pending" | "success" | "failure" | "cancelled" | "action-required"; required: boolean; url: string | null };
+type PixicePullRequestActor = { login: string; url: string | null };
+type PixicePullRequestRemark = {
+  id: string; kind: "comment" | "review" | "inline"; body: string; author: PixicePullRequestActor | null;
+  createdAt: string; editedAt: string | null; url: string | null; path: string | null; reviewState: string | null;
+};
+type PixicePullRequestRef = { owner: string; repository: string; repo: string; number: number; url: string; key: string };
+type PixicePullRequest = PixicePullRequestRef & {
+  title: string; body: string; state: "open" | "closed" | "merged"; isDraft: boolean;
+  author: PixicePullRequestActor | null; viewer: string | null; baseBranch: string; headBranch: string; headSha: string | null;
+  mergeability: "clean" | "conflicting" | "unknown"; reviewDecision: string | null; updatedAt: string | null; createdAt: string | null;
+  checks: PixicePullRequestCheck[]; checksComplete?: boolean;
+  comments: PixicePullRequestRemark[]; reviews: PixicePullRequestRemark[]; inlineComments: PixicePullRequestRemark[];
+  files: Array<{ path: string; additions: number; deletions: number }>;
+  commits: Array<{ sha: string; message: string; committedAt: string }>;
+  truncated: { comments: boolean; files: boolean; inlineComments: boolean }; activityComplete: boolean;
+  warning?: string;
+};
+type PixicePullRequestWatch = ThreadScope & {
+  id: string; key: string; url: string; active: boolean; startedAt: string; permissionMode: PixicePermissionMode;
+  failures: number; pauseUntil: number | null; stoppedReason: string | null; lastCheckedAt: string; lastError?: string | null;
+  cursor: { startedAt: string; headSha: string | null; failedChecks: string[]; passed: boolean; passedChecks: string[]; remarksThrough: string; remarkIds: string[]; conflicting: boolean; wakes: number };
+};
+type PixicePullRequestLink = ThreadScope & PixicePullRequestRef & {
+  linkedAt: string; snapshot: Pick<PixicePullRequest, "title" | "state" | "isDraft" | "headSha" | "updatedAt" | "reviewDecision" | "mergeability" | "checks"> | null;
+  watch: PixicePullRequestWatch | null;
+};
+type PixicePullRequestWorkspace = ThreadScope & {
+  cwd: string; branch: string; files: Array<{ path: string; status: string }>;
+  ahead: number; behind: number; hasUpstream: boolean;
+  repository: { nameWithOwner: string; url: string; defaultBranchRef: { name: string } | null } | null;
+  githubError: string | null; canWrite: boolean; canWatch: boolean; links: PixicePullRequestLink[];
+};
 type PixiceTaskReceipt = ThreadScope & {
   groupId: string;
   sourceThreadId?: string;
@@ -332,6 +414,36 @@ declare global {
         login(): Promise<any>;
         logout(): Promise<any>;
       };
+      pullRequests: {
+        workspace(payload: ThreadScope): Promise<PixicePullRequestWorkspace>;
+        list(payload: ThreadScope & { state?: "open" | "closed" | "merged" | "all" }): Promise<PixicePullRequest[]>;
+        read(payload: ThreadScope & { reference: string }): Promise<PixicePullRequest>;
+        link(payload: ThreadScope & { reference: string }): Promise<{ detail: PixicePullRequest; links: PixicePullRequestLink[] }>;
+        unlink(payload: ThreadScope & { url: string }): Promise<{ links: PixicePullRequestLink[] }>;
+        diff(payload: ThreadScope & { url: string }): Promise<{ url: string; diff: string; truncated: boolean }>;
+        commit(payload: ThreadScope & { message: string; paths: string[] }): Promise<{ output: string; workspace: PixicePullRequestWorkspace }>;
+        push(payload: ThreadScope): Promise<{ output: string; workspace: PixicePullRequestWorkspace }>;
+        create(payload: ThreadScope & { title: string; body: string; base: string; draft?: boolean }): Promise<{ detail: PixicePullRequest; links: PixicePullRequestLink[]; warning?: string }>;
+        update(payload: ThreadScope & { url: string; action: "ready" | "draft" | "close" | "reopen" | "edit" | "comment" | "review" | "merge"; title?: string; body?: string; verdict?: "comment" | "approve" | "request-changes"; method?: "squash" | "merge" | "rebase"; expectedHeadSha?: string }): Promise<PixicePullRequest>;
+        watch(payload: ThreadScope & { reference: string }): Promise<PixicePullRequestWatch>;
+        stopWatch(payload: ThreadScope & { url: string }): Promise<{ ok: true; links: PixicePullRequestLink[] }>;
+      };
+      htmlReplies: {
+        read(payload: ThreadScope & { id: string }): Promise<PixiceHtmlReply & { html: string }>;
+        list(payload: ThreadScope): Promise<PixiceHtmlReply[]>;
+        document(payload: ThreadScope & { html: string; title?: string; nonce: string; theme?: { appearance: "light" | "dark"; variables: Record<string, string> } }): Promise<{ path: string; url: string; expiresAt: number }>;
+      };
+      taskWorkspaces: {
+        read(payload: ThreadScope): Promise<PixiceTaskWorkspace | null>;
+        remove(payload: ThreadScope): Promise<PixiceTaskWorkspace>;
+      };
+      history: {
+        list(payload: ThreadScope): Promise<PixiceCheckpoint[]>;
+        preview(payload: ThreadScope & { checkpointId: string }): Promise<PixiceHistoryPreview>;
+        rewind(payload: ThreadScope & { checkpointId: string; conversationRevision: string; workspaceRevision?: string | null; restoreFiles?: boolean }): Promise<{ thread?: any; input: PixiceCheckpointInput; checkpointId: string; restoredFiles: PixiceRestoreFile[]; backupSnapshot?: unknown; filesKept?: boolean; restoreError?: string }>;
+        restoreFile(payload: ThreadScope & { checkpointId: string; file: PixiceRestoreFile; workspaceRevision: string }): Promise<{ restoredFiles: PixiceRestoreFile[]; checkpointId: string }>;
+        attachment(payload: ThreadScope & { checkpointId: string; path: string }): Promise<{ name: string; type: string; size: number; dataUrl: string }>;
+      };
       tasks: {
         receipts(payload?: { projectId?: string; groupId?: string }): Promise<PixiceTaskReceipt[]>;
         receipt(payload: ThreadScope): Promise<PixiceTaskReceipt | null>;
@@ -399,7 +511,7 @@ declare global {
             open: boolean;
             tabCount: number;
             active: null | {
-              kind: "browser" | "file" | "instrument" | "task" | "plan" | "workflow" | "simulator" | "thread" | "task-map" | "new";
+              kind: "browser" | "file" | "instrument" | "task" | "plan" | "workflow" | "simulator" | "thread" | "task-map" | "pull-requests" | "htmlReply" | "new";
               id?: string;
               title?: string;
               url?: string;
@@ -433,6 +545,7 @@ declare global {
         adopt(payload: { fromWorkspaceId: string; toWorkspaceId: string }): Promise<any | null>;
       };
       files: {
+        list(payload: ProjectScope & { threadId?: string; query?: string; limit?: number }): Promise<{ files: Array<{ path: string; relativePath: string; name: string; folderPath: string }>; truncated: boolean }>;
         read(payload: ProjectScope & { path: string }): Promise<any>;
         preview(payload: ProjectScope & { path: string }): Promise<any>;
         write(payload: ProjectScope & { path: string; content: string; expectedMtimeMs?: number }): Promise<any>;
@@ -536,17 +649,26 @@ declare global {
         list(payload: ProjectScope): Promise<{ data: any[]; nextCursor: string | null }>;
         read(payload: ThreadScope): Promise<{ thread: any; plan?: any[] | null }>;
         children(payload: ThreadScope): Promise<{ data: any[]; nextCursor: string | null }>;
-        create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access"; parentThreadId?: string }): Promise<{ thread: any }>;
+        create(payload: ProjectScope & { model?: string; serviceTier?: string | null; permissionMode?: PixicePermissionMode; parentThreadId?: string; workspace?: { mode: "project" | "worktree"; startingState?: { type: "working-tree" } | { type: "ref"; ref: string }; branch?: string } }): Promise<{ thread: any }>;
         fork(payload: ThreadScope & ({ lastTurnId: string } | { turnId: string }) & ({ lastItemId: string } | { itemId: string })): Promise<{ thread: any }>;
         archive(payload: ThreadScope): Promise<unknown>;
       };
       turns: {
-        start(payload: ThreadScope & { text: string; images?: string[]; attachments?: Array<{ name: string; type: string; size: number; dataUrl: string }>; model?: string; serviceTier?: string | null; effort?: string; permissionMode?: "read-only" | "workspace-write" | "auto-approve" | "full-access" }): Promise<{ turn: any }>;
-        steer(payload: ThreadScope & { turnId: string; text: string; images?: string[]; attachments?: Array<{ name: string; type: string; size: number; dataUrl: string }> }): Promise<unknown>;
+        start(payload: ThreadScope & PixicePromptInput & PixiceTurnOptions & { commandId?: string }): Promise<{ turn: any }>;
+        steer(payload: ThreadScope & PixicePromptInput & { turnId: string }): Promise<unknown>;
         interrupt(payload: ThreadScope & { turnId: string }): Promise<unknown>;
+        queue(payload: ThreadScope & PixicePromptInput & PixiceTurnOptions): Promise<{ queued: true; entry: PixiceQueuedMessage } | { duplicate: true }>;
+        queueList(payload: ThreadScope): Promise<PixiceMessageQueue>;
+        queueDraft(payload: ThreadScope & { id: string }): Promise<{ id: string; text: string; contextRecords: Array<Record<string, unknown>>; attachments: Array<{ name: string; type: string; size: number; dataUrl?: string; unavailable?: boolean }> }>;
+        queueEdit(payload: ThreadScope & PixicePromptInput & { id: string; replaceAttachments?: boolean }): Promise<PixiceMessageQueue>;
+        queueRemove(payload: ThreadScope & { id: string }): Promise<PixiceMessageQueue>;
+        queueReorder(payload: ThreadScope & { ids: string[] }): Promise<PixiceMessageQueue>;
+        queueHold(payload: ThreadScope): Promise<PixiceMessageQueue>;
+        queueResume(payload: ThreadScope & { retryUncertain?: boolean }): Promise<PixiceMessageQueue>;
+        queueSteer(payload: ThreadScope & { id: string; turnId: string }): Promise<PixiceMessageQueue>;
       };
       approvals: {
-        resolve(payload: { requestId: string | number; decision: "accept" | "decline" | "acceptForSession" | "cancel" }): Promise<unknown>;
+        resolve(payload: { requestId: string | number; requestGeneration: number; decision: "accept" | "decline" | "acceptForSession" | "cancel" }): Promise<unknown>;
       };
       requests: {
         respond(payload: { requestId: string | number; answers: Record<string, { answers: string[] }> }): Promise<unknown>;
@@ -555,7 +677,10 @@ declare global {
         respond(payload: { requestId: string | number; action: "answer" | "cancel"; answers: Record<string, string> }): Promise<unknown>;
       };
       elicitations: {
-        respond(payload: { requestId: string | number; action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> }): Promise<unknown>;
+        respond(payload: { requestId: string | number; requestGeneration: number } & (
+          | { decision: "accept" | "acceptForSession" | "acceptAlways" | "decline" | "cancel"; action?: never; content?: never; _meta?: never }
+          | { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown>; _meta?: { persist: "session" | "always" }; decision?: never }
+        )): Promise<unknown>;
       };
       review: {
         read(payload: ProjectScope): Promise<{ repository: any; files: Array<{ path: string; plus: number; minus: number; binary?: boolean }> }>;

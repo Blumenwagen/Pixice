@@ -4,6 +4,10 @@ Pixice 0.1.0-beta.1 uses the permanent application identifier `com.blumenwagen.p
 
 Pixice disables install-on-quit. An in-app update first writes verified, consistent copies of the project, thread metadata, workflow, and Instrument databases under `update-data-backups` in the application's user-data directory. A failed integrity check or backup aborts installation. The first launch of a new version restores missing or corrupt durable files from the latest verified snapshot, takes another pre-migration snapshot, and only records the new data version after all persistent stores open successfully.
 
+The updater verifies that the running macOS app has an Apple team signature before offering automatic downloads. An ad-hoc local copy requires a one-time replacement with the signed GitHub release. After preserving data and pausing backend recovery, Pixice waits for Electron's native installer to verify the ZIP before allowing windows to close. Failed native preparation or a cancelled quit restores the backend and leaves a retry available. Installation receipts under `updates/installation.json` compare the expected version with the next running binary; `updates/updater.log` retains bounded update diagnostics.
+
+Tagged macOS releases run `node scripts/verify-macos-update.mjs` before uploading artifacts. This builds two disposable signed Electron applications using Pixice's updater and backup modules, then verifies ZIP download, native acceptance, bundle replacement, single-instance relaunch, the running version, and a preserved live WAL database. Signing credentials are required; an ad-hoc run is not an upgrade test. `--package-only` checks the fixture packaging, dependencies, and ad-hoc rejection locally without claiming a signed upgrade passed.
+
 ## One-time setup
 
 1. Rename or create the GitHub repository as `Blumenwagen/Pixice`, then update local clones to `https://github.com/Blumenwagen/Pixice.git`.

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const DEFAULT_POLICY = Object.freeze({
   coordinatorModel: null,
@@ -71,6 +71,10 @@ function normalizeIdList(value, name, max) {
   return [...new Set(boundedArray(value, name, max).map((entry) => boundedString(entry, `${name} entry`, { max: 160, required: true })))];
 }
 
+function normalizeEventIds(value, max) {
+  return [...new Set(boundedArray(value, "eventIds", max).map(entry => boundedString(entry, "event id", { max: 512, required: true })))];
+}
+
 function normalizeResources(value) {
   return boundedArray(value, "resources", MAX_RESOURCES)
     .map((entry) => boundedString(entry, "resource", { max: 2_048, required: true }));
@@ -125,6 +129,7 @@ function mapWork(row) {
     decisionRevision: row.decision_revision,
     acknowledgedDecisionRevision: row.acknowledged_decision_revision,
     completionReported: Boolean(row.completion_reported),
+    stopRequested: row.stop_requested ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -141,7 +146,9 @@ function mapEvent(row) {
     message: row.message,
     sequence: row.sequence,
     createdAt: row.created_at,
-    deliveredAt: row.delivered_at
+    deliveredAt: row.delivered_at,
+    deliveryId: row.delivery_id ?? null,
+    observedAt: row.observed_at ?? null
   };
 }
 
@@ -158,12 +165,19 @@ function mapDecision(row) {
   };
 }
 
+function mapDelivery(row) {
+  return row ? { id: row.id, projectId: row.project_id, coordinatorThreadId: row.coordinator_thread_id,
+    messageId: row.message_id, eventIds: parseJson(row.event_ids, []), state: row.state,
+    turnId: row.turn_id, error: row.error, createdAt: row.created_at, updatedAt: row.updated_at } : null;
+}
+
 /** Durable, project-scoped state for Focus coordination. */
 export class FocusStore {
   constructor(database) {
     if (!database?.db?.prepare || !database?.db?.exec) throw new Error("FocusStore requires a Pixice database connection");
     this.database = database;
     this.db = database.db;
+    this.transactionDepth = 0;
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS focus_policies (
@@ -244,6 +258,19 @@ export class FocusStore {
     `);
     this.#ensureColumn("focus_work", "artifacts", "TEXT NOT NULL DEFAULT '[]'");
     this.#ensureColumn("focus_work", "review_of", "TEXT");
+    this.#ensureColumn("focus_work", "stop_requested", "TEXT");
+    this.#ensureColumn("focus_events", "delivery_id", "TEXT");
+    this.#ensureColumn("focus_events", "observed_at", "TEXT");
+    // T3 Orchestrator V2 EffectOutbox: claim before crossing a process boundary.
+    // A lost provider response is process-bound; it must not be blindly replayed.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS focus_deliveries (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, coordinator_thread_id TEXT NOT NULL,
+      message_id TEXT NOT NULL UNIQUE, event_ids TEXT NOT NULL, state TEXT NOT NULL,
+      turn_id TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    ); CREATE INDEX IF NOT EXISTS focus_deliveries_project_state ON focus_deliveries(project_id, state, created_at);
+    UPDATE focus_deliveries SET state='uncertain', error='Pixice stopped before coordinator delivery was confirmed.',
+      updated_at='${now()}' WHERE state='claimed';`);
   }
 
   #ensureColumn(table, column, definition) {
@@ -258,7 +285,9 @@ export class FocusStore {
   }
 
   #transaction(callback) {
+    if (this.transactionDepth) return callback();
     this.db.exec("BEGIN IMMEDIATE");
+    this.transactionDepth += 1;
     try {
       const result = callback();
       this.db.exec("COMMIT");
@@ -266,6 +295,8 @@ export class FocusStore {
     } catch (error) {
       try { this.db.exec("ROLLBACK"); } catch {}
       throw error;
+    } finally {
+      this.transactionDepth -= 1;
     }
   }
 
@@ -338,7 +369,7 @@ export class FocusStore {
     const allowed = new Set([
       "id",
       "coordinatorThreadId", "title", "prompt", "model", "effort", "permissionMode", "access", "resources", "dependsOn",
-      "artifacts", "reviewOf", "status", "threadId", "turnId", "answer", "error", "verification", "decisionRevision", "acknowledgedDecisionRevision", "completionReported"
+      "artifacts", "reviewOf", "status", "threadId", "turnId", "answer", "error", "verification", "decisionRevision", "acknowledgedDecisionRevision", "completionReported", "stopRequested"
     ]);
     for (const key of Object.keys(input)) {
       if (!allowed.has(key) || (key === "id" && current)) throw new Error(`Unknown work field: ${key}`);
@@ -347,7 +378,7 @@ export class FocusStore {
     const base = current ?? {
       coordinatorThreadId: null, title: "", prompt: "", model: policy.workerModel, effort: null,
       permissionMode: policy.permissionMode, access: "write", resources: [], artifacts: [], dependsOn: [], reviewOf: null, status: "queued", threadId: null,
-      turnId: null, answer: "", error: null, verification: null, decisionRevision: 0, acknowledgedDecisionRevision: 0, completionReported: false
+      turnId: null, answer: "", error: null, verification: null, decisionRevision: 0, acknowledgedDecisionRevision: 0, completionReported: false, stopRequested: null
     };
     const value = { ...base };
     const strings = [
@@ -384,6 +415,10 @@ export class FocusStore {
       }
     }
     if (value.acknowledgedDecisionRevision > value.decisionRevision) throw new Error("acknowledgedDecisionRevision cannot exceed decisionRevision");
+    if (Object.hasOwn(input, "stopRequested")) {
+      if (input.stopRequested !== null && !["pause", "cancel"].includes(input.stopRequested)) throw new Error("Unsupported stopRequested");
+      value.stopRequested = input.stopRequested;
+    }
     if (Object.hasOwn(input, "completionReported")) {
       if (typeof input.completionReported !== "boolean") throw new Error("completionReported must be a boolean");
       value.completionReported = input.completionReported;
@@ -425,12 +460,12 @@ export class FocusStore {
       this.db.prepare(`INSERT INTO focus_work (
         id, project_id, coordinator_thread_id, title, prompt, model, effort, permission_mode, access, resources, artifacts, depends_on, review_of,
         status, thread_id, turn_id, answer, error, verification, revision, decision_revision, acknowledged_decision_revision,
-        completion_reported, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`).run(
+        completion_reported, stop_requested, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`).run(
         workId, id, value.coordinatorThreadId, value.title, value.prompt, value.model, value.effort, value.permissionMode, value.access,
         jsonValue(value.resources, "resources"), jsonValue(value.artifacts, "artifacts"), jsonValue(value.dependsOn, "dependsOn"), value.reviewOf,
         value.status, value.threadId, value.turnId, value.answer, value.error, value.verification === null ? null : jsonValue(value.verification, "verification"), value.decisionRevision,
-        value.acknowledgedDecisionRevision, value.completionReported ? 1 : 0, timestamp, timestamp
+        value.acknowledgedDecisionRevision, value.completionReported ? 1 : 0, value.stopRequested, timestamp, timestamp
       );
       return this.getWork(id, workId);
     });
@@ -448,13 +483,36 @@ export class FocusStore {
       const timestamp = now();
       this.db.prepare(`UPDATE focus_work SET coordinator_thread_id=?, title=?, prompt=?, model=?, effort=?, permission_mode=?, access=?,
         resources=?, artifacts=?, depends_on=?, review_of=?, status=?, thread_id=?, turn_id=?, answer=?, error=?, verification=?, revision=revision + 1,
-        decision_revision=?, acknowledged_decision_revision=?, completion_reported=?, updated_at=? WHERE project_id=? AND id=?`).run(
+        decision_revision=?, acknowledged_decision_revision=?, completion_reported=?, stop_requested=?, updated_at=? WHERE project_id=? AND id=?`).run(
         value.coordinatorThreadId, value.title, value.prompt, value.model, value.effort, value.permissionMode, value.access,
         jsonValue(value.resources, "resources"), jsonValue(value.artifacts, "artifacts"), jsonValue(value.dependsOn, "dependsOn"), value.reviewOf,
         value.status, value.threadId, value.turnId, value.answer, value.error, value.verification === null ? null : jsonValue(value.verification, "verification"), value.decisionRevision,
-        value.acknowledgedDecisionRevision, value.completionReported ? 1 : 0, timestamp, id, work
+        value.acknowledgedDecisionRevision, value.completionReported ? 1 : 0, value.stopRequested, timestamp, id, work
       );
       return this.getWork(id, work);
+    });
+  }
+
+  createWorkWithEvent(projectId, input, event) {
+    return this.#transaction(() => {
+      const work = this.createWork(projectId, input);
+      this.appendEvent(projectId, { ...event, workId: work.id });
+      return work;
+    });
+  }
+
+  transitionWork(projectId, workId, patch, event) {
+    return this.#transaction(() => {
+      if (event.id) {
+        const existing = this.db.prepare("SELECT * FROM focus_events WHERE id=?").get(event.id);
+        if (existing) {
+          if (existing.project_id !== projectId || existing.work_id !== workId || existing.kind !== event.kind) throw new Error("Lifecycle command identity belongs to another transition");
+          return this.getWork(projectId, workId);
+        }
+      }
+      const work = this.updateWork(projectId, workId, patch);
+      this.appendEvent(projectId, { ...event, workId });
+      return work;
     });
   }
 
@@ -464,14 +522,19 @@ export class FocusStore {
       ORDER BY updated_at ASC, id ASC`).all().map(mapWork);
   }
 
-  appendEvent(projectId, { workId = null, kind, message = "", ...metadata } = {}) {
+  appendEvent(projectId, { id: requestedId = null, workId = null, kind, message = "", ...metadata } = {}) {
     const id = this.#requireProject(projectId);
     const resolvedWorkId = workId === null ? null : boundedString(workId, "workId", { max: 160, required: true });
     if (resolvedWorkId && !this.getWork(id, resolvedWorkId)) throw new Error("Event work belongs to another project or does not exist");
     const eventKind = boundedString(kind, "kind", { max: 96, required: true });
     const eventMessage = boundedString(message, "message", { max: 8_000 }) ?? "";
     const timestamp = now();
-    const eventId = randomUUID();
+    const eventId = requestedId === null ? randomUUID() : boundedString(requestedId, "event id", { max: 512, required: true });
+    const existing = this.db.prepare("SELECT * FROM focus_events WHERE id=?").get(eventId);
+    if (existing) {
+      if (existing.project_id !== id || existing.work_id !== resolvedWorkId || existing.kind !== eventKind) throw new Error("Event identity belongs to another lifecycle transition");
+      return mapEvent(existing);
+    }
     const result = this.db.prepare(`INSERT INTO focus_events (id, project_id, work_id, kind, message, metadata, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(eventId, id, resolvedWorkId, eventKind, eventMessage, jsonValue(metadata, "event metadata"), timestamp);
     return mapEvent(this.db.prepare("SELECT * FROM focus_events WHERE sequence = ?").get(Number(result.lastInsertRowid)));
@@ -487,7 +550,7 @@ export class FocusStore {
 
   markEventsDelivered(projectId, ids) {
     const id = this.#requireProject(projectId);
-    const eventIds = normalizeIdList(ids, "ids", 100);
+    const eventIds = normalizeEventIds(ids, 100);
     if (!eventIds.length) return 0;
     const placeholders = eventIds.map(() => "?").join(", ");
     return this.db.prepare(`UPDATE focus_events SET delivered_at = COALESCE(delivered_at, ?) WHERE project_id = ? AND id IN (${placeholders})`)
@@ -497,8 +560,92 @@ export class FocusStore {
   pendingEvents(projectId, limit = 20) {
     const id = this.#requireProject(projectId);
     const count = normalizeLimit(limit, 20, MAX_EVENTS);
-    return this.db.prepare("SELECT * FROM focus_events WHERE project_id = ? AND delivered_at IS NULL ORDER BY sequence ASC LIMIT ?")
+    return this.db.prepare("SELECT * FROM focus_events WHERE project_id = ? AND delivered_at IS NULL AND delivery_id IS NULL ORDER BY sequence ASC LIMIT ?")
       .all(id, count).map(mapEvent);
+  }
+
+  hasSettledTurn(projectId, workId, turnId) {
+    return Boolean(this.db.prepare("SELECT 1 FROM focus_events WHERE project_id=? AND work_id=? AND id=?")
+      .get(projectId, workId, `focus:${workId}:turn:${turnId}:settled`));
+  }
+
+  deliveryProjects() {
+    return this.db.prepare("SELECT DISTINCT project_id FROM focus_deliveries WHERE state IN ('claimed', 'uncertain')").all().map(row => row.project_id);
+  }
+
+  listDeliveries(projectId, { states = null, limit = 200 } = {}) {
+    const id = this.#requireProject(projectId);
+    const count = normalizeLimit(limit, 200, 200);
+    if (states) {
+      const values = boundedArray(states, "delivery states", 5);
+      if (!values.length) return [];
+      if (values.some(state => !["claimed", "uncertain", "accepted", "observed", "not-delivered"].includes(state))) throw new Error("Unsupported coordinator delivery state");
+      return this.db.prepare(`SELECT * FROM focus_deliveries WHERE project_id=? AND state IN (${values.map(() => "?").join(",")}) ORDER BY created_at ASC LIMIT ?`)
+        .all(id, ...values, count).map(mapDelivery);
+    }
+    return this.db.prepare("SELECT * FROM focus_deliveries WHERE project_id=? ORDER BY created_at DESC LIMIT ?").all(id, count).map(mapDelivery);
+  }
+
+  claimDelivery(projectId, coordinatorThreadId, eventIds) {
+    const id = this.#requireProject(projectId);
+    const threadId = boundedString(coordinatorThreadId, "coordinatorThreadId", { max: 160, required: true });
+    const ids = normalizeEventIds(eventIds, 25);
+    if (!ids.length) throw new Error("Delivery requires events");
+    return this.#transaction(() => {
+      // An unresolved send can have created a live coordinator turn. Hold all later
+      // sends for this coordinator until its exact message has been reconciled.
+      if (this.listDeliveries(id, { states: ["claimed", "uncertain"] }).length) return null;
+      const rows = ids.map(eventId => this.db.prepare("SELECT * FROM focus_events WHERE project_id=? AND id=?").get(id, eventId));
+      if (rows.some(row => !row || row.delivered_at || row.delivery_id)) throw new Error("Coordinator delivery events changed");
+      const identity = createHash("sha256").update(JSON.stringify(ids)).digest("hex");
+      const deliveryId = `focus-delivery:${identity}`;
+      const messageId = `focus-message:${identity}`;
+      const timestamp = now();
+      this.db.prepare(`INSERT INTO focus_deliveries (id, project_id, coordinator_thread_id, message_id, event_ids, state, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'claimed', ?, ?) ON CONFLICT(id) DO UPDATE SET state='claimed', error=NULL, updated_at=excluded.updated_at`)
+        .run(deliveryId, id, threadId, messageId, jsonValue(ids, "eventIds"), timestamp, timestamp);
+      for (const eventId of ids) this.db.prepare("UPDATE focus_events SET delivery_id=? WHERE project_id=? AND id=?").run(deliveryId, id, eventId);
+      return mapDelivery(this.db.prepare("SELECT * FROM focus_deliveries WHERE id=?").get(deliveryId));
+    });
+  }
+
+  settleDelivery(projectId, deliveryId, { state, turnId = null, error = null } = {}) {
+    const id = this.#requireProject(projectId);
+    if (!["accepted", "observed", "uncertain", "not-delivered"].includes(state)) throw new Error("Unsupported coordinator delivery state");
+    return this.#transaction(() => {
+      const delivery = mapDelivery(this.db.prepare("SELECT * FROM focus_deliveries WHERE project_id=? AND id=?").get(id, deliveryId));
+      if (!delivery) throw new Error("Coordinator delivery not found");
+      if (delivery.state === "observed" || (delivery.state === "accepted" && !["accepted", "observed"].includes(state))) return delivery;
+      const timestamp = now();
+      this.db.prepare("UPDATE focus_deliveries SET state=?, turn_id=COALESCE(?, turn_id), error=?, updated_at=? WHERE project_id=? AND id=?")
+        .run(state, turnId, error === null ? null : boundedString(String(error), "delivery error", { max: 8000 }), timestamp, id, deliveryId);
+      for (const eventId of delivery.eventIds) {
+        if (state === "not-delivered") this.db.prepare("UPDATE focus_events SET delivery_id=NULL WHERE project_id=? AND id=? AND delivered_at IS NULL").run(id, eventId);
+        else if (["accepted", "observed"].includes(state)) {
+          this.db.prepare("UPDATE focus_events SET delivered_at=COALESCE(delivered_at, ?), observed_at=CASE WHEN ?='observed' THEN COALESCE(observed_at, ?) ELSE observed_at END WHERE project_id=? AND id=?")
+            .run(timestamp, state, timestamp, id, eventId);
+          const event = this.db.prepare("SELECT work_id FROM focus_events WHERE project_id=? AND id=?").get(id, eventId);
+          const work = event?.work_id ? this.getWork(id, event.work_id) : null;
+          if (work && ["review", "done", "failed", "cancelled", "needs-attention"].includes(work.status)) this.updateWork(id, work.id, { completionReported: true });
+        }
+      }
+      return mapDelivery(this.db.prepare("SELECT * FROM focus_deliveries WHERE id=?").get(deliveryId));
+    });
+  }
+
+  observeWorkDeliveries(projectId, workId) {
+    const id = this.#requireProject(projectId);
+    if (!this.getWork(id, workId)) throw new Error("Work not found");
+    return this.#transaction(() => {
+      this.db.prepare("UPDATE focus_events SET observed_at=COALESCE(observed_at, ?) WHERE project_id=? AND work_id=? AND delivered_at IS NOT NULL").run(now(), id, workId);
+      const matching = this.db.prepare(`SELECT DISTINCT delivery_id FROM focus_events WHERE project_id=? AND work_id=? AND delivery_id IS NOT NULL`).all(id, workId);
+      for (const row of matching) {
+        const delivery = mapDelivery(this.db.prepare("SELECT * FROM focus_deliveries WHERE project_id=? AND id=? AND state='accepted'").get(id, row.delivery_id));
+        if (!delivery) continue;
+        const observed = delivery.eventIds.every(eventId => this.db.prepare("SELECT observed_at FROM focus_events WHERE project_id=? AND id=?").get(id, eventId)?.observed_at);
+        if (observed) this.settleDelivery(id, delivery.id, { state: "observed" });
+      }
+    });
   }
 
   latestSequence(projectId) {
@@ -520,18 +667,29 @@ export class FocusStore {
     return this.getSeen(id);
   }
 
-  recordDecision(projectId, { text, workIds = [], sourceThreadId = null } = {}) {
+  recordDecision(projectId, { text, workIds = [], sourceThreadId = null, commandId = null } = {}) {
     const id = this.#requireProject(projectId);
     const decisionText = boundedString(text, "text", { max: 12_000, required: true });
     const ids = normalizeIdList(workIds, "workIds", MAX_DECISION_WORK_ITEMS);
     const threadId = boundedString(sourceThreadId, "sourceThreadId", { max: 160, nullable: true });
     return this.#transaction(() => {
+      if (commandId) {
+        const existing = this.db.prepare("SELECT * FROM focus_decisions WHERE id=?").get(commandId);
+        if (existing) {
+          if (existing.project_id !== id) throw new Error("Decision command belongs to another project");
+          return mapDecision(existing);
+        }
+      }
       for (const workId of ids) if (!this.getWork(id, workId)) throw new Error("Decision work belongs to another project or does not exist");
       const revision = (this.db.prepare("SELECT COALESCE(MAX(revision), 0) AS revision FROM focus_decisions WHERE project_id = ?").get(id).revision ?? 0) + 1;
-      const decisionId = randomUUID();
+      const decisionId = commandId ? boundedString(commandId, "commandId", { max: 160, required: true }) : randomUUID();
       const timestamp = now();
       this.db.prepare(`INSERT INTO focus_decisions (id, project_id, revision, text, work_ids, source_thread_id, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`).run(decisionId, id, revision, decisionText, jsonValue(ids, "workIds"), threadId, timestamp);
+      for (const work of this.listRecoverableWork().filter(work => work.projectId === id && !TERMINAL_WORK_STATUSES.has(work.status) && (!ids.length || ids.includes(work.id)))) {
+        this.transitionWork(id, work.id, { decisionRevision: revision }, { id: `direction:${decisionId}:${work.id}`,
+          kind: "direction-recorded", message: `Coordinator direction r${revision} recorded.`, decisionRevision: revision });
+      }
       return mapDecision(this.db.prepare("SELECT * FROM focus_decisions WHERE id = ?").get(decisionId));
     });
   }

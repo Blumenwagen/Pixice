@@ -114,7 +114,7 @@ export class CodexRuntime extends EventEmitter {
 
   respond(id, result) {
     if (!this.connected || !this.#client) throw new Error("Codex runtime is not connected");
-    this.#client.respond(id, result);
+    return this.#client.respond(id, result);
   }
 
   async stop() {

@@ -107,7 +107,7 @@ export class FocusQuestionGroups {
     return detachedResult(key, generation);
   }
 
-  resolve(leaderKey, leaderGeneration, answers) {
+  resolve(leaderKey, leaderGeneration, answers, { consume = true } = {}) {
     const leaderIdentity = identity(leaderKey, leaderGeneration);
     const indexed = leaderIdentity && this.membersByIdentity.get(leaderIdentity);
     if (!indexed || indexed.group.leader !== indexed.member || !plainObject(answers)) return [];
@@ -117,7 +117,7 @@ export class FocusQuestionGroups {
       generation: member.generation,
       answers: remapAnswers(group.leader.questionIds, member.questionIds, answers)
     }));
-    this.#deleteGroup(group, indexed.bucketKey);
+    if (consume) this.#deleteGroup(group, indexed.bucketKey);
     return resolved;
   }
 
