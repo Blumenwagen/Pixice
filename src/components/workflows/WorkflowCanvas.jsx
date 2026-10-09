@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Background,
@@ -441,7 +441,7 @@ export function WorkflowCanvas({
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
     setConnectingFrom(null);
