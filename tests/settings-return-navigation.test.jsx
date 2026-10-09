@@ -25,6 +25,7 @@ beforeEach(() => {
 
 async function openFocus() {
   const app = render(<App />);
+  await waitFor(() => expect(app.container.querySelector('.pixice-app')).toHaveAttribute('data-active-thread-id', 'preview-task'));
   fireEvent.click(await screen.findByRole('button', { name: 'Focus' }));
   const prompt = await screen.findByRole('textbox', { name: 'Project Focus prompt' });
   await waitFor(() => expect(app.container.querySelector('.pixice-app')).toHaveAttribute('data-active-thread-id', 'preview-focus'));

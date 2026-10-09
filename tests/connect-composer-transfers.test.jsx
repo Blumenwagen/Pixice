@@ -145,6 +145,7 @@ describe("Composer transfer UI", () => {
     expect(screen.getByRole("button", { name: "Resume upload" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Resume upload" }));
+    await screen.findByText("Uploads resumed. Send the message when you are ready.");
     await waitFor(() => expect(screen.queryByRole("button", { name: "Resume upload" })).not.toBeInTheDocument());
     expect(fetchImpl.mock.calls.filter(([url]) => new URL(url).pathname.endsWith("/chunk"))).toHaveLength(2);
     expect(fetchImpl.mock.calls.filter(([url]) => new URL(url).pathname.endsWith("/complete"))).toHaveLength(0);

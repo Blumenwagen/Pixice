@@ -2397,7 +2397,7 @@ describe("Pixice app shell", () => {
 
     const threadButton = screen.getByRole("button", { name: "Finished background task" });
     const threadRow = threadButton.closest(".task-row");
-    expect(threadRow).toHaveClass("finished");
+    await waitFor(() => expect(threadRow).toHaveClass("finished"));
     expect(threadButton).toHaveAttribute("title", "Finished background task · Finished");
     expect(threadRow.querySelector(".task-finished-badge")).toHaveAttribute("title", "Finished");
     expect(threadRow.querySelector(".task-row-progress")).not.toBeInTheDocument();
@@ -4360,7 +4360,9 @@ describe("Pixice app shell", () => {
     await screen.findByRole("region", { name: "Usage overview" });
     expect(window.pixice.turns.start).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Back to task" }));
-    await user.type(screen.getByRole("textbox", { name: "Task prompt" }), "/settings{Enter}");
+    await user.type(await screen.findByRole("textbox", { name: "Task prompt" }), "/settings");
+    await screen.findByRole("option", { name: /\/settings/ });
+    await user.keyboard("{Enter}");
     expect(await screen.findByRole("complementary", { name: "Settings navigation" })).toBeInTheDocument();
     expect(window.pixice.turns.start).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Back to task" }));
